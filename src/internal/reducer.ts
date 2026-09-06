@@ -45,6 +45,7 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.childOperationIds);
   Object.freeze(operation.settledChildOperationIds);
   if (operation.result !== undefined) Object.freeze(operation.result);
+  if (operation.resultConflict !== undefined) Object.freeze(operation.resultConflict);
   return Object.freeze(operation);
 }
 
@@ -112,10 +113,11 @@ export function reduceOperation(
     throw new TransitionError("unexpected_sequence");
   }
   if (
-    current.state === "completed" ||
-    current.state === "failed" ||
-    current.state === "cancelled" ||
-    current.state === "unknown"
+    event.type !== "result_conflict_recorded" &&
+    (current.state === "completed" ||
+      current.state === "failed" ||
+      current.state === "cancelled" ||
+      current.state === "unknown")
   ) {
     throw new TransitionError("terminal_state_immutable");
   }
@@ -226,6 +228,21 @@ export function reduceOperation(
         throw new TransitionError("illegal_transition");
       }
       return immutable({ ...current, result: { ...event.result }, stateSeq: event.seq });
+
+    case "result_conflict_recorded":
+      if (
+        current.result === undefined ||
+        current.resultConflict !== undefined ||
+        event.conflict.acceptedDigest !== current.result.digest ||
+        event.conflict.conflictingDigest === current.result.digest
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        resultConflict: { ...event.conflict },
+        stateSeq: event.seq,
+      });
 
     case "self_settled":
       if (

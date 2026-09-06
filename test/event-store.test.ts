@@ -242,6 +242,28 @@ test("a fresh EventStore rejects Result bytes left by interrupted publication", 
   assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "incomplete_record");
 });
 
+test("a reopened EventStore reconstructs Result conflict evidence", async (context) => {
+  const root = await privateRoot();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await complete(new PrivateFileEventStore(root, clock()));
+  const reopened = new PrivateFileEventStore(root, clock());
+  await Effect.runPromise(Effect.either(reopened.acceptResult("operation-1", {
+    body: "conflicting",
+    digest: digest("conflicting"),
+    sequenceNumber: 2,
+  })));
+
+  const reconstructed = await Effect.runPromise(
+    new PrivateFileEventStore(root, clock()).get("operation-1"),
+  );
+
+  assert.deepEqual(reconstructed.resultConflict, {
+    acceptedDigest: digest("finished"),
+    conflictingDigest: digest("conflicting"),
+    deliverySequenceNumber: 2,
+  });
+});
+
 test("conflicting persisted Result events make a record corrupt", async (context) => {
   const root = await privateRoot();
   context.after(() => rm(root, { recursive: true, force: true }));

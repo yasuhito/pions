@@ -174,7 +174,7 @@ test("a conflicting Result is not acknowledged", async () => {
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(
     trace,
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5"]),
+    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
   );
   await runningOperation(store);
   trace.length = 0;
@@ -198,7 +198,7 @@ test("Result acceptance stops processing after the first conflict", async () => 
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(
     trace,
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5"]),
+    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
   );
   await runningOperation(store);
   trace.length = 0;
@@ -222,7 +222,7 @@ test("Result acceptance stops processing after the first conflict", async () => 
 test("the first conflict is reported when multiple conflicts are delivered", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5"]),
+    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({
@@ -246,10 +246,41 @@ test("the first conflict is reported when multiple conflicts are delivered", asy
   );
 });
 
+test("Result acceptance returns the persisted conflict after a restart", async () => {
+  const store = new InMemoryEventStore(
+    [],
+    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
+  );
+  await runningOperation(store);
+  const firstAcceptance = makeResultAcceptance({
+    channel: new FakeChildChannel([
+      { body: "accepted", sequenceNumber: 1 },
+      { body: "first conflict", sequenceNumber: 2 },
+    ]),
+    store,
+  });
+  await Effect.runPromise(firstAcceptance.acceptFromWorker("operation-1"));
+  const restartedAcceptance = makeResultAcceptance({
+    channel: new FakeChildChannel({ body: "later conflict", sequenceNumber: 3 }),
+    store,
+  });
+
+  const outcome = await Effect.runPromise(
+    restartedAcceptance.acceptFromWorker("operation-1"),
+  );
+
+  assert.equal(
+    outcome.state === "accepted"
+      ? outcome.resultDeliveryError?.conflictingDigest
+      : undefined,
+    "sha256:749d6220f308d86f1fc9717595933ebd2f734bb0fd15d1755454756ee5094988",
+  );
+});
+
 test("a conflicting Result does not replace the accepted Result", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5"]),
+    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({

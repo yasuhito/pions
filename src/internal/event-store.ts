@@ -182,6 +182,25 @@ function parseEvent(value: unknown): OperationEvent {
       };
       break;
     }
+    case "result_conflict_recorded": {
+      const conflict = value.conflict;
+      if (!isObject(conflict)) throw failure("corrupt_record", "Invalid Result conflict");
+      const acceptedDigest = stringField(conflict, "acceptedDigest");
+      const conflictingDigest = stringField(conflict, "conflictingDigest");
+      if (!acceptedDigest.startsWith("sha256:") || !conflictingDigest.startsWith("sha256:")) {
+        throw failure("corrupt_record", "Invalid Result conflict digest");
+      }
+      event = {
+        ...base,
+        type,
+        conflict: {
+          acceptedDigest,
+          conflictingDigest,
+          deliverySequenceNumber: numberField(conflict, "deliverySequenceNumber"),
+        },
+      };
+      break;
+    }
     case "self_settled": {
       const outcome = stringField(value, "outcome");
       if (outcome === "succeeded") event = { ...base, type, outcome };
@@ -373,10 +392,64 @@ export abstract class ValidatedEventStore implements EventStore {
         const loaded = await this.load(operationId, true);
         if (loaded === undefined) throw failure("not_found", `Operation not found: ${operationId}`);
         if (loaded.result !== undefined && loaded.resultReference !== undefined) {
-          if (loaded.result.digest !== delivery.digest) {
-            throw new ResultConflictError(operationId, loaded.result.digest, delivery.digest);
+          if (loaded.result.digest === delivery.digest) {
+            return { operation: loaded.operation, result: loaded.result };
           }
-          return { operation: loaded.operation, result: loaded.result };
+          if (loaded.operation.resultConflict !== undefined) {
+            throw new ResultConflictError(
+              operationId,
+              loaded.operation.resultConflict.acceptedDigest,
+              loaded.operation.resultConflict.conflictingDigest,
+            );
+          }
+          const conflict = {
+            acceptedDigest: loaded.result.digest,
+            conflictingDigest: delivery.digest,
+            deliverySequenceNumber: delivery.sequenceNumber,
+          } as const;
+          const seq = loaded.operation.stateSeq + 1;
+          const eventWithoutTimestamp = {
+            type: "result_conflict_recorded",
+            conflict,
+            actorId: RUNTIME_ACTOR_ID,
+            authority: OPERATION_AUTHORITY,
+            eventId: `${operationId}:${seq}`,
+            operationId,
+            schemaVersion: EVENT_SCHEMA_VERSION,
+            seq,
+          } as const;
+          try {
+            reduceOperation(loaded.operation, {
+              ...eventWithoutTimestamp,
+              timestamp: "result-conflict-preflight",
+            });
+          } catch (error) {
+            throw failure(
+              "corrupt_record",
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+          try {
+            const event = {
+              ...eventWithoutTimestamp,
+              timestamp: await Effect.runPromise(this.clock.now()),
+            } satisfies OperationEvent;
+            await this.writeRecord(operationId, {
+              ...loaded.record,
+              events: [...loaded.record.events, event],
+            });
+            this.didAppend(event);
+          } catch (error) {
+            throw failure(
+              "write_failed",
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+          throw new ResultConflictError(
+            operationId,
+            conflict.acceptedDigest,
+            conflict.conflictingDigest,
+          );
         }
         const bytes = Buffer.from(delivery.body, "utf8");
         const digest = resultDigest(bytes);

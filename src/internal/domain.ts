@@ -46,6 +46,7 @@ export interface Operation {
   readonly spawnFrozen: boolean;
   readonly cancellationEpoch: number;
   readonly result?: Readonly<ResultReference>;
+  readonly resultConflict?: Readonly<ResultConflictEvidence>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
   readonly terminalReason?: OperationFailureReason | "cancel-unproven";
@@ -60,6 +61,12 @@ export interface ResultReference {
   readonly location: "result.utf8";
   readonly byteCount: number;
   readonly digest: Result["digest"];
+  readonly deliverySequenceNumber: number;
+}
+
+export interface ResultConflictEvidence {
+  readonly acceptedDigest: Result["digest"];
+  readonly conflictingDigest: Result["digest"];
   readonly deliverySequenceNumber: number;
 }
 
@@ -108,6 +115,10 @@ export type OperationEvent = EventMetadata &
     | {
         readonly type: "result_persisted";
         readonly result: Readonly<ResultReference>;
+      }
+    | {
+        readonly type: "result_conflict_recorded";
+        readonly conflict: Readonly<ResultConflictEvidence>;
       }
     | {
         readonly type: "self_settled";

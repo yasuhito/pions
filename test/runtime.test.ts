@@ -170,6 +170,7 @@ async function completeOperation(
     "2026-09-06T10:00:05.000Z",
     "2026-09-06T10:00:06.000Z",
     "2026-09-06T10:00:07.000Z",
+    "2026-09-06T10:00:08.000Z",
   ]);
   const store = new InMemoryEventStore(trace, clock);
   const presentation = new FakePresentation(
@@ -768,6 +769,7 @@ async function conflictResult() {
       "2026-09-06T10:00:05.000Z",
       "2026-09-06T10:00:06.000Z",
       "2026-09-06T10:00:07.000Z",
+      "2026-09-06T10:00:08.000Z",
     ]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
