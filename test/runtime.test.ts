@@ -11,7 +11,7 @@ import {
   InMemoryEventStore,
 } from "../src/internal/testing.js";
 
-test("Runtime completes one operation only after accepting its result", async () => {
+async function completeOperation() {
   const trace: Array<string> = [];
   const backend = new FakeAgentBackend(trace);
   const channel = new FakeChildChannel({ body: "finished" }, trace);
@@ -38,16 +38,48 @@ test("Runtime completes one operation only after accepting its result", async ()
     profile: "coding",
     idempotencyKey: "task-1",
   });
-  const result = await handle.result();
+
+  return {
+    backend,
+    handle,
+    presentation,
+    result: await handle.result(),
+    store,
+    trace,
+  };
+}
+
+test("OperationHandle returns the accepted Result", async () => {
+  const { result } = await completeOperation();
 
   assert.deepEqual(result, {
     body: "finished",
     byteCount: 8,
     digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
   });
+});
+
+test("OperationHandle exposes the Operation identifier", async () => {
+  const { handle } = await completeOperation();
+
   assert.equal(handle.operationId, "operation-1");
+});
+
+test("EventStore retains the accepted Result", async () => {
+  const { result, store } = await completeOperation();
+
   assert.deepEqual(store.result("operation-1"), result);
+});
+
+test("Runtime starts the AgentBackend once", async () => {
+  const { backend } = await completeOperation();
+
   assert.equal(backend.startCount, 1);
+});
+
+test("Runtime records the successful Operation event sequence", async () => {
+  const { store } = await completeOperation();
+
   assert.deepEqual(
     store.events("operation-1").map(({ type }) => type),
     [
@@ -59,6 +91,11 @@ test("Runtime completes one operation only after accepting its result", async ()
       "operation_completed",
     ],
   );
+});
+
+test("Runtime persists result bytes before self-settlement and completion", async () => {
+  const { trace } = await completeOperation();
+
   assert.deepEqual(trace, [
     "event:operation_requested",
     "presentation:queued",
@@ -74,6 +111,11 @@ test("Runtime completes one operation only after accepting its result", async ()
     "event:operation_completed",
     "presentation:completed",
   ]);
+});
+
+test("Runtime uses deterministic event sequence numbers and timestamps", async () => {
+  const { store } = await completeOperation();
+
   assert.deepEqual(
     store.events("operation-1").map(({ seq, timestamp }) => ({ seq, timestamp })),
     [
@@ -85,6 +127,16 @@ test("Runtime completes one operation only after accepting its result", async ()
       { seq: 6, timestamp: "2026-09-06T10:00:05.000Z" },
     ],
   );
+});
+
+test("Presentation cannot change Operation state", async () => {
+  const { presentation } = await completeOperation();
+
   assert.equal(presentation.stateChangeSucceeded, false);
+});
+
+test("Presentation receives the completed Operation projection", async () => {
+  const { presentation } = await completeOperation();
+
   assert.equal(presentation.projections.at(-1)?.state, "completed");
 });
