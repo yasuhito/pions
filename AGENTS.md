@@ -14,6 +14,10 @@ Use the canonical triage roles mapped in `docs/agents/triage-labels.md` when tri
 
 Read `CONTEXT.md` and relevant files under `docs/adr/` before designing, specifying, or implementing Pions. See `docs/agents/domain.md`.
 
+## Testing
+
+各テストケースは、1つの振る舞いを1つのアサーションで検証する。複数のアサーションが必要な場合は、観測対象ごとに適切な名前のテストケースへ分割する。
+
 ## Writing
 
 日本語文では、一般語を自然な日本語または定着したカタカナ語で書く。正確さに必要なコード識別子、パッケージ名、コマンド、プロトコルリテラルだけをバッククォートで残す。
