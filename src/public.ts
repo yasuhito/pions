@@ -14,6 +14,19 @@ export interface Result {
   readonly digest: `sha256:${string}`;
 }
 
+export type OperationFailureReason = "backend_start_failed";
+
+export class OperationFailedError extends Error {
+  override readonly name = "OperationFailedError";
+
+  constructor(
+    readonly operationId: string,
+    readonly reason: OperationFailureReason,
+  ) {
+    super(`Operation ${operationId} failed: ${reason}`);
+  }
+}
+
 export class ResultConflictError extends Error {
   override readonly name = "ResultConflictError";
 

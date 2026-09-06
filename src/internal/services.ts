@@ -1,7 +1,11 @@
 import type { Effect } from "effect";
 
 import type { Operation, OperationEvent } from "./domain.js";
-import type { Result, ResultConflictError } from "../public.js";
+import type {
+  OperationFailureReason,
+  Result,
+  ResultConflictError,
+} from "../public.js";
 
 export interface ResultDelivery {
   readonly body: string;
@@ -16,6 +20,7 @@ export interface StoreError {
 
 export interface BackendError {
   readonly _tag: "BackendError";
+  readonly reason: OperationFailureReason;
   readonly message: string;
 }
 

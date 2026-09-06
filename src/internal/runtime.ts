@@ -1,8 +1,16 @@
 import { Cause, Effect, Exit, Schema } from "effect";
 
+import {
+  EVENT_SCHEMA_VERSION,
+  OPERATION_AUTHORITY,
+  RUNTIME_ACTOR_ID,
+} from "./domain.js";
 import type { EventInput, Operation, OperationEvent } from "./domain.js";
 import type { RuntimeServices } from "./services.js";
-import { ResultConflictError } from "../public.js";
+import {
+  OperationFailedError,
+  ResultConflictError,
+} from "../public.js";
 import type {
   OperationHandle,
   Result,
@@ -41,10 +49,11 @@ function makeRuntimeProgram(
         const timestamp = yield* services.clock.now();
         const event = {
           ...input,
-          actor: "runtime",
+          actorId: RUNTIME_ACTOR_ID,
+          authority: OPERATION_AUTHORITY,
           eventId: `${operationId}:${seq}`,
           operationId,
-          schemaVersion: 1,
+          schemaVersion: EVENT_SCHEMA_VERSION,
           seq,
           timestamp,
         } as OperationEvent;
@@ -60,7 +69,19 @@ function makeRuntimeProgram(
     operation = yield* append({ type: "operation_starting" });
     yield* project(operation);
 
-    yield* services.backend.start(operation);
+    const backendStart = yield* Effect.either(services.backend.start(operation));
+    if (backendStart._tag === "Left") {
+      const reason = backendStart.left.reason;
+      operation = yield* append({ type: "self_settled", outcome: "failed", reason });
+      operation = yield* append({ type: "operation_failed", reason });
+      yield* project(operation);
+      const failure = new OperationFailedError(operationId, reason);
+      return {
+        operationId,
+        result: () => Promise.reject(failure),
+      } satisfies OperationHandle;
+    }
+
     operation = yield* append({ type: "operation_started" });
     yield* project(operation);
 
@@ -73,10 +94,11 @@ function makeRuntimeProgram(
     const seq = operation.stateSeq + 1;
     const timestamp = yield* services.clock.now();
     const resultMetadata = {
-      actor: "runtime" as const,
+      actorId: RUNTIME_ACTOR_ID,
+      authority: OPERATION_AUTHORITY,
       eventId: `${operationId}:${seq}`,
       operationId,
-      schemaVersion: 1 as const,
+      schemaVersion: EVENT_SCHEMA_VERSION,
       seq,
       timestamp,
     };

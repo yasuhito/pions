@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { makeRuntime } from "../src/internal/runtime.js";
-import { ResultConflictError } from "../src/index.js";
+import {
+  OperationFailedError,
+  ResultConflictError,
+} from "../src/index.js";
 import {
   FakeAgentBackend,
   FakeChildChannel,
@@ -290,4 +293,75 @@ test("OperationHandle returns the same Result without republishing it", async ()
       digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
     },
   ]);
+});
+
+async function failOperation() {
+  const store = new InMemoryEventStore();
+  const runtime = makeRuntime({
+    backend: new FakeAgentBackend([], {
+      _tag: "BackendError",
+      reason: "backend_start_failed",
+      message: "worker executable unavailable",
+    }),
+    channel: new FakeChildChannel({ body: "must not be returned" }),
+    clock: new FakeClock([
+      "2026-09-06T10:00:00.000Z",
+      "2026-09-06T10:00:01.000Z",
+      "2026-09-06T10:00:02.000Z",
+      "2026-09-06T10:00:03.000Z",
+    ]),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+
+  return { handle, store };
+}
+
+test("OperationHandle reports backend failure as a bounded typed failure", async () => {
+  const { handle } = await failOperation();
+
+  await assert.rejects(
+    handle.result(),
+    (error) =>
+      error instanceof OperationFailedError &&
+      error.reason === "backend_start_failed",
+  );
+});
+
+test("backend failure records the failed terminal result", async () => {
+  const { store } = await failOperation();
+
+  assert.deepEqual(
+    store.events("operation-1").map(({ type }) => type),
+    [
+      "operation_requested",
+      "operation_starting",
+      "self_settled",
+      "operation_failed",
+    ],
+  );
+});
+
+test("backend failure does not publish a successful Result", async () => {
+  const { store } = await failOperation();
+
+  assert.equal(store.result("operation-1"), undefined);
+});
+
+test("EventStore rebuilds the failed snapshot from accepted events", async () => {
+  const { store } = await failOperation();
+
+  assert.deepEqual(store.rebuild("operation-1"), store.snapshot("operation-1"));
+});
+
+test("EventStore rebuilds the accepted failure reason", async () => {
+  const { store } = await failOperation();
+
+  assert.equal(store.rebuild("operation-1")?.terminalReason, "backend_start_failed");
 });

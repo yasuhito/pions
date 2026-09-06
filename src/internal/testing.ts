@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 
 import { Effect } from "effect";
 
-import { reduceOperation } from "./reducer.js";
+import {
+  reduceOperation,
+  replayOperation,
+  TransitionError,
+} from "./reducer.js";
 import type { Operation, OperationEvent, OperationState } from "./domain.js";
 import type {
   AgentBackend,
@@ -13,6 +17,7 @@ import type {
   ResultDelivery,
   RuntimeClock,
   StoreError,
+  BackendError,
 } from "./services.js";
 import { ResultConflictError } from "../public.js";
 import type { Result } from "../public.js";
@@ -27,12 +32,18 @@ function storeError(error: unknown): StoreError {
 export class FakeAgentBackend implements AgentBackend {
   startCount = 0;
 
-  constructor(private readonly trace: Array<string> = []) {}
+  constructor(
+    private readonly trace: Array<string> = [],
+    private readonly failure?: BackendError,
+  ) {}
 
-  start(_operation: Operation): Effect.Effect<void> {
-    return Effect.sync(() => {
+  start(_operation: Operation): Effect.Effect<void, BackendError> {
+    return Effect.suspend(() => {
       this.startCount += 1;
       this.trace.push("backend:start");
+      return this.failure === undefined
+        ? Effect.void
+        : Effect.fail(this.failure);
     });
   }
 }
@@ -125,6 +136,7 @@ export class FakePresentation implements Presentation {
 
 export class InMemoryEventStore implements EventStore {
   private readonly eventLog = new Map<string, Array<OperationEvent>>();
+  private readonly eventIds = new Set<string>();
   private readonly operations = new Map<string, Operation>();
   private readonly results = new Map<string, Result>();
   private readonly resultDeliveries = new Map<string, ResultDelivery>();
@@ -134,8 +146,12 @@ export class InMemoryEventStore implements EventStore {
   append(event: OperationEvent): Effect.Effect<Operation, StoreError> {
     return Effect.try({
       try: () => {
+        if (this.eventIds.has(event.eventId)) {
+          throw new TransitionError("duplicate_event");
+        }
         const current = this.operations.get(event.operationId);
         const next = reduceOperation(current, event);
+        this.eventIds.add(event.eventId);
         this.operations.set(event.operationId, next);
         const events = this.eventLog.get(event.operationId) ?? [];
         events.push(event);
@@ -196,9 +212,13 @@ export class InMemoryEventStore implements EventStore {
           type: "result_persisted",
           result,
         } as OperationEvent;
+        if (this.eventIds.has(event.eventId)) {
+          throw new TransitionError("duplicate_event");
+        }
         const next = reduceOperation(existingOperation, event);
 
         this.trace.push("result:bytes-persisted");
+        this.eventIds.add(event.eventId);
         this.results.set(operationId, result);
         this.resultDeliveries.set(operationId, Object.freeze({ ...delivery }));
         this.operations.set(operationId, next);
@@ -225,5 +245,13 @@ export class InMemoryEventStore implements EventStore {
 
   result(operationId: string): Result | undefined {
     return this.results.get(operationId);
+  }
+
+  snapshot(operationId: string): Operation | undefined {
+    return this.operations.get(operationId);
+  }
+
+  rebuild(operationId: string): Operation | undefined {
+    return replayOperation(this.events(operationId));
   }
 }
