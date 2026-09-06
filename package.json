@@ -15,6 +15,7 @@
     "build:test": "rm -rf .test-dist && tsc --outDir .test-dist"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "effect": "3.22.1"
   },
   "devDependencies": {

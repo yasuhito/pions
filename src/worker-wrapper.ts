@@ -2,43 +2,44 @@ import { randomBytes } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
-import { spawn } from "node:child_process";
 
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+
+import {
+  PiAgentFailedError,
+  runPiAgentSession,
+} from "./internal/pi-agent-backend.js";
 import {
   WorkerProtocolPeer,
   decodeWorkerConfig,
 } from "./internal/worker-protocol.js";
 import type { WorkerProtocolEvent } from "./internal/worker-protocol.js";
 
-function assistantOutcome(message: unknown): { readonly text: string; readonly succeeded: boolean } | undefined {
-  if (typeof message !== "object" || message === null) return undefined;
-  const record = message as {
-    readonly role?: unknown;
-    readonly content?: unknown;
-    readonly stopReason?: unknown;
-    readonly errorMessage?: unknown;
-  };
-  if (record.role !== "assistant" || !Array.isArray(record.content)) return undefined;
-  const text = record.content
-    .filter((part): part is { readonly type: "text"; readonly text: string } =>
-      typeof part === "object" && part !== null &&
-      (part as { readonly type?: unknown }).type === "text" &&
-      typeof (part as { readonly text?: unknown }).text === "string")
-    .map((part) => part.text)
-    .join("\n");
-  return text.length === 0
-    ? undefined
-    : {
-        text,
-        succeeded: record.stopReason === "stop" && record.errorMessage === undefined,
-      };
+function displayEvent(event: AgentSessionEvent): void {
+  if (
+    event.type === "message_update" &&
+    event.assistantMessageEvent.type === "text_delta"
+  ) {
+    process.stdout.write(event.assistantMessageEvent.delta);
+    return;
+  }
+  if (event.type === "tool_execution_start") {
+    process.stdout.write(`\n[tool] ${event.toolName}\n`);
+  }
 }
 
 async function main(): Promise<void> {
   const configPath = process.argv[2];
   if (configPath === undefined) throw new Error("Worker configuration path is required");
   const config = decodeWorkerConfig(await readFile(configPath, "utf8"));
-  await readFile(config.promptPath);
+  const prompt = await readFile(config.promptPath, "utf8");
   const socket = connect(config.socketPath);
   await new Promise<void>((resolve, reject) => {
     socket.once("connect", resolve);
@@ -53,57 +54,42 @@ async function main(): Promise<void> {
     socket.write(protocol.send(event));
   };
   send({ type: "hello", processInstanceId });
-  send({ type: "started" });
 
-  const child = spawn("pi", [
-    "--mode", "json", "--print", "--no-extensions", "--no-skills",
-    ...config.agentArgs,
-    `@${config.promptPath}`,
-  ], { cwd: config.cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
-  let stdout = "";
-  let stderr = "";
-  let assistantResult: string | undefined;
-  let assistantSucceeded = false;
-  let settled = false;
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => {
-    process.stdout.write(chunk);
-    stdout += chunk;
-    let newline = stdout.indexOf("\n");
-    while (newline >= 0) {
-      const line = stdout.slice(0, newline);
-      stdout = stdout.slice(newline + 1);
-      try {
-        const event = JSON.parse(line) as { readonly type?: unknown; readonly message?: unknown };
-        const outcome = assistantOutcome(event.message);
-        if (outcome !== undefined) {
-          assistantResult = outcome.text;
-          assistantSucceeded = outcome.succeeded;
-        }
-        if (event.type === "agent_settled") settled = true;
-      } catch {
-        // Pi terminal output is displayed, but only JSON events can become semantic evidence.
-      }
-      newline = stdout.indexOf("\n");
-    }
+  const agentDir = getAgentDir();
+  const settingsManager = SettingsManager.create(config.cwd, agentDir);
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: config.cwd,
+    agentDir,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
   });
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (chunk: string) => {
-    process.stderr.write(chunk);
-    if (Buffer.byteLength(stderr, "utf8") < 1024 * 1024) stderr += chunk;
+  await resourceLoader.reload();
+  const { session } = await createAgentSession({
+    cwd: config.cwd,
+    resourceLoader,
+    settingsManager,
+    sessionManager: SessionManager.create(config.cwd),
   });
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("close", resolve);
-    child.once("error", reject);
-  });
-  if (exitCode !== 0 || !settled || !assistantSucceeded || assistantResult === undefined) {
-    const errorPath = join(dirname(configPath), "error.utf8");
-    await writeFile(errorPath, stderr || "Pi exited without an agent_settled Result", { mode: 0o600 });
-    await chmod(errorPath, 0o600);
-    throw new Error("Pi exited without authenticated semantic completion");
+  send({ type: "started", piSessionId: session.sessionId });
+
+  let result;
+  try {
+    result = await runPiAgentSession(session, prompt, displayEvent);
+  } catch (error) {
+    if (!(error instanceof PiAgentFailedError)) throw error;
+    send({
+      type: "failed",
+      errorMessage: error.message,
+      usage: error.evidence.usage,
+      toolUses: error.evidence.toolUses,
+    });
+    socket.end();
+    return;
   }
-  send({ type: "result", body: assistantResult, deliverySequenceNumber: 1 });
-  send({ type: "done" });
+  send({ type: "result", body: result.body, deliverySequenceNumber: 1 });
+  send({ type: "done", usage: result.usage, toolUses: result.toolUses });
   await new Promise<void>((resolve, reject) => {
     socket.on("data", (chunk: Buffer) => {
       try {
@@ -118,7 +104,13 @@ async function main(): Promise<void> {
   socket.end();
 }
 
-void main().catch((error) => {
+void main().catch(async (error) => {
+  const configPath = process.argv[2];
+  if (configPath !== undefined) {
+    const errorPath = join(dirname(configPath), "error.utf8");
+    await writeFile(errorPath, String(error), { mode: 0o600 }).catch(() => undefined);
+    await chmod(errorPath, 0o600).catch(() => undefined);
+  }
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

@@ -3,9 +3,10 @@ import { timingSafeEqual } from "node:crypto";
 import { Schema } from "effect";
 
 import type { Result } from "../public.js";
+import type { AgentRunEvidence } from "./services.js";
 import { resultDigest } from "./result-digest.js";
 
-export const WORKER_PROTOCOL_VERSION = 2 as const;
+export const WORKER_PROTOCOL_VERSION = 3 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -72,6 +73,7 @@ const HelloSchema = Schema.Struct({
 const StartedSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("started"),
+  piSessionId: Schema.NonEmptyString,
 });
 const ResultSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
@@ -80,9 +82,31 @@ const ResultSchema = Schema.Struct({
   digest: DigestSchema,
   deliverySequenceNumber: Schema.Number,
 });
+const UsageSchema = Schema.Struct({
+  input: Schema.Number,
+  output: Schema.Number,
+  cacheRead: Schema.Number,
+  cacheWrite: Schema.Number,
+  totalTokens: Schema.Number,
+  cost: Schema.Number,
+});
+const ToolUseSchema = Schema.Struct({
+  toolCallId: Schema.NonEmptyString,
+  toolName: Schema.NonEmptyString,
+  isError: Schema.Boolean,
+});
 const DoneSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("done"),
+  usage: UsageSchema,
+  toolUses: Schema.Array(ToolUseSchema),
+});
+const FailedSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("failed"),
+  errorMessage: Schema.String,
+  usage: UsageSchema,
+  toolUses: Schema.Array(ToolUseSchema),
 });
 const AcknowledgementSchema = Schema.Struct({
   protocolVersion: Schema.Number,
@@ -99,8 +123,7 @@ const WorkerConfigSchema = Schema.Struct({
   socketPath: Schema.NonEmptyString,
   promptPath: Schema.NonEmptyString,
   cwd: Schema.NonEmptyString,
-  profile: Schema.NonEmptyString,
-  agentArgs: Schema.Array(Schema.String),
+  profile: Schema.Literal("coding"),
 });
 
 export interface WorkerConfig {
@@ -109,8 +132,7 @@ export interface WorkerConfig {
   readonly socketPath: string;
   readonly promptPath: string;
   readonly cwd: string;
-  readonly profile: string;
-  readonly agentArgs: ReadonlyArray<string>;
+  readonly profile: "coding";
 }
 
 export interface ResultDelivery {
@@ -157,21 +179,29 @@ export type HostProtocolEvent =
   | {
       readonly type: "started";
       readonly processInstanceId: string;
+      readonly piSessionId: string;
     }
   | {
       readonly type: "results_received";
       readonly reception: ResultReception;
+      readonly evidence: Readonly<AgentRunEvidence>;
+    }
+  | {
+      readonly type: "worker_failed";
+      readonly errorMessage: string;
+      readonly evidence: Readonly<AgentRunEvidence>;
     };
 
 export type WorkerProtocolEvent =
   | { readonly type: "hello"; readonly processInstanceId: string }
-  | { readonly type: "started" }
+  | { readonly type: "started"; readonly piSessionId: string }
   | {
       readonly type: "result";
       readonly body: string;
       readonly deliverySequenceNumber: number;
     }
-  | { readonly type: "done" };
+  | ({ readonly type: "done" } & Readonly<AgentRunEvidence>)
+  | ({ readonly type: "failed"; readonly errorMessage: string } & Readonly<AgentRunEvidence>);
 
 function violation(
   reason: ProtocolViolationReason,
@@ -456,7 +486,11 @@ export class HostProtocolPeer extends FramedPeer {
         throw violation("invalid_transition", "Worker started more than once");
       }
       this.state = "receiving_results";
-      return { type: "started", processInstanceId: this.processInstanceId };
+      return {
+        type: "started",
+        processInstanceId: this.processInstanceId,
+        piSessionId: started.piSessionId,
+      };
     }
     if (object.type === "result") {
       const result = decodeShape(
@@ -490,6 +524,26 @@ export class HostProtocolPeer extends FramedPeer {
       );
       return undefined;
     }
+    if (object.type === "failed") {
+      const failed = decodeShape(
+        FailedSchema,
+        value,
+        "Worker protocol frame has an invalid shape",
+      );
+      this.validateCommon(failed);
+      if (this.state !== "receiving_results" || this.deliveries.length !== 0) {
+        throw violation("invalid_transition", "Worker failure arrived outside an active Pi run");
+      }
+      this.state = "done";
+      return {
+        type: "worker_failed",
+        errorMessage: failed.errorMessage,
+        evidence: {
+          usage: { ...failed.usage },
+          toolUses: failed.toolUses.map((toolUse) => ({ ...toolUse })),
+        },
+      };
+    }
     if (object.type === "done") {
       const done = decodeShape(
         DoneSchema,
@@ -504,6 +558,10 @@ export class HostProtocolPeer extends FramedPeer {
       return {
         type: "results_received",
         reception: { deliveries: [...this.deliveries] },
+        evidence: {
+          usage: { ...done.usage },
+          toolUses: done.toolUses.map((toolUse) => ({ ...toolUse })),
+        },
       };
     }
     throw violation("invalid_frame", "Unknown worker protocol frame type");
@@ -571,7 +629,13 @@ export class WorkerProtocolPeer extends FramedPeer {
       }
       case "started": {
         if (this.state !== "identified") return this.invalidSend(event.type);
-        const bytes = this.encodeWorkerFrame({ type: "started" });
+        if (event.piSessionId.length === 0) {
+          throw violation("invalid_frame", "piSessionId must not be empty");
+        }
+        const bytes = this.encodeWorkerFrame({
+          type: "started",
+          piSessionId: event.piSessionId,
+        });
         this.state = "started";
         return bytes;
       }
@@ -600,9 +664,24 @@ export class WorkerProtocolPeer extends FramedPeer {
         );
         return bytes;
       }
+      case "failed": {
+        if (this.state !== "started") return this.invalidSend(event.type);
+        const bytes = this.encodeWorkerFrame({
+          type: "failed",
+          errorMessage: event.errorMessage,
+          usage: event.usage,
+          toolUses: event.toolUses,
+        });
+        this.state = "done";
+        return bytes;
+      }
       case "done": {
         if (this.state !== "delivering") return this.invalidSend(event.type);
-        const bytes = this.encodeWorkerFrame({ type: "done" });
+        const bytes = this.encodeWorkerFrame({
+          type: "done",
+          usage: event.usage,
+          toolUses: event.toolUses,
+        });
         this.state = "done";
         return bytes;
       }
@@ -687,10 +766,7 @@ export function decodeWorkerConfig(text: string): WorkerConfig {
   }
   const decoded = decodeWorkerConfigValue(value);
   const { protocolVersion: _protocolVersion, ...config } = decoded;
-  return {
-    ...config,
-    agentArgs: [...config.agentArgs],
-  };
+  return config;
 }
 
 function decodeWorkerConfigValue(

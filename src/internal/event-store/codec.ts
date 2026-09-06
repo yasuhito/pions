@@ -58,7 +58,25 @@ const Presentation = Schema.Struct({
 });
 const WorkerIdentity = Schema.Struct({
   processInstanceId: Schema.String,
+  piSessionId: Schema.String,
   paneId: Schema.String,
+});
+const Usage = Schema.Struct({
+  input: Schema.Number,
+  output: Schema.Number,
+  cacheRead: Schema.Number,
+  cacheWrite: Schema.Number,
+  totalTokens: Schema.Number,
+  cost: Schema.Number,
+});
+const ToolUse = Schema.Struct({
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  isError: Schema.Boolean,
+});
+const AgentRunEvidence = Schema.Struct({
+  usage: Usage,
+  toolUses: Schema.Array(ToolUse),
 });
 const ResultReference = Schema.Struct({
   location: Schema.String,
@@ -74,6 +92,7 @@ const ResultConflict = Schema.Struct({
 const FailureReason = Schema.Literal(
   "worker_start_failed",
   "worker_protocol_failed",
+  "agent_failed",
   "descendant_failed",
 );
 const CancellationProof = Schema.Literal("acknowledgement", "worker-stop");
@@ -108,6 +127,11 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("worker_identified"),
     workerIdentity: WorkerIdentity,
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("agent_settled"),
+    evidence: AgentRunEvidence,
   }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_blocked") }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_unblocked") }),

@@ -182,6 +182,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const reason =
         operation.terminalReason === "worker_start_failed" ||
         operation.terminalReason === "worker_protocol_failed" ||
+        operation.terminalReason === "agent_failed" ||
         operation.terminalReason === "descendant_failed"
           ? operation.terminalReason
           : "descendant_failed";
@@ -281,6 +282,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             type: "worker_identified",
             workerIdentity: {
               processInstanceId: workerIdentity.processInstanceId,
+              piSessionId: workerIdentity.piSessionId,
               paneId: started.presentation?.paneId ?? "",
             },
           })),
@@ -303,6 +305,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             ),
           );
         }
+        if (workerOutcome.state === "agent_failed") {
+          operation = await runEffect(
+            advanceOperation(record.operationId, {
+              type: "agent_settled",
+              evidence: workerOutcome.evidence,
+            }),
+          );
+          await runEffect(project(operation));
+        }
         operation = await runEffect(
           advanceOperation(record.operationId, {
             type: "self_settled",
@@ -320,6 +331,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         record.resultDeliveryError = workerOutcome.resultDeliveryError;
       }
 
+      operation = await runEffect(
+        advanceOperation(record.operationId, {
+          type: "agent_settled",
+          evidence: workerOutcome.evidence,
+        }),
+      );
+      await runEffect(project(operation));
       operation = await runEffect(
         advanceOperation(record.operationId, {
           type: "self_settled",

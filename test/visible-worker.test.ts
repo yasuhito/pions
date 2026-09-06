@@ -12,9 +12,18 @@ import type { CommandInvocation } from "../src/internal/herdr-presentation.js";
 import type { WorkerRunHooks } from "../src/internal/services.js";
 import { operationDirectoryKey } from "../src/internal/event-store/index.js";
 import { VisibleWorker } from "../src/internal/visible-worker.js";
+import { makeRuntime } from "../src/internal/runtime.js";
+import {
+  FakeClock,
+  FakeIdGenerator,
+  FakePresentation,
+  InMemoryEventStore,
+} from "../src/internal/testing.js";
 import { WORKER_PROTOCOL_VERSION } from "../src/internal/worker-protocol.js";
 import type { ResultDelivery } from "../src/internal/worker-protocol.js";
 import {
+  agentRunEvidence,
+  piSessionId,
   resultAcceptanceProof,
   resultDigest,
 } from "./worker-protocol-fixtures.js";
@@ -82,6 +91,7 @@ async function fixture() {
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
     serverFactory: () => {
       protocolServer = createServer();
+      protocolServer.unref();
       protocolServer.on("connection", (connected) => {
         protocolSocket = connected;
       });
@@ -91,10 +101,12 @@ async function fixture() {
   const current = operation();
   const deliveries: Array<ResultDelivery> = [];
   const identities: Array<string> = [];
+  const piSessionIds: Array<string> = [];
   const hooks: WorkerRunHooks = {
     workerLaunched: () => Effect.void,
     workerIdentified: (identity) => Effect.sync(() => {
       identities.push(identity.processInstanceId);
+      piSessionIds.push(identity.piSessionId);
     }),
     acceptResults: (received) => Effect.sync(() => {
       deliveries.push(...received);
@@ -134,6 +146,7 @@ async function fixture() {
     directory,
     executor,
     identities,
+    piSessionIds,
     outcome,
     protocolSession,
     root,
@@ -197,13 +210,13 @@ function sendResultDelivery(
     operationId: options.operationId,
   });
   send(client, withOperation(frame(options.capability, 1, "hello", { processInstanceId })));
-  send(client, withOperation(frame(options.capability, 2, "started")));
+  send(client, withOperation(frame(options.capability, 2, "started", { piSessionId })));
   send(client, withOperation(frame(options.capability, 3, "result", {
     body: options.body,
     digest: resultDigest(options.body),
     deliverySequenceNumber: 1,
   })));
-  send(client, withOperation(frame(options.capability, 4, "done")));
+  send(client, withOperation(frame(options.capability, 4, "done", { ...agentRunEvidence })));
 }
 
 async function deliver(
@@ -231,6 +244,46 @@ test("public visible Runtime composes the production path", async (context) => {
     runtime.spawn({ promptRef: "/private/prompt", profile: "coding", idempotencyKey: "task-1" }),
     (error) => error instanceof HerdrPreconditionError,
   );
+});
+
+test("visible Pi adapter satisfies the caller-facing Runtime Result contract", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pvc-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const executor = new FakeExecutor();
+  const capability = "ab".repeat(32);
+  const worker = new VisibleWorker({
+    rootDirectory: root,
+    cwd: "/work/project",
+    executor,
+    wrapperEntryPath: "/pions/worker-wrapper.js",
+    capabilityGenerator: { nextCapability: () => capability },
+    promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
+  });
+  const runtime = makeRuntime({
+    worker,
+    clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+  });
+  const handle = await runtime.spawn({
+    promptRef: "/private/prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  while (executor.invocations.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v1.json");
+  const config = JSON.parse(await readFile(configPath, "utf8")) as { readonly socketPath: string };
+  const client = await socket(config.socketPath);
+  sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
+
+  assert.deepEqual(await handle.result(), {
+    body: "finished",
+    byteCount: 8,
+    digest: resultDigest("finished"),
+  });
 });
 
 test("visible Worker launch keeps the prompt out of process arguments", async (context) => {
@@ -336,6 +389,39 @@ test("visible Worker socket uses private permissions", async (context) => {
   assert.equal(await mode(value.config.socketPath), 0o600);
 });
 
+test("visible Worker keeps Node alive while awaiting the wrapper connection", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pvk-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const executor = new FakeExecutor();
+  let unrefCount = 0;
+  const adapter = new VisibleWorker({
+    rootDirectory: root,
+    cwd: "/work/project",
+    executor,
+    wrapperEntryPath: "/pions/worker-wrapper.js",
+    capabilityGenerator: { nextCapability: () => "ab".repeat(32) },
+    promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
+    serverFactory: () => {
+      const server = createServer();
+      const unref = server.unref.bind(server);
+      server.unref = () => {
+        unrefCount += 1;
+        return unref();
+      };
+      return server;
+    },
+  });
+  const worker = adapter.open(operation());
+  const outcome = Effect.runPromise(worker.run(workerHooks()));
+  while (executor.invocations.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await Effect.runPromise(worker.cancel(1));
+  await outcome;
+
+  assert.equal(unrefCount, 0);
+});
+
 test("authenticated Result is observed through the Worker interface", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -356,12 +442,25 @@ test("authenticated Worker identity is observed before Result delivery", async (
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
-  send(client, frame(value.capability, 2, "started"));
+  send(client, frame(value.capability, 2, "started", { piSessionId }));
   while (value.identities.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   assert.deepEqual(value.identities, [processInstanceId]);
+});
+
+test("authenticated Pi session identity is observed through the Worker interface", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(value.piSessionIds, [piSessionId]);
 });
 
 test("visible Worker sends ACK after Result acceptance", async (context) => {
@@ -378,6 +477,23 @@ test("normal completion releases Worker protocol listeners", async (context) => 
   await deliver(workerFixture);
 
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
+});
+
+test("settled Pi failure becomes an agent failure with evidence", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId }));
+  send(client, frame(value.capability, 3, "failed", {
+    errorMessage: "provider failed",
+    ...agentRunEvidence,
+  }));
+
+  assert.deepEqual(await value.outcome, {
+    state: "agent_failed",
+    evidence: agentRunEvidence,
+  });
 });
 
 test("protocol rejection becomes a Worker protocol failure", async (context) => {
@@ -514,6 +630,10 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
     operationId: first.operationId,
     body: "first",
   });
+  const outcome = await firstOutcome;
+  await Effect.runPromise(secondWorker.cancel(1));
+  firstClient.destroy();
+  secondClient.destroy();
 
-  assert.equal((await firstOutcome).state, "worker_protocol_failed");
+  assert.equal(outcome.state, "worker_protocol_failed");
 });

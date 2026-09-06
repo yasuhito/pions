@@ -98,13 +98,27 @@ class ControlledWorkerAdapter implements WorkerAdapter {
     return Effect.gen(this, function* () {
       this.startCount += 1;
       yield* hooks.workerLaunched();
-      yield* hooks.workerIdentified({ processInstanceId: `process:${operation.operationId}` });
+      yield* hooks.workerIdentified({
+        processInstanceId: `process:${operation.operationId}`,
+        piSessionId: `session:${operation.operationId}`,
+      });
       const deliveries = yield* Effect.async<ReadonlyArray<ResultDelivery>>((resume) => {
         this.receivers.set(operation.operationId, resume);
       });
       const acceptance = yield* hooks.acceptResults(deliveries);
       return yield* acknowledgeResultAcceptance(
         acceptance,
+        {
+          usage: {
+            input: 10,
+            output: 4,
+            cacheRead: 2,
+            cacheWrite: 1,
+            totalTokens: 17,
+            cost: 0.33,
+          },
+          toolUses: [{ toolCallId: "call-1", toolName: "read", isError: false }],
+        },
         () => Effect.void,
       );
     });
@@ -179,6 +193,7 @@ async function completeOperation(
     "2026-09-06T10:00:07.000Z",
     "2026-09-06T10:00:08.000Z",
     "2026-09-06T10:00:09.000Z",
+    "2026-09-06T10:00:10.000Z",
   ]);
   const store = new InMemoryEventStore(trace, clock);
   const presentation = new FakePresentation(
@@ -646,6 +661,26 @@ test("Operation records the worker process instance identity", async () => {
   assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.processInstanceId, "fake-process-instance");
 });
 
+test("Operation records the Pi session identity", async () => {
+  const { store } = await completeOperation();
+
+  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.piSessionId, "fake-pi-session");
+});
+
+test("Operation records Pi usage at agent settlement", async () => {
+  const { store } = await completeOperation();
+
+  assert.equal((await storedOperation(store, "operation-1")).agentRunEvidence?.usage.totalTokens, 17);
+});
+
+test("Operation records Pi tool use at agent settlement", async () => {
+  const { store } = await completeOperation();
+
+  assert.deepEqual((await storedOperation(store, "operation-1")).agentRunEvidence?.toolUses, [
+    { toolCallId: "fake-call", toolName: "read", isError: false },
+  ]);
+});
+
 test("Operation records the worker's owned pane identity", async () => {
   const { store } = await completeOperation();
 
@@ -665,6 +700,7 @@ test("Runtime records the successful Operation event sequence", async () => {
       "operation_started",
       "worker_identified",
       "result_persisted",
+      "agent_settled",
       "self_settled",
       "operation_completed",
     ],
@@ -686,6 +722,7 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
       { seq: 7, timestamp: "2026-09-06T10:00:06.000Z" },
       { seq: 8, timestamp: "2026-09-06T10:00:07.000Z" },
       { seq: 9, timestamp: "2026-09-06T10:00:08.000Z" },
+      { seq: 10, timestamp: "2026-09-06T10:00:09.000Z" },
     ],
   );
 });
@@ -853,6 +890,35 @@ async function failOperation() {
 
   return { handle, store, trace };
 }
+
+async function settledAgentFailure() {
+  const store = new InMemoryEventStore();
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter({ failure: "agent_failed" }),
+    clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `failure-time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  await handle.result().catch(() => undefined);
+  return { handle, store };
+}
+
+test("a settled Pi failure is durably classified", async () => {
+  const { store } = await settledAgentFailure();
+
+  assert.equal((await storedOperation(store, "operation-1")).terminalReason, "agent_failed");
+});
+
+test("a settled Pi failure retains usage and tool evidence", async () => {
+  const { store } = await settledAgentFailure();
+
+  assert.deepEqual((await storedOperation(store, "operation-1")).agentRunEvidence, {
+    usage: { input: 10, output: 4, cacheRead: 2, cacheWrite: 1, totalTokens: 17, cost: 0.33 },
+    toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: true }],
+  });
+});
 
 test("a Worker protocol failure is durably classified without fake completion", async () => {
   const store = new InMemoryEventStore();

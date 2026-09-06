@@ -3,6 +3,7 @@ import type {
   Result,
   TaskSpec,
 } from "../../public.js";
+import type { AgentRunEvidence } from "../services.js";
 import type {
   PersistableOperationIntent,
   PresentationOwnership,
@@ -39,6 +40,7 @@ export interface Operation {
   readonly lineage: Readonly<OperationLineage>;
   readonly presentation?: Readonly<PresentationOwnership>;
   readonly workerIdentity?: Readonly<WorkerIdentity>;
+  readonly agentRunEvidence?: Readonly<AgentRunEvidence>;
   readonly state: OperationState;
   readonly stateSeq: number;
   readonly workerLaunched: boolean;
@@ -68,7 +70,7 @@ export interface ResultConflictEvidence {
   readonly deliverySequenceNumber: number;
 }
 
-export const EVENT_SCHEMA_VERSION = 3 as const;
+export const EVENT_SCHEMA_VERSION = 4 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 

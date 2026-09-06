@@ -10,6 +10,7 @@ import type {
   ResultAcceptanceProof,
   ResultDelivery,
 } from "./worker-protocol.js";
+import type { PiUsage, PiToolUse } from "./pi-agent-backend.js";
 import type {
   OperationPersistenceError,
   ResultConflictError,
@@ -17,6 +18,12 @@ import type {
 
 export interface WorkerProcessIdentity {
   readonly processInstanceId: string;
+  readonly piSessionId: string;
+}
+
+export interface AgentRunEvidence {
+  readonly usage: Readonly<PiUsage>;
+  readonly toolUses: ReadonlyArray<Readonly<PiToolUse>>;
 }
 
 export interface WorkerCancellationEvidence {
@@ -36,10 +43,15 @@ export interface WorkerRunHooks {
 export type WorkerRunOutcome =
   | {
       readonly state: "result_acknowledged";
+      readonly evidence: Readonly<AgentRunEvidence>;
       readonly resultDeliveryError?: ResultConflictError;
     }
   | { readonly state: "worker_start_failed" }
-  | { readonly state: "worker_protocol_failed" };
+  | { readonly state: "worker_protocol_failed" }
+  | {
+      readonly state: "agent_failed";
+      readonly evidence: Readonly<AgentRunEvidence>;
+    };
 
 export interface Worker {
   run(
@@ -68,6 +80,7 @@ export function makeSingleRunWorker(
 
 export function acknowledgeResultAcceptance(
   acceptance: ResultAcceptanceOutcome,
+  evidence: Readonly<AgentRunEvidence>,
   acknowledge: (
     proof: Readonly<ResultAcceptanceProof>,
   ) => Effect.Effect<void, unknown>,
@@ -77,6 +90,7 @@ export function acknowledgeResultAcceptance(
   }
   const outcome: WorkerRunOutcome = {
     state: "result_acknowledged",
+    evidence,
     ...(acceptance.resultDeliveryError === undefined
       ? {}
       : { resultDeliveryError: acceptance.resultDeliveryError }),

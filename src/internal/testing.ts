@@ -37,14 +37,14 @@ export interface FakeResultMessage {
 export interface FakeWorkerAdapterOptions {
   readonly messages?: FakeResultMessage | ReadonlyArray<FakeResultMessage>;
   readonly trace?: Array<string>;
-  readonly failure?: "worker_start_failed" | "worker_protocol_failed";
+  readonly failure?: "worker_start_failed" | "worker_protocol_failed" | "agent_failed";
   readonly acknowledgementFails?: boolean;
 }
 
 export class FakeWorkerAdapter implements WorkerAdapter {
   startCount = 0;
   private readonly acknowledgementFails: boolean;
-  private readonly failure: "worker_start_failed" | "worker_protocol_failed" | undefined;
+  private readonly failure: "worker_start_failed" | "worker_protocol_failed" | "agent_failed" | undefined;
   private readonly messages: ReadonlyArray<FakeResultMessage>;
   private readonly trace: Array<string>;
 
@@ -80,7 +80,26 @@ export class FakeWorkerAdapter implements WorkerAdapter {
       if (this.failure === "worker_protocol_failed") {
         return { state: "worker_protocol_failed" } as const;
       }
-      yield* hooks.workerIdentified({ processInstanceId: "fake-process-instance" });
+      yield* hooks.workerIdentified({
+        processInstanceId: "fake-process-instance",
+        piSessionId: "fake-pi-session",
+      });
+      if (this.failure === "agent_failed") {
+        return {
+          state: "agent_failed",
+          evidence: {
+            usage: {
+              input: 10,
+              output: 4,
+              cacheRead: 2,
+              cacheWrite: 1,
+              totalTokens: 17,
+              cost: 0.33,
+            },
+            toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: true }],
+          },
+        } as const;
+      }
       this.trace.push("worker-protocol:receive-result");
       const acceptance = yield* hooks.acceptResults(this.messages.map((message) => ({
         operationId: operation.operationId,
@@ -90,6 +109,17 @@ export class FakeWorkerAdapter implements WorkerAdapter {
       })));
       return yield* acknowledgeResultAcceptance(
         acceptance,
+        {
+          usage: {
+            input: 10,
+            output: 4,
+            cacheRead: 2,
+            cacheWrite: 1,
+            totalTokens: 17,
+            cost: 0.33,
+          },
+          toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: false }],
+        },
         (proof) => this.acknowledgementFails
           ? Effect.fail(new Error("Fake Worker acknowledgement failed"))
           : Effect.sync(() => this.acknowledge(proof)),

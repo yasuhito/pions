@@ -21,8 +21,10 @@ import {
   makeSingleRunWorker,
 } from "./services.js";
 import type {
+  AgentRunEvidence,
   Worker,
   WorkerAdapter,
+  WorkerProcessIdentity,
   WorkerRunHooks,
   WorkerRunOutcome,
 } from "./services.js";
@@ -52,7 +54,6 @@ export interface VisibleWorkerOptions {
   readonly nodeExecutable?: string;
   readonly capabilityGenerator?: WorkerCapabilityGenerator;
   readonly promptReader?: PromptReader;
-  readonly profiles?: Readonly<Record<string, ReadonlyArray<string>>>;
   readonly serverFactory?: () => Server;
 }
 
@@ -61,9 +62,16 @@ interface WorkerProtocolError {
   readonly message: string;
 }
 
-interface ResultDeliveryReception {
-  readonly deliveries: ReadonlyArray<ResultDelivery>;
-}
+type WorkerCompletionReception =
+  | {
+      readonly state: "results_received";
+      readonly deliveries: ReadonlyArray<ResultDelivery>;
+      readonly evidence: Readonly<AgentRunEvidence>;
+    }
+  | {
+      readonly state: "agent_failed";
+      readonly evidence: Readonly<AgentRunEvidence>;
+    };
 
 class WorkerCancellation {
   private isRequested = false;
@@ -87,11 +95,11 @@ interface Session {
   readonly operation: Operation;
   readonly server: Server;
   readonly socketPath: string;
-  readonly reception: Promise<ResultDeliveryReception>;
-  resolveReception(value: ResultDeliveryReception): void;
+  readonly reception: Promise<WorkerCompletionReception>;
+  resolveReception(value: WorkerCompletionReception): void;
   rejectReception(error: WorkerProtocolError): void;
-  readonly startedReception: Promise<{ readonly processInstanceId: string }>;
-  resolveStarted(value: { readonly processInstanceId: string }): void;
+  readonly startedReception: Promise<Readonly<WorkerProcessIdentity>>;
+  resolveStarted(value: Readonly<WorkerProcessIdentity>): void;
   rejectStarted(error: WorkerProtocolError): void;
   socket?: Socket;
   receptionCompleted: boolean;
@@ -209,9 +217,13 @@ export class VisibleWorker implements WorkerAdapter {
         const started = yield* receiveWorkerProtocol(session!.startedReception);
         yield* hooks.workerIdentified(started);
         const reception = yield* receiveWorkerProtocol(session!.reception);
+        if (reception.state === "agent_failed") {
+          return { state: "agent_failed", evidence: reception.evidence } as const;
+        }
         const acceptance = yield* hooks.acceptResults(reception.deliveries);
         return yield* acknowledgeResultAcceptance(
           acceptance,
+          reception.evidence,
           (proof) => Effect.tryPromise({
             try: () => this.sendAcknowledgement(session!, proof),
             catch: (error) => error instanceof Error ? error : new Error(String(error)),
@@ -251,8 +263,9 @@ export class VisibleWorker implements WorkerAdapter {
     cancellation.requireLaunchAllowed();
     if (prompt.byteLength > DEFAULT_MAX_PROMPT_BYTES) throw new Error("Prompt exceeds the configured size limit");
     const capability = this.capabilityGenerator.nextCapability();
-    const agentArgs = (this.options.profiles ?? { coding: [] })[operation.task.profile];
-    if (agentArgs === undefined) throw new Error(`Unknown visible worker profile: ${operation.task.profile}`);
+    if (operation.task.profile !== "coding") {
+      throw new Error(`Unknown Pi worker profile: ${operation.task.profile}`);
+    }
     const config: WorkerConfig = {
       operationId: operation.operationId,
       capability,
@@ -260,7 +273,6 @@ export class VisibleWorker implements WorkerAdapter {
       promptPath,
       cwd: this.options.cwd,
       profile: operation.task.profile,
-      agentArgs: [...agentArgs],
     };
     const encodedConfig = encodeWorkerConfig(config);
     await writeFile(promptPath, prompt, { mode: FILE_MODE, flag: "wx" });
@@ -274,7 +286,6 @@ export class VisibleWorker implements WorkerAdapter {
       await new Promise<void>((resolve, reject) => {
         session.server.once("error", reject);
         session.server.listen(socketPath, () => {
-          session.server.unref();
           resolve();
         });
       });
@@ -302,15 +313,15 @@ export class VisibleWorker implements WorkerAdapter {
   }
 
   private createSession(operation: Operation, capability: string, socketPath: string): Session {
-    let resolveReception!: (value: ResultDeliveryReception) => void;
+    let resolveReception!: (value: WorkerCompletionReception) => void;
     let rejectReception!: (error: WorkerProtocolError) => void;
-    const reception = new Promise<ResultDeliveryReception>((resolve, reject) => {
+    const reception = new Promise<WorkerCompletionReception>((resolve, reject) => {
       resolveReception = resolve;
       rejectReception = reject;
     });
-    let resolveStarted!: (value: { readonly processInstanceId: string }) => void;
+    let resolveStarted!: (value: Readonly<WorkerProcessIdentity>) => void;
     let rejectStarted!: (error: WorkerProtocolError) => void;
-    const startedReception = new Promise<{ readonly processInstanceId: string }>((resolve, reject) => {
+    const startedReception = new Promise<Readonly<WorkerProcessIdentity>>((resolve, reject) => {
       resolveStarted = resolve;
       rejectStarted = reject;
     });
@@ -348,10 +359,19 @@ export class VisibleWorker implements WorkerAdapter {
       try {
         for (const event of session.protocol.receive(chunk)) {
           if (event.type === "started") {
-            session.resolveStarted({ processInstanceId: event.processInstanceId });
+            session.resolveStarted({
+              processInstanceId: event.processInstanceId,
+              piSessionId: event.piSessionId,
+            });
           } else {
             session.receptionCompleted = true;
-            session.resolveReception(event.reception);
+            session.resolveReception(event.type === "worker_failed"
+              ? { state: "agent_failed", evidence: event.evidence }
+              : {
+                  state: "results_received",
+                  deliveries: event.reception.deliveries,
+                  evidence: event.evidence,
+                });
           }
         }
       } catch (error) {

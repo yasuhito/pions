@@ -1,4 +1,5 @@
 import type { OperationFailureReason } from "../../public.js";
+import type { AgentRunEvidence } from "../services.js";
 import type { ResultDelivery } from "../worker-protocol.js";
 
 export interface CreatedPresentation {
@@ -12,6 +13,7 @@ export interface PresentationOwnership extends CreatedPresentation {
 
 export interface WorkerIdentity {
   readonly processInstanceId: string;
+  readonly piSessionId: string;
   readonly paneId: string;
 }
 
@@ -32,6 +34,10 @@ export type OperationIntent =
   | {
       readonly type: "worker_identified";
       readonly workerIdentity: Readonly<WorkerIdentity>;
+    }
+  | {
+      readonly type: "agent_settled";
+      readonly evidence: Readonly<AgentRunEvidence>;
     }
   | { readonly type: "operation_blocked" }
   | { readonly type: "operation_unblocked" }

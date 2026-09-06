@@ -14,7 +14,6 @@ export interface VisibleRuntimeOptions {
   readonly cwd: string;
   readonly stateDirectory: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
-  readonly profiles?: Readonly<Record<string, ReadonlyArray<string>>>;
   readonly wrapperEntryPath?: string;
 }
 
@@ -30,7 +29,6 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     rootDirectory: options.stateDirectory,
     cwd: options.cwd,
     executor,
-    ...(options.profiles === undefined ? {} : { profiles: options.profiles }),
     wrapperEntryPath: options.wrapperEntryPath ?? fileURLToPath(new URL("../worker-wrapper.js", import.meta.url)),
   });
   return makeRuntime({

@@ -42,6 +42,12 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.lineage);
   if (operation.presentation !== undefined) Object.freeze(operation.presentation);
   if (operation.workerIdentity !== undefined) Object.freeze(operation.workerIdentity);
+  if (operation.agentRunEvidence !== undefined) {
+    Object.freeze(operation.agentRunEvidence.usage);
+    operation.agentRunEvidence.toolUses.forEach(Object.freeze);
+    Object.freeze(operation.agentRunEvidence.toolUses);
+    Object.freeze(operation.agentRunEvidence);
+  }
   Object.freeze(operation.childOperationIds);
   Object.freeze(operation.settledChildOperationIds);
   if (operation.result !== undefined) Object.freeze(operation.result);
@@ -208,6 +214,7 @@ export function reduceOperation(
         current.workerIdentity !== undefined ||
         current.presentation === undefined ||
         event.workerIdentity.processInstanceId.length === 0 ||
+        event.workerIdentity.piSessionId.length === 0 ||
         event.workerIdentity.paneId !== current.presentation.paneId
       ) {
         throw new TransitionError("illegal_transition");
@@ -215,6 +222,22 @@ export function reduceOperation(
       return immutable({
         ...current,
         workerIdentity: { ...event.workerIdentity },
+        stateSeq: event.seq,
+      });
+
+    case "agent_settled":
+      if (
+        current.state !== "running" && current.state !== "blocked" ||
+        current.agentRunEvidence !== undefined
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        agentRunEvidence: {
+          usage: { ...event.evidence.usage },
+          toolUses: event.evidence.toolUses.map((toolUse) => ({ ...toolUse })),
+        },
         stateSeq: event.seq,
       });
 

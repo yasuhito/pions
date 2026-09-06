@@ -17,6 +17,7 @@ export interface Result {
 export type OperationFailureReason =
   | "worker_start_failed"
   | "worker_protocol_failed"
+  | "agent_failed"
   | "descendant_failed";
 
 export class HerdrPreconditionError extends Error {

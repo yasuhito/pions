@@ -14,6 +14,8 @@ import type {
   WorkerConfig,
 } from "../src/internal/worker-protocol.js";
 import {
+  agentRunEvidence,
+  piSessionId,
   resultAcceptanceProof,
   resultDigest,
 } from "./worker-protocol-fixtures.js";
@@ -38,9 +40,9 @@ function successfulDelivery(
 ): ReadonlyArray<HostProtocolEvent> {
   return host.receive(Buffer.concat([
     worker.send({ type: "hello", processInstanceId }),
-    worker.send({ type: "started" }),
+    worker.send({ type: "started", piSessionId }),
     worker.send({ type: "result", body, deliverySequenceNumber: 1 }),
-    worker.send({ type: "done" }),
+    worker.send({ type: "done", ...agentRunEvidence }),
   ]));
 }
 
@@ -58,6 +60,7 @@ test("Worker protocol returns the authenticated process identity", () => {
   assert.deepEqual(successfulDelivery(host, worker)[0], {
     type: "started",
     processInstanceId,
+    piSessionId,
   });
 });
 
@@ -74,7 +77,26 @@ test("Worker protocol returns the authenticated Result reception", () => {
         sequenceNumber: 1,
       }],
     },
+    evidence: agentRunEvidence,
   });
+});
+
+test("Worker protocol carries settled Pi failure evidence", () => {
+  const { host, worker } = peers();
+  host.receive(worker.send({ type: "hello", processInstanceId }));
+  host.receive(worker.send({ type: "started", piSessionId }));
+
+  const events = host.receive(worker.send({
+    type: "failed",
+    errorMessage: "provider failed",
+    ...agentRunEvidence,
+  }));
+
+  assert.deepEqual(events, [{
+    type: "worker_failed",
+    errorMessage: "provider failed",
+    evidence: agentRunEvidence,
+  }]);
 });
 
 test("Worker protocol buffers a split frame", () => {
@@ -88,12 +110,12 @@ test("Worker protocol buffers a split frame", () => {
 test("Worker protocol accepts a same-delivery retry", () => {
   const { host, worker } = peers();
   host.receive(worker.send({ type: "hello", processInstanceId }));
-  host.receive(worker.send({ type: "started" }));
+  host.receive(worker.send({ type: "started", piSessionId }));
   host.receive(worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }));
   host.receive(worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }));
 
   assert.deepEqual(
-    host.receive(worker.send({ type: "done" }))[0]?.type === "results_received"
+    host.receive(worker.send({ type: "done", ...agentRunEvidence }))[0]?.type === "results_received"
       ? host.acknowledgeResult(resultAcceptanceProof(authority.operationId)).complete
       : undefined,
     false,
@@ -113,7 +135,7 @@ test("Worker protocol rejects an invalid Operation capability", () => {
 test("Worker protocol rejects a stale Worker sequence", () => {
   const { host, worker } = peers();
   host.receive(worker.send({ type: "hello", processInstanceId }));
-  const started = rewriteFrame(worker.send({ type: "started" }), { sequenceNumber: 1 });
+  const started = rewriteFrame(worker.send({ type: "started", piSessionId }), { sequenceNumber: 1 });
 
   assert.throws(
     () => host.receive(started),
@@ -121,8 +143,8 @@ test("Worker protocol rejects a stale Worker sequence", () => {
   );
 });
 
-test("Worker protocol uses version 2", () => {
-  assert.equal(WORKER_PROTOCOL_VERSION, 2);
+test("Worker protocol uses version 3", () => {
+  assert.equal(WORKER_PROTOCOL_VERSION, 3);
 });
 
 test("Worker protocol rejects a different frame version", () => {
@@ -209,7 +231,7 @@ test("Worker protocol refuses to emit an oversized normal frame", () => {
     resultBytes: 1024,
   });
   worker.send({ type: "hello", processInstanceId });
-  worker.send({ type: "started" });
+  worker.send({ type: "started", piSessionId });
 
   assert.throws(
     () => worker.send({ type: "result", body: "x".repeat(200), deliverySequenceNumber: 1 }),
@@ -223,7 +245,7 @@ test("a failed Worker protocol send leaves its sequence unchanged", () => {
     resultBytes: 1024,
   });
   worker.send({ type: "hello", processInstanceId });
-  worker.send({ type: "started" });
+  worker.send({ type: "started", piSessionId });
   try {
     worker.send({ type: "result", body: "x".repeat(400), deliverySequenceNumber: 1 });
   } catch {
@@ -241,7 +263,7 @@ test("Worker protocol rejects an excessive inbound session Result total", () => 
   });
   const worker = new WorkerProtocolPeer(authority);
   host.receive(worker.send({ type: "hello", processInstanceId }));
-  host.receive(worker.send({ type: "started" }));
+  host.receive(worker.send({ type: "started", piSessionId }));
   host.receive(worker.send({ type: "result", body: "12345", deliverySequenceNumber: 1 }));
 
   assert.throws(
@@ -254,7 +276,7 @@ test("Worker protocol rejects too many inbound Result deliveries", () => {
   const host = new HostProtocolPeer(authority, { resultDeliveries: 1 });
   const worker = new WorkerProtocolPeer(authority);
   host.receive(worker.send({ type: "hello", processInstanceId }));
-  host.receive(worker.send({ type: "started" }));
+  host.receive(worker.send({ type: "started", piSessionId }));
   host.receive(worker.send({ type: "result", body: "first", deliverySequenceNumber: 1 }));
 
   assert.throws(
@@ -266,7 +288,7 @@ test("Worker protocol rejects too many inbound Result deliveries", () => {
 test("Worker protocol rejects a mismatched Result digest", () => {
   const { host, worker } = peers();
   host.receive(worker.send({ type: "hello", processInstanceId }));
-  host.receive(worker.send({ type: "started" }));
+  host.receive(worker.send({ type: "started", piSessionId }));
   const result = rewriteFrame(
     worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
     { digest: `sha256:${"0".repeat(64)}` },
@@ -291,7 +313,7 @@ test("Worker protocol emits ACK only after explicit Result acknowledgement", () 
 test("Worker protocol makes a premature ACK reception terminal", () => {
   const { worker } = peers();
   worker.send({ type: "hello", processInstanceId });
-  worker.send({ type: "started" });
+  worker.send({ type: "started", piSessionId });
   const acknowledgement = Buffer.from(`${JSON.stringify({
     protocolVersion: WORKER_PROTOCOL_VERSION,
     operationId: authority.operationId,
@@ -315,10 +337,10 @@ test("Worker protocol makes a failed ACK reception terminal", () => {
   const { host, worker } = peers();
   host.receive(Buffer.concat([
     worker.send({ type: "hello", processInstanceId }),
-    worker.send({ type: "started" }),
+    worker.send({ type: "started", piSessionId }),
     worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
     worker.send({ type: "result", body: "finished", deliverySequenceNumber: 2 }),
-    worker.send({ type: "done" }),
+    worker.send({ type: "done", ...agentRunEvidence }),
   ]));
   const first = host.acknowledgeResult(resultAcceptanceProof(authority.operationId, "finished", 1));
   const invalid = rewriteFrame(
@@ -341,10 +363,10 @@ test("ACK distinguishes conflicting Results with the same delivery sequence", ()
   const { host, worker } = peers();
   host.receive(Buffer.concat([
     worker.send({ type: "hello", processInstanceId }),
-    worker.send({ type: "started" }),
+    worker.send({ type: "started", piSessionId }),
     worker.send({ type: "result", body: "accepted", deliverySequenceNumber: 1 }),
     worker.send({ type: "result", body: "conflicting", deliverySequenceNumber: 1 }),
-    worker.send({ type: "done" }),
+    worker.send({ type: "done", ...agentRunEvidence }),
   ]));
   const acknowledgement = host.acknowledgeResult(
     resultAcceptanceProof(authority.operationId, "accepted", 1),
@@ -381,9 +403,9 @@ test("Host protocol peer rejects an incomplete frame after done", () => {
   const { host, worker } = peers();
   const bytes = Buffer.concat([
     worker.send({ type: "hello", processInstanceId }),
-    worker.send({ type: "started" }),
+    worker.send({ type: "started", piSessionId }),
     worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
-    worker.send({ type: "done" }),
+    worker.send({ type: "done", ...agentRunEvidence }),
     Buffer.from("{", "utf8"),
   ]);
 
@@ -438,7 +460,6 @@ function workerConfig(): WorkerConfig {
     promptPath: "/private/prompt.utf8",
     cwd: "/work/project",
     profile: "coding",
-    agentArgs: ["--model", "current"],
   };
 }
 
