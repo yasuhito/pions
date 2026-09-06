@@ -10,9 +10,11 @@ import type {
   EventStore,
   IdGenerator,
   Presentation,
+  ResultDelivery,
   RuntimeClock,
   StoreError,
 } from "./services.js";
+import { ResultConflictError } from "../public.js";
 import type { Result } from "../public.js";
 
 function storeError(error: unknown): StoreError {
@@ -35,16 +37,36 @@ export class FakeAgentBackend implements AgentBackend {
   }
 }
 
-export class FakeChildChannel implements ChildChannel {
-  constructor(
-    private readonly message: { readonly body: string },
-    private readonly trace: Array<string> = [],
-  ) {}
+interface FakeResultMessage {
+  readonly body: string;
+  readonly digest?: Result["digest"];
+  readonly sequenceNumber?: number;
+}
 
-  receiveResult(_operation: Operation): Effect.Effect<{ readonly body: string }> {
+function digest(body: string): Result["digest"] {
+  return `sha256:${createHash("sha256").update(Buffer.from(body, "utf8")).digest("hex")}`;
+}
+
+export class FakeChildChannel implements ChildChannel {
+  private readonly messages: ReadonlyArray<FakeResultMessage>;
+
+  constructor(
+    messages: FakeResultMessage | ReadonlyArray<FakeResultMessage>,
+    private readonly trace: Array<string> = [],
+  ) {
+    this.messages = Array.isArray(messages) ? messages : [messages];
+  }
+
+  receiveResults(
+    _operation: Operation,
+  ): Effect.Effect<ReadonlyArray<ResultDelivery>> {
     return Effect.sync(() => {
       this.trace.push("channel:receive-result");
-      return this.message;
+      return this.messages.map((message) => ({
+        body: message.body,
+        digest: message.digest ?? digest(message.body),
+        sequenceNumber: message.sequenceNumber ?? 1,
+      }));
     });
   }
 }
@@ -84,10 +106,12 @@ export class FakePresentation implements Presentation {
   constructor(
     private readonly trace: Array<string> = [],
     private readonly attemptedState?: OperationState,
+    private readonly fails = false,
   ) {}
 
   project(operation: Operation): Effect.Effect<void> {
     return Effect.sync(() => {
+      if (this.fails) throw new Error("Presentation failed");
       this.projections.push(operation);
       this.trace.push(`presentation:${operation.state}`);
       if (this.attemptedState !== undefined) {
@@ -103,6 +127,7 @@ export class InMemoryEventStore implements EventStore {
   private readonly eventLog = new Map<string, Array<OperationEvent>>();
   private readonly operations = new Map<string, Operation>();
   private readonly results = new Map<string, Result>();
+  private readonly resultDeliveries = new Map<string, ResultDelivery>();
 
   constructor(private readonly trace: Array<string> = []) {}
 
@@ -124,16 +149,46 @@ export class InMemoryEventStore implements EventStore {
 
   acceptResult(
     operationId: string,
-    body: string,
+    delivery: ResultDelivery,
     metadata: Omit<OperationEvent, "type" | "result">,
-  ): Effect.Effect<{ readonly operation: Operation; readonly result: Result }, StoreError> {
+  ): Effect.Effect<
+    { readonly operation: Operation; readonly result: Result },
+    StoreError | ResultConflictError
+  > {
     return Effect.try({
       try: () => {
-        const bytes = Buffer.from(body, "utf8");
+        const existingDelivery = this.resultDeliveries.get(operationId);
+        const existingResult = this.results.get(operationId);
+        const existingOperation = this.operations.get(operationId);
+        if (
+          existingDelivery !== undefined &&
+          existingResult !== undefined &&
+          existingOperation !== undefined
+        ) {
+          if (existingDelivery.digest !== delivery.digest) {
+            throw new ResultConflictError(
+              operationId,
+              existingDelivery.digest,
+              delivery.digest,
+            );
+          }
+          if (existingDelivery.sequenceNumber !== delivery.sequenceNumber) {
+            throw new Error(
+              "Result sequence number does not match accepted delivery",
+            );
+          }
+          return { operation: existingOperation, result: existingResult };
+        }
+
+        const bytes = Buffer.from(delivery.body, "utf8");
+        const computedDigest = digest(delivery.body);
+        if (delivery.digest !== computedDigest) {
+          throw new Error("Result digest does not match body");
+        }
         const result: Result = Object.freeze({
-          body,
+          body: delivery.body,
           byteCount: bytes.byteLength,
-          digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          digest: computedDigest,
         });
         const event = {
           ...metadata,
@@ -141,10 +196,11 @@ export class InMemoryEventStore implements EventStore {
           type: "result_persisted",
           result,
         } as OperationEvent;
-        const next = reduceOperation(this.operations.get(operationId), event);
+        const next = reduceOperation(existingOperation, event);
 
         this.trace.push("result:bytes-persisted");
         this.results.set(operationId, result);
+        this.resultDeliveries.set(operationId, Object.freeze({ ...delivery }));
         this.operations.set(operationId, next);
         const events = this.eventLog.get(operationId) ?? [];
         events.push(event);
@@ -152,7 +208,8 @@ export class InMemoryEventStore implements EventStore {
         this.trace.push("event:result_persisted");
         return { operation: next, result };
       },
-      catch: storeError,
+      catch: (error) =>
+        error instanceof ResultConflictError ? error : storeError(error),
     });
   }
 

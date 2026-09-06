@@ -2,6 +2,7 @@ import { Cause, Effect, Exit, Schema } from "effect";
 
 import type { EventInput, Operation, OperationEvent } from "./domain.js";
 import type { RuntimeServices } from "./services.js";
+import { ResultConflictError } from "../public.js";
 import type {
   OperationHandle,
   Result,
@@ -63,21 +64,35 @@ function makeRuntimeProgram(
     operation = yield* append({ type: "operation_started" });
     yield* project(operation);
 
-    const message = yield* services.channel.receiveResult(operation);
+    const deliveries = yield* services.channel.receiveResults(operation);
+    const firstDelivery = deliveries[0];
+    if (firstDelivery === undefined) {
+      throw new Error("ChildChannel returned no Result");
+    }
+
     const seq = operation.stateSeq + 1;
     const timestamp = yield* services.clock.now();
-    const accepted = yield* services.store.acceptResult(operationId, message.body, {
-      actor: "runtime",
+    const resultMetadata = {
+      actor: "runtime" as const,
       eventId: `${operationId}:${seq}`,
       operationId,
-      schemaVersion: 1,
+      schemaVersion: 1 as const,
       seq,
       timestamp,
-    });
+    };
+    const accepted = yield* services.store.acceptResult(
+      operationId,
+      firstDelivery,
+      resultMetadata,
+    );
 
     operation = yield* append({ type: "self_settled", outcome: "succeeded" });
     operation = yield* append({ type: "operation_completed" });
     yield* project(operation);
+
+    for (const delivery of deliveries.slice(1)) {
+      yield* services.store.acceptResult(operationId, delivery, resultMetadata);
+    }
 
     const result: Result = accepted.result;
     return {
@@ -88,13 +103,40 @@ function makeRuntimeProgram(
 }
 
 export function makeRuntime(services: RuntimeServices): Runtime {
+  const spawnsByParent = new Map<
+    string | undefined,
+    Map<string, Promise<OperationHandle>>
+  >();
+
   return {
-    async spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
-      const exit = await Effect.runPromiseExit(
-        makeRuntimeProgram(services, task, options),
-      );
-      if (Exit.isSuccess(exit)) return exit.value;
-      throw new RuntimeError("operation_failed", Cause.pretty(exit.cause));
+    spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
+      const parentOperationId = options?.parentOperationId;
+      let spawnsByKey = spawnsByParent.get(parentOperationId);
+      if (spawnsByKey === undefined) {
+        spawnsByKey = new Map();
+        spawnsByParent.set(parentOperationId, spawnsByKey);
+      }
+
+      const existing = spawnsByKey.get(task.idempotencyKey);
+      if (existing !== undefined) return existing;
+
+      const spawn = (async () => {
+        const exit = await Effect.runPromiseExit(
+          makeRuntimeProgram(services, task, options),
+        );
+        if (Exit.isSuccess(exit)) return exit.value;
+
+        const failure = Cause.failureOption(exit.cause);
+        if (
+          failure._tag === "Some" &&
+          failure.value instanceof ResultConflictError
+        ) {
+          throw failure.value;
+        }
+        throw new RuntimeError("operation_failed", Cause.pretty(exit.cause));
+      })();
+      spawnsByKey.set(task.idempotencyKey, spawn);
+      return spawn;
     },
   };
 }

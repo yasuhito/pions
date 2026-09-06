@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { makeRuntime } from "../src/internal/runtime.js";
+import { ResultConflictError } from "../src/index.js";
 import {
   FakeAgentBackend,
   FakeChildChannel,
@@ -11,12 +12,21 @@ import {
   InMemoryEventStore,
 } from "../src/internal/testing.js";
 
-async function completeOperation() {
+async function completeOperation(
+  messages: ConstructorParameters<typeof FakeChildChannel>[0] = {
+    body: "finished",
+  },
+  presentationFails = false,
+) {
   const trace: Array<string> = [];
   const backend = new FakeAgentBackend(trace);
-  const channel = new FakeChildChannel({ body: "finished" }, trace);
+  const channel = new FakeChildChannel(messages, trace);
   const store = new InMemoryEventStore(trace);
-  const presentation = new FakePresentation(trace, "completed");
+  const presentation = new FakePresentation(
+    trace,
+    "completed",
+    presentationFails,
+  );
   const runtime = makeRuntime({
     backend,
     channel,
@@ -139,4 +149,145 @@ test("Presentation receives the completed Operation projection", async () => {
   const { presentation } = await completeOperation();
 
   assert.equal(presentation.projections.at(-1)?.state, "completed");
+});
+
+test("Presentation failure cannot prevent terminal completion", async () => {
+  const { store } = await completeOperation({ body: "finished" }, true);
+
+  assert.equal(store.events("operation-1").at(-1)?.type, "operation_completed");
+});
+
+async function retryOperation(options?: { readonly parentOperationId?: string }) {
+  const backend = new FakeAgentBackend();
+  const runtime = makeRuntime({
+    backend,
+    channel: new FakeChildChannel({ body: "finished" }),
+    clock: new FakeClock([
+      "2026-09-06T10:00:00.000Z",
+      "2026-09-06T10:00:01.000Z",
+      "2026-09-06T10:00:02.000Z",
+      "2026-09-06T10:00:03.000Z",
+      "2026-09-06T10:00:04.000Z",
+      "2026-09-06T10:00:05.000Z",
+    ]),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+  });
+  const task = {
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  };
+
+  const handles = await Promise.all([
+    runtime.spawn(task, options),
+    runtime.spawn(task, options),
+  ]);
+
+  return { backend, handles };
+}
+
+test("Runtime returns the same OperationHandle for an idempotent spawn", async () => {
+  const { handles } = await retryOperation({ parentOperationId: "parent-1" });
+
+  assert.equal(handles[0], handles[1]);
+});
+
+test("Runtime starts the AgentBackend once for an idempotent spawn", async () => {
+  const { backend } = await retryOperation({ parentOperationId: "parent-1" });
+
+  assert.equal(backend.startCount, 1);
+});
+
+test("Runtime publishes one event sequence for a duplicate Result delivery", async () => {
+  const { store } = await completeOperation([
+    { body: "finished", sequenceNumber: 1 },
+    { body: "finished", sequenceNumber: 1 },
+  ]);
+
+  assert.deepEqual(
+    store.events("operation-1").map(({ type }) => type),
+    [
+      "operation_requested",
+      "operation_starting",
+      "operation_started",
+      "result_persisted",
+      "self_settled",
+      "operation_completed",
+    ],
+  );
+});
+
+test("Runtime rejects a conflicting Result with a typed error", async () => {
+  await assert.rejects(
+    completeOperation([
+      { body: "finished", sequenceNumber: 1 },
+      { body: "conflicting", sequenceNumber: 1 },
+    ]),
+    (error) => error instanceof ResultConflictError,
+  );
+});
+
+async function conflictResult() {
+  const store = new InMemoryEventStore();
+  const runtime = makeRuntime({
+    backend: new FakeAgentBackend(),
+    channel: new FakeChildChannel([
+      { body: "finished", sequenceNumber: 1 },
+      { body: "conflicting", sequenceNumber: 1 },
+    ]),
+    clock: new FakeClock([
+      "2026-09-06T10:00:00.000Z",
+      "2026-09-06T10:00:01.000Z",
+      "2026-09-06T10:00:02.000Z",
+      "2026-09-06T10:00:03.000Z",
+      "2026-09-06T10:00:04.000Z",
+      "2026-09-06T10:00:05.000Z",
+    ]),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+
+  await runtime
+    .spawn({
+      promptRef: "private://prompt/1",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    })
+    .catch(() => undefined);
+
+  return store;
+}
+
+test("a conflicting Result does not overwrite the accepted Result", async () => {
+  const store = await conflictResult();
+
+  assert.equal(store.result("operation-1")?.body, "finished");
+});
+
+test("a conflicting Result does not overwrite terminal completion", async () => {
+  const store = await conflictResult();
+
+  assert.equal(store.events("operation-1").at(-1)?.type, "operation_completed");
+});
+
+test("OperationHandle returns the same Result without republishing it", async () => {
+  const { handle } = await completeOperation();
+
+  const results = await Promise.all([handle.result(), handle.result()]);
+
+  assert.deepEqual(results, [
+    {
+      body: "finished",
+      byteCount: 8,
+      digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
+    },
+    {
+      body: "finished",
+      byteCount: 8,
+      digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
+    },
+  ]);
 });

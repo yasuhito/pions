@@ -1,7 +1,13 @@
 import type { Effect } from "effect";
 
 import type { Operation, OperationEvent } from "./domain.js";
-import type { Result } from "../public.js";
+import type { Result, ResultConflictError } from "../public.js";
+
+export interface ResultDelivery {
+  readonly body: string;
+  readonly digest: Result["digest"];
+  readonly sequenceNumber: number;
+}
 
 export interface StoreError {
   readonly _tag: "StoreError";
@@ -23,7 +29,9 @@ export interface AgentBackend {
 }
 
 export interface ChildChannel {
-  receiveResult(operation: Operation): Effect.Effect<{ readonly body: string }, ChannelError>;
+  receiveResults(
+    operation: Operation,
+  ): Effect.Effect<ReadonlyArray<ResultDelivery>, ChannelError>;
 }
 
 export interface RuntimeClock {
@@ -42,9 +50,12 @@ export interface EventStore {
   append(event: OperationEvent): Effect.Effect<Operation, StoreError>;
   acceptResult(
     operationId: string,
-    body: string,
+    delivery: ResultDelivery,
     metadata: Omit<OperationEvent, "type" | "result">,
-  ): Effect.Effect<{ readonly operation: Operation; readonly result: Result }, StoreError>;
+  ): Effect.Effect<
+    { readonly operation: Operation; readonly result: Result },
+    StoreError | ResultConflictError
+  >;
   get(operationId: string): Effect.Effect<Operation, StoreError>;
 }
 

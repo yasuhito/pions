@@ -1,3 +1,4 @@
+export { ResultConflictError } from "./public.js";
 export type {
   OperationHandle,
   Result,

@@ -14,6 +14,18 @@ export interface Result {
   readonly digest: `sha256:${string}`;
 }
 
+export class ResultConflictError extends Error {
+  override readonly name = "ResultConflictError";
+
+  constructor(
+    readonly operationId: string,
+    readonly acceptedDigest: Result["digest"],
+    readonly conflictingDigest: Result["digest"],
+  ) {
+    super(`Conflicting Result for Operation ${operationId}`);
+  }
+}
+
 export interface OperationHandle {
   readonly operationId: string;
   result(): Promise<Result>;
