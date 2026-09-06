@@ -2,7 +2,18 @@ import type {
   OperationFailureReason,
   Result,
   TaskSpec,
-} from "../public.js";
+} from "../../public.js";
+import type {
+  PersistableOperationIntent,
+  PresentationOwnership,
+  WorkerIdentity,
+} from "./intent.js";
+
+export type {
+  CreatedPresentation,
+  PresentationOwnership,
+  WorkerIdentity,
+} from "./intent.js";
 
 export type OperationState =
   | "queued"
@@ -23,15 +34,6 @@ export interface OperationLineage {
   readonly depth: number;
 }
 
-export interface CreatedPresentation {
-  readonly kind: "herdr_pane";
-  readonly paneId: string;
-}
-
-export interface PresentationOwnership extends CreatedPresentation {
-  readonly ownedByPions: true;
-}
-
 export interface Operation {
   readonly operationId: string;
   readonly lineage: Readonly<OperationLineage>;
@@ -50,11 +52,6 @@ export interface Operation {
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
   readonly terminalReason?: OperationFailureReason | "cancel-unproven";
-}
-
-export interface WorkerIdentity {
-  readonly processInstanceId: string;
-  readonly paneId: string;
 }
 
 export interface ResultReference {
@@ -91,27 +88,7 @@ export type OperationEvent = EventMetadata &
         readonly task: Readonly<TaskSpec>;
         readonly lineage: Readonly<OperationLineage>;
       }
-    | {
-        readonly type: "presentation_owned";
-        readonly presentation: Readonly<PresentationOwnership>;
-      }
-    | {
-        readonly type: "child_attached";
-        readonly childOperationId: string;
-      }
-    | {
-        readonly type: "child_settled";
-        readonly childOperationId: string;
-        readonly outcome: "succeeded" | "failed";
-      }
-    | { readonly type: "operation_starting" }
-    | { readonly type: "operation_started" }
-    | {
-        readonly type: "worker_identified";
-        readonly workerIdentity: Readonly<WorkerIdentity>;
-      }
-    | { readonly type: "operation_blocked" }
-    | { readonly type: "operation_unblocked" }
+    | PersistableOperationIntent
     | {
         readonly type: "result_persisted";
         readonly result: Readonly<ResultReference>;
@@ -119,42 +96,6 @@ export type OperationEvent = EventMetadata &
     | {
         readonly type: "result_conflict_recorded";
         readonly conflict: Readonly<ResultConflictEvidence>;
-      }
-    | {
-        readonly type: "self_settled";
-        readonly outcome: "succeeded";
-      }
-    | {
-        readonly type: "self_settled";
-        readonly outcome: "failed";
-        readonly reason: OperationFailureReason;
-      }
-    | { readonly type: "operation_completed" }
-    | {
-        readonly type: "cancellation_requested";
-        readonly cancellationEpoch: number;
-      }
-    | {
-        readonly type: "cancel_dispatched";
-        readonly cancellationEpoch: number;
-      }
-    | {
-        readonly type: "cancel_acknowledged";
-        readonly cancellationEpoch: number;
-        readonly proof: "acknowledgement" | "backend-stop";
-      }
-    | {
-        readonly type: "operation_cancelled";
-        readonly cancellationEpoch: number;
-      }
-    | {
-        readonly type: "operation_unknown";
-        readonly cancellationEpoch: number;
-        readonly reason: "cancel-unproven";
-      }
-    | {
-        readonly type: "operation_failed";
-        readonly reason: OperationFailureReason;
       }
   );
 

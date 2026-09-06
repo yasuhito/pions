@@ -10,9 +10,9 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 
-import { ValidatedEventStore } from "./event-store.js";
-import type { StoredOperationRecord } from "./event-store.js";
-import type { RuntimeClock } from "./services.js";
+import { ValidatedEventStore } from "./store.js";
+import type { StoredOperationRecord } from "./store.js";
+import type { RuntimeClock } from "../services.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;

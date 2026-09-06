@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { Effect } from "effect";
 
-import type { Operation } from "../src/internal/domain.js";
+import type { Operation } from "../src/internal/event-store/index.js";
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
 import {
   FakeChildChannel,
@@ -15,8 +15,8 @@ async function runningOperation(
   store: InMemoryEventStore,
   operationId = "operation-1",
 ): Promise<Operation> {
-  await Effect.runPromise(store.append(operationId, {
-    type: "operation_requested",
+  await Effect.runPromise(store.create({
+    operationId,
     task: {
       promptRef: "file:///prompt.md",
       profile: "coding",
@@ -24,7 +24,7 @@ async function runningOperation(
     },
     lineage: { rootOperationId: operationId, depth: 0 },
   }));
-  await Effect.runPromise(store.append(operationId, {
+  await Effect.runPromise(store.advance(operationId, {
     type: "presentation_owned",
     presentation: {
       kind: "herdr_pane",
@@ -32,8 +32,10 @@ async function runningOperation(
       ownedByPions: true,
     },
   }));
-  await Effect.runPromise(store.append(operationId, { type: "operation_starting" }));
-  return Effect.runPromise(store.append(operationId, { type: "operation_started" }));
+  await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
+  return Effect.runPromise(store.advance(operationId, { type: "operation_started" })).then(
+    (snapshot) => snapshot.operation,
+  );
 }
 
 class FailingReceptionChannel extends FakeChildChannel {
@@ -119,7 +121,7 @@ test("Result acceptance persists bytes and evidence before acknowledgement", asy
   assert.deepEqual(trace, [
     "channel:receive-result",
     "result:bytes-persisted",
-    "event:result_persisted",
+    'event:{"operationId":"operation-1","type":"result_persisted","seq":5,"timestamp":"time-5"}',
     "channel:ack:1",
   ]);
 });
@@ -149,11 +151,13 @@ test("each retry of the same Result is acknowledged regardless of delivery seque
 });
 
 test("a retry of the same Result with a different delivery sequence adds one acceptance event", async () => {
+  const trace: Array<string> = [];
   const store = new InMemoryEventStore(
-    [],
+    trace,
     new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5"]),
   );
   await runningOperation(store);
+  trace.length = 0;
   const acceptance = makeResultAcceptance({
     channel: new FakeChildChannel([
       { body: "finished", sequenceNumber: 1 },
@@ -165,7 +169,7 @@ test("a retry of the same Result with a different delivery sequence adds one acc
   await Effect.runPromise(acceptance.acceptFromWorker("operation-1"));
 
   assert.equal(
-    store.events("operation-1").filter(({ type }) => type === "result_persisted").length,
+    trace.filter((entry) => entry.includes('"type":"result_persisted"')).length,
     1,
   );
 });
@@ -334,7 +338,7 @@ test("cancellation before Result acceptance leaves no Result bytes", async () =>
     new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5"]),
   );
   await runningOperation(store);
-  await Effect.runPromise(store.append("operation-1", {
+  await Effect.runPromise(store.advance("operation-1", {
     type: "cancellation_requested",
     cancellationEpoch: 1,
   }));

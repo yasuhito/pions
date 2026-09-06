@@ -2,8 +2,8 @@ import {
   EVENT_SCHEMA_VERSION,
   OPERATION_AUTHORITY,
   RUNTIME_ACTOR_ID,
-} from "./domain.js";
-import type { Operation, OperationEvent } from "./domain.js";
+} from "./model.js";
+import type { Operation, OperationEvent } from "./model.js";
 
 export type TransitionErrorCode =
   | "operation_required"

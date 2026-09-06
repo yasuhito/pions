@@ -8,9 +8,9 @@ import { test } from "node:test";
 
 import { Effect } from "effect";
 
-import type { Operation } from "../src/internal/domain.js";
+import type { Operation } from "../src/internal/event-store/index.js";
 import type { CommandInvocation } from "../src/internal/herdr-presentation.js";
-import { operationDirectoryKey } from "../src/internal/private-file-event-store.js";
+import { operationDirectoryKey } from "../src/internal/event-store/index.js";
 import {
   CHILD_PROTOCOL_VERSION,
   VisibleWorker,

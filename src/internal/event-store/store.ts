@@ -6,29 +6,30 @@ import {
   EVENT_SCHEMA_VERSION,
   OPERATION_AUTHORITY,
   RUNTIME_ACTOR_ID,
-} from "./domain.js";
+} from "./model.js";
 import type {
   EventInput,
   Operation,
   OperationEvent,
   ResultReference,
-} from "./domain.js";
+} from "./model.js";
 import { reduceOperation, replayOperation, TransitionError } from "./reducer.js";
+import { decodeRecord, RecordDecodingError } from "./codec.js";
+import type { StoredOperationRecord } from "./codec.js";
+import type { RuntimeClock } from "../services.js";
 import type {
   EventStore,
+  OperationIntent,
+  OperationRequest,
+  OperationSnapshot,
   ResultDelivery,
-  RuntimeClock,
   StoreError,
   StoreErrorCode,
-} from "./services.js";
-import { ResultConflictError } from "../public.js";
-import type { Result } from "../public.js";
+} from "./index.js";
+import { ResultConflictError } from "../../public.js";
+import type { Result } from "../../public.js";
 
-export interface StoredOperationRecord {
-  readonly schemaVersion: typeof EVENT_SCHEMA_VERSION;
-  readonly operationId: string;
-  readonly events: ReadonlyArray<OperationEvent>;
-}
+export type { StoredOperationRecord } from "./codec.js";
 
 interface LoadedRecord {
   readonly record: StoredOperationRecord;
@@ -51,7 +52,7 @@ function failure(code: StoreErrorCode, message: string): StoreFailure {
 }
 
 function asStoreError(error: unknown, fallback: StoreErrorCode): StoreError {
-  if (error instanceof StoreFailure) {
+  if (error instanceof StoreFailure || error instanceof RecordDecodingError) {
     return { _tag: "StoreError", code: error.code, message: error.message };
   }
   return {
@@ -59,220 +60,6 @@ function asStoreError(error: unknown, fallback: StoreErrorCode): StoreError {
     code: fallback,
     message: error instanceof Error ? error.message : String(error),
   };
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringField(value: Record<string, unknown>, key: string): string {
-  const field = value[key];
-  if (typeof field !== "string") throw failure("corrupt_record", `Invalid ${key}`);
-  return field;
-}
-
-function numberField(value: Record<string, unknown>, key: string): number {
-  const field = value[key];
-  if (!Number.isSafeInteger(field)) throw failure("corrupt_record", `Invalid ${key}`);
-  return field as number;
-}
-
-function parseEvent(value: unknown): OperationEvent {
-  if (!isObject(value)) throw failure("corrupt_record", "Invalid event");
-  const schemaVersion = numberField(value, "schemaVersion");
-  if (schemaVersion !== EVENT_SCHEMA_VERSION) {
-    throw failure("unsupported_schema", `Unsupported event schema ${schemaVersion}`);
-  }
-  const base = {
-    eventId: stringField(value, "eventId"),
-    operationId: stringField(value, "operationId"),
-    seq: numberField(value, "seq"),
-    timestamp: stringField(value, "timestamp"),
-    actorId: stringField(value, "actorId"),
-    authority: stringField(value, "authority"),
-    schemaVersion,
-  };
-  const type = stringField(value, "type");
-  let event: unknown;
-  switch (type) {
-    case "operation_requested": {
-      const task = value.task;
-      const lineage = value.lineage;
-      if (!isObject(task) || !isObject(lineage)) {
-        throw failure("corrupt_record", "Invalid operation request");
-      }
-      const parentOperationId = lineage.parentOperationId;
-      if (parentOperationId !== undefined && typeof parentOperationId !== "string") {
-        throw failure("corrupt_record", "Invalid parent Operation identifier");
-      }
-      event = {
-        ...base,
-        type,
-        task: {
-          promptRef: stringField(task, "promptRef"),
-          profile: stringField(task, "profile"),
-          idempotencyKey: stringField(task, "idempotencyKey"),
-        },
-        lineage: {
-          rootOperationId: stringField(lineage, "rootOperationId"),
-          ...(parentOperationId === undefined ? {} : { parentOperationId }),
-          depth: numberField(lineage, "depth"),
-        },
-      };
-      break;
-    }
-    case "presentation_owned": {
-      const presentation = value.presentation;
-      if (!isObject(presentation)) throw failure("corrupt_record", "Invalid Presentation ownership");
-      if (
-        stringField(presentation, "kind") !== "herdr_pane" ||
-        presentation.ownedByPions !== true
-      ) {
-        throw failure("corrupt_record", "Invalid Presentation ownership");
-      }
-      event = {
-        ...base,
-        type,
-        presentation: {
-          kind: "herdr_pane",
-          paneId: stringField(presentation, "paneId"),
-          ownedByPions: true,
-        },
-      };
-      break;
-    }
-    case "worker_identified": {
-      const workerIdentity = value.workerIdentity;
-      if (!isObject(workerIdentity)) throw failure("corrupt_record", "Invalid Worker identity");
-      event = {
-        ...base,
-        type,
-        workerIdentity: {
-          processInstanceId: stringField(workerIdentity, "processInstanceId"),
-          paneId: stringField(workerIdentity, "paneId"),
-        },
-      };
-      break;
-    }
-    case "child_attached":
-      event = { ...base, type, childOperationId: stringField(value, "childOperationId") };
-      break;
-    case "child_settled": {
-      const outcome = stringField(value, "outcome");
-      if (outcome !== "succeeded" && outcome !== "failed") {
-        throw failure("corrupt_record", "Invalid child outcome");
-      }
-      event = { ...base, type, childOperationId: stringField(value, "childOperationId"), outcome };
-      break;
-    }
-    case "result_persisted": {
-      const result = value.result;
-      if (!isObject(result)) throw failure("corrupt_record", "Invalid Result reference");
-      const digest = stringField(result, "digest");
-      if (!digest.startsWith("sha256:")) throw failure("corrupt_record", "Invalid Result digest");
-      event = {
-        ...base,
-        type,
-        result: {
-          location: stringField(result, "location"),
-          byteCount: numberField(result, "byteCount"),
-          digest,
-          deliverySequenceNumber: numberField(result, "deliverySequenceNumber"),
-        },
-      };
-      break;
-    }
-    case "result_conflict_recorded": {
-      const conflict = value.conflict;
-      if (!isObject(conflict)) throw failure("corrupt_record", "Invalid Result conflict");
-      const acceptedDigest = stringField(conflict, "acceptedDigest");
-      const conflictingDigest = stringField(conflict, "conflictingDigest");
-      if (!acceptedDigest.startsWith("sha256:") || !conflictingDigest.startsWith("sha256:")) {
-        throw failure("corrupt_record", "Invalid Result conflict digest");
-      }
-      event = {
-        ...base,
-        type,
-        conflict: {
-          acceptedDigest,
-          conflictingDigest,
-          deliverySequenceNumber: numberField(conflict, "deliverySequenceNumber"),
-        },
-      };
-      break;
-    }
-    case "self_settled": {
-      const outcome = stringField(value, "outcome");
-      if (outcome === "succeeded") event = { ...base, type, outcome };
-      else if (outcome === "failed") {
-        const reason = stringField(value, "reason");
-        if (reason !== "backend_start_failed" && reason !== "worker_protocol_failed" && reason !== "descendant_failed") {
-          throw failure("corrupt_record", "Invalid failure reason");
-        }
-        event = { ...base, type, outcome, reason };
-      } else throw failure("corrupt_record", "Invalid settlement outcome");
-      break;
-    }
-    case "operation_failed": {
-      const reason = stringField(value, "reason");
-      if (reason !== "backend_start_failed" && reason !== "worker_protocol_failed" && reason !== "descendant_failed") {
-        throw failure("corrupt_record", "Invalid failure reason");
-      }
-      event = { ...base, type, reason };
-      break;
-    }
-    case "cancellation_requested":
-    case "cancel_dispatched":
-    case "operation_cancelled":
-      event = { ...base, type, cancellationEpoch: numberField(value, "cancellationEpoch") };
-      break;
-    case "cancel_acknowledged": {
-      const proof = stringField(value, "proof");
-      if (proof !== "acknowledgement" && proof !== "backend-stop") {
-        throw failure("corrupt_record", "Invalid cancellation proof");
-      }
-      event = { ...base, type, cancellationEpoch: numberField(value, "cancellationEpoch"), proof };
-      break;
-    }
-    case "operation_unknown":
-      if (stringField(value, "reason") !== "cancel-unproven") {
-        throw failure("corrupt_record", "Invalid unknown reason");
-      }
-      event = { ...base, type, cancellationEpoch: numberField(value, "cancellationEpoch"), reason: "cancel-unproven" };
-      break;
-    case "operation_starting":
-    case "operation_started":
-    case "operation_blocked":
-    case "operation_unblocked":
-    case "operation_completed":
-      event = { ...base, type };
-      break;
-    default:
-      throw failure("corrupt_record", `Unknown event type ${type}`);
-  }
-  return event as OperationEvent;
-}
-
-function parseRecord(value: unknown, operationId: string): StoredOperationRecord {
-  if (!isObject(value)) throw failure("corrupt_record", "Invalid Operation record");
-  const schemaVersion = numberField(value, "schemaVersion");
-  if (schemaVersion !== EVENT_SCHEMA_VERSION) {
-    throw failure("unsupported_schema", `Unsupported record schema ${schemaVersion}`);
-  }
-  if (stringField(value, "operationId") !== operationId) {
-    throw failure("corrupt_record", "Operation identifier does not match record path");
-  }
-  if (!Array.isArray(value.events)) throw failure("corrupt_record", "Invalid event list");
-  const events = value.events.map(parseEvent);
-  for (const event of events) {
-    if (
-      event.eventId !== `${operationId}:${event.seq}` ||
-      event.timestamp.length === 0
-    ) {
-      throw failure("corrupt_record", "Invalid event envelope");
-    }
-  }
-  return { schemaVersion, operationId, events };
 }
 
 function resultDigest(bytes: Buffer): Result["digest"] {
@@ -317,7 +104,7 @@ export abstract class ValidatedEventStore implements EventStore {
       if (required) throw failure("not_found", `Operation not found: ${operationId}`);
       return undefined;
     }
-    const record = parseRecord(recordValue, operationId);
+    const record = decodeRecord(recordValue, operationId);
     let operation: Operation | undefined;
     try {
       operation = replayOperation(record.events);
@@ -350,7 +137,41 @@ export abstract class ValidatedEventStore implements EventStore {
     };
   }
 
-  append(operationId: string, input: EventInput): Effect.Effect<Operation, StoreError> {
+  create(request: OperationRequest): Effect.Effect<OperationSnapshot, StoreError> {
+    return this.appendEvent(request.operationId, {
+      type: "operation_requested",
+      task: request.task,
+      lineage: request.lineage,
+    });
+  }
+
+  advance(
+    operationId: string,
+    intent: OperationIntent,
+  ): Effect.Effect<OperationSnapshot, StoreError | ResultConflictError> {
+    if (intent.type === "accept_result") {
+      return this.acceptResult(operationId, intent.delivery).pipe(
+        Effect.map(({ operation, result }) => ({ operation, result })),
+      );
+    }
+    return this.appendEvent(operationId, intent);
+  }
+
+  read(operationId: string): Effect.Effect<OperationSnapshot, StoreError> {
+    return Effect.tryPromise({
+      try: async () => {
+        const loaded = await this.load(operationId, true);
+        if (loaded === undefined) throw failure("not_found", `Operation not found: ${operationId}`);
+        return {
+          operation: loaded.operation,
+          ...(loaded.result === undefined ? {} : { result: loaded.result }),
+        };
+      },
+      catch: (error) => asStoreError(error, "corrupt_record"),
+    });
+  }
+
+  private appendEvent(operationId: string, input: EventInput): Effect.Effect<OperationSnapshot, StoreError> {
     return Effect.tryPromise({
       try: () => this.serialize(operationId, async () => {
         const loaded = await this.load(operationId, input.type !== "operation_requested");
@@ -377,13 +198,16 @@ export abstract class ValidatedEventStore implements EventStore {
           throw failure("write_failed", error instanceof Error ? error.message : String(error));
         }
         this.didAppend(event);
-        return operation;
+        return {
+          operation,
+          ...(loaded?.result === undefined ? {} : { result: loaded.result }),
+        };
       }),
       catch: (error) => asStoreError(error, "corrupt_record"),
     });
   }
 
-  acceptResult(operationId: string, delivery: ResultDelivery): Effect.Effect<
+  private acceptResult(operationId: string, delivery: ResultDelivery): Effect.Effect<
     { readonly operation: Operation; readonly result: Result },
     StoreError | ResultConflictError
   > {
@@ -505,25 +329,4 @@ export abstract class ValidatedEventStore implements EventStore {
     });
   }
 
-  get(operationId: string): Effect.Effect<Operation, StoreError> {
-    return Effect.tryPromise({
-      try: async () => {
-        const loaded = await this.load(operationId, true);
-        if (loaded === undefined) throw failure("not_found", `Operation not found: ${operationId}`);
-        return loaded.operation;
-      },
-      catch: (error) => asStoreError(error, "corrupt_record"),
-    });
-  }
-
-  readResult(operationId: string): Effect.Effect<Result, StoreError> {
-    return Effect.tryPromise({
-      try: async () => {
-        const loaded = await this.load(operationId, true);
-        if (loaded?.result === undefined) throw failure("incomplete_record", "Operation has no Result");
-        return loaded.result;
-      },
-      catch: (error) => asStoreError(error, "corrupt_record"),
-    });
-  }
 }

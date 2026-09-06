@@ -5,8 +5,7 @@ import { Effect } from "effect";
 import type {
   CreatedPresentation,
   Operation,
-  PresentationOwnership,
-} from "./domain.js";
+} from "./event-store/index.js";
 import type { Presentation } from "./services.js";
 import { HerdrPreconditionError } from "../public.js";
 

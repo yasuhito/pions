@@ -17,11 +17,10 @@ import {
   ResultConflictError,
   SpawnRejectedError,
 } from "../src/index.js";
-import type { Operation } from "../src/internal/domain.js";
+import type { Operation, ResultDelivery } from "../src/internal/event-store/index.js";
 import type {
   BackendCancellationEvidence,
   ChildChannel,
-  ResultDelivery,
   RuntimeClock,
 } from "../src/internal/services.js";
 import {
@@ -152,6 +151,22 @@ async function waitForReceiver(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+async function storedOperation(store: InMemoryEventStore, operationId: string) {
+  return (await Effect.runPromise(store.read(operationId))).operation;
+}
+
+function operationEvents(trace: ReadonlyArray<string>, operationId: string) {
+  return trace
+    .filter((entry) => entry.startsWith("event:"))
+    .map((entry) => JSON.parse(entry.slice("event:".length)) as {
+      readonly operationId: string;
+      readonly type: string;
+      readonly seq: number;
+      readonly timestamp: string;
+    })
+    .filter((event) => event.operationId === operationId);
+}
+
 async function completeOperation(
   messages: ConstructorParameters<typeof FakeChildChannel>[0] = {
     body: "finished",
@@ -228,7 +243,11 @@ test("each Operation records root, parent, and depth lineage", async () => {
   );
 
   assert.deepEqual(
-    [root, child, grandchild].map(({ operationId }) => store.snapshot(operationId)?.lineage),
+    await Promise.all(
+      [root, child, grandchild].map(async ({ operationId }) =>
+        (await storedOperation(store, operationId)).lineage,
+      ),
+    ),
     [
       { rootOperationId: "root", depth: 0 },
       { rootOperationId: "root", parentOperationId: "root", depth: 1 },
@@ -275,7 +294,8 @@ function cancellableNestedRuntime(operationIds: ReadonlyArray<string>) {
   const clock = new ControlledTestClock(
     Array.from({ length: 100 }, (_, index) => `cancel-time-${index}`),
   );
-  const store = new InMemoryEventStore();
+  const trace: Array<string> = [];
+  const store = new InMemoryEventStore(trace);
   const runtime = makeRuntime({
     backend,
     channel,
@@ -284,7 +304,7 @@ function cancellableNestedRuntime(operationIds: ReadonlyArray<string>) {
     presentation: new FakePresentation(),
     store,
   });
-  return { backend, channel, clock, runtime, store };
+  return { backend, channel, clock, runtime, store, trace };
 }
 
 async function spawnCancellationTree() {
@@ -362,7 +382,7 @@ test("acknowledged subtree cancellation ends as cancelled", async () => {
   await clock.advanceBy(1_000);
   await cancellation;
 
-  assert.equal(store.snapshot(root.operationId)?.state, "cancelled");
+  assert.equal((await storedOperation(store, root.operationId)).state, "cancelled");
 });
 
 test("an unproven descendant makes subtree cancellation unknown", async () => {
@@ -377,15 +397,15 @@ test("an unproven descendant makes subtree cancellation unknown", async () => {
 
   assert.deepEqual(
     [
-      store.snapshot(root.operationId)?.state,
-      store.snapshot(root.operationId)?.terminalReason,
+      (await storedOperation(store, root.operationId)).state,
+      (await storedOperation(store, root.operationId)).terminalReason,
     ],
     ["unknown", "cancel-unproven"],
   );
 });
 
 test("an acknowledged parent retains its evidence when a descendant is unproven", async () => {
-  const { backend, clock, grandchild, root, store } =
+  const { backend, clock, grandchild, root, trace } =
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
@@ -395,7 +415,7 @@ test("an acknowledged parent retains its evidence when a descendant is unproven"
   await cancellation;
 
   assert.deepEqual(
-    store.events(root.operationId).slice(-2).map(({ type }) => type),
+    operationEvents(trace, root.operationId).slice(-2).map(({ type }) => type),
     ["cancel_acknowledged", "operation_unknown"],
   );
 });
@@ -445,7 +465,7 @@ test("subtree cancellation preserves an already completed descendant", async () 
   await clock.advanceBy(1_000);
   await cancellation;
 
-  assert.equal(store.snapshot(grandchild.operationId)?.state, "completed");
+  assert.equal((await storedOperation(store, grandchild.operationId)).state, "completed");
 });
 
 test("a self-settled parent drains while its child is still running", async () => {
@@ -457,7 +477,7 @@ test("a self-settled parent drains while its child is still running", async () =
   channel.deliver(root.operationId);
   await waitForReceiver();
 
-  assert.equal(store.snapshot(root.operationId)?.state, "draining_descendants");
+  assert.equal((await storedOperation(store, root.operationId)).state, "draining_descendants");
 });
 
 test("a parent completes after its child result handoff terminates", async () => {
@@ -469,7 +489,7 @@ test("a parent completes after its child result handoff terminates", async () =>
   channel.deliver(child.operationId);
   await Promise.all([root.result(), child.result()]);
 
-  assert.equal(store.snapshot(root.operationId)?.state, "completed");
+  assert.equal((await storedOperation(store, root.operationId)).state, "completed");
 });
 
 test("a grandparent completes only after its grandchild terminates", async () => {
@@ -482,7 +502,7 @@ test("a grandparent completes only after its grandchild terminates", async () =>
   channel.deliver(child.operationId);
   await waitForReceiver();
 
-  const beforeGrandchild = store.snapshot(root.operationId)?.state;
+  const beforeGrandchild = (await storedOperation(store, root.operationId)).state;
   channel.deliver(grandchild.operationId);
   await Promise.all([root.result(), child.result(), grandchild.result()]);
 
@@ -633,20 +653,20 @@ test("Runtime starts the AgentBackend once", async () => {
 test("Operation records the worker process instance identity", async () => {
   const { store } = await completeOperation();
 
-  assert.equal(store.snapshot("operation-1")?.workerIdentity?.processInstanceId, "fake-process-instance");
+  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.processInstanceId, "fake-process-instance");
 });
 
 test("Operation records the worker's owned pane identity", async () => {
   const { store } = await completeOperation();
 
-  assert.equal(store.snapshot("operation-1")?.workerIdentity?.paneId, "fake-pane:operation-1");
+  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.paneId, "fake-pane:operation-1");
 });
 
 test("Runtime records the successful Operation event sequence", async () => {
-  const { store } = await completeOperation();
+  const { trace } = await completeOperation();
 
   assert.deepEqual(
-    store.events("operation-1").map(({ type }) => type),
+    operationEvents(trace, "operation-1").map(({ type }) => type),
     [
       "operation_requested",
       "presentation_owned",
@@ -661,10 +681,10 @@ test("Runtime records the successful Operation event sequence", async () => {
 });
 
 test("Runtime uses deterministic event sequence numbers and timestamps", async () => {
-  const { store } = await completeOperation();
+  const { trace } = await completeOperation();
 
   assert.deepEqual(
-    store.events("operation-1").map(({ seq, timestamp }) => ({ seq, timestamp })),
+    operationEvents(trace, "operation-1").map(({ seq, timestamp }) => ({ seq, timestamp })),
     [
       { seq: 1, timestamp: "2026-09-06T10:00:00.000Z" },
       { seq: 2, timestamp: "2026-09-06T10:00:01.000Z" },
@@ -693,7 +713,7 @@ test("Presentation receives the completed Operation projection", async () => {
 test("Presentation failure cannot prevent terminal completion", async () => {
   const { store } = await completeOperation({ body: "finished" }, true);
 
-  assert.equal(store.events("operation-1").at(-1)?.type, "operation_completed");
+  assert.equal((await storedOperation(store, "operation-1")).state, "completed");
 });
 
 async function retryOperation(options?: { readonly parentOperationId?: string }) {
@@ -789,7 +809,7 @@ async function conflictResult() {
 test("a conflicting Result does not overwrite terminal completion", async () => {
   const store = await conflictResult();
 
-  assert.equal(store.events("operation-1").at(-1)?.type, "operation_completed");
+  assert.equal((await storedOperation(store, "operation-1")).state, "completed");
 });
 
 test("OperationHandle returns the same Result without republishing it", async () => {
@@ -812,9 +832,10 @@ test("OperationHandle returns the same Result without republishing it", async ()
 });
 
 async function failOperation() {
-  const store = new InMemoryEventStore();
+  const trace: Array<string> = [];
+  const store = new InMemoryEventStore(trace);
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend([], {
+    backend: new FakeAgentBackend(trace, {
       _tag: "BackendError",
       reason: "backend_start_failed",
       message: "worker executable unavailable",
@@ -838,7 +859,7 @@ async function failOperation() {
   });
   await handle.result().catch(() => undefined);
 
-  return { handle, store };
+  return { handle, store, trace };
 }
 
 test("a ChildChannel failure is durably classified without fake completion", async () => {
@@ -854,7 +875,7 @@ test("a ChildChannel failure is durably classified without fake completion", asy
   const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
   await handle.result().catch(() => undefined);
 
-  assert.equal(store.snapshot("operation-1")?.terminalReason, "worker_protocol_failed");
+  assert.equal((await storedOperation(store, "operation-1")).terminalReason, "worker_protocol_failed");
 });
 
 test("an acknowledgement failure is durably classified", async () => {
@@ -870,7 +891,7 @@ test("an acknowledgement failure is durably classified", async () => {
   const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
   await handle.result().catch(() => undefined);
 
-  assert.equal(store.snapshot("operation-1")?.terminalReason, "worker_protocol_failed");
+  assert.equal((await storedOperation(store, "operation-1")).terminalReason, "worker_protocol_failed");
 });
 
 test("OperationHandle reports backend failure as a bounded typed failure", async () => {
@@ -885,10 +906,10 @@ test("OperationHandle reports backend failure as a bounded typed failure", async
 });
 
 test("backend failure records the failed terminal result", async () => {
-  const { store } = await failOperation();
+  const { trace } = await failOperation();
 
   assert.deepEqual(
-    store.events("operation-1").map(({ type }) => type),
+    operationEvents(trace, "operation-1").map(({ type }) => type),
     [
       "operation_requested",
       "presentation_owned",
@@ -902,17 +923,5 @@ test("backend failure records the failed terminal result", async () => {
 test("backend failure does not publish a successful Result", async () => {
   const { store } = await failOperation();
 
-  assert.equal(store.result("operation-1"), undefined);
-});
-
-test("EventStore rebuilds the failed snapshot from accepted events", async () => {
-  const { store } = await failOperation();
-
-  assert.deepEqual(store.rebuild("operation-1"), store.snapshot("operation-1"));
-});
-
-test("EventStore rebuilds the accepted failure reason", async () => {
-  const { store } = await failOperation();
-
-  assert.equal(store.rebuild("operation-1")?.terminalReason, "backend_start_failed");
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).result, undefined);
 });

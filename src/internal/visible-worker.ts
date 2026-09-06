@@ -17,8 +17,8 @@ import {
   resultDigest,
 } from "./child-protocol.js";
 import type { WorkerConfig } from "./child-protocol.js";
-import type { Operation } from "./domain.js";
-import { operationDirectoryKey } from "./private-file-event-store.js";
+import type { Operation, ResultDelivery } from "./event-store/index.js";
+import { operationDirectoryKey } from "./event-store/index.js";
 import type {
   AgentBackend,
   BackendCancellationEvidence,
@@ -26,7 +26,6 @@ import type {
   ChannelError,
   ChannelReception,
   ChildChannel,
-  ResultDelivery,
 } from "./services.js";
 import type { CommandExecutor } from "./herdr-presentation.js";
 

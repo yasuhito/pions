@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { Effect } from "effect";
 
-import type { EventInput, Operation } from "../src/internal/domain.js";
+import type { Operation, OperationIntent } from "../src/internal/event-store/index.js";
 import {
   HerdrPresentation,
   type CommandExecutor,
@@ -20,14 +20,14 @@ import {
 import { HerdrPreconditionError } from "../src/index.js";
 
 class OwnershipFailingStore extends InMemoryEventStore {
-  override append(operationId: string, input: EventInput) {
+  override advance(operationId: string, input: OperationIntent) {
     return input.type === "presentation_owned"
       ? Effect.fail({
           _tag: "StoreError" as const,
           code: "write_failed" as const,
           message: "ownership persistence failed",
         })
-      : super.append(operationId, input);
+      : super.advance(operationId, input);
   }
 }
 
@@ -206,7 +206,9 @@ test("Runtime rejects missing Herdr before creating any resource", async () => {
 
   await runtime.spawn({ promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" }).catch(() => undefined);
 
-  assert.deepEqual([ids.issuedCount, executor.invocations.length, store.snapshot("operation-1")], [0, 0, undefined]);
+  const read = await Effect.runPromise(Effect.either(store.read("operation-1")));
+
+  assert.deepEqual([ids.issuedCount, executor.invocations.length, read._tag], [0, 0, "Left"]);
 });
 
 test("failed ownership persistence rolls back exactly the created pane", async () => {
@@ -269,7 +271,7 @@ test("a Herdr projection failure cannot create Operation completion", async () =
   const handle = await runtime.spawn({ promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" });
   await handle.result().catch(() => undefined);
 
-  assert.equal(store.snapshot("operation-1")?.state, "failed");
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "failed");
 });
 
 test("Runtime persists ownership returned by Herdr", async () => {
@@ -295,7 +297,7 @@ test("Runtime persists ownership returned by Herdr", async () => {
   const handle = await runtime.spawn({ promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" });
   await handle.result();
 
-  assert.deepEqual(store.snapshot("operation-1")?.presentation, {
+  assert.deepEqual((await Effect.runPromise(store.read("operation-1"))).operation.presentation, {
     kind: "herdr_pane",
     paneId: "opaque:new-pane",
     ownedByPions: true,

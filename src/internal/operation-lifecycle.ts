@@ -1,15 +1,15 @@
 import { Cause, Effect, Exit, Schema } from "effect";
 
 import type {
-  EventInput,
   Operation,
+  OperationIntent,
   OperationLineage,
-} from "./domain.js";
+  StoreError,
+} from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
 import type {
   BackendCancellationEvidence,
   RuntimeServices,
-  StoreError,
 } from "./services.js";
 import {
   CancellationRejectedError,
@@ -118,16 +118,22 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
       error.code === "not_found" ? "corrupt_record" : error.code,
     );
 
-  const append = (
+  const advanceOperation = (
     operationId: string,
-    input: EventInput,
-  ): Effect.Effect<Operation, OperationPersistenceError> =>
-    services.store.append(operationId, input).pipe(
-      Effect.mapError((error) => persistenceError(operationId, error)),
+    intent: OperationIntent,
+  ): Effect.Effect<Operation, OperationPersistenceError | ResultConflictError> =>
+    services.store.advance(operationId, intent).pipe(
+      Effect.map((snapshot) => snapshot.operation),
+      Effect.mapError((error) =>
+        error instanceof ResultConflictError
+          ? error
+          : persistenceError(operationId, error),
+      ),
     );
 
   const getOperation = (operationId: string) =>
-    services.store.get(operationId).pipe(
+    services.store.read(operationId).pipe(
+      Effect.map((snapshot) => snapshot.operation),
       Effect.mapError((error) => persistenceError(operationId, error)),
     );
 
@@ -135,8 +141,13 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
     Effect.catchAllCause(services.presentation.project(operation), () => Effect.void);
 
   const readResult = (operationId: string) =>
-    services.store.readResult(operationId).pipe(
+    services.store.read(operationId).pipe(
       Effect.mapError((error) => persistenceError(operationId, error)),
+      Effect.flatMap((snapshot) =>
+        snapshot.result === undefined
+          ? Effect.fail(new OperationPersistenceError(operationId, "incomplete_record"))
+          : Effect.succeed(snapshot.result),
+      ),
     );
 
   const runEffect = async <Value>(effect: Effect.Effect<Value, unknown>): Promise<Value> => {
@@ -186,7 +197,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
     if (isTerminal(parentOperation)) return;
 
     const parentAfterChild = await runEffect(
-      append(parentId, {
+      advanceOperation(parentId, {
         type: "child_settled",
         childOperationId: record.operationId,
         outcome: operation.state === "completed" ? "succeeded" : "failed",
@@ -215,7 +226,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
           ? "descendant_failed"
           : undefined;
     const terminal = await runEffect(
-      append(
+      advanceOperation(
         record.operationId,
         failureReason === undefined
           ? { type: "operation_completed" }
@@ -247,7 +258,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
   const execute = async (record: OperationRecord): Promise<void> => {
     try {
       let operation = await runEffect(
-        append(record.operationId, { type: "operation_starting" }),
+        advanceOperation(record.operationId, { type: "operation_starting" }),
       );
       await runEffect(project(operation));
 
@@ -263,7 +274,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
           ),
         );
         operation = await runEffect(
-          append(record.operationId, {
+          advanceOperation(record.operationId, {
             type: "self_settled",
             outcome: "failed",
             reason,
@@ -275,13 +286,13 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
       }
 
       operation = await runEffect(
-        append(record.operationId, { type: "operation_started" }),
+        advanceOperation(record.operationId, { type: "operation_started" }),
       );
       await runEffect(project(operation));
 
       const workerIdentity = await runEffect(services.channel.receiveStarted(operation));
       operation = await runEffect(
-        append(record.operationId, {
+        advanceOperation(record.operationId, {
           type: "worker_identified",
           workerIdentity: {
             processInstanceId: workerIdentity.processInstanceId,
@@ -295,7 +306,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
       );
       if (acceptance.state === "protocol_failed") {
         operation = await runEffect(
-          append(record.operationId, {
+          advanceOperation(record.operationId, {
             type: "self_settled",
             outcome: "failed",
             reason: "worker_protocol_failed",
@@ -312,7 +323,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
       }
 
       operation = await runEffect(
-        append(record.operationId, {
+        advanceOperation(record.operationId, {
           type: "self_settled",
           outcome: "succeeded",
         }),
@@ -329,7 +340,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
       }
       if (typeof error === "object" && error !== null && "_tag" in error && error._tag === "ChannelError") {
         const failed = await runEffect(
-          append(record.operationId, {
+          advanceOperation(record.operationId, {
             type: "self_settled",
             outcome: "failed",
             reason: "worker_protocol_failed",
@@ -438,7 +449,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
 
     if (parent !== undefined) {
       const updatedParent = await runEffect(
-        append(parent.operationId, {
+        advanceOperation(parent.operationId, {
           type: "child_attached",
           childOperationId: operationId,
         }),
@@ -449,14 +460,17 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
 
     records.set(operationId, record);
     let operation = await runEffect(
-      append(operationId, { type: "operation_requested", task, lineage }),
+      services.store.create({ operationId, task, lineage }).pipe(
+        Effect.map((snapshot) => snapshot.operation),
+        Effect.mapError((error) => persistenceError(operationId, error)),
+      ),
     );
     await runEffect(project(operation));
 
     const createdPresentation = await runEffect(services.presentation.create(operation));
     try {
       operation = await runEffect(
-        append(operationId, {
+        advanceOperation(operationId, {
           type: "presentation_owned",
           presentation: { ...createdPresentation, ownedByPions: true },
         }),
@@ -552,7 +566,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
       await collectPostOrder(root, postOrder);
       for (const { record } of postOrder) {
         const operation = await runEffect(
-          append(record.operationId, {
+          advanceOperation(record.operationId, {
             type: "cancellation_requested",
             cancellationEpoch: epoch,
           }),
@@ -566,7 +580,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
       > = [];
       for (const { record } of postOrder) {
         const operation = await runEffect(
-          append(record.operationId, {
+          advanceOperation(record.operationId, {
             type: "cancel_dispatched",
             cancellationEpoch: epoch,
           }),
@@ -596,7 +610,7 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
 
         if (response !== undefined) {
           const acknowledged = await runEffect(
-            append(node.record.operationId, {
+            advanceOperation(node.record.operationId, {
               type: "cancel_acknowledged",
               cancellationEpoch: epoch,
               proof: response.proof,
@@ -607,14 +621,14 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
 
         const terminal = unproven
           ? await runEffect(
-              append(node.record.operationId, {
+              advanceOperation(node.record.operationId, {
                 type: "operation_unknown",
                 cancellationEpoch: epoch,
                 reason: "cancel-unproven",
               }),
             )
           : await runEffect(
-              append(node.record.operationId, {
+              advanceOperation(node.record.operationId, {
                 type: "operation_cancelled",
                 cancellationEpoch: epoch,
               }),

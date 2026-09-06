@@ -5,17 +5,17 @@ import {
   EVENT_SCHEMA_VERSION,
   OPERATION_AUTHORITY,
   RUNTIME_ACTOR_ID,
-} from "../src/internal/domain.js";
+} from "../src/internal/event-store/model.js";
 import type {
   EventInput,
   Operation,
   OperationEvent,
-} from "../src/internal/domain.js";
+} from "../src/internal/event-store/model.js";
 import {
   reduceOperation,
   replayOperation,
   TransitionError,
-} from "../src/internal/reducer.js";
+} from "../src/internal/event-store/reducer.js";
 
 const metadata = {
   operationId: "operation-1",

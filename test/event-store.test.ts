@@ -3,13 +3,13 @@ import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
-import type { OperationEvent } from "../src/internal/domain.js";
-import type { EventStore, StoreError } from "../src/internal/services.js";
-import { PrivateFileEventStore, operationDirectoryKey } from "../src/internal/private-file-event-store.js";
+import type { OperationEvent } from "../src/internal/event-store/model.js";
+import type { EventStore, StoreError } from "../src/internal/event-store/index.js";
+import { PrivateFileEventStore, operationDirectoryKey } from "../src/internal/event-store/index.js";
 import {
   FakeAgentBackend,
   FakeChildChannel,
@@ -42,24 +42,65 @@ function clock(): FakeClock {
 }
 
 async function complete(store: EventStore, operationId = "operation-1") {
-  await Effect.runPromise(store.append(operationId, {
-    type: "operation_requested",
+  await Effect.runPromise(store.create({
+    operationId,
     task,
     lineage: { rootOperationId: operationId, depth: 0 },
   }));
-  await Effect.runPromise(store.append(operationId, { type: "operation_starting" }));
-  await Effect.runPromise(store.append(operationId, { type: "operation_started" }));
-  await Effect.runPromise(store.acceptResult(operationId, {
-    body: "finished",
-    digest: digest("finished"),
-    sequenceNumber: 1,
+  await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
+  await Effect.runPromise(store.advance(operationId, { type: "operation_started" }));
+  await Effect.runPromise(store.advance(operationId, {
+    type: "accept_result",
+    delivery: {
+      body: "finished",
+      digest: digest("finished"),
+      sequenceNumber: 1,
+    },
   }));
-  await Effect.runPromise(store.append(operationId, { type: "self_settled", outcome: "succeeded" }));
-  return Effect.runPromise(store.append(operationId, { type: "operation_completed" }));
+  await Effect.runPromise(store.advance(operationId, { type: "self_settled", outcome: "succeeded" }));
+  return Effect.runPromise(store.advance(operationId, { type: "operation_completed" }));
 }
 
 async function storeFailure(effect: Effect.Effect<unknown, { readonly code: string }>) {
   return Effect.runPromise(Effect.flip(effect));
+}
+
+const eventStoreAdapters: ReadonlyArray<{
+  readonly name: string;
+  readonly make: (context: TestContext) => Promise<EventStore>;
+}> = [
+  {
+    name: "memory",
+    make: () => Promise.resolve(new InMemoryEventStore([], clock())),
+  },
+  {
+    name: "file",
+    make: async (context) => {
+      const root = await privateRoot();
+      context.after(() => rm(root, { recursive: true, force: true }));
+      return new PrivateFileEventStore(root, clock());
+    },
+  },
+];
+
+for (const adapter of eventStoreAdapters) {
+  test(`${adapter.name} EventStore adapter creates a queued Operation`, async (context) => {
+    const store = await adapter.make(context);
+    const snapshot = await Effect.runPromise(store.create({
+      operationId: "operation-1",
+      task,
+      lineage: { rootOperationId: "operation-1", depth: 0 },
+    }));
+
+    assert.equal(snapshot.operation.state, "queued");
+  });
+
+  test(`${adapter.name} EventStore adapter returns an accepted Result`, async (context) => {
+    const store = await adapter.make(context);
+    const snapshot = await complete(store);
+
+    assert.equal(snapshot.result?.body, "finished");
+  });
 }
 
 test("EventStore adapters reconstruct the same terminal snapshot", async (context) => {
@@ -71,7 +112,7 @@ test("EventStore adapters reconstruct the same terminal snapshot", async (contex
   await complete(file);
   const reopened = new PrivateFileEventStore(root, clock());
 
-  assert.deepEqual(await Effect.runPromise(reopened.get("operation-1")), expected);
+  assert.deepEqual((await Effect.runPromise(reopened.read("operation-1"))).operation, expected.operation);
 });
 
 test("reloading a Result does not append a delivery event", async (context) => {
@@ -81,7 +122,7 @@ test("reloading a Result does not append a delivery event", async (context) => {
   const recordPath = join(root, operationDirectoryKey("operation-1"), "events.v2.json");
   const before = await readFile(recordPath, "utf8");
   const reopened = new PrivateFileEventStore(root, clock());
-  await Effect.runPromise(reopened.readResult("operation-1"));
+  await Effect.runPromise(reopened.read("operation-1"));
 
   assert.equal(await readFile(recordPath, "utf8"), before);
 });
@@ -92,7 +133,7 @@ test("a reopened EventStore returns the integrity-checked Result", async (contex
   await complete(new PrivateFileEventStore(root, clock()));
 
   assert.deepEqual(
-    await Effect.runPromise(new PrivateFileEventStore(root, clock()).readResult("operation-1")),
+    (await Effect.runPromise(new PrivateFileEventStore(root, clock()).read("operation-1"))).result,
     { body: "finished", byteCount: 8, digest: digest("finished") },
   );
 });
@@ -124,8 +165,8 @@ test("a symlink Operation directory is rejected", async (context) => {
   await symlink(target, join(root, operationDirectoryKey("operation-1")));
   const store = new PrivateFileEventStore(root, clock());
 
-  assert.equal((await storeFailure(store.append("operation-1", {
-    type: "operation_requested",
+  assert.equal((await storeFailure(store.create({
+    operationId: "operation-1",
     task,
     lineage: { rootOperationId: "operation-1", depth: 0 },
   }))).code, "corrupt_record");
@@ -138,7 +179,7 @@ test("a Result without an event record is incomplete", async (context) => {
   await mkdir(directory, { mode: 0o700 });
   await writeFile(join(directory, "result.utf8"), "finished", { mode: 0o600 });
 
-  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "incomplete_record");
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "incomplete_record");
 });
 
 test("a missing Result referenced by an event record is corrupt", async (context) => {
@@ -147,7 +188,7 @@ test("a missing Result referenced by an event record is corrupt", async (context
   await complete(new PrivateFileEventStore(root, clock()));
   await rm(join(root, operationDirectoryKey("operation-1"), "result.utf8"));
 
-  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "corrupt_record");
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "corrupt_record");
 });
 
 test("a Result with changed bytes is corrupt", async (context) => {
@@ -156,7 +197,7 @@ test("a Result with changed bytes is corrupt", async (context) => {
   await complete(new PrivateFileEventStore(root, clock()));
   await writeFile(join(root, operationDirectoryKey("operation-1"), "result.utf8"), "changed", { mode: 0o600 });
 
-  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "corrupt_record");
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "corrupt_record");
 });
 
 test("an unsupported record schema is rejected", async (context) => {
@@ -168,7 +209,21 @@ test("an unsupported record schema is rejected", async (context) => {
   record.schemaVersion = 3;
   await writeFile(path, JSON.stringify(record), { mode: 0o600 });
 
-  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "unsupported_schema");
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "unsupported_schema");
+});
+
+test("an unsupported event schema is rejected", async (context) => {
+  const root = await privateRoot();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await complete(new PrivateFileEventStore(root, clock()));
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v2.json");
+  const record = JSON.parse(await readFile(path, "utf8")) as {
+    events: Array<{ schemaVersion: number }>;
+  };
+  record.events[0]!.schemaVersion = 3;
+  await writeFile(path, JSON.stringify(record), { mode: 0o600 });
+
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "unsupported_schema");
 });
 
 test("an event record with a forged envelope is corrupt", async (context) => {
@@ -180,7 +235,7 @@ test("an event record with a forged envelope is corrupt", async (context) => {
   record.events[1] = { ...record.events[1]!, eventId: "forged-event" };
   await writeFile(path, JSON.stringify(record), { mode: 0o600 });
 
-  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "corrupt_record");
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "corrupt_record");
 });
 
 test("an out-of-order event record is corrupt", async (context) => {
@@ -192,7 +247,7 @@ test("an out-of-order event record is corrupt", async (context) => {
   [record.events[1], record.events[2]] = [record.events[2]!, record.events[1]!];
   await writeFile(path, JSON.stringify(record), { mode: 0o600 });
 
-  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "corrupt_record");
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "corrupt_record");
 });
 
 test("a persisted Result event contains only its durable reference", async (context) => {
@@ -213,17 +268,20 @@ test("a persisted Result event contains only its durable reference", async (cont
 
 async function interruptResultPublication(root: string) {
   const store = new PrivateFileEventStore(root, new FakeClock(["time-0", "time-1", "time-2"]));
-  await Effect.runPromise(store.append("operation-1", {
-    type: "operation_requested",
+  await Effect.runPromise(store.create({
+    operationId: "operation-1",
     task,
     lineage: { rootOperationId: "operation-1", depth: 0 },
   }));
-  await Effect.runPromise(store.append("operation-1", { type: "operation_starting" }));
-  await Effect.runPromise(store.append("operation-1", { type: "operation_started" }));
-  return storeFailure(store.acceptResult("operation-1", {
-    body: "finished",
-    digest: digest("finished"),
-    sequenceNumber: 1,
+  await Effect.runPromise(store.advance("operation-1", { type: "operation_starting" }));
+  await Effect.runPromise(store.advance("operation-1", { type: "operation_started" }));
+  return storeFailure(store.advance("operation-1", {
+    type: "accept_result",
+    delivery: {
+      body: "finished",
+      digest: digest("finished"),
+      sequenceNumber: 1,
+    },
   }) as Effect.Effect<unknown, StoreError>);
 }
 
@@ -239,7 +297,7 @@ test("a fresh EventStore rejects Result bytes left by interrupted publication", 
   context.after(() => rm(root, { recursive: true, force: true }));
   await interruptResultPublication(root);
 
-  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "incomplete_record");
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "incomplete_record");
 });
 
 test("a reopened EventStore reconstructs Result conflict evidence", async (context) => {
@@ -247,17 +305,20 @@ test("a reopened EventStore reconstructs Result conflict evidence", async (conte
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
   const reopened = new PrivateFileEventStore(root, clock());
-  await Effect.runPromise(Effect.either(reopened.acceptResult("operation-1", {
-    body: "conflicting",
-    digest: digest("conflicting"),
-    sequenceNumber: 2,
+  await Effect.runPromise(Effect.either(reopened.advance("operation-1", {
+    type: "accept_result",
+    delivery: {
+      body: "conflicting",
+      digest: digest("conflicting"),
+      sequenceNumber: 2,
+    },
   })));
 
   const reconstructed = await Effect.runPromise(
-    new PrivateFileEventStore(root, clock()).get("operation-1"),
+    new PrivateFileEventStore(root, clock()).read("operation-1"),
   );
 
-  assert.deepEqual(reconstructed.resultConflict, {
+  assert.deepEqual(reconstructed.operation.resultConflict, {
     acceptedDigest: digest("finished"),
     conflictingDigest: digest("conflicting"),
     deliverySequenceNumber: 2,
@@ -283,7 +344,7 @@ test("conflicting persisted Result events make a record corrupt", async (context
   ];
   await writeFile(path, JSON.stringify(record), { mode: 0o600 });
 
-  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).get("operation-1"))).code, "corrupt_record");
+  assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "corrupt_record");
 });
 
 test("Runtime reports record write failure as a typed persistence failure", async (context) => {

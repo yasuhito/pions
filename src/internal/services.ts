@@ -2,21 +2,11 @@ import type { Effect } from "effect";
 
 import type {
   CreatedPresentation,
-  EventInput,
+  EventStore,
   Operation,
-  PresentationOwnership,
-} from "./domain.js";
-import type {
-  OperationFailureReason,
-  Result,
-  ResultConflictError,
-} from "../public.js";
-
-export interface ResultDelivery {
-  readonly body: string;
-  readonly digest: Result["digest"];
-  readonly sequenceNumber: number;
-}
+  ResultDelivery,
+} from "./event-store/index.js";
+import type { OperationFailureReason } from "../public.js";
 
 export interface WorkerProcessIdentity {
   readonly processInstanceId: string;
@@ -24,19 +14,6 @@ export interface WorkerProcessIdentity {
 
 export interface ChannelReception {
   readonly deliveries: ReadonlyArray<ResultDelivery>;
-}
-
-export type StoreErrorCode =
-  | "not_found"
-  | "write_failed"
-  | "incomplete_record"
-  | "corrupt_record"
-  | "unsupported_schema";
-
-export interface StoreError {
-  readonly _tag: "StoreError";
-  readonly code: StoreErrorCode;
-  readonly message: string;
 }
 
 export interface BackendError {
@@ -86,19 +63,6 @@ export interface Presentation {
   rollbackCreated(presentation: CreatedPresentation): Effect.Effect<void, unknown>;
   onBackendStartFailure(operation: Operation): Effect.Effect<void, unknown>;
   project(operation: Operation): Effect.Effect<void, unknown>;
-}
-
-export interface EventStore {
-  append(operationId: string, event: EventInput): Effect.Effect<Operation, StoreError>;
-  acceptResult(
-    operationId: string,
-    delivery: ResultDelivery,
-  ): Effect.Effect<
-    { readonly operation: Operation; readonly result: Result },
-    StoreError | ResultConflictError
-  >;
-  get(operationId: string): Effect.Effect<Operation, StoreError>;
-  readResult(operationId: string): Effect.Effect<Result, StoreError>;
 }
 
 export interface RuntimeServices {

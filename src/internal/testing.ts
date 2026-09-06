@@ -2,17 +2,13 @@ import { createHash } from "node:crypto";
 
 import { Effect } from "effect";
 
-import { replayOperation } from "./reducer.js";
 import type {
   CreatedPresentation,
   Operation,
-  OperationEvent,
   OperationState,
-} from "./domain.js";
-import {
-  ValidatedEventStore,
-} from "./event-store.js";
-import type { StoredOperationRecord } from "./event-store.js";
+  ResultDelivery,
+} from "./event-store/index.js";
+export { InMemoryEventStore } from "./event-store/memory-storage.js";
 import type {
   AgentBackend,
   ChildChannel,
@@ -20,7 +16,6 @@ import type {
   ChannelReception,
   IdGenerator,
   Presentation,
-  ResultDelivery,
   RuntimeClock,
   BackendError,
   BackendCancellationEvidence,
@@ -199,71 +194,5 @@ export class FakePresentation implements Presentation {
           this.stateChangeSucceeded;
       }
     });
-  }
-}
-
-const systemClock: RuntimeClock = {
-  now: () => Effect.sync(() => new Date().toISOString()),
-  sleep: (milliseconds) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, milliseconds))),
-};
-
-export class InMemoryEventStore extends ValidatedEventStore {
-  private readonly records = new Map<string, StoredOperationRecord>();
-  private readonly resultBytes = new Map<string, Buffer>();
-
-  constructor(
-    private readonly trace: Array<string> = [],
-    clock: RuntimeClock = systemClock,
-  ) {
-    super(clock);
-  }
-
-  protected readRecord(operationId: string): Promise<unknown | undefined> {
-    return Promise.resolve(this.records.get(operationId));
-  }
-
-  protected writeRecord(operationId: string, record: StoredOperationRecord): Promise<void> {
-    this.records.set(operationId, structuredClone(record));
-    return Promise.resolve();
-  }
-
-  protected readResultBytes(operationId: string): Promise<Buffer | undefined> {
-    const bytes = this.resultBytes.get(operationId);
-    return Promise.resolve(bytes === undefined ? undefined : Buffer.from(bytes));
-  }
-
-  protected writeResultBytes(operationId: string, bytes: Buffer): Promise<void> {
-    this.resultBytes.set(operationId, Buffer.from(bytes));
-    return Promise.resolve();
-  }
-
-  protected override didPersistResultBytes(): void {
-    this.trace.push("result:bytes-persisted");
-  }
-
-  protected override didAppend(event: OperationEvent): void {
-    this.trace.push(`event:${event.type}`);
-  }
-
-  events(operationId: string): ReadonlyArray<OperationEvent> {
-    return [...(this.records.get(operationId)?.events ?? [])];
-  }
-
-  result(operationId: string): Result | undefined {
-    const bytes = this.resultBytes.get(operationId);
-    if (bytes === undefined) return undefined;
-    return {
-      body: bytes.toString("utf8"),
-      byteCount: bytes.byteLength,
-      digest: digest(bytes.toString("utf8")),
-    };
-  }
-
-  snapshot(operationId: string): Operation | undefined {
-    return replayOperation(this.events(operationId));
-  }
-
-  rebuild(operationId: string): Operation | undefined {
-    return replayOperation(this.events(operationId));
   }
 }

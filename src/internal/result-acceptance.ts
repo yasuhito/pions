@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 
-import type { ChildChannel, EventStore, StoreError } from "./services.js";
+import type { EventStore, StoreError } from "./event-store/index.js";
+import type { ChildChannel } from "./services.js";
 import {
   OperationPersistenceError,
   ResultConflictError,
@@ -57,15 +58,24 @@ export function makeResultAcceptance(
 
         for (const delivery of reception.right.deliveries) {
           const acceptance = yield* Effect.either(
-            dependencies.store.acceptResult(operationId, delivery),
+            dependencies.store.advance(operationId, {
+              type: "accept_result",
+              delivery,
+            }),
           );
           if (acceptance._tag === "Left") {
             if (acceptance.left instanceof ResultConflictError) {
               resultDeliveryError = acceptance.left;
               if (acceptedResult === undefined) {
-                acceptedResult = yield* dependencies.store.readResult(operationId).pipe(
+                const snapshot = yield* dependencies.store.read(operationId).pipe(
                   Effect.mapError((error) => persistenceError(operationId, error)),
                 );
+                if (snapshot.result === undefined) {
+                  return yield* Effect.fail(
+                    new OperationPersistenceError(operationId, "incomplete_record"),
+                  );
+                }
+                acceptedResult = snapshot.result;
               }
               break;
             }
@@ -74,6 +84,11 @@ export function makeResultAcceptance(
             );
           }
 
+          if (acceptance.right.result === undefined) {
+            return yield* Effect.fail(
+              new OperationPersistenceError(operationId, "incomplete_record"),
+            );
+          }
           acceptedResult = acceptance.right.result;
           const acknowledgement = yield* Effect.either(
             dependencies.channel.acknowledgeResult(
@@ -84,7 +99,7 @@ export function makeResultAcceptance(
           if (acknowledgement._tag === "Left") {
             return {
               state: "protocol_failed",
-              acceptedResult,
+              acceptedResult: acceptance.right.result,
             } as const;
           }
         }

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Effect } from "effect";
 
 import { HerdrPresentation, NodeCommandExecutor } from "./herdr-presentation.js";
-import { PrivateFileEventStore } from "./private-file-event-store.js";
+import { PrivateFileEventStore } from "./event-store/index.js";
 import { makeRuntime } from "./runtime.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
