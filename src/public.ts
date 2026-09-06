@@ -14,7 +14,27 @@ export interface Result {
   readonly digest: `sha256:${string}`;
 }
 
-export type OperationFailureReason = "backend_start_failed";
+export type OperationFailureReason =
+  | "backend_start_failed"
+  | "descendant_failed";
+
+export type SpawnRejectionReason =
+  | "parent_not_found"
+  | "parent_terminal"
+  | "depth_limit_exceeded"
+  | "child_limit_exceeded"
+  | "live_descendant_limit_exceeded";
+
+export class SpawnRejectedError extends Error {
+  override readonly name = "SpawnRejectedError";
+
+  constructor(
+    readonly reason: SpawnRejectionReason,
+    readonly parentOperationId: string,
+  ) {
+    super(`Child Operation rejected for ${parentOperationId}: ${reason}`);
+  }
+}
 
 export class OperationFailedError extends Error {
   override readonly name = "OperationFailedError";

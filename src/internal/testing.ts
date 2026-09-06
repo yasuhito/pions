@@ -101,6 +101,10 @@ export class FakeIdGenerator implements IdGenerator {
 
   constructor(private readonly operationIds: ReadonlyArray<string>) {}
 
+  get issuedCount(): number {
+    return this.index;
+  }
+
   nextOperationId(): Effect.Effect<string> {
     return Effect.sync(() => {
       const operationId = this.operationIds[this.index++];

@@ -25,9 +25,16 @@ const metadata = {
   schemaVersion: EVENT_SCHEMA_VERSION,
 };
 
-function event(seq: number, value: EventInput): OperationEvent {
+type TestEventInput =
+  | EventInput
+  | Omit<Extract<EventInput, { readonly type: "operation_requested" }>, "lineage">;
+
+function event(seq: number, value: TestEventInput): OperationEvent {
   return {
     ...metadata,
+    ...(value.type === "operation_requested"
+      ? { lineage: { rootOperationId: metadata.operationId, depth: 0 } }
+      : {}),
     ...value,
     eventId: `event-${seq}`,
     seq,

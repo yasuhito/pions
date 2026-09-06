@@ -10,14 +10,25 @@ export type OperationState =
   | "running"
   | "blocked"
   | "self_settled"
+  | "draining_descendants"
   | "completed"
   | "failed";
 
+export interface OperationLineage {
+  readonly rootOperationId: string;
+  readonly parentOperationId?: string;
+  readonly depth: number;
+}
+
 export interface Operation {
   readonly operationId: string;
+  readonly lineage: Readonly<OperationLineage>;
   readonly state: OperationState;
   readonly stateSeq: number;
   readonly task: Readonly<TaskSpec>;
+  readonly childOperationIds: ReadonlyArray<string>;
+  readonly settledChildOperationIds: ReadonlyArray<string>;
+  readonly descendantFailure: boolean;
   readonly result?: Readonly<Result>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
@@ -43,6 +54,16 @@ export type OperationEvent = EventMetadata &
     | {
         readonly type: "operation_requested";
         readonly task: Readonly<TaskSpec>;
+        readonly lineage: Readonly<OperationLineage>;
+      }
+    | {
+        readonly type: "child_attached";
+        readonly childOperationId: string;
+      }
+    | {
+        readonly type: "child_settled";
+        readonly childOperationId: string;
+        readonly outcome: "succeeded" | "failed";
       }
     | { readonly type: "operation_starting" }
     | { readonly type: "operation_started" }

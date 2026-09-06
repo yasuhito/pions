@@ -20,6 +20,10 @@ export type TransitionErrorCode =
   | "terminal_state_immutable"
   | "result_required_before_self_settlement"
   | "successful_settlement_required_before_completion"
+  | "descendants_must_be_settled"
+  | "descendant_failure_prevents_completion"
+  | "unknown_child"
+  | "child_already_settled"
   | "failed_settlement_required_before_failure"
   | "failure_reason_mismatch";
 
@@ -33,8 +37,18 @@ export class TransitionError extends Error {
 
 function immutable(operation: Operation): Operation {
   Object.freeze(operation.task);
+  Object.freeze(operation.lineage);
+  Object.freeze(operation.childOperationIds);
+  Object.freeze(operation.settledChildOperationIds);
   if (operation.result !== undefined) Object.freeze(operation.result);
   return Object.freeze(operation);
+}
+
+function hasUnsettledChildren(operation: Operation): boolean {
+  return (
+    operation.childOperationIds.length !==
+    operation.settledChildOperationIds.length
+  );
 }
 
 function validateEnvelope(event: OperationEvent): void {
@@ -72,9 +86,13 @@ export function reduceOperation(
 
     return immutable({
       operationId: event.operationId,
+      lineage: { ...event.lineage },
       state: "queued",
       stateSeq: event.seq,
       task: { ...event.task },
+      childOperationIds: [],
+      settledChildOperationIds: [],
+      descendantFailure: false,
     });
   }
 
@@ -92,6 +110,49 @@ export function reduceOperation(
   }
 
   switch (event.type) {
+    case "child_attached":
+      if (current.state === "draining_descendants") {
+        throw new TransitionError("illegal_transition");
+      }
+      if (current.childOperationIds.includes(event.childOperationId)) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        childOperationIds: [...current.childOperationIds, event.childOperationId],
+        state:
+          current.state === "self_settled"
+            ? "draining_descendants"
+            : current.state,
+        stateSeq: event.seq,
+      });
+
+    case "child_settled": {
+      if (!current.childOperationIds.includes(event.childOperationId)) {
+        throw new TransitionError("unknown_child");
+      }
+      if (current.settledChildOperationIds.includes(event.childOperationId)) {
+        throw new TransitionError("child_already_settled");
+      }
+      const settledChildOperationIds = [
+        ...current.settledChildOperationIds,
+        event.childOperationId,
+      ];
+      const descendantsDrained =
+        settledChildOperationIds.length === current.childOperationIds.length;
+      return immutable({
+        ...current,
+        descendantFailure:
+          current.descendantFailure || event.outcome === "failed",
+        settledChildOperationIds,
+        state:
+          current.state === "draining_descendants" && descendantsDrained
+            ? "self_settled"
+            : current.state,
+        stateSeq: event.seq,
+      });
+    }
+
     case "operation_starting":
       if (current.state !== "queued") {
         throw new TransitionError("illegal_transition");
@@ -140,7 +201,9 @@ export function reduceOperation(
         return immutable({
           ...current,
           selfOutcome: "succeeded",
-          state: "self_settled",
+          state: hasUnsettledChildren(current)
+            ? "draining_descendants"
+            : "self_settled",
           stateSeq: event.seq,
         });
       }
@@ -148,7 +211,9 @@ export function reduceOperation(
         ...current,
         failureReason: event.reason,
         selfOutcome: "failed",
-        state: "self_settled",
+        state: hasUnsettledChildren(current)
+          ? "draining_descendants"
+          : "self_settled",
         stateSeq: event.seq,
       });
 
@@ -158,16 +223,37 @@ export function reduceOperation(
           "successful_settlement_required_before_completion",
         );
       }
+      if (hasUnsettledChildren(current)) {
+        throw new TransitionError("descendants_must_be_settled");
+      }
+      if (current.descendantFailure) {
+        throw new TransitionError("descendant_failure_prevents_completion");
+      }
       if (current.result === undefined) {
         throw new TransitionError("result_required_before_self_settlement");
       }
       return immutable({ ...current, state: "completed", stateSeq: event.seq });
 
     case "operation_failed":
-      if (current.state !== "self_settled" || current.selfOutcome !== "failed") {
+      if (
+        current.state !== "self_settled" ||
+        (current.selfOutcome !== "failed" && !current.descendantFailure)
+      ) {
         throw new TransitionError("failed_settlement_required_before_failure");
       }
-      if (current.failureReason !== event.reason) {
+      if (hasUnsettledChildren(current)) {
+        throw new TransitionError("descendants_must_be_settled");
+      }
+      if (
+        current.selfOutcome === "failed" &&
+        current.failureReason !== event.reason
+      ) {
+        throw new TransitionError("failure_reason_mismatch");
+      }
+      if (
+        current.selfOutcome === "succeeded" &&
+        (!current.descendantFailure || event.reason !== "descendant_failed")
+      ) {
         throw new TransitionError("failure_reason_mismatch");
       }
       return immutable({
