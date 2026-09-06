@@ -18,6 +18,14 @@ export interface ResultDelivery {
   readonly sequenceNumber: number;
 }
 
+export interface WorkerProcessIdentity {
+  readonly processInstanceId: string;
+}
+
+export interface ChannelReception {
+  readonly deliveries: ReadonlyArray<ResultDelivery>;
+}
+
 export type StoreErrorCode =
   | "not_found"
   | "write_failed"
@@ -55,9 +63,12 @@ export interface AgentBackend {
 }
 
 export interface ChildChannel {
-  receiveResults(
+  receiveStarted(operation: Operation): Effect.Effect<WorkerProcessIdentity, ChannelError>;
+  receiveResults(operation: Operation): Effect.Effect<ChannelReception, ChannelError>;
+  acknowledgeResult(
     operation: Operation,
-  ): Effect.Effect<ReadonlyArray<ResultDelivery>, ChannelError>;
+    sequenceNumber: number,
+  ): Effect.Effect<void, ChannelError>;
 }
 
 export interface RuntimeClock {

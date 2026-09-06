@@ -41,6 +41,7 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.task);
   Object.freeze(operation.lineage);
   if (operation.presentation !== undefined) Object.freeze(operation.presentation);
+  if (operation.workerIdentity !== undefined) Object.freeze(operation.workerIdentity);
   Object.freeze(operation.childOperationIds);
   Object.freeze(operation.settledChildOperationIds);
   if (operation.result !== undefined) Object.freeze(operation.result);
@@ -191,6 +192,22 @@ export function reduceOperation(
         throw new TransitionError("illegal_transition");
       }
       return immutable({ ...current, state: "running", stateSeq: event.seq });
+
+    case "worker_identified":
+      if (
+        current.state !== "running" ||
+        current.workerIdentity !== undefined ||
+        current.presentation === undefined ||
+        event.workerIdentity.processInstanceId.length === 0 ||
+        event.workerIdentity.paneId !== current.presentation.paneId
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        workerIdentity: { ...event.workerIdentity },
+        stateSeq: event.seq,
+      });
 
     case "operation_blocked":
       if (current.state !== "running") {

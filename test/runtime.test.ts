@@ -83,25 +83,54 @@ class ControlledTestClock implements RuntimeClock {
   }
 }
 
+class FailingResultChannel implements ChildChannel {
+  receiveStarted(_operation: Operation) {
+    return Effect.succeed({ processInstanceId: "failed-process-instance" });
+  }
+
+  receiveResults(_operation: Operation) {
+    return Effect.fail({ _tag: "ChannelError" as const, message: "disconnected" });
+  }
+
+  acknowledgeResult(_operation: Operation, _sequenceNumber: number) {
+    return Effect.void;
+  }
+}
+
 class ControlledChildChannel implements ChildChannel {
   private readonly receivers = new Map<
     string,
-    (effect: Effect.Effect<ReadonlyArray<ResultDelivery>>) => void
+    (effect: Effect.Effect<{
+      readonly deliveries: ReadonlyArray<ResultDelivery>;
+    }>) => void
   >();
 
-  receiveResults(
-    operation: Operation,
-  ): Effect.Effect<ReadonlyArray<ResultDelivery>> {
-    return Effect.async((resume) => {
+  receiveStarted(operation: Operation) {
+    return Effect.succeed({ processInstanceId: `process:${operation.operationId}` });
+  }
+
+  receiveResults(operation: Operation) {
+    return Effect.async<{
+      readonly deliveries: ReadonlyArray<ResultDelivery>;
+    }>((resume) => {
       this.receivers.set(operation.operationId, resume);
     });
+  }
+
+  acknowledgeResult(
+    _operation: Operation,
+    _sequenceNumber: number,
+  ): Effect.Effect<void> {
+    return Effect.void;
   }
 
   deliver(operationId: string, body = "finished"): void {
     const resume = this.receivers.get(operationId);
     if (resume === undefined) throw new Error(`No receiver for ${operationId}`);
     const digest = `sha256:${createHash("sha256").update(body).digest("hex")}` as const;
-    resume(Effect.succeed([{ body, digest, sequenceNumber: 1 }]));
+    resume(Effect.succeed({
+      deliveries: [{ body, digest, sequenceNumber: 1 }],
+    }));
   }
 }
 
@@ -126,6 +155,7 @@ async function completeOperation(
     "2026-09-06T10:00:04.000Z",
     "2026-09-06T10:00:05.000Z",
     "2026-09-06T10:00:06.000Z",
+    "2026-09-06T10:00:07.000Z",
   ]);
   const store = new InMemoryEventStore(trace, clock);
   const presentation = new FakePresentation(
@@ -570,6 +600,18 @@ test("Runtime starts the AgentBackend once", async () => {
   assert.equal(backend.startCount, 1);
 });
 
+test("Operation records the worker process instance identity", async () => {
+  const { store } = await completeOperation();
+
+  assert.equal(store.snapshot("operation-1")?.workerIdentity?.processInstanceId, "fake-process-instance");
+});
+
+test("Operation records the worker's owned pane identity", async () => {
+  const { store } = await completeOperation();
+
+  assert.equal(store.snapshot("operation-1")?.workerIdentity?.paneId, "fake-pane:operation-1");
+});
+
 test("Runtime records the successful Operation event sequence", async () => {
   const { store } = await completeOperation();
 
@@ -580,6 +622,7 @@ test("Runtime records the successful Operation event sequence", async () => {
       "presentation_owned",
       "operation_starting",
       "operation_started",
+      "worker_identified",
       "result_persisted",
       "self_settled",
       "operation_completed",
@@ -600,9 +643,12 @@ test("Runtime persists result bytes before self-settlement and completion", asyn
     "backend:start",
     "event:operation_started",
     "presentation:running",
+    "event:worker_identified",
+    "presentation:running",
     "channel:receive-result",
     "result:bytes-persisted",
     "event:result_persisted",
+    "channel:ack:1",
     "event:self_settled",
     "presentation:self_settled",
     "event:operation_completed",
@@ -623,6 +669,7 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
       { seq: 5, timestamp: "2026-09-06T10:00:04.000Z" },
       { seq: 6, timestamp: "2026-09-06T10:00:05.000Z" },
       { seq: 7, timestamp: "2026-09-06T10:00:06.000Z" },
+      { seq: 8, timestamp: "2026-09-06T10:00:07.000Z" },
     ],
   );
 });
@@ -658,6 +705,7 @@ async function retryOperation(options?: { readonly parentOperationId?: string })
       "2026-09-06T10:00:04.000Z",
       "2026-09-06T10:00:05.000Z",
       "2026-09-06T10:00:06.000Z",
+      "2026-09-06T10:00:07.000Z",
     ]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
@@ -703,6 +751,7 @@ test("Runtime publishes one event sequence for a duplicate Result delivery", asy
       "presentation_owned",
       "operation_starting",
       "operation_started",
+      "worker_identified",
       "result_persisted",
       "self_settled",
       "operation_completed",
@@ -736,6 +785,7 @@ async function conflictResult() {
       "2026-09-06T10:00:04.000Z",
       "2026-09-06T10:00:05.000Z",
       "2026-09-06T10:00:06.000Z",
+      "2026-09-06T10:00:07.000Z",
     ]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
@@ -812,6 +862,22 @@ async function failOperation() {
 
   return { handle, store };
 }
+
+test("a ChildChannel failure is durably classified without fake completion", async () => {
+  const store = new InMemoryEventStore();
+  const runtime = makeRuntime({
+    backend: new FakeAgentBackend(),
+    channel: new FailingResultChannel(),
+    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  await handle.result().catch(() => undefined);
+
+  assert.equal(store.snapshot("operation-1")?.terminalReason, "worker_protocol_failed");
+});
 
 test("OperationHandle reports backend failure as a bounded typed failure", async () => {
   const { handle } = await failOperation();

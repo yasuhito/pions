@@ -1,3 +1,6 @@
+export { makeVisibleRuntime } from "./internal/visible-runtime.js";
+export type { VisibleRuntimeOptions } from "./internal/visible-runtime.js";
+
 export {
   CancellationRejectedError,
   HerdrPreconditionError,

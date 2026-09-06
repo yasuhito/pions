@@ -71,16 +71,31 @@ export class FakeChildChannel implements ChildChannel {
     this.messages = Array.isArray(messages) ? messages : [messages];
   }
 
+  receiveStarted(_operation: Operation) {
+    return Effect.succeed({ processInstanceId: "fake-process-instance" });
+  }
+
   receiveResults(
     _operation: Operation,
-  ): Effect.Effect<ReadonlyArray<ResultDelivery>> {
+  ) {
     return Effect.sync(() => {
       this.trace.push("channel:receive-result");
-      return this.messages.map((message) => ({
-        body: message.body,
-        digest: message.digest ?? digest(message.body),
-        sequenceNumber: message.sequenceNumber ?? 1,
-      }));
+      return {
+        deliveries: this.messages.map((message) => ({
+          body: message.body,
+          digest: message.digest ?? digest(message.body),
+          sequenceNumber: message.sequenceNumber ?? 1,
+        })),
+      };
+    });
+  }
+
+  acknowledgeResult(
+    _operation: Operation,
+    sequenceNumber: number,
+  ): Effect.Effect<void> {
+    return Effect.sync(() => {
+      this.trace.push(`channel:ack:${sequenceNumber}`);
     });
   }
 }

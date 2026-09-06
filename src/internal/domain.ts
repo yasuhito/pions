@@ -36,6 +36,7 @@ export interface Operation {
   readonly operationId: string;
   readonly lineage: Readonly<OperationLineage>;
   readonly presentation?: Readonly<PresentationOwnership>;
+  readonly workerIdentity?: Readonly<WorkerIdentity>;
   readonly state: OperationState;
   readonly stateSeq: number;
   readonly task: Readonly<TaskSpec>;
@@ -48,6 +49,11 @@ export interface Operation {
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
   readonly terminalReason?: OperationFailureReason | "cancel-unproven";
+}
+
+export interface WorkerIdentity {
+  readonly processInstanceId: string;
+  readonly paneId: string;
 }
 
 export interface ResultReference {
@@ -93,6 +99,10 @@ export type OperationEvent = EventMetadata &
       }
     | { readonly type: "operation_starting" }
     | { readonly type: "operation_started" }
+    | {
+        readonly type: "worker_identified";
+        readonly workerIdentity: Readonly<WorkerIdentity>;
+      }
     | { readonly type: "operation_blocked" }
     | { readonly type: "operation_unblocked" }
     | {

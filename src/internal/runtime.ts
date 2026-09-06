@@ -169,6 +169,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         new OperationFailedError(
           record.operationId,
           operation.terminalReason === "backend_start_failed" ||
+          operation.terminalReason === "worker_protocol_failed" ||
           operation.terminalReason === "descendant_failed"
             ? operation.terminalReason
             : "descendant_failed",
@@ -277,26 +278,26 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       );
       await run(project(operation));
 
-      const deliveries = await run(services.channel.receiveResults(operation));
-      const firstDelivery = deliveries[0];
+      const workerIdentity = await run(services.channel.receiveStarted(operation));
+      operation = await run(
+        append(record.operationId, {
+          type: "worker_identified",
+          workerIdentity: {
+            processInstanceId: workerIdentity.processInstanceId,
+            paneId: operation.presentation?.paneId ?? "",
+          },
+        }),
+      );
+      await run(project(operation));
+      const reception = await run(services.channel.receiveResults(operation));
+      const firstDelivery = reception.deliveries[0];
       if (firstDelivery === undefined) {
         throw new Error("ChildChannel returned no Result");
       }
 
-      const accepted = await run(
-        services.store.acceptResult(record.operationId, firstDelivery).pipe(
-          Effect.mapError((error) =>
-            error instanceof ResultConflictError
-              ? error
-              : persistenceError(record.operationId, error),
-          ),
-        ),
-      );
-      record.result = accepted.result;
-
-      for (const delivery of deliveries.slice(1)) {
+      for (const delivery of reception.deliveries) {
         try {
-          await run(
+          const accepted = await run(
             services.store.acceptResult(record.operationId, delivery).pipe(
               Effect.mapError((error) =>
                 error instanceof ResultConflictError
@@ -305,8 +306,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               ),
             ),
           );
+          record.result ??= accepted.result;
+          await run(services.channel.acknowledgeResult(operation, delivery.sequenceNumber));
         } catch (error) {
-          if (error instanceof ResultConflictError) {
+          if (delivery !== firstDelivery && error instanceof ResultConflictError) {
             record.resultDeliveryError = error;
           } else {
             throw error;
@@ -324,7 +327,18 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await run(project(operation));
       await tryFinalize(record);
     } catch (error) {
-      if (!record.terminal) {
+      if (!record.terminal && typeof error === "object" && error !== null && "_tag" in error && error._tag === "ChannelError") {
+        const failed = await run(
+          append(record.operationId, {
+            type: "self_settled",
+            outcome: "failed",
+            reason: "worker_protocol_failed",
+          }),
+        );
+        record.selfSettled = true;
+        await run(project(failed));
+        await tryFinalize(record);
+      } else if (!record.terminal) {
         record.terminal = true;
         record.rejectResult(
           error instanceof ResultConflictError ||

@@ -141,6 +141,19 @@ function parseEvent(value: unknown): OperationEvent {
       };
       break;
     }
+    case "worker_identified": {
+      const workerIdentity = value.workerIdentity;
+      if (!isObject(workerIdentity)) throw failure("corrupt_record", "Invalid Worker identity");
+      event = {
+        ...base,
+        type,
+        workerIdentity: {
+          processInstanceId: stringField(workerIdentity, "processInstanceId"),
+          paneId: stringField(workerIdentity, "paneId"),
+        },
+      };
+      break;
+    }
     case "child_attached":
       event = { ...base, type, childOperationId: stringField(value, "childOperationId") };
       break;
@@ -174,7 +187,7 @@ function parseEvent(value: unknown): OperationEvent {
       if (outcome === "succeeded") event = { ...base, type, outcome };
       else if (outcome === "failed") {
         const reason = stringField(value, "reason");
-        if (reason !== "backend_start_failed" && reason !== "descendant_failed") {
+        if (reason !== "backend_start_failed" && reason !== "worker_protocol_failed" && reason !== "descendant_failed") {
           throw failure("corrupt_record", "Invalid failure reason");
         }
         event = { ...base, type, outcome, reason };
@@ -183,7 +196,7 @@ function parseEvent(value: unknown): OperationEvent {
     }
     case "operation_failed": {
       const reason = stringField(value, "reason");
-      if (reason !== "backend_start_failed" && reason !== "descendant_failed") {
+      if (reason !== "backend_start_failed" && reason !== "worker_protocol_failed" && reason !== "descendant_failed") {
         throw failure("corrupt_record", "Invalid failure reason");
       }
       event = { ...base, type, reason };
