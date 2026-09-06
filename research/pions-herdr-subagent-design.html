@@ -1,0 +1,1687 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="ja" xml:lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.11" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="dcterms.date" content="2026-09-05" />
+  <title>Pions — Herdr可視化対応 Python サブエージェント基盤</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">:root{--bg:#f6f7fb;--paper:#fff;--ink:#18202b;--muted:#5d6978;--line:#dce2ea;--accent:#5b45d6;--accent2:#0f8b8d;--code:#f0f2f7;--warn:#fff5db}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Noto Sans JP","Hiragino Sans",system-ui,sans-serif;line-height:1.72}body>header,body>main,body>nav#TOC{max-width:1180px;margin-inline:auto}body>header{padding:64px 48px 30px;background:linear-gradient(135deg,#251d5b,#5b45d6 62%,#15888b);color:#fff;max-width:none}header h1{max-width:1180px;margin:0 auto;font-size:clamp(2rem,4vw,3.6rem);line-height:1.15;letter-spacing:-.035em}header .subtitle,header .date{max-width:1180px;margin:14px auto 0;opacity:.86}nav#TOC{background:var(--paper);margin-top:24px;padding:22px 30px;border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 28px #27314a10}nav#TOC:before{content:"目次";font-weight:800;font-size:1.1rem}nav#TOC ul{columns:2;margin-bottom:0}nav#TOC a{text-decoration:none;color:var(--accent)}main{background:var(--paper);margin:24px auto 72px;padding:52px 56px 80px;border:1px solid var(--line);border-radius:18px;box-shadow:0 12px 40px #27314a12}h1,h2,h3{line-height:1.3;letter-spacing:-.02em}h1{margin-top:1.6em}h2{margin-top:2.3em;padding-bottom:.4em;border-bottom:2px solid var(--line)}h3{margin-top:1.8em;color:#39308f}.lead{font-size:1.18rem;padding:24px 28px;border-left:5px solid var(--accent);background:#f3f1ff;border-radius:0 12px 12px 0}a{color:#4936bd;text-underline-offset:3px}code{font-family:"SFMono-Regular",Consolas,monospace;background:var(--code);border-radius:5px;padding:.12em .35em;font-size:.9em}pre{background:#171b28;color:#e7eaf2;padding:22px 24px;border-radius:12px;overflow:auto;line-height:1.5}pre code{background:none;padding:0;color:inherit}table{width:100%;border-collapse:separate;border-spacing:0;margin:1.5em 0;font-size:.92rem;display:block;overflow-x:auto}th{background:#eeecfb;color:#302875;text-align:left;position:sticky;top:0}th,td{padding:11px 13px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);vertical-align:top;min-width:140px}th:first-child,td:first-child{border-left:1px solid var(--line)}tr:first-child th{border-top:1px solid var(--line)}blockquote{margin:1.4em 0;padding:12px 22px;background:var(--warn);border-left:4px solid #dfa72d}.appendix-break{margin-top:80px;border-top:6px double var(--line)}ul,ol{padding-left:1.5em}strong{color:#20255f}@media(max-width:760px){body>header{padding:42px 22px 24px}nav#TOC{margin:14px;border-radius:12px}nav#TOC ul{columns:1}main{margin:14px;padding:28px 20px;border-radius:12px}.lead{font-size:1.05rem;padding:18px}th,td{min-width:180px}}@media(prefers-color-scheme:dark){:root{--bg:#0e1118;--paper:#161b25;--ink:#e8ebf1;--muted:#a6afbd;--line:#30394a;--accent:#9e8cff;--code:#242b38;--warn:#332b17}nav#TOC a,a{color:#ad9eff}h3{color:#b7aaff}strong{color:#c9c0ff}th{background:#272440;color:#d6d0ff}.lead{background:#24213d}}@media print{body{background:#fff}nav#TOC,main{box-shadow:none}main{border:0;margin:0;padding:20px}.appendix-break{break-before:page}}</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Pions — Herdr可視化対応 Python
+サブエージェント基盤</h1>
+<p class="subtitle">既存Pi拡張50件の実装調査・要求整理・設計案・実装ロードマップ</p>
+<p class="date">2026-09-05</p>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#エグゼクティブサマリー" id="toc-エグゼクティブサマリー"><span class="toc-section-number">1</span> エグゼクティブサマリー</a>
+<ul>
+<li><a href="#推奨方針" id="toc-推奨方針"><span class="toc-section-number">1.1</span> 推奨方針</a></li>
+<li><a href="#調査から採用する要素" id="toc-調査から採用する要素"><span class="toc-section-number">1.2</span> 調査から採用する要素</a></li>
+</ul></li>
+<li><a href="#目標と非目標" id="toc-目標と非目標"><span class="toc-section-number">2</span> 目標と非目標</a>
+<ul>
+<li><a href="#初期目標" id="toc-初期目標"><span class="toc-section-number">2.1</span> 初期目標</a></li>
+<li><a href="#初期の非目標" id="toc-初期の非目標"><span class="toc-section-number">2.2</span> 初期の非目標</a></li>
+</ul></li>
+<li><a href="#提案アーキテクチャ" id="toc-提案アーキテクチャ"><span class="toc-section-number">3</span> 提案アーキテクチャ</a>
+<ul>
+<li><a href="#moduleとseam" id="toc-moduleとseam"><span class="toc-section-number">3.1</span> Moduleとseam</a>
+<ul>
+<li><a href="#runtime" id="toc-runtime"><span class="toc-section-number">3.1.1</span> <code>Runtime</code></a></li>
+<li><a href="#agentbackend" id="toc-agentbackend"><span class="toc-section-number">3.1.2</span>
+<code>AgentBackend</code></a></li>
+<li><a href="#presentationadapter" id="toc-presentationadapter"><span class="toc-section-number">3.1.3</span>
+<code>PresentationAdapter</code></a></li>
+<li><a href="#eventstore" id="toc-eventstore"><span class="toc-section-number">3.1.4</span> <code>EventStore</code></a></li>
+</ul></li>
+</ul></li>
+<li><a href="#実行データモデル" id="toc-実行データモデル"><span class="toc-section-number">4</span> 実行データモデル</a>
+<ul>
+<li><a href="#状態" id="toc-状態"><span class="toc-section-number">4.1</span> 状態</a></li>
+<li><a href="#イベント" id="toc-イベント"><span class="toc-section-number">4.2</span> イベント</a></li>
+</ul></li>
+<li><a href="#herdrでの見え方" id="toc-herdrでの見え方"><span class="toc-section-number">5</span> Herdrでの見え方</a>
+<ul>
+<li><a href="#配置ポリシー案" id="toc-配置ポリシー案"><span class="toc-section-number">5.1</span> 配置ポリシー案</a></li>
+<li><a href="#状態投影" id="toc-状態投影"><span class="toc-section-number">5.2</span> 状態投影</a></li>
+</ul></li>
+<li><a href="#入れ子spawnの仕様" id="toc-入れ子spawnの仕様"><span class="toc-section-number">6</span> 入れ子spawnの仕様</a></li>
+<li><a href="#modelthinkingtoolsポリシー" id="toc-modelthinkingtoolsポリシー"><span class="toc-section-number">7</span> Model・thinking・toolsポリシー</a>
+<ul>
+<li><a href="#解決順序" id="toc-解決順序"><span class="toc-section-number">7.1</span> 解決順序</a></li>
+</ul></li>
+<li><a href="#完了通信履歴" id="toc-完了通信履歴"><span class="toc-section-number">8</span> 完了・通信・履歴</a>
+<ul>
+<li><a href="#正本の優先順位" id="toc-正本の優先順位"><span class="toc-section-number">8.1</span> 正本の優先順位</a></li>
+<li><a href="#通信" id="toc-通信"><span class="toc-section-number">8.2</span> 通信</a></li>
+</ul></li>
+<li><a href="#セキュリティと障害時原則" id="toc-セキュリティと障害時原則"><span class="toc-section-number">9</span> セキュリティと障害時原則</a></li>
+<li><a href="#実装ロードマップ" id="toc-実装ロードマップ"><span class="toc-section-number">10</span> 実装ロードマップ</a>
+<ul>
+<li><a href="#phase-0--contract-spike" id="toc-phase-0--contract-spike"><span class="toc-section-number">10.1</span> Phase 0 — Contract spike</a></li>
+<li><a href="#phase-1--visible-worker-mvp" id="toc-phase-1--visible-worker-mvp"><span class="toc-section-number">10.2</span> Phase 1 — Visible worker
+MVP</a></li>
+<li><a href="#phase-2--first-class-nesting" id="toc-phase-2--first-class-nesting"><span class="toc-section-number">10.3</span> Phase 2 — First-class
+nesting</a></li>
+<li><a href="#phase-3--durable-recovery" id="toc-phase-3--durable-recovery"><span class="toc-section-number">10.4</span> Phase 3 — Durable
+recovery</a></li>
+<li><a href="#phase-4--production-policy" id="toc-phase-4--production-policy"><span class="toc-section-number">10.5</span> Phase 4 — Production
+policy</a></li>
+<li><a href="#phase-5--optional-workflow-features" id="toc-phase-5--optional-workflow-features"><span class="toc-section-number">10.6</span> Phase 5 — Optional workflow
+features</a></li>
+</ul></li>
+<li><a href="#実装前に決める事項" id="toc-実装前に決める事項"><span class="toc-section-number">11</span> 実装前に決める事項</a></li>
+<li><a href="#推奨する次の一手" id="toc-推奨する次の一手"><span class="toc-section-number">12</span> 推奨する次の一手</a></li>
+<li><a href="#付録--50パッケージ実装調査原文" id="toc-付録--50パッケージ実装調査原文"><span class="toc-section-number">13</span> 付録 —
+50パッケージ実装調査（原文）</a>
+<ul>
+<li><a href="#herdr-related-packages-in-the-pi-package-index" id="toc-herdr-related-packages-in-the-pi-package-index"><span class="toc-section-number">13.1</span> Herdr-related packages in the Pi
+package index</a></li>
+<li><a href="#method-and-evidence-rules" id="toc-method-and-evidence-rules"><span class="toc-section-number">13.2</span> Method and evidence
+rules</a></li>
+<li><a href="#executive-comparison-for-a-python-nested-subagent-harness" id="toc-executive-comparison-for-a-python-nested-subagent-harness"><span class="toc-section-number">13.3</span> Executive comparison for a Python
+nested-subagent harness</a>
+<ul>
+<li><a href="#strongest-design-inputs" id="toc-strongest-design-inputs"><span class="toc-section-number">13.3.1</span> Strongest design
+inputs</a></li>
+<li><a href="#other-orchestration-relevant-designs" id="toc-other-orchestration-relevant-designs"><span class="toc-section-number">13.3.2</span> Other orchestration-relevant
+designs</a></li>
+</ul></li>
+<li><a href="#complete-50-package-inventory" id="toc-complete-50-package-inventory"><span class="toc-section-number">13.4</span> Complete 50-package
+inventory</a></li>
+<li><a href="#source-fact-synthesis-by-requested-dimension" id="toc-source-fact-synthesis-by-requested-dimension"><span class="toc-section-number">13.5</span> Source-fact synthesis by
+requested dimension</a>
+<ul>
+<li><a href="#package-shape-and-entry-points" id="toc-package-shape-and-entry-points"><span class="toc-section-number">13.5.1</span> Package shape and entry
+points</a></li>
+<li><a href="#lifecycle-and-herdr-integration" id="toc-lifecycle-and-herdr-integration"><span class="toc-section-number">13.5.2</span> Lifecycle and Herdr
+integration</a></li>
+<li><a href="#model-and-thinking-configuration" id="toc-model-and-thinking-configuration"><span class="toc-section-number">13.5.3</span> Model and thinking
+configuration</a></li>
+<li><a href="#nesting" id="toc-nesting"><span class="toc-section-number">13.5.4</span> Nesting</a></li>
+<li><a href="#persistence-and-history" id="toc-persistence-and-history"><span class="toc-section-number">13.5.5</span> Persistence and
+history</a></li>
+<li><a href="#failure-cancellation-and-security" id="toc-failure-cancellation-and-security"><span class="toc-section-number">13.5.6</span> Failure, cancellation, and
+security</a></li>
+</ul></li>
+<li><a href="#recommendations-for-the-python-harness-not-source-facts" id="toc-recommendations-for-the-python-harness-not-source-facts"><span class="toc-section-number">13.6</span> Recommendations for the Python
+harness (not source facts)</a></li>
+</ul></li>
+</ul>
+</nav>
+<main>
+<h1 data-number="1" id="エグゼクティブサマリー"><span class="header-section-number">1</span> エグゼクティブサマリー</h1>
+<div class="lead">
+Pythonハーネスを実行の正本とし、Herdrを可視化・操作のプレゼンテーション層として使う。各サブエージェントはHerdrペイン内の実worker processとして見えるようにする一方、完了判定・履歴・親子関係・キャンセル状態は認証付きイベントと永続ストアで管理する。
+</div>
+
+<h2 data-number="1.1" id="推奨方針"><span class="header-section-number">1.1</span> 推奨方針</h2>
+<ul>
+<li><strong>ペインは観測面であり、完了の正本ではない。</strong>
+<code>idle</code>、画面文字列、process
+exitだけで成果完了を確定しない。</li>
+<li><strong>入れ子を偶発的な再帰にしない。</strong>
+<code>root_id</code>、<code>parent_id</code>、<code>depth</code>、子孫集合を明示し、Runtimeがspawnを一元管理する。</li>
+<li><strong>親の完了は子孫のsettle後。</strong>
+自分の処理が終わっても、子孫結果の受領・永続化が終わるまでは上流へ完了を公開しない。</li>
+<li><strong>キャンセルは子孫優先。</strong>
+新規spawnを凍結し、末端から停止し、停止不能なら <code>unknown</code>
+を記録する。</li>
+<li><strong>model / thinkingは指定可能にする。</strong>
+ただし要求値・ポリシー適用値・実測値を分け、silent fallbackしない。</li>
+<li><strong>最初から巨大なworkflow platformを作らない。</strong> visible
+pane、認証付きresult
+channel、lineage、復旧の順に深いmoduleを育てる。</li>
+</ul>
+<h2 data-number="1.2" id="調査から採用する要素"><span class="header-section-number">1.2</span> 調査から採用する要素</h2>
+<table>
+<thead>
+<tr>
+<th>参照実装</th>
+<th>採用する考え方</th>
+<th>そのまま採用しない点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pi-herdr-live-agents</code></td>
+<td>実セッションを見えるペインに置く、capability token mailbox、JSONL
+lifecycle</td>
+<td>root-only制約。今回の設計では安全なnested spawnを追加する</td>
+</tr>
+<tr>
+<td><code>@qcts33/pi-herdr-subagents</code></td>
+<td>lineage、子孫drain、子孫優先cancel、settled後の完了</td>
+<td>process再起動をまたぐ復旧が弱い</td>
+</tr>
+<tr>
+<td><code>pi-pier</code></td>
+<td>event sourcing、session identity、再起動時reconciliation</td>
+<td>大きなtodo/terminal surfaceは初期スコープ外</td>
+</tr>
+<tr>
+<td><code>@minhduydev/pi-subagents</code></td>
+<td>durable run model、recursive scope、reason-coded failure</td>
+<td>scheduling・review・multi-repo一式は後回し</td>
+</tr>
+<tr>
+<td><code>@martintrojer/mu</code></td>
+<td>SQLite/WAL、task DAG、永続crew</td>
+<td>CLI全体は導入しない</td>
+</tr>
+<tr>
+<td><code>pi-herdr-agents</code></td>
+<td>model/thinking解決、role policy、interrupt、human takeover</td>
+<td>Pi固有の実装詳細をPython interfaceへ漏らさない</td>
+</tr>
+<tr>
+<td><code>@ogulcancelik/pi-herdr</code></td>
+<td>shellを使わない型付きHerdr操作</td>
+<td>汎用の全Herdr操作をagent toolとして公開しない</td>
+</tr>
+<tr>
+<td>Pi公式subagent example</td>
+<td>JSON stream、parallel/chain、usage集計、AbortSignal伝播</td>
+<td>Herdr、永続lineage、任意nestingは別途実装する</td>
+</tr>
+</tbody>
+</table>
+<h1 data-number="2" id="目標と非目標"><span class="header-section-number">2</span> 目標と非目標</h1>
+<h2 data-number="2.1" id="初期目標"><span class="header-section-number">2.1</span> 初期目標</h2>
+<ol type="1">
+<li>Python subagent
+packageを使った各runをHerdr上でリアルタイム観測できる。</li>
+<li>子エージェントがRuntime経由で、さらに子を起動できる。</li>
+<li>blocking、background、parallelの各実行を同じ状態モデルで扱える。</li>
+<li>model、thinking/reasoning
+effort、tools、cwd、timeoutをprofileまたは明示指定できる。</li>
+<li>親processやHerdr
+clientが再起動しても、保存済み状態から安全にreconcileできる。</li>
+<li>人間がペインへ入って調査でき、失敗・blockedペインは証拠として残せる。</li>
+</ol>
+<h2 data-number="2.2" id="初期の非目標"><span class="header-section-number">2.2</span> 初期の非目標</h2>
+<ul>
+<li>汎用workflow engine、issue tracker、review gateの完成形</li>
+<li>Herdr以外のmultiplexerを同時に完全対応</li>
+<li>worktreeをsecurity sandboxとして扱うこと</li>
+<li>任意シェルコマンドや全Herdr CLIをモデルへ公開すること</li>
+<li>exactly-once配送を分散システム全体で保証すること</li>
+</ul>
+<h1 data-number="3" id="提案アーキテクチャ"><span class="header-section-number">3</span> 提案アーキテクチャ</h1>
+<pre class="text"><code>Python Harness / Root Agent
+        │  spawn(TaskSpec)
+        ▼
+┌───────────────────────────────────────────────────────┐
+│ Pions Runtime / Supervisor                            │
+│                                                       │
+│  Policy Resolver ── Run Registry ── Lineage Manager   │
+│         │                │                │            │
+│  requested→effective    SQLite/WAL     subtree cancel │
+└─────────┬────────────────┬────────────────┬────────────┘
+          │                │                │
+          ▼                ▼                ▼
+ Agent Backend       Herdr Adapter    Authenticated Channel
+ (Python package)    pane/tab/report  UDS + capability token
+          │                │                ▲
+          └──────────── Worker Process ─────┘
+                         per subagent</code></pre>
+<h2 data-number="3.1" id="moduleとseam"><span class="header-section-number">3.1</span> Moduleとseam</h2>
+<h3 data-number="3.1.1" id="runtime"><span class="header-section-number">3.1.1</span> <code>Runtime</code></h3>
+<p>呼び出し側が学ぶ中心interface。実行、入れ子、待機、停止の複雑さを隠す。</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>handle <span class="op">=</span> <span class="cf">await</span> runtime.spawn(TaskSpec(...), parent<span class="op">=</span>context.operation_id)</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> <span class="cf">await</span> handle.result()</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">await</span> handle.cancel(scope<span class="op">=</span><span class="st">&quot;subtree&quot;</span>)</span></code></pre></div>
+<h3 data-number="3.1.2" id="agentbackend"><span class="header-section-number">3.1.2</span>
+<code>AgentBackend</code></h3>
+<p>使用するPython subagent packageとのseam。まずfake
+adapterと実adapterの2つを用意する。</p>
+<ul>
+<li>入力: resolved task、model、reasoning、tools、cwd、deadline</li>
+<li>出力: typed lifecycle events、messages、usage、terminal result</li>
+<li>package固有イベントをPionsのevent vocabularyへ正規化する</li>
+</ul>
+<h3 data-number="3.1.3" id="presentationadapter"><span class="header-section-number">3.1.3</span>
+<code>PresentationAdapter</code></h3>
+<p>最初は <code>HerdrPresentation</code> と
+<code>HeadlessPresentation</code> の2adapter。</p>
+<ul>
+<li>ペイン作成、label、metadata/status投影</li>
+<li>ペインID・terminal ID取得</li>
+<li>focusを奪わない</li>
+<li>Runtime所有のsurfaceだけを閉じる</li>
+<li>Herdr不在時の挙動を明示する</li>
+</ul>
+<h3 data-number="3.1.4" id="eventstore"><span class="header-section-number">3.1.4</span> <code>EventStore</code></h3>
+<p>SQLite
+WALを第一候補とする。ペインscrollbackや一時markerは正本にしない。</p>
+<h1 data-number="4" id="実行データモデル"><span class="header-section-number">4</span> 実行データモデル</h1>
+<pre class="text"><code>Operation
+├── operation_id
+├── root_operation_id
+├── parent_operation_id
+├── depth
+├── state + state_seq
+├── requested_config
+├── effective_config
+├── observed_config
+├── child_operation_ids
+├── herdr workspace/tab/pane/terminal IDs
+├── backend session/process identity
+├── cwd / worktree identity
+├── deadline / budget / cancellation_epoch
+└── result pointer + digest</code></pre>
+<h2 data-number="4.1" id="状態"><span class="header-section-number">4.1</span> 状態</h2>
+<pre class="text"><code>queued → starting → running ───────────→ self_settled
+                       │                     │
+                       ├→ blocked            ├→ draining_descendants
+                       ├→ cancelling         │
+                       └→ failed             └→ completed
+
+cancelling → cancelled | failed_to_cancel | unknown</code></pre>
+<p><code>self_settled</code> と <code>completed</code>
+を分ける。子孫やresult handoffが残っている間は親を
+<code>completed</code> にしない。</p>
+<h2 data-number="4.2" id="イベント"><span class="header-section-number">4.2</span> イベント</h2>
+<ul>
+<li><code>operation_requested</code></li>
+<li><code>operation_started</code></li>
+<li><code>activity</code></li>
+<li><code>blocked</code></li>
+<li><code>self_settled</code></li>
+<li><code>child_attached</code></li>
+<li><code>result_persisted</code></li>
+<li><code>cancellation_requested</code></li>
+<li><code>cancel_acknowledged</code></li>
+<li><code>completed</code> / <code>failed</code> /
+<code>cancelled</code> / <code>unknown</code></li>
+</ul>
+<p>各イベントは <code>operation_id</code>、単調増加する
+<code>seq</code>、timestamp、actor identityを持つ。</p>
+<h1 data-number="5" id="herdrでの見え方"><span class="header-section-number">5</span> Herdrでの見え方</h1>
+<h2 data-number="5.1" id="配置ポリシー案"><span class="header-section-number">5.1</span> 配置ポリシー案</h2>
+<ul>
+<li>root runごとに専用tabを作るか、少数なら現在tabのsibling
+paneを使う。</li>
+<li>depthはレイアウトそのものではなくlabelで示す。例:
+<code>R1 · d2 · research</code>。</li>
+<li>4ペインを超える場合は新tabへ送る。無限分割しない。</li>
+<li>background起動では常にfocusを維持する。</li>
+<li>blocked/failed/unknownは自動closeしない。</li>
+<li>successペインは保持時間または明示cleanup後に閉じる。</li>
+</ul>
+<h2 data-number="5.2" id="状態投影"><span class="header-section-number">5.2</span> 状態投影</h2>
+<p>Herdrの
+<code>pane report-agent</code>、<code>report-agent-session</code>、<code>report-metadata</code>、<code>release-agent</code>
+をadapter内で使う。Herdr表示は次を含む。</p>
+<ul>
+<li>role / profile</li>
+<li>depth、親run</li>
+<li>effective model / reasoning</li>
+<li>running / blocked / cancelling</li>
+<li>token、cost、elapsed time（取得可能な範囲）</li>
+</ul>
+<h1 data-number="6" id="入れ子spawnの仕様"><span class="header-section-number">6</span> 入れ子spawnの仕様</h1>
+<ol type="1">
+<li>子はHerdr CLIを直接呼ばず、認証されたRuntime
+endpointへspawn要求を送る。</li>
+<li>Runtimeがdepth、fan-out、budget、model、tools、cwdを検査する。</li>
+<li>許可後にoperationを永続化してからsurface/processを作る。</li>
+<li>親の終了後も子が動いてよいかはpolicyで決める。初期値は「親scopeに所属」。</li>
+<li>親cancel時は新規spawnを凍結し、子孫末端からcancelする。</li>
+<li>同一operationからの重複要求はidempotency keyで多重起動を防ぐ。</li>
+</ol>
+<p>初期安全値案:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">max_depth</span><span class="kw">:</span><span class="at"> </span><span class="dv">2</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="fu">max_children_per_operation</span><span class="kw">:</span><span class="at"> </span><span class="dv">3</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="fu">max_live_descendants_per_root</span><span class="kw">:</span><span class="at"> </span><span class="dv">4</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="fu">parent_exit_policy</span><span class="kw">:</span><span class="at"> cancel_descendants</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="fu">completion_policy</span><span class="kw">:</span><span class="at"> wait_for_descendants</span></span></code></pre></div>
+<h1 data-number="7" id="modelthinkingtoolsポリシー"><span class="header-section-number">7</span>
+Model・thinking・toolsポリシー</h1>
+<h2 data-number="7.1" id="解決順序"><span class="header-section-number">7.1</span> 解決順序</h2>
+<pre class="text"><code>明示指定 → role/profile → project/global policy → 親から継承 → system default</code></pre>
+<div class="sourceCode" id="cb7"><pre class="sourceCode yaml"><code class="sourceCode yaml"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">profiles</span><span class="kw">:</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">quick</span><span class="kw">:</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">model</span><span class="kw">:</span><span class="at"> openai/gpt-5.6-mini</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">reasoning</span><span class="kw">:</span><span class="at"> low</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">tools</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">read</span><span class="kw">,</span><span class="at"> grep</span><span class="kw">,</span><span class="at"> find</span><span class="kw">]</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">research</span><span class="kw">:</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">model</span><span class="kw">:</span><span class="at"> openai/gpt-5.6-sol</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">reasoning</span><span class="kw">:</span><span class="at"> high</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">tools</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">read</span><span class="kw">,</span><span class="at"> grep</span><span class="kw">,</span><span class="at"> find</span><span class="kw">,</span><span class="at"> bash</span><span class="kw">]</span></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">review</span><span class="kw">:</span></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">model</span><span class="kw">:</span><span class="at"> openai/gpt-5.6-sol</span></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">reasoning</span><span class="kw">:</span><span class="at"> xhigh</span></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">tools</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">read</span><span class="kw">,</span><span class="at"> grep</span><span class="kw">,</span><span class="at"> find</span><span class="kw">,</span><span class="at"> bash</span><span class="kw">]</span></span></code></pre></div>
+<p>保存する値:</p>
+<ul>
+<li><code>requested_config</code>: 呼び出し側の要求</li>
+<li><code>effective_config</code>: policy適用後</li>
+<li><code>observed_config</code>: backendが実際に使用した値</li>
+</ul>
+<p>不一致は黙って無視せず、拒否または明示的なdegraded
+resultにする。子が親より高価なmodel/effortへ昇格できるかもpolicyで制御する。</p>
+<h1 data-number="8" id="完了通信履歴"><span class="header-section-number">8</span> 完了・通信・履歴</h1>
+<h2 data-number="8.1" id="正本の優先順位"><span class="header-section-number">8.1</span> 正本の優先順位</h2>
+<ol type="1">
+<li>認証付きchild result＋digest</li>
+<li>backendのsettled/session event</li>
+<li>process/Herdr liveness</li>
+<li>terminal output（人間向け観測のみ）</li>
+</ol>
+<p>配送ACK、Herdrの <code>idle</code> / <code>done</code>、process
+exitを成果受領や検証完了へ昇格させない。</p>
+<h2 data-number="8.2" id="通信"><span class="header-section-number">8.2</span> 通信</h2>
+<ul>
+<li>Unix domain socketまたはprivate mailbox</li>
+<li>root/runごとのランダムcapability token</li>
+<li>directory <code>0700</code>、artifact <code>0600</code></li>
+<li>task本文はargvへ置かずprivate file/socketで渡す</li>
+<li>terminal
+resultはat-most-onceで上流へ注入し、永続記録からreplay可能にする</li>
+<li>子からの結果は非信頼入力としてサイズ制限・framing・escapingを行う</li>
+</ul>
+<h1 data-number="9" id="セキュリティと障害時原則"><span class="header-section-number">9</span> セキュリティと障害時原則</h1>
+<ul>
+<li><code>asyncio.create_subprocess_exec()</code>
+を使用し、shellを介さない。</li>
+<li>ID、方向、状態、model、reasoningはenum/allowlistで検証する。</li>
+<li>worktreeは整合性分離でありsandboxではない。</li>
+<li>Bashを許可したagentを「read-only」と呼ばない。</li>
+<li>rollbackするのは今回新規作成したsurfaceだけ。</li>
+<li>cancel後にprocess死を証明できなければ <code>unknown</code>
+とする。</li>
+<li>failed/blocked/unknownの証拠を自動削除しない。</li>
+<li><code>interrupt turn</code>、<code>cancel subtree</code>、<code>close surface</code>、<code>forget history</code>
+を別操作にする。</li>
+</ul>
+<h1 data-number="10" id="実装ロードマップ"><span class="header-section-number">10</span> 実装ロードマップ</h1>
+<h2 data-number="10.1" id="phase-0--contract-spike"><span class="header-section-number">10.1</span> Phase 0 — Contract spike</h2>
+<p><strong>目的:</strong> Python
+packageやHerdrに依存しない状態機械を固める。</p>
+<ul>
+<li><code>TaskSpec</code>、<code>Operation</code>、event schema</li>
+<li>fake backend</li>
+<li>in-memory event store</li>
+<li>nested spawn、depth/fan-out拒否</li>
+<li>descendant-first cancelの決定論的テスト</li>
+</ul>
+<p><strong>完了条件:</strong>
+terminalやsleepに依存しないテストで、親子settlementとcancel順序を説明できる。</p>
+<h2 data-number="10.2" id="phase-1--visible-worker-mvp"><span class="header-section-number">10.2</span> Phase 1 — Visible worker
+MVP</h2>
+<p><strong>目的:</strong> 1つのPython
+workerをHerdrペインに表示し、安全に結果を返す。</p>
+<ul>
+<li>Herdr adapter</li>
+<li>private prompt transport</li>
+<li>capability token付きchild reporter</li>
+<li><code>report-agent</code> / metadata投影</li>
+<li>blocking <code>spawn → result</code></li>
+<li>failed/blockedペイン保持</li>
+</ul>
+<p><strong>完了条件:</strong> ペインを見ながら、同じ最終結果をevent
+storeから再現できる。画面scrapingは不要。</p>
+<h2 data-number="10.3" id="phase-2--first-class-nesting"><span class="header-section-number">10.3</span> Phase 2 — First-class
+nesting</h2>
+<p><strong>目的:</strong> depth 2の入れ子を正式対応する。</p>
+<ul>
+<li>child Runtime client</li>
+<li>lineage永続化</li>
+<li>idempotency key</li>
+<li>subtree budget</li>
+<li>self-settled / descendant-drain</li>
+<li>subtree cancellation</li>
+</ul>
+<p><strong>完了条件:</strong> root → child →
+grandchildの成功、失敗、blocked、cancel、timeoutをすべて自動テストできる。</p>
+<h2 data-number="10.4" id="phase-3--durable-recovery"><span class="header-section-number">10.4</span> Phase 3 — Durable
+recovery</h2>
+<p><strong>目的:</strong> 親Python processまたはHerdr
+client再起動後に安全に復旧する。</p>
+<ul>
+<li>SQLite WAL</li>
+<li>exact pane/terminal/session/process identity</li>
+<li>startup reconciliation</li>
+<li>orphan、stale、unknown分類</li>
+<li>at-most-once result delivery＋replay</li>
+</ul>
+<p><strong>完了条件:</strong>
+各phaseでprocessを強制停止しても、二重spawn・誤close・偽完了が起きない。</p>
+<h2 data-number="10.5" id="phase-4--production-policy"><span class="header-section-number">10.5</span> Phase 4 — Production
+policy</h2>
+<p><strong>目的:</strong> 実運用向け制御を追加する。</p>
+<ul>
+<li>profiles、model/thinking validation</li>
+<li>concurrency/cost/time budgets</li>
+<li>worktree adapter</li>
+<li>approval/permission bridge</li>
+<li>retention/cleanup policy</li>
+<li>metrics、diagnostics</li>
+</ul>
+<h2 data-number="10.6" id="phase-5--optional-workflow-features"><span class="header-section-number">10.6</span> Phase 5 — Optional workflow
+features</h2>
+<p>必要性が確認されてから追加する。</p>
+<ul>
+<li>scheduler / DAG</li>
+<li>reusable persistent workers</li>
+<li>independent review gates</li>
+<li>multi-repository claims</li>
+<li>remote workers</li>
+<li>Herdr以外のpresentation adapter</li>
+</ul>
+<h1 data-number="11" id="実装前に決める事項"><span class="header-section-number">11</span> 実装前に決める事項</h1>
+<ol type="1">
+<li>使用するPython subagent
+packageと、取得可能なstream/sessionイベント</li>
+<li>各workerを独立processにできるか、package内agentをmirrorする必要があるか</li>
+<li>調査agentと編集agentのfilesystem分離方針</li>
+<li>root終了後に子の継続を許すユースケースの有無</li>
+<li>Herdrがない環境でheadless fallbackを必須にするか</li>
+<li>model/reasoning昇格に人間承認が必要か</li>
+<li>成功ペインの保持期間と自動cleanup条件</li>
+</ol>
+<h1 data-number="12" id="推奨する次の一手"><span class="header-section-number">12</span> 推奨する次の一手</h1>
+<p>まずPhase 0とPhase
+1だけを対象に、小さなプロトタイプを作る。実subagent
+packageをつなぐ前にfake
+backendで状態機械とHerdr投影を完成させ、その後backend
+adapterを差し替える。この順序なら、パッケージ固有の挙動に引きずられず、入れ子・キャンセル・復旧という難しい部分を同じinterfaceで検証できる。</p>
+<div class="appendix-break"></div>
+
+<h1 data-number="13" id="付録--50パッケージ実装調査原文"><span class="header-section-number">13</span> 付録 —
+50パッケージ実装調査（原文）</h1>
+<p>以下は一次ソースと固定commitを参照した詳細調査である。検索に一致した全50件を含む。</p>
+<h2 data-number="13.1" id="herdr-related-packages-in-the-pi-package-index"><span class="header-section-number">13.1</span> Herdr-related packages in the
+Pi package index</h2>
+<p><strong>Observed:</strong> 2026-09-05<br />
+<strong>Index query:</strong> <a href="https://pi.dev/packages?name=herdr"><code>https://pi.dev/packages?name=herdr</code></a><br />
+<strong>Scope:</strong> all 50 package cards returned by that query, not
+only packages whose names contain <code>herdr</code>.</p>
+<h2 data-number="13.2" id="method-and-evidence-rules"><span class="header-section-number">13.2</span> Method and evidence rules</h2>
+<p>This is static primary-source research. I inspected package manifests
+and TypeScript/JavaScript, Markdown, and configuration files; I did
+<strong>not</strong> install or execute any package. “Source facts”
+below describe the cited implementation. “Recommendations” are confined
+to the final section.</p>
+<p>For reproducibility, the review revision is the npm release&#39;s
+<code>gitHead</code> where npm supplied one, otherwise the exact version
+tag, and otherwise the repository HEAD observed on 2026-09-05. Every
+source link is commit-pinned and its URL contains the full hash. The Pi
+index is the authority for which cards and versions were listed; the
+repositories/manifests are the authority for implementation claims.</p>
+<p>Important qualifications:</p>
+<ul>
+<li>The Forgejo repository for <code>@qcts33/pi-herdr-subagents</code>
+was unavailable from this environment. I inspected the immutable npm
+0.2.0 tarball
+(<code>sha512-WpKrgwW7y1v1EH8PfX+xpLBHUctx6Ut/8ubGecftE6CJVcqV0pzcjolVX81RJKiaoV5L3+u14VRUtJ0t0I3cPg==</code>),
+whose registry metadata identifies git commit
+<code>c639b12c87b42d1b367a58b41e49c4a9dd312ea7</code>; repository links
+below may remain unavailable. <a href="https://registry.npmjs.org/@qcts33%2Fpi-herdr-subagents/0.2.0">npm
+metadata</a></li>
+<li><code>@xzzpig/pi-terminal-notifications</code> has been replaced in
+repository HEAD by <code>@xzzpig/pi-notify</code>. Its listed 0.1.1
+implementation is still present at pre-migration commit
+<code>49b0a83b0dca18cbf33416b977afa0ae3920b3cb</code>; current
+repository HEAD was
+<code>1d38fa9005be3c8f4223758cf0124b22c2f7565c</code>. <a href="https://github.com/xzzpig/pi-extensions/blob/49b0a83b0dca18cbf33416b977afa0ae3920b3cb/packages/pi-terminal-notifications/package.json">old
+manifest</a> · <a href="https://github.com/xzzpig/pi-extensions/commit/e0aadc1033f30168fe686dccfdc7b75183620300">migration</a></li>
+<li><code>@bumaociyuan/pi-herd-mirror-adapter</code> is absent from its
+cited repository&#39;s current history/HEAD
+(<code>7f86a2931f83b68f7915fd132a026bb8fa76ae97</code>). Its
+implementation facts therefore come from the immutable npm 0.1.1 tarball
+(<code>sha512-amgtVFmve17eTK+uM2ZmHaoRcH62osLD2WcfTy8OJrRVjHKcYWfK8iZ9tK4A5br/eRJxIfs8Ydxx98RKGQnCnA==</code>),
+not a verifiable repository commit. <a href="https://registry.npmjs.org/@bumaociyuan%2Fpi-herd-mirror-adapter/0.1.1">npm
+metadata</a> · <a href="https://github.com/bumaociyuan/threeonefour/tree/7f86a2931f83b68f7915fd132a026bb8fa76ae97">repository
+HEAD</a></li>
+<li><code>@asermax/pi-herdr-subagents</code> is generated from a
+repository whose root development manifest still says
+<code>herdr-subagents@0.1.0</code>; its <code>VERSION</code> and
+generated release are 0.6.0. <a href="https://github.com/asermax/herdr-subagents/tree/b87077f0ddeea122952b7c9099b3d99d24a7a1ee">build
+source</a></li>
+</ul>
+<h2 data-number="13.3" id="executive-comparison-for-a-python-nested-subagent-harness"><span class="header-section-number">13.3</span> Executive comparison for a
+Python nested-subagent harness</h2>
+<h3 data-number="13.3.1" id="strongest-design-inputs"><span class="header-section-number">13.3.1</span> Strongest design inputs</h3>
+<table>
+<thead>
+<tr>
+<th>Package</th>
+<th>Pane visibility and process boundary</th>
+<th>Nested subagents</th>
+<th>Durable state and completion</th>
+<th>Main lesson</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://pi.dev/packages/@qcts33/pi-herdr-subagents?name=herdr"><code>@qcts33/pi-herdr-subagents</code></a>
+0.2.0</td>
+<td>Every fresh Pi child is a native Herdr agent/pane; no pane-command
+fallback.</td>
+<td><strong>Explicit and strongest:</strong> lineage, direct-self-spawn
+rejection, descendant continuation batching, descendant-first
+cancellation/drain.</td>
+<td>Short-lived operation artifacts; parent registry survives
+same-process <code>/reload</code>, not a new parent process. Completion
+is published at <code>agent_settled</code>, only after descendants
+drain.</td>
+<td>Best lifecycle model for nesting and cancellation; persistence is
+intentionally too short-lived for crash recovery. <a href="https://forgejo.horse-carat.ts.net/qcts33/pi-herdr-subagents/src/commit/c639b12c87b42d1b367a58b41e49c4a9dd312ea7/pi-extension/subagents/nested-lifecycle.ts">source
+<code>c639…</code></a> <a href="https://forgejo.horse-carat.ts.net/qcts33/pi-herdr-subagents/src/commit/c639b12c87b42d1b367a58b41e49c4a9dd312ea7/README.md">README</a></td>
+</tr>
+<tr>
+<td><a href="https://pi.dev/packages/@minhduydev/pi-subagents?name=herdr"><code>@minhduydev/pi-subagents</code></a>
+0.13.0</td>
+<td>Herdr preferred, tmux/SDK fallbacks; structured Herdr client and
+explicit terminal backend.</td>
+<td><strong>Explicit recursive scopes:</strong> a handle owns
+descendants; stop freezes new descendants, cancels descendant-first, and
+returns settlement failures.</td>
+<td>Durable task/run/session mappings, claims, evidence, reviews,
+schedules, replay API, retained worktrees; grouped completion
+notifications.</td>
+<td>Richest durable orchestration/domain model, but much broader than a
+small harness. <a href="https://github.com/MinhDuyDEV/pi-subagents/tree/6df61535ec2f9d580c2a687014cfb585eb7e44bf/src">source
+<code>6df615…</code></a></td>
+</tr>
+<tr>
+<td><a href="https://pi.dev/packages/pi-herdr-agents?name=herdr"><code>pi-herdr-agents</code></a>
+1.5.1</td>
+<td>Real Pi child in a pane/tab or managed-worktree workspace; async
+result steering and live status.</td>
+<td>Supported unless role policy sets <code>spawning: false</code>;
+bundled leaves default to constrained roles.</td>
+<td>Child Pi JSONL supplies transcript/resume/lineage; watchers survive
+Pi session replacement and same-process reload; process exit and Herdr
+state drive liveness.</td>
+<td>Mature visible-agent UX, role discovery, worktree retention, and
+bounded result delivery. <a href="https://github.com/giuseppecrj/pi-herdr-agents/tree/ebef2657b0b21177373868d83d66965fdf77febd/pi-extension/subagents">source
+<code>ebef…</code></a></td>
+</tr>
+<tr>
+<td><a href="https://pi.dev/packages/pi-pier?name=herdr"><code>pi-pier</code></a>
+0.2.6</td>
+<td>Interactive Pi sessions in panes, optional worktree isolation, plus
+terminal and todo surfaces.</td>
+<td>Default worker role denies <code>subagent</code> and
+<code>terminal</code>; hierarchy is deliberately parent-owned.</td>
+<td>Pi session JSONL is the source of truth; event-driven Herdr status,
+ledgers, locks, notices, restart reconciliation, and GC.</td>
+<td>Best example of event-sourced session integration and keeping panes
+human-takeover-friendly. <a href="https://github.com/July24/pier/tree/85a81c762973258fb56f24053ebc4086f3ea4588/packages/pier-ext/src">source
+<code>85a81…</code></a></td>
+</tr>
+<tr>
+<td><a href="https://pi.dev/packages/@luminascale/pi-shepherd?name=herdr"><code>@luminascale/pi-shepherd</code></a>
+0.1.8</td>
+<td>Persistent named agents in owned panes/tabs/workspaces; spawn and
+delegate are separate.</td>
+<td>Children can message parent/owned peers, but spawning remains
+Shepherd-owned rather than recursively exposed.</td>
+<td>Durable shared fieldnotes and correlated request/reply/task IDs;
+explicit close/cancel/timeout semantics.</td>
+<td>Separate agent lifetime from task lifetime; this is valuable for
+reusable workers. <a href="https://github.com/MikkelKappelPersson/pi-shepherd/tree/63f63a427925a257f2be05423f5deceac2e8a26f/src">source
+<code>63f63…</code></a></td>
+</tr>
+<tr>
+<td><a href="https://pi.dev/packages/@martintrojer/mu?name=herdr"><code>@martintrojer/mu</code></a>
+1.1.1</td>
+<td>Long-lived agents in tmux or Herdr; CLI rather than a Pi
+extension.</td>
+<td><strong>Explicit recursive delegation</strong> through
+workstream/task ownership.</td>
+<td>SQLite/WAL state, append-like synced operations, task DAG,
+tombstones/undo, remote handoff.</td>
+<td>Best persistence and multiplexer abstraction reference; adapt
+concepts, not its large CLI surface. <a href="https://github.com/martintrojer/mu/tree/1f0e05c13c424bb04fa6e355fa086e88babca283/src">source
+<code>1f0e…</code></a></td>
+</tr>
+<tr>
+<td><a href="https://pi.dev/packages/@itc-steve/pi-herdr?name=herdr"><code>@itc-steve/pi-herdr</code></a>
+1.4.0</td>
+<td>Fresh Pi sessions in background tabs, visible and retained after
+completion.</td>
+<td>Not a general nested tree: the frontier parent owns local/think
+seats and jobs communicate via Markdown handoffs.</td>
+<td>Per-run directories, journals, dedicated session JSONL, output
+contracts, wait/collect barriers.</td>
+<td>Useful local-first model routing and output-pointer batching; weaker
+for arbitrary nesting. <a href="https://github.com/itc-steve/pi-herdr/tree/1f26816dce4cef8391623615ff85bb5cdecadec5/src">source
+<code>1f268…</code></a></td>
+</tr>
+<tr>
+<td><a href="https://pi.dev/packages/pi-herdr-live-agents?name=herdr"><code>pi-herdr-live-agents</code></a>
+0.3.0</td>
+<td>Normal interactive Pi TUI in every pane; no terminal scraping; pane
+remains for human takeover.</td>
+<td><strong>Explicitly root-only:</strong> children get reporter
+commands, not spawn tools.</td>
+<td>Per-parent run directories, atomic JSON, JSONL lifecycle events,
+capability tokens and acknowledgements; session-scoped adoption.</td>
+<td>Cleanest small reference for visible panes and a secure mailbox, but
+nesting must be added. <a href="https://github.com/aaaxn/pi-herdr-live-agents/tree/cd9119e9d51adbf5cb6af3b201e9929397bbe99a/src">source
+<code>cd911…</code></a></td>
+</tr>
+</tbody>
+</table>
+<h3 data-number="13.3.2" id="other-orchestration-relevant-designs"><span class="header-section-number">13.3.2</span> Other orchestration-relevant
+designs</h3>
+<ul>
+<li><a href="https://pi.dev/packages/pi-herdr-subagents?name=herdr"><code>pi-herdr-subagents</code></a>
+0.2.0 is the direct ancestor of several forks: async pane children, role
+frontmatter, standalone/lineage/fork sessions, model/thinking override,
+activity projection, result steering, resume, and turn-level interrupt.
+It permits nesting unless <code>spawning: false</code>, but its
+generic/custom CLI command templates and terminal-derived completion
+paths broaden the trust surface. <a href="https://github.com/0xRichardH/pi-herdr-subagents/tree/7180d986a712e7627986a147ca8e5d5a4e0265da/pi-extension/subagents">source
+<code>7180…</code></a></li>
+<li><a href="https://pi.dev/packages/@yofriadi/pi-subagent-herdr?name=herdr"><code>@yofriadi/pi-subagent-herdr</code></a>
+0.5.0 narrows that family to one <code>subagent</code> tool, strict
+named agents, FIFO admission, transactional pane launch, bounded
+foreground/background delivery, and process-global state across reload.
+Children receive <code>subagent_done</code> and hard-deny
+<code>subagent</code>, so it is intentionally non-nested. <a href="https://github.com/yofriadi/pi-extensions/tree/0c4eacec4619d3411e26e5b92fea4117d62e2cfd/packages/pi-subagent-herdr/src">source
+<code>0c4e…</code></a></li>
+<li><a href="https://pi.dev/packages/@asermax/pi-herdr-subagents?name=herdr"><code>@asermax/pi-herdr-subagents</code></a>
+0.6.0 separates a Pi tool from a bundled helper CLI. Children are tabs
+or worktree workspaces; a registry and event subscription support
+collect/watch/unblock/close. It forwards only
+<code>HERDR_SUBAGENT_*</code> state, marks child role with
+<code>HERDR_SUBAGENT=1</code>, and can itself spawn from child sessions,
+but model/frontmatter fields that cannot be applied at Pi&#39;s
+<code>before_agent_start</code> boundary are warned about rather than
+reliably enforced. <a href="https://github.com/asermax/herdr-subagents/tree/b87077f0ddeea122952b7c9099b3d99d24a7a1ee/src">source
+<code>b870…</code></a></li>
+<li><a href="https://pi.dev/packages/@howaboua/pi-shepherdr?name=herdr"><code>@howaboua/pi-shepherdr</code></a>
+0.1.5 provides blocking or async persistent agents, profiles with fixed
+model/thinking, local and SSH machines, event monitoring, session
+reading, and automatic steer delivery. Herdr owns restored processes
+while the extension owns fleet state; the design is useful for remote
+routing but creates a larger SSH/helper trust boundary. <a href="https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/7021ae48e8efe36a3becc5830d529696ff798e5e/packages/pi-shepherdr/src">source
+<code>7021…</code></a></li>
+<li><a href="https://pi.dev/packages/@tian.zuo/pi-subagents?name=herdr"><code>@tian.zuo/pi-subagents</code></a>
+0.1.2 has profile-owned model/tools/workspace, Herdr and Pi-RPC
+backends, foreground/background runs, worktrees, private binary patch
+artifacts, explicit status/cancel/apply, and process supervision.
+Children load only a package child runtime; no recursive spawn surface
+is documented. <a href="https://github.com/TianZuo555/pi-extensions/tree/7415725c83052e5c70ad2d0f58dc43377bf267c1/packages/pi-subagents">source
+<code>741572…</code></a></li>
+<li><a href="https://pi.dev/packages/pi-herdr-squad?name=herdr"><code>pi-herdr-squad</code></a>
+0.2.0 launches bounded, flat groups (1–12) across at most three tabs,
+keeps tabs after success/partial failure, writes prompts as
+mode-<code>0600</code> files, and uses per-agent identity tokens for
+structured reports. Models resolve explicit → trusted project/global
+config → Pi default. Investigation agents are read-only; worker
+<code>edit</code>/<code>write</code> roots are checked, but Bash is
+expressly cooperative rather than sandboxed. <a href="https://github.com/jillesme/pi-herdr-squad/tree/e2bad6c2ecabdfd568287f8c0a864511e2c91f12/agent/extensions/herdr-squad">source
+<code>e2bad…</code></a></li>
+<li><a href="https://pi.dev/packages/@ret2hell/pi-herdr-orchestrator?name=herdr"><code>@ret2hell/pi-herdr-orchestrator</code></a>
+0.1.2 exposes plan/dispatch/watch/review tools around fresh Herdr panes,
+file ledgers under <code>.herdr-runs</code>, configurable prompt/watch
+timeouts, and an approval gate. Worker and reviewer models are
+hard-coded/configured separately. It is a flat plan-worker-review
+workflow; cancellation aborts waits, but its ledger polling and broad
+Herdr tool surface are less robust than explicit child completion
+artifacts. <a href="https://github.com/Ret2Hell/pi-extensions/tree/c24f40ff619872b154ff7e08cbab96df709a0f92/packages/pi-herdr-orchestrator">source
+<code>c24f…</code></a></li>
+<li><a href="https://pi.dev/packages/ry-skill?name=herdr"><code>ry-skill</code></a>
+0.6.8 combines session fork/clone with a substantial
+<code>ry_herdr_delegate_tool</code>: leaf jobs, durable JSONL pipelines,
+a long-lived exact-session coordinator, leases/fences/layout locks, late
+reconciliation, model/agent precedence, and shell-free Herdr argv. It
+deliberately launches Codex with <code>--yolo</code> and Claude with
+<code>--dangerously-skip-permissions</code>; direct prompts may appear
+in process diagnostics even after secret redaction. Its durable
+coordinator is instructive, but its multi-harness privilege defaults
+should not be copied. <a href="https://github.com/mithyer/ry-skill/tree/c6564ac539680471ad348742ed9db2df8893a8b9/ry-herdr-delegate">source
+<code>c656…</code></a></li>
+<li><a href="https://pi.dev/packages/@andrewjacop/pi-herdr?name=herdr"><code>@andrewjacop/pi-herdr</code></a>
+0.4.0 is a broad Herdr control and one-shot delegation layer:
+spawn/send/wait/read/close, layout, worktrees, and session operations.
+It passes argv without a shell and reports clean Herdr errors/timeouts.
+A spawned Pi normally loads installed extensions, so recursive use is
+technically possible, but there is no persisted lineage, depth policy,
+descendant cancellation, or result mailbox. <a href="https://github.com/AndrewJacop/pi-herdr/tree/c49ed8b9abec28c96171add46a38916c412e0042/src">source
+<code>c49ed…</code></a></li>
+<li><a href="https://pi.dev/packages/@ogulcancelik/pi-herdr?name=herdr"><code>@ogulcancelik/pi-herdr</code></a>
+0.4.0 exposes structured <code>herdr_layout</code>,
+<code>herdr_pane</code>, and <code>herdr_agent</code> tools, gates on
+<code>HERDR_ENV</code>/pane ID, invokes
+<code>pi.exec(&quot;herdr&quot;, argv)</code>, propagates abort, parses JSON
+envelopes, and truncates terminal output. It is an excellent typed
+control-plane adapter but intentionally has no subagent lineage, model
+policy, persistence, or completion protocol. <a href="https://github.com/ogulcancelik/pi-extensions/blob/c28f7fcf0a88b14f8e0372260defadb998f15548/packages/pi-herdr/index.ts">source
+<code>c28f…</code></a></li>
+<li><a href="https://pi.dev/packages/@sfroment/pi-herdr?name=herdr"><code>@sfroment/pi-herdr</code></a>
+0.1.13 wraps almost any Herdr subcommand in one typed tool, uses argv
+maps and 1–120 second bounds, and separately gates
+<code>server stop</code> behind <code>forceDangerous</code>. It
+regenerates a Herdr skill at <code>session_start</code>. This is
+convenient but too broad as the sole security boundary for an autonomous
+nested harness. <a href="https://github.com/sfroment/pi-herdr/blob/e83b56114fa6f8d1902e8a772f8740b4e5e527dd/index.ts">source
+<code>e83b…</code></a></li>
+<li><a href="https://pi.dev/packages/pi-terminal-mux?name=herdr"><code>pi-terminal-mux</code></a>
+0.4.1 is a library, not a Pi extension. Its <code>Surface</code>
+abstraction supports Herdr/tmux/zellij/WezTerm/etc. plus a headless
+child-process fallback, long-command script files, read/poll/close, and
+backend detection. It is a useful seam if portability is required, but
+headless fallback should be disabled when “visible in Herdr” is an
+invariant. <a href="https://github.com/maplezzk/pi-extensions/tree/5fe58b5ebd4d0d2397f534e968fdafa037ec8260/packages/pi-terminal-mux/src">source
+<code>5fe58…</code></a></li>
+<li><a href="https://pi.dev/packages/pi-herdr-subagents-planning?name=herdr"><code>pi-herdr-subagents-planning</code></a>
+0.2.1 vendors an older <code>pi-herdr-subagents</code> runtime and adds
+planner/todo forwarding, fixed role/model defaults, <code>.agent</code>
+project context, and planning artifacts. It is a workflow bundle rather
+than a reusable lifecycle foundation; its nested behavior and failure
+semantics inherit the vendored runtime snapshot. <a href="https://github.com/giacolees/plan-herdr-subagents/tree/92e2e6b16acee895268de0b1e95552bb8e1690e0/extensions">source
+<code>92e2…</code></a></li>
+<li><a href="https://pi.dev/packages/@naxodev/pi-apnea?name=herdr"><code>@naxodev/pi-apnea</code></a>
+0.2.1 is a Pi adapter for the external Apnea multi-role workflow:
+extension commands, role-agent runtime, skills, prompts, and bounded
+process helpers. Herdr orchestration belongs to the Apnea/core boundary
+rather than a package-owned nested pane protocol, so it is a
+workflow-integration reference, not a direct harness blueprint. <a href="https://github.com/naxodev/ai/tree/223eda9392ca2f39418aca97e7f388a3d6d23555/packages/pi-apnea">source
+<code>223eda…</code></a></li>
+<li><a href="https://pi.dev/packages/@chankov/agent-fleet?name=herdr"><code>@chankov/agent-fleet</code></a>
+2.0.4 is chiefly a guided setup/distribution: skills, personas, prompts,
+a remote ask extension, vendored harnesses, and configuration
+reconciliation for Pi + Herdr + peer communication. It does not itself
+provide one small subagent lifecycle entry point. Its
+transaction/doctor/manifest machinery is relevant to installation
+safety, not child execution. <a href="https://github.com/chankov/agent-fleet/tree/3db0de8ab3d7acd3d1616222ab21b4f3c5c8a2fd">source
+<code>3db0…</code></a></li>
+<li><a href="https://pi.dev/packages/pi-advisor-flow?name=herdr"><code>pi-advisor-flow</code></a>
+0.5.2 runs a second, tool-less advisor model over selected executor
+context, with model pickers, persisted activation/configuration,
+automatic tool/session gates, abort handling, and failure policy. Herdr
+is ancillary to presentation rather than its process substrate; use it
+as a model-routing/review-gate input, not a pane lifecycle design. <a href="https://github.com/philipbrembeck/pi-advisor/tree/574e88e34d08a0fa449952d717c2015b8b7b162c/extensions">source
+<code>574e…</code></a></li>
+</ul>
+<h2 data-number="13.4" id="complete-50-package-inventory"><span class="header-section-number">13.4</span> Complete 50-package
+inventory</h2>
+<p>The following compact inventory ensures every current query match is
+accounted for. “M/T” means model/thinking behavior; “N” means nesting.
+For non-agent utilities those concerns are correctly marked not
+applicable.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">#</th>
+<th>Listed package</th>
+<th>Manifest / entry and lifecycle</th>
+<th>Herdr/process, M/T, N, persistence, failure/security</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td><a href="https://pi.dev/packages/ry-skill?name=herdr"><code>ry-skill</code>
+0.6.8</a></td>
+<td>Three Pi extensions: fork, clone, delegate.</td>
+<td>Delegate uses shell-free <code>spawn</code>, JSONL/coordinator
+recovery and configurable models; nested coordinator workflows exist.
+Fails closed to <code>BLOCKED/PARTIAL/ERROR</code>, but external CLIs
+default to unsafe permission flags. <a href="https://github.com/mithyer/ry-skill/blob/c6564ac539680471ad348742ed9db2df8893a8b9/package.json">source
+<code>c6564ac539680471ad348742ed9db2df8893a8b9</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td><a href="https://pi.dev/packages/@henryqw/pi-herdr-rename?name=herdr"><code>@henryqw/pi-herdr-rename</code>
+4.0.0</a></td>
+<td>Pi extension directory; generates a short title and updates
+session/Herdr display state.</td>
+<td>M/T belongs only to title generation; N N/A; session naming
+persists, no child process. Herdr failure degrades without creating
+agents. <a href="https://github.com/HenryQW/pi-harness/tree/ddf0dc130782494f058e05565a587de4e2b1c77f/extensions/pi-herdr-rename">source
+<code>ddf0dc130782494f058e05565a587de4e2b1c77f</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">3</td>
+<td><a href="https://pi.dev/packages/@henryqw/pi-herdr?name=herdr"><code>@henryqw/pi-herdr</code>
+0.4.4</a></td>
+<td>Exported client library, no Pi extension entry.</td>
+<td>Copies argv into a supplied executor, parses JSON, retries only
+<code>agent_pane_busy</code>, and provides a worktree lock. M/T, N,
+history N/A; callers own timeout/cancellation/security. <a href="https://github.com/HenryQW/pi-harness/blob/61ed6f46fbbd28307ea89ba2008b14f5d1ad2c46/extensions/pi-herdr/src/index.ts">source
+<code>61ed6f46fbbd28307ea89ba2008b14f5d1ad2c46</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td><a href="https://pi.dev/packages/pi-herdr-agents?name=herdr"><code>pi-herdr-agents</code>
+1.5.1</a></td>
+<td><code>pi-extension/subagents/index.ts</code>; five parent tools,
+child completion/help tools, commands and role packs.</td>
+<td>Native visible Pi panes/worktrees; exact model/thinking resolution;
+N allowed by policy. Session JSONL + watchers; launch cleanup, turn
+interrupt, bounded result and fail-closed reviewed workflows. Worktrees
+are not sandboxes. <a href="https://github.com/giuseppecrj/pi-herdr-agents/tree/ebef2657b0b21177373868d83d66965fdf77febd/pi-extension/subagents">source
+<code>ebef2657b0b21177373868d83d66965fdf77febd</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td><a href="https://pi.dev/packages/pi-advisor-flow?name=herdr"><code>pi-advisor-flow</code>
+0.5.2</a></td>
+<td><code>extensions/index.ts</code>; advisor commands and automatic
+gates.</td>
+<td>Separate tool-less model call, not a Herdr child pane; N N/A.
+Persists activation/model choices; cancellation and configured failure
+policies can stop repeated work. <a href="https://github.com/philipbrembeck/pi-advisor/tree/574e88e34d08a0fa449952d717c2015b8b7b162c/extensions">source
+<code>574e88e34d08a0fa449952d717c2015b8b7b162c</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">6</td>
+<td><a href="https://pi.dev/packages/@chankov/agent-fleet?name=herdr"><code>@chankov/agent-fleet</code>
+2.0.4</a></td>
+<td>Package manifest registers skills/prompts plus a remote ask
+extension; setup CLI reconciles an installation.</td>
+<td>Herdr is workspace control plane; models/personas are setup-owned. N
+comes from composed harnesses, not this entry. Persistent
+desired/current state and transactional setup; broad
+supply-chain/configuration surface. <a href="https://github.com/chankov/agent-fleet/blob/3db0de8ab3d7acd3d1616222ab21b4f3c5c8a2fd/package.json">source
+<code>3db0de8ab3d7acd3d1616222ab21b4f3c5c8a2fd</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">7</td>
+<td><a href="https://pi.dev/packages/@henryqw/pi-herdr-clone?name=herdr"><code>@henryqw/pi-herdr-clone</code>
+1.0.0</a></td>
+<td>Pi command extension cloning the active session branch to a
+tab/worktree.</td>
+<td>Launches independent Pi with copied persisted history; N only by
+repeated user command, no parent-child protocol. Startup failure cleans
+tab/session preparation. Shared/worktree filesystem risks remain. <a href="https://github.com/HenryQW/pi-harness/tree/ddf0dc130782494f058e05565a587de4e2b1c77f/extensions/pi-herdr-clone">source
+<code>ddf0dc130782494f058e05565a587de4e2b1c77f</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td><a href="https://pi.dev/packages/@henryqw/pi-herdr-btw?name=herdr"><code>@henryqw/pi-herdr-btw</code>
+3.0.0</a></td>
+<td><code>extensions/btw.ts</code>; side-thread launch and merge
+delivery.</td>
+<td>Side Pi pane gets static parent context and configurable
+inherited/all/read-only/no tools; task model mapping is external.
+Repeated side panes are possible, but no lineage cancellation tree.
+Pending delivery persists; shared cwd means enabled tools can alter
+parent files. <a href="https://github.com/HenryQW/pi-harness/tree/ddf0dc130782494f058e05565a587de4e2b1c77f/extensions/pi-herdr-btw">source
+<code>ddf0dc130782494f058e05565a587de4e2b1c77f</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">9</td>
+<td><a href="https://pi.dev/packages/@henryqw/pi-herdr-done?name=herdr"><code>@henryqw/pi-herdr-done</code>
+1.0.0</a></td>
+<td>Worktree completion command.</td>
+<td>No model/N. Checks idle/dirty/use state, removes checkout, closes
+tabs, and may fast-forward parent; <code>--force</code> deliberately
+permits destructive removal. <a href="https://github.com/HenryQW/pi-harness/tree/ddf0dc130782494f058e05565a587de4e2b1c77f/extensions/pi-herdr-done">source
+<code>ddf0dc130782494f058e05565a587de4e2b1c77f</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td><a href="https://pi.dev/packages/@asermax/pi-herdr-subagents?name=herdr"><code>@asermax/pi-herdr-subagents</code>
+0.6.0</a></td>
+<td>Generated Pi extension + skill + helper CLI.</td>
+<td>Herdr tabs/worktree workspaces; helper
+registry/watch/collect/unblock. Child marker permits recursive use, but
+M/T frontmatter application has lifecycle limitations. Event-driven
+watch and cleanup distinguish created versus joined worktrees. <a href="https://github.com/asermax/herdr-subagents/tree/b87077f0ddeea122952b7c9099b3d99d24a7a1ee/src">source
+<code>b87077f0ddeea122952b7c9099b3d99d24a7a1ee</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">11</td>
+<td><a href="https://pi.dev/packages/@ogulcancelik/pi-herdr?name=herdr"><code>@ogulcancelik/pi-herdr</code>
+0.4.0</a></td>
+<td><code>index.ts</code>; layout/pane/agent tools.</td>
+<td>Shell-free structured Herdr control with abort and bounded output;
+passes agent kind/args but owns no M/T policy, nesting, or state. Broad
+process-control authority is the principal risk. <a href="https://github.com/ogulcancelik/pi-extensions/blob/c28f7fcf0a88b14f8e0372260defadb998f15548/packages/pi-herdr/index.ts">source
+<code>c28f7fcf0a88b14f8e0372260defadb998f15548</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">12</td>
+<td><a href="https://pi.dev/packages/@sfroment/pi-herdr?name=herdr"><code>@sfroment/pi-herdr</code>
+0.1.13</a></td>
+<td><code>index.ts</code>; one generic Herdr tool plus generated/bundled
+skill.</td>
+<td><code>HERDR_ENV</code> gate, argv serialization, timeout and output
+bounds; no M/T/N/state. <code>server stop</code> has an opt-in gate, but
+other destructive subcommands remain dependent on model/user discipline.
+<a href="https://github.com/sfroment/pi-herdr/blob/e83b56114fa6f8d1902e8a772f8740b4e5e527dd/index.ts">source
+<code>e83b56114fa6f8d1902e8a772f8740b4e5e527dd</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">13</td>
+<td><a href="https://pi.dev/packages/@sting8k/pi-peer?name=herdr"><code>@sting8k/pi-peer</code>
+2.2.1</a></td>
+<td><code>pi-extension/pi-peer/index.ts</code>; <code>talk_to</code>,
+<code>talk_sessions</code>, <code>talk_latest</code>.</td>
+<td>Same-workspace peer messaging, not spawning. No M/T/N. Atomic
+at-least-once mailbox, heartbeat, bounded published history excluding
+thinking, 0700 storage, claim/requeue recovery; peer content remains
+untrusted. <a href="https://github.com/sting8k/pi-peer/tree/e8f3640b2948de2337b98c919dbc96eaf5f47b8e/pi-extension/pi-peer">source
+<code>e8f3640b2948de2337b98c919dbc96eaf5f47b8e</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">14</td>
+<td><a href="https://pi.dev/packages/@oipsanthony/pi-session-title?name=herdr"><code>@oipsanthony/pi-session-title</code>
+0.3.5</a></td>
+<td>Session lifecycle/title extension.</td>
+<td>Configurable naming model/thinking/timeout; no N. Synchronizes Pi
+and Herdr display title without overwriting manual pane label; model
+failure falls back to current model. Conversation data is sent to the
+naming model. <a href="https://github.com/OiAnthony/pi-extensions/tree/03cb2f34176de0c260b155acbbc51107473dea14/packages/pi-session-title/extensions">source
+<code>03cb2f34176de0c260b155acbbc51107473dea14</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">15</td>
+<td><a href="https://pi.dev/packages/@andrewjacop/pi-herdr?name=herdr"><code>@andrewjacop/pi-herdr</code>
+0.4.0</a></td>
+<td><code>src/index.ts</code>; 43
+control/delegation/layout/worktree/session tools.</td>
+<td>Native Herdr CLI, shell-free argv, status-based wait/read. Agent
+args can choose model; recursive use is possible but unmanaged. No
+lineage persistence; timeout/clean errors, with dangerous close/session
+operations exposed. <a href="https://github.com/AndrewJacop/pi-herdr/tree/c49ed8b9abec28c96171add46a38916c412e0042/src">source
+<code>c49ed8b9abec28c96171add46a38916c412e0042</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">16</td>
+<td><a href="https://pi.dev/packages/pi-herdr-subagents?name=herdr"><code>pi-herdr-subagents</code>
+0.2.0</a></td>
+<td><code>pi-extension/subagents/index.ts</code>;
+spawn/list/interrupt/resume and child done/help.</td>
+<td>Pi and generic CLI children, configurable model/thinking and session
+mode; N enabled unless policy denies. Session JSONL/result steering;
+turn interrupt keeps process alive. Custom command templates and
+write-capable Bash are trust concerns. <a href="https://github.com/0xRichardH/pi-herdr-subagents/tree/7180d986a712e7627986a147ca8e5d5a4e0265da/pi-extension/subagents">source
+<code>7180d986a712e7627986a147ca8e5d5a4e0265da</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">17</td>
+<td><a href="https://pi.dev/packages/pi-terminal-mux?name=herdr"><code>pi-terminal-mux</code>
+0.4.1</a></td>
+<td>Exported library; no <code>pi.extensions</code>.</td>
+<td>Unified create/send/read/poll/close over Herdr and other muxes, with
+headless fallback. No M/T/N/history. Script-file command transport
+reduces length/quoting problems but still executes caller-provided
+commands. <a href="https://github.com/maplezzk/pi-extensions/tree/5fe58b5ebd4d0d2397f534e968fdafa037ec8260/packages/pi-terminal-mux">source
+<code>5fe58b5ebd4d0d2397f534e968fdafa037ec8260</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">18</td>
+<td><a href="https://pi.dev/packages/@tifan/pi-rename?name=herdr"><code>@tifan/pi-rename</code>
+0.6.0</a></td>
+<td><code>src/index.ts</code>; rename command and lifecycle.</td>
+<td>Separate configured naming model, sanitized user-message context,
+secret redaction and fallback; no N. Renames session and current Herdr
+surface. Persistence is configuration/session name only. <a href="https://github.com/tifandotme/pi-extensions/tree/d9fa55f6ad157f46d261f44349a98521ed56d267/packages/pi-rename/src">source
+<code>d9fa55f6ad157f46d261f44349a98521ed56d267</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">19</td>
+<td><a href="https://pi.dev/packages/@minhduydev/pi-subagents?name=herdr"><code>@minhduydev/pi-subagents</code>
+0.13.0</a></td>
+<td>Built <code>task-runtime</code> extension plus public
+API/events/replay exports and skill.</td>
+<td>Herdr/tmux/SDK execution, exact profile model, recursive handles,
+durable orchestration and worktrees. Descendant-first stop, reason-coded
+failures and recovery. Worktrees/tool allowlists are not OS sandboxing.
+<a href="https://github.com/MinhDuyDEV/pi-subagents/tree/6df61535ec2f9d580c2a687014cfb585eb7e44bf/src">source
+<code>6df61535ec2f9d580c2a687014cfb585eb7e44bf</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">20</td>
+<td><a href="https://pi.dev/packages/@kvoon/pi-split-fork?name=herdr"><code>@kvoon/pi-split-fork</code>
+0.3.0</a></td>
+<td><code>index.ts</code>; command forks current active Pi branch.</td>
+<td>New pane/tab/workspace with persisted session branch; no model
+override or orchestration lineage. Busy parent copies only committed
+session entries. Repeated forks are possible; shared checkout can
+conflict. <a href="https://github.com/kvoon3/pi-extensions/tree/cfd2bf844be07cbb37b031cbda06e336c4ba8f8b/pi-split-fork">source
+<code>cfd2bf844be07cbb37b031cbda06e336c4ba8f8b</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">21</td>
+<td><a href="https://pi.dev/packages/@luminascale/pi-shepherd?name=herdr"><code>@luminascale/pi-shepherd</code>
+0.1.8</a></td>
+<td><code>index.ts</code>;
+spawn/delegate/watch/message/status/read/close and child done/message
+tools.</td>
+<td>Persistent owned agents; model from role or parent. Parent-brokered
+peer messaging rather than recursive spawn. Durable fieldnotes and task
+correlation; close cancels work and only closes registry-owned panes.
+Shell remains unsandboxed. <a href="https://github.com/MikkelKappelPersson/pi-shepherd/tree/63f63a427925a257f2be05423f5deceac2e8a26f/src">source
+<code>63f63a427925a257f2be05423f5deceac2e8a26f</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">22</td>
+<td><a href="https://pi.dev/packages/pi-herdr-status?name=herdr"><code>pi-herdr-status</code>
+0.2.1</a></td>
+<td><code>src/index.ts</code>; session/model lifecycle listeners.</td>
+<td>Reports model/status metadata under a dedicated source namespace and
+clears it on shutdown. No child, N or history. Failure is best-effort
+metadata loss. <a href="https://github.com/dereknex/pi-extensions/tree/dec77ef1ef7bf8959277d859a64c4ce6c7f5c15a/packages/pi-herdr-status/src">source
+<code>dec77ef1ef7bf8959277d859a64c4ce6c7f5c15a</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">23</td>
+<td><a href="https://pi.dev/packages/@howaboua/pi-shepherdr?name=herdr"><code>@howaboua/pi-shepherdr</code>
+0.1.5</a></td>
+<td><code>index.ts</code>; fleet controller, tools, commands and event
+monitors.</td>
+<td>Persistent local/SSH Pi agents with profile-fixed model/thinking;
+blocking or async settle delivery. No clear general recursive contract.
+Session restore and remote helper support; SSH and copied helper enlarge
+trust boundary. <a href="https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/7021ae48e8efe36a3becc5830d529696ff798e5e/packages/pi-shepherdr">source
+<code>7021ae48e8efe36a3becc5830d529696ff798e5e</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">24</td>
+<td><a href="https://pi.dev/packages/@martintrojer/mu?name=herdr"><code>@martintrojer/mu</code>
+1.1.1</a></td>
+<td>CLI package/skill, not a Pi extension manifest.</td>
+<td>Persistent crews in Herdr/tmux, model command delegated to shell
+config, recursive task delegation. SQLite/WAL DAG and tombstones/undo;
+explicit spawn/send/read/kill failures. Shell-configured commands are a
+powerful trusted boundary. <a href="https://github.com/martintrojer/mu/tree/1f0e05c13c424bb04fa6e355fa086e88babca283/src">source
+<code>1f0e05c13c424bb04fa6e355fa086e88babca283</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">25</td>
+<td><a href="https://pi.dev/packages/@yofriadi/pi-subagent-herdr?name=herdr"><code>@yofriadi/pi-subagent-herdr</code>
+0.5.0</a></td>
+<td><code>src/index.ts</code>; one parent <code>subagent</code> and
+child <code>subagent_done</code>.</td>
+<td>Native Herdr only; M/T and tools role-owned; <strong>N
+denied</strong>. Process-global reload state and bounded pending
+delivery; queued work creates no resources, failed launch rolls back.
+Shared tool/Bash risk remains. <a href="https://github.com/yofriadi/pi-extensions/tree/0c4eacec4619d3411e26e5b92fea4117d62e2cfd/packages/pi-subagent-herdr/src">source
+<code>0c4eacec4619d3411e26e5b92fea4117d62e2cfd</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">26</td>
+<td><a href="https://pi.dev/packages/pi-pier?name=herdr"><code>pi-pier</code>
+0.2.6</a></td>
+<td><code>src/index.ts</code>; todo, subagent, terminal and ask
+surfaces.</td>
+<td>Visible Pi panes/worktrees; role model config; default workers deny
+nesting. Session-JSONL event sourcing, ledgers and recovery; inactivity
+timeout, explicit interrupt/resume and deferred GC. Tool collisions and
+non-sandbox worktrees are documented. <a href="https://github.com/July24/pier/tree/85a81c762973258fb56f24053ebc4086f3ea4588/packages/pier-ext/src">source
+<code>85a81c762973258fb56f24053ebc4086f3ea4588</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">27</td>
+<td><a href="https://pi.dev/packages/@pi-kaush/pi-btw-with-imports?name=herdr"><code>@pi-kaush/pi-btw-with-imports</code>
+0.3.0</a></td>
+<td>Release manifest points to a side-session <code>/btw</code>
+extension; that directory is absent from repository HEAD.</td>
+<td>Persists a forked side session and opens a Herdr/Ghostty split; no
+model policy or completion/nesting tree. Context imports and a shared
+checkout are the main data/write boundary. <a href="https://github.com/kaushikgopal/pi-kaush/tree/141bedd55c871125a88506f59c99c4d5b602dac8/extensions/pi-btw-with-imports">source
+<code>141bedd55c871125a88506f59c99c4d5b602dac8</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">28</td>
+<td><a href="https://pi.dev/packages/pi-todo-herdr?name=herdr"><code>pi-todo-herdr</code>
+0.2.5</a></td>
+<td><code>index.ts</code>; five hierarchical task tools, widget, prompt
+hook and Herdr reporter.</td>
+<td>No subprocess/model/N. Session-branch entries restore across
+reload/resume/fork/compaction; Herdr is optional. Task descriptions
+reach model/session/sidebar and should not contain secrets. <a href="https://github.com/leset0ng/pi-todo-herdr/tree/6c6b9ec01b3ea88814c05ef804987e21e44f7f72/src">source
+<code>6c6b9ec01b3ea88814c05ef804987e21e44f7f72</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">29</td>
+<td><a href="https://pi.dev/packages/@itc-steve/pi-herdr?name=herdr"><code>@itc-steve/pi-herdr</code>
+1.4.0</a></td>
+<td><code>index.ts</code>; <code>herd</code> and broad
+<code>herdr</code> tools plus skills.</td>
+<td>Local/think model seat routing; flat parent-owned jobs, no general
+nested protocol. Journals, session JSONL, waits/collect/abort and
+retained tabs. Refuses known competing Herdr extensions; shell/process
+access and shared checkout require policy. <a href="https://github.com/itc-steve/pi-herdr/tree/1f26816dce4cef8391623615ff85bb5cdecadec5/src">source
+<code>1f26816dce4cef8391623615ff85bb5cdecadec5</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">30</td>
+<td><a href="https://pi.dev/packages/@mcuste/pi-herdr-worktree?name=herdr"><code>@mcuste/pi-herdr-worktree</code>
+0.1.3</a></td>
+<td><code>src/index.ts</code>; one <code>herdr_worktree</code>
+tool.</td>
+<td>Fixed list/create/open/remove argv operations, no M/T/N. Pre/post
+Git verification, argument validation, no shell string, and explicit
+approval on mutating hosts. Worktrees isolate checkouts, not processes.
+<a href="https://github.com/mcuste/pi-herdr-worktree/tree/7882a73ca8fe68fa823bbef1eca6c5262d3c4f64/src">source
+<code>7882a73ca8fe68fa823bbef1eca6c5262d3c4f64</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">31</td>
+<td><a href="https://pi.dev/packages/pi-portr?name=herdr"><code>pi-portr</code>
+0.1.5</a></td>
+<td><code>src/index.ts</code>; explicit user commands for pass/ask, no
+model-callable delegation tool.</td>
+<td>Creates reviewed Pi/Claude/Codex panes; destination model optional,
+context synthesis uses current model; pane limit discourages recursion.
+Append-only origin snapshots and idempotent operation IDs;
+<code>execFile</code> with <code>shell:false</code>, bounded/sanitized
+context, explicit incomplete-generation failure. <a href="https://github.com/migsalazar/pi-portr/tree/dc0d5e97f5d33e83628c87de68a3546432dc588a/src">source
+<code>dc0d5e97f5d33e83628c87de68a3546432dc588a</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">32</td>
+<td><a href="https://pi.dev/packages/pi-herdr-sudo-task?name=herdr"><code>pi-herdr-sudo-task</code>
+0.1.5</a></td>
+<td>Built extension; one blocking <code>sudo_task</code> tool.</td>
+<td>Dedicated review pane runs <code>sudo sh -c</code> only after human
+approval; no M/T/N. Append-only transcript, terminal markers and
+unknown-outcome reporting on post-launch cancellation. Explicitly
+<strong>not a sandbox</strong>; approved command has root shell
+semantics. <a href="https://github.com/tigorlazuardi/pi-herdr-sudo-task/blob/2c456df4535077f8d4ebbf021fd4965992dd988b/index.ts">source
+<code>2c456df4535077f8d4ebbf021fd4965992dd988b</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">33</td>
+<td><a href="https://pi.dev/packages/@normful/pi-auto-name?name=herdr"><code>@normful/pi-auto-name</code>
+1.0.2</a></td>
+<td><code>src/index.ts</code>; lifecycle naming extension.</td>
+<td>Configurable naming model/context depth and periodic rename; no N.
+Persists config and session name, updates Herdr/tmux/zellij surfaces.
+Full-conversation option can disclose tool output/secrets to naming
+model despite sanitization responsibilities. <a href="https://github.com/normful/pi-bakery/tree/638bb556ea1df82efe4562cab274a3d8638e249a/packages/pi-auto-name/src">source
+<code>638bb556ea1df82efe4562cab274a3d8638e249a</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">34</td>
+<td><a href="https://pi.dev/packages/herdr-link?name=herdr"><code>herdr-link</code>
+0.3.1</a></td>
+<td><code>src/pi.ts</code>; lazy gateway then peers/send/close tools;
+OpenCode/MCP adapters too.</td>
+<td>Same-workspace messaging only: no spawn, M/T, N, retry, ack or
+persistence. Shell-free argv, workspace-scoped indistinguishable peer
+errors and automatic ephemeral names; messages are still untrusted and
+delivery is not reliable. <a href="https://github.com/LZHcode1986/herdr-link/tree/17a42de6568f2cbdf99080976dc79985ad41e98e/src">source
+<code>17a42de6568f2cbdf99080976dc79985ad41e98e</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">35</td>
+<td><a href="https://pi.dev/packages/@naxodev/pi-apnea?name=herdr"><code>@naxodev/pi-apnea</code>
+0.2.1</a></td>
+<td>Extension directory plus skills/prompts and bounded process
+scripts.</td>
+<td>Adapter to external Apnea roles; model/nesting/process state are
+chiefly core-workflow concerns. Bounded subprocess helpers and explicit
+runtime errors exist, but this is not a self-contained Herdr child
+protocol. <a href="https://github.com/naxodev/ai/tree/223eda9392ca2f39418aca97e7f388a3d6d23555/packages/pi-apnea">source
+<code>223eda9392ca2f39418aca97e7f388a3d6d23555</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">36</td>
+<td><a href="https://pi.dev/packages/@ret2hell/pi-herdr-orchestrator?name=herdr"><code>@ret2hell/pi-herdr-orchestrator</code>
+0.1.2</a></td>
+<td><code>index.ts</code>; Herdr control plus plan/dispatch/watch/review
+tools.</td>
+<td>Configured worker/reviewer M/T, flat workflow.
+<code>.herdr-runs</code> ledgers, polling, timeout and abort;
+pane/reviewer approval gates. File-marker completion and broad process
+tools are weaker security/recovery boundaries. <a href="https://github.com/Ret2Hell/pi-extensions/tree/c24f40ff619872b154ff7e08cbab96df709a0f92/packages/pi-herdr-orchestrator">source
+<code>c24f40ff619872b154ff7e08cbab96df709a0f92</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">37</td>
+<td><a href="https://pi.dev/packages/pi-herdr-background-terminal?name=herdr"><code>pi-herdr-background-terminal</code>
+0.1.2</a></td>
+<td><code>index.ts</code>; persistent background terminal tools and
+service/state modules.</td>
+<td>Herdr pane commands, no model/N. Persists task/output state and
+recovers active tasks at session start; reconciles exits, input,
+interrupt and stale workspace IDs. It intentionally executes arbitrary
+shell commands, so command authority is the risk. <a href="https://github.com/yaukwan/pi-herdr-background-terminal/tree/63d271c86effdcfd4427ffa79f915048fc68c818">source
+<code>63d271c86effdcfd4427ffa79f915048fc68c818</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">38</td>
+<td><a href="https://pi.dev/packages/pi-herdr-squad?name=herdr"><code>pi-herdr-squad</code>
+0.2.0</a></td>
+<td><code>index.ts</code> loads parent and child squad extensions plus
+skills/prompts.</td>
+<td>Flat visible squads, explicit/config/default model, no nested spawn.
+Pi session entries retain squad state; reports use private files/tokens;
+wait cancellation and partial collection preserve tabs. Bash is
+cooperative, not sandboxed. <a href="https://github.com/jillesme/pi-herdr-squad/tree/e2bad6c2ecabdfd568287f8c0a864511e2c91f12/agent/extensions/herdr-squad">source
+<code>e2bad6c2ecabdfd568287f8c0a864511e2c91f12</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">39</td>
+<td><a href="https://pi.dev/packages/@tifan/pi-titlebar-spinner?name=herdr"><code>@tifan/pi-titlebar-spinner</code>
+1.1.0</a></td>
+<td><code>src/index.ts</code>; agent lifecycle listeners update
+title.</td>
+<td>No model/N/history. Displays running state in Herdr title and
+restores/cleans it at lifecycle boundaries; only terminal-title
+escape/output side effects. <a href="https://github.com/tifandotme/pi-extensions/tree/ee46f8b42c8375c33c2aa06a121ef853ee7fb269/packages/pi-titlebar-spinner/src">source
+<code>ee46f8b42c8375c33c2aa06a121ef853ee7fb269</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">40</td>
+<td><a href="https://pi.dev/packages/@qcts33/pi-herdr-subagents?name=herdr"><code>@qcts33/pi-herdr-subagents</code>
+0.2.0</a></td>
+<td><code>pi-extension/subagents/index.ts</code>; spawn/cancel plus
+child completion machinery.</td>
+<td>Native Pi/Herdr only; exact per-call M/T with parent inheritance;
+<strong>first-class N</strong>. Ephemeral no-session children and
+operation artifacts; descendant-draining cancellation, at-most-once
+completion destination and explicit stalled/delivery failures. Current
+process reload only, not restart recovery. <a href="https://forgejo.horse-carat.ts.net/qcts33/pi-herdr-subagents/src/commit/c639b12c87b42d1b367a58b41e49c4a9dd312ea7/pi-extension/subagents">source
+<code>c639b12c87b42d1b367a58b41e49c4a9dd312ea7</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">41</td>
+<td><a href="https://pi.dev/packages/@muzi3/run-cmd?name=herdr"><code>@muzi3/run-cmd</code>
+0.1.2</a></td>
+<td><code>extensions/index.ts</code>; clickable/command-selected
+code-block runner.</td>
+<td>Opens a Herdr pane after confirmation; no M/T/N/persistent
+orchestration. Executes selected shell code, so confirmation and code
+provenance are the security boundary. <a href="https://codeberg.org/muzi/pi-packages/src/commit/75c18d44b9b81a2b389f355a318cc2121ffcd542/packages/run-cmd">source
+<code>75c18d44b9b81a2b389f355a318cc2121ffcd542</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">42</td>
+<td><a href="https://pi.dev/packages/@tian.zuo/pi-subagents?name=herdr"><code>@tian.zuo/pi-subagents</code>
+0.1.2</a></td>
+<td><code>index.ts</code>; subagent/status/cancel/apply and
+<code>/agents</code>.</td>
+<td>Profile-owned M/T/tools; Herdr or Pi-RPC child, no documented N.
+Persistent private patch/run artifacts, supervisor and explicit apply
+confirmation; agent argv is validated and RPC children disable ambient
+extensions/skills. <a href="https://github.com/TianZuo555/pi-extensions/tree/7415725c83052e5c70ad2d0f58dc43377bf267c1/packages/pi-subagents">source
+<code>7415725c83052e5c70ad2d0f58dc43377bf267c1</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">43</td>
+<td><a href="https://pi.dev/packages/pi-peer?name=herdr"><code>pi-peer</code>
+1.2.1</a></td>
+<td>Same three peer tools as the older blocking-request fork.</td>
+<td>Root-seat-only peer request/reply; child task seats excluded. No
+M/T/N. 0700 atomic mailbox, timeout-to-pending, 24h GC, bounded/escaped
+untrusted payloads and no thought/transcript access. <a href="https://github.com/MinhDuyDEV/pi-peer/tree/2a083a714314067a8c7c5a1520c0407bedfde90b/pi-extension/pi-peer">source
+<code>2a083a714314067a8c7c5a1520c0407bedfde90b</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">44</td>
+<td><a href="https://pi.dev/packages/@oipsanthony/pi-fork-with-herdr?name=herdr"><code>@oipsanthony/pi-fork-with-herdr</code>
+0.1.3</a></td>
+<td><code>extensions/index.ts</code>; session-fork command and Herdr
+adapter.</td>
+<td>Forks active branch into a tab; inherited current runtime rather
+than separate M/T policy; repeated forks but no nested result protocol.
+Session file provides history; launch errors are surfaced. <a href="https://github.com/OiAnthony/pi-extensions/tree/9b0f8ab2446eb2eac53c21f134e9c51a47119912/packages/pi-fork-with-herdr/extensions">source
+<code>9b0f8ab2446eb2eac53c21f134e9c51a47119912</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">45</td>
+<td><a href="https://pi.dev/packages/@xzzpig/pi-terminal-notifications?name=herdr"><code>@xzzpig/pi-terminal-notifications</code>
+0.1.1</a></td>
+<td>Old <code>extensions/index.ts</code>; replaced by
+<code>pi-notify</code> after the fixed source commit.</td>
+<td>Lifecycle/ask/permission notifications and Herdr blocked-state
+reporting; no M/T/N/history. State cleanup can become stale if lifecycle
+events are missed; no command execution beyond notification output. <a href="https://github.com/xzzpig/pi-extensions/tree/49b0a83b0dca18cbf33416b977afa0ae3920b3cb/packages/pi-terminal-notifications">source
+<code>49b0a83b0dca18cbf33416b977afa0ae3920b3cb</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">46</td>
+<td><a href="https://pi.dev/packages/@bumaociyuan/pi-herd-mirror-adapter?name=herdr"><code>@bumaociyuan/pi-herd-mirror-adapter</code>
+0.1.1</a></td>
+<td>npm tarball: <code>extensions/mirror-adapter.ts</code> and
+<code>src/mirror-service.ts</code>; <strong>no matching repository
+commit located</strong>.</td>
+<td>Bridges upstream subagent events to read-only Herdr transcript
+mirrors; it does not own spawn/model/N. Session-scoped local socket and
+shutdown cleanup; observation only, so steering/cancel stays with
+upstream. Treat unverifiable source provenance as a supply-chain risk.
+<a href="https://registry.npmjs.org/@bumaociyuan%2Fpi-herd-mirror-adapter/0.1.1">npm
+source metadata</a></td>
+</tr>
+<tr>
+<td style="text-align: right;">47</td>
+<td><a href="https://pi.dev/packages/@getpipher/cursor?name=herdr"><code>@getpipher/cursor</code>
+0.2.3</a></td>
+<td><code>extensions/cursor.ts</code>; focus providers and UI
+rendering.</td>
+<td>Herdr socket snapshot/event subscription, no M/T/N/history. Global
+config persists and propagates by file watcher; probes live sockets and
+restores hardware cursor on shutdown. Terminal control sequences/socket
+assumptions are the risk boundary. <a href="https://github.com/getpipher/cursor/tree/8b4dc31d0c0321f228b8551950cc98561e260c5f/lib/focus">source
+<code>8b4dc31d0c0321f228b8551950cc98561e260c5f</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">48</td>
+<td><a href="https://pi.dev/packages/pi-herdr-live-agents?name=herdr"><code>pi-herdr-live-agents</code>
+0.3.0</a></td>
+<td><code>src/index.ts</code>; root manager/tools and child
+reporter.</td>
+<td>Normal visible Pi sessions, inherited/profile M/T; <strong>N denied
+to children</strong>. Atomic capability-token mailbox and JSONL events;
+panes retained, limits fail rather than queue, explicit interrupt/close.
+Shared working tree is not isolated. <a href="https://github.com/aaaxn/pi-herdr-live-agents/tree/cd9119e9d51adbf5cb6af3b201e9929397bbe99a/src">source
+<code>cd9119e9d51adbf5cb6af3b201e9929397bbe99a</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">49</td>
+<td><a href="https://pi.dev/packages/@yassimba/pi-herdr-worktree?name=herdr"><code>@yassimba/pi-herdr-worktree</code>
+1.0.0</a></td>
+<td>Release at <code>plugins/herdr-worktree</code>; later repository
+layout renamed/reworked it.</td>
+<td>Continues active Pi session in a new Herdr-managed Git worktree;
+inherited runtime, no orchestration N. Session/worktree persist
+independently; creation/launch cleanup and Git state are key failure
+boundaries. <a href="https://github.com/Yassimba/loom/tree/7a3c16682dea48abd3d20c6d8df9b98621b9a914/plugins/herdr-worktree">source
+<code>7a3c16682dea48abd3d20c6d8df9b98621b9a914</code></a></td>
+</tr>
+<tr>
+<td style="text-align: right;">50</td>
+<td><a href="https://pi.dev/packages/pi-herdr-subagents-planning?name=herdr"><code>pi-herdr-subagents-planning</code>
+0.2.1</a></td>
+<td>Vendored Herdr-subagent extension, planner-todo forwarder, external
+todo/lens entries, skills.</td>
+<td>Fixed/config/role M/T and planning workflow; nesting follows old
+vendored runtime. <code>.agent</code>, plan/ADR/todo/session artifacts
+persist; todo forwarding has best-effort fallback and reload import.
+Vendored runtime/dependencies increase update and tool-collision risk.
+<a href="https://github.com/giacolees/plan-herdr-subagents/tree/92e2e6b16acee895268de0b1e95552bb8e1690e0">source
+<code>92e2e6b16acee895268de0b1e95552bb8e1690e0</code></a></td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="13.5" id="source-fact-synthesis-by-requested-dimension"><span class="header-section-number">13.5</span> Source-fact synthesis by
+requested dimension</h2>
+<h3 data-number="13.5.1" id="package-shape-and-entry-points"><span class="header-section-number">13.5.1</span> Package shape and entry
+points</h3>
+<p>The implementations divide into four materially different shapes:</p>
+<ol type="1">
+<li><strong>True Pi child runtimes:</strong>
+<code>pi-herdr-agents</code>, both <code>pi-herdr-subagents</code>
+variants, <code>@minhduydev/pi-subagents</code>,
+<code>@yofriadi/pi-subagent-herdr</code>, <code>pi-pier</code>,
+Shepherd/Shepherdr, <code>@tian.zuo/pi-subagents</code>,
+<code>pi-herdr-live-agents</code>, and the planning bundle. They
+register parent tools and usually a restricted child-side
+completion/reporter tool.</li>
+<li><strong>Herdr control substrates:</strong>
+<code>@ogulcancelik/pi-herdr</code>, <code>@sfroment/pi-herdr</code>,
+<code>@andrewjacop/pi-herdr</code>, <code>@henryqw/pi-herdr</code>, and
+<code>pi-terminal-mux</code>. These manage surfaces/processes but do not
+by themselves establish durable parent/child semantics.</li>
+<li><strong>Workflow/crew layers:</strong> <code>ry-skill</code>,
+<code>@itc-steve/pi-herdr</code>, <code>mu</code>,
+<code>pi-herdr-squad</code>,
+<code>@ret2hell/pi-herdr-orchestrator</code>, Apnea, Agent Fleet, and
+the planning bundle. These add stages, DAGs, roles, reviews, or setup
+policy.</li>
+<li><strong>Adjacent utilities:</strong>
+title/status/fork/worktree/todo/terminal/peer/notification packages.
+They are useful components or UX precedents but are not subagent
+harnesses.</li>
+</ol>
+<h3 data-number="13.5.2" id="lifecycle-and-herdr-integration"><span class="header-section-number">13.5.2</span> Lifecycle and Herdr
+integration</h3>
+<p>Three completion authorities appear in source:</p>
+<ul>
+<li><strong>Explicit child artifact/tool:</strong> qcts, live-agents,
+Shepherd, squad, Tian, and Pier. This gives a typed terminal outcome and
+is safest for nesting.</li>
+<li><strong>Pi session/event boundary:</strong> qcts waits for
+<code>agent_settled</code>; the subagent family records activity from Pi
+events; Pier replays session custom entries. This avoids treating an
+intermediate <code>agent_end</code> as final.</li>
+<li><strong>Herdr state/terminal observation:</strong> generic Herdr
+tools and older orchestrators wait on native agent state, terminal
+stability, output markers, or ledger text. This is useful for liveness
+but is weaker as the sole semantic completion signal.</li>
+</ul>
+<p>All serious integrations use Herdr IDs rather than focus-dependent
+keystrokes. The safer ones distinguish surfaces they created from
+caller-owned surfaces and retain evidence when termination cannot be
+proven.</p>
+<h3 data-number="13.5.3" id="model-and-thinking-configuration"><span class="header-section-number">13.5.3</span> Model and thinking
+configuration</h3>
+<p>The recurring precedence is <strong>explicit invocation →
+role/profile → package/global config → parent runtime</strong>.
+<code>pi-herdr-agents</code>, legacy <code>pi-herdr-subagents</code>,
+qcts, squad, and live-agents validate exact Pi model IDs and supported
+thinking levels. <code>@itc-steve/pi-herdr</code> instead partitions a
+default local model and ranked “think” models. Shepherd makes the role
+authoritative; Tian makes profiles authoritative. <code>mu</code>
+deliberately does not choose model/thinking and delegates launch
+commands to environment configuration.</p>
+<p>Silent fallback is generally dangerous: the better packages reject
+unavailable pinned models or report which fallback was selected. The
+qcts implementation also records observed runtime details in completion
+evidence.</p>
+<h3 data-number="13.5.4" id="nesting"><span class="header-section-number">13.5.4</span> Nesting</h3>
+<p>Only three reviewed designs provide substantial positive input for
+arbitrary nesting:</p>
+<ul>
+<li><strong>qcts:</strong> explicit parent/descendant ownership,
+continuation batching, completion delayed until descendants settle,
+cancellation acknowledgement after descendant drain, and direct
+self-type recursion rejection.</li>
+<li><strong>MinhDuy:</strong> recursive handle/scope API and
+descendant-first stop with bounded settlement reporting.</li>
+<li><strong>pi-herdr-agents / legacy pi-herdr-subagents:</strong> child
+tools can remain enabled, with role-level
+<code>spawning: false</code>/deny controls; this is flexible but less
+structurally strict.</li>
+</ul>
+<p>Several packages intentionally prohibit nesting
+(<code>@yofriadi/pi-subagent-herdr</code>, live-agents, Pier&#39;s default
+worker, squad), and others merely make accidental recursion possible
+because installed extensions load in a child
+(<code>@andrewjacop/pi-herdr</code>). Accidental availability is not a
+nesting protocol.</p>
+<h3 data-number="13.5.5" id="persistence-and-history"><span class="header-section-number">13.5.5</span> Persistence and history</h3>
+<ul>
+<li><strong>Strong durable control state:</strong> MinhDuy&#39;s run/task
+stores and <code>mu</code>&#39;s SQLite/WAL DAG.</li>
+<li><strong>Session-event sourcing:</strong> Pier and todo-herdr use Pi
+session entries, which naturally follow session branch/reload
+semantics.</li>
+<li><strong>Durable append logs:</strong> ry-skill pipelines, ITC
+journals, workflow journals, and peer mailboxes.</li>
+<li><strong>Ephemeral operation artifacts:</strong> qcts intentionally
+disables child Pi session persistence and does not recover old outcomes
+in a new parent process.</li>
+<li><strong>Human-readable child history:</strong> pi-herdr-agents and
+live-agents keep real Pi session/pane history; live-agents explicitly
+retains panes.</li>
+</ul>
+<h3 data-number="13.5.6" id="failure-cancellation-and-security"><span class="header-section-number">13.5.6</span> Failure, cancellation, and
+security</h3>
+<p>The strongest failure patterns are: rollback only newly created
+surfaces; preserve caller-owned or evidence-bearing surfaces;
+distinguish turn interrupt from process cancellation; report “unknown”
+when process death cannot be proved; make terminal outcome
+single-writer/at-most-once; and cancel descendants before acknowledging
+parent cancellation.</p>
+<p>Common security limitations are also explicit in first-party
+sources:</p>
+<ul>
+<li>A Herdr pane, Git worktree, VM, or Worker thread is
+<strong>not</strong> an OS security sandbox.</li>
+<li>Read-only role claims are not enforceable if arbitrary Bash remains
+available.</li>
+<li>Generic Herdr wrappers expose destructive process/session
+operations.</li>
+<li>Task text in argv can be visible in process listings; prompt
+files/mailboxes reduce that exposure.</li>
+<li>Peer and child output is untrusted model input and needs size bounds
+and delimiter/framing defenses.</li>
+<li>Remote SSH helpers, custom CLI templates, <code>--yolo</code>,
+<code>--dangerously-skip-permissions</code>, and <code>sudo sh -c</code>
+are deliberate high-trust boundaries, not implementation
+conveniences.</li>
+</ul>
+<h2 data-number="13.6" id="recommendations-for-the-python-harness-not-source-facts"><span class="header-section-number">13.6</span> Recommendations for the Python
+harness (not source facts)</h2>
+<ol type="1">
+<li><strong>Use a small two-sided protocol.</strong> Run a Python
+supervisor in the parent and a minimal child reporter plugin/helper in
+every spawned pane. Give each operation a random ID and capability
+token. The reporter emits typed <code>started</code>,
+<code>activity</code>, <code>blocked</code>, <code>completed</code>,
+<code>failed</code>, and <code>cancelled</code> records; terminal output
+is observability only.</li>
+<li><strong>Make lineage first-class.</strong> Persist
+<code>operation_id</code>, <code>parent_operation_id</code>,
+<code>root_operation_id</code>, depth, child IDs, Herdr
+workspace/tab/pane IDs, Pi session reference, model/thinking,
+cwd/worktree, state sequence, and cancellation epoch. Enforce maximum
+depth, fan-out, total live descendants, and budget. Reject direct
+same-profile recursion unless explicitly permitted.</li>
+<li><strong>Adopt qcts-style settlement.</strong> A node may be
+self-settled while descendants still run. Publish parent completion only
+after its direct descendants and pending result handoffs drain. On
+cancellation: atomically freeze new children, propagate
+descendant-first, wait to a deadline, record failures/unknowns, then
+acknowledge upstream.</li>
+<li><strong>Add stronger crash recovery than qcts.</strong> Use SQLite
+in WAL mode (or rigorously locked append-only JSONL) under a
+mode-<code>0700</code> harness directory with mode-<code>0600</code>
+artifacts. Reconcile records against Herdr native agent identity at
+startup. Never “adopt latest session”; require exact operation, pane,
+and child-session identity.</li>
+<li><strong>Use <code>asyncio.create_subprocess_exec</code>, never a
+shell.</strong> Pass Herdr as an argv array; validate IDs/enums; bound
+stdout/stderr/timeouts. Put task prompts in private files or a local
+authenticated socket rather than command-line arguments. Do not offer a
+generic “any Herdr subcommand” model tool.</li>
+<li><strong>Separate liveness from semantic completion.</strong>
+Subscribe to Herdr events or poll native <code>agent get</code> for
+process/liveness; accept semantic results only through the authenticated
+child channel. Treat <code>agent_end</code> as intermediate and
+<code>agent_settled</code> plus descendant drain as terminal.</li>
+<li><strong>Snapshot runtime policy at spawn.</strong> Resolve exact
+provider/model ID and thinking level once, validate them, record them
+with the operation, and pass them explicitly. Do not silently change
+model or widen tools on resume/recovery.</li>
+<li><strong>Keep panes visible and ownership-safe.</strong> Default to
+background tabs/panes without focus theft, retain failed/blocked panes
+for inspection, and close only surfaces recorded as supervisor-owned.
+Offer separate <code>interrupt turn</code>, <code>cancel subtree</code>,
+<code>close surface</code>, and <code>forget history</code>
+actions.</li>
+<li><strong>Treat worktrees as consistency tools, not
+sandboxes.</strong> Use exclusive writable scopes or one worktree per
+writing subtree, but combine that with child tool allowlists and
+OS-level controls if hostile code is in scope. Never claim Bash is
+read-only.</li>
+<li><strong>Bound all model-to-model data.</strong> Size-limit
+tasks/results/history; frame and escape untrusted child/peer text;
+redact secrets before persistence; store hashes and pointers for
+oversized results. Deliver each terminal result at most once, but keep
+an auditable durable record for replay.</li>
+</ol>
+<p>A pragmatic implementation order is: <strong>(1)</strong>
+live-agents-style visible pane + capability mailbox,
+<strong>(2)</strong> qcts-style lineage/descendant
+settlement/cancellation, <strong>(3)</strong> Pier-style event-sourced
+recovery, then <strong>(4)</strong> optional MinhDuy/mu-style durable
+scheduling, claims, reviews, and worktrees. This keeps the initial
+Python module deep and testable rather than reproducing an entire
+workflow platform.</p>
+</main>
+</body>
+</html>
