@@ -8,6 +8,10 @@ A durable, uniquely identified request for one worker execution. An operation ow
 
 The executor assigned to one operation. A worker's process or visible terminal state is liveness evidence, not proof of semantic completion.
 
+## Result
+
+The durable semantic output accepted from one worker. An operation refers to its result by location, byte count, and digest; reconstruction returns the output only after its integrity is verified.
+
 ## Runtime
 
 The caller-facing module that starts operations, returns their results, and cancels operation subtrees. Callers do not coordinate backend, persistence, child-channel, or presentation details directly.
