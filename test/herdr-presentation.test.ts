@@ -11,8 +11,7 @@ import {
 } from "../src/internal/herdr-presentation.js";
 import { makeRuntime } from "../src/internal/runtime.js";
 import {
-  FakeAgentBackend,
-  FakeChildChannel,
+  FakeWorkerAdapter,
   FakeClock,
   FakeIdGenerator,
   InMemoryEventStore,
@@ -69,6 +68,7 @@ function operation(paneId?: string): Operation {
     lineage: { rootOperationId: "operation-1", depth: 0 },
     state: "running",
     stateSeq: 3,
+    workerLaunched: true,
     task: { promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" },
     childOperationIds: [],
     settledChildOperationIds: [],
@@ -177,8 +177,7 @@ test("rollback targets exactly the newly-created pane", async () => {
 
 test("Runtime exposes a typed Herdr precondition violation", async () => {
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend(),
-    channel: new FakeChildChannel({ body: "finished" }),
+    worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock([]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(new FakeCommandExecutor([]), {}),
@@ -196,8 +195,7 @@ test("Runtime rejects missing Herdr before creating any resource", async () => {
   const ids = new FakeIdGenerator(["operation-1"]);
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend(),
-    channel: new FakeChildChannel({ body: "finished" }),
+    worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock([]),
     ids,
     presentation: presentation(executor, {}),
@@ -217,8 +215,7 @@ test("failed ownership persistence rolls back exactly the created pane", async (
     { stdout: JSON.stringify({ result: {} }) },
   ]);
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend(),
-    channel: new FakeChildChannel({ body: "finished" }),
+    worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock(["time-0"]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(executor),
@@ -230,22 +227,22 @@ test("failed ownership persistence rolls back exactly the created pane", async (
   assert.deepEqual(executor.invocations.at(-1)?.args, ["pane", "close", "opaque:new-pane"]);
 });
 
-test("the default backend-start failure policy retains the owned pane", async () => {
+test("the default Worker-start failure policy retains the owned pane", async () => {
   const executor = new FakeCommandExecutor([]);
-  await Effect.runPromise(presentation(executor).onBackendStartFailure(operation("opaque:new-pane")));
+  await Effect.runPromise(presentation(executor).onWorkerStartFailure(operation("opaque:new-pane")));
 
   assert.equal(executor.invocations.length, 0);
 });
 
-test("configured backend-start rollback closes exactly the owned pane", async () => {
+test("configured Worker-start rollback closes exactly the owned pane", async () => {
   const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
   const adapter = new HerdrPresentation({
     cwd: "/work/project",
     environment: herdrEnvironment,
     executor,
-    retainOnBackendStartFailure: false,
+    retainOnWorkerStartFailure: false,
   });
-  await Effect.runPromise(adapter.onBackendStartFailure(operation("opaque:new-pane")));
+  await Effect.runPromise(adapter.onWorkerStartFailure(operation("opaque:new-pane")));
 
   assert.deepEqual(executor.invocations[0]?.args, ["pane", "close", "opaque:new-pane"]);
 });
@@ -256,12 +253,10 @@ test("a Herdr projection failure cannot create Operation completion", async () =
   ]);
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend([], {
-      _tag: "BackendError",
-      reason: "backend_start_failed",
-      message: "worker failed",
+    worker: new FakeWorkerAdapter({
+      messages: { body: "unused" },
+      failure: "worker_start_failed",
     }),
-    channel: new FakeChildChannel({ body: "unused" }),
     clock: new FakeClock(Array.from({ length: 5 }, (_, index) => `time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(executor),
@@ -286,8 +281,7 @@ test("Runtime persists ownership returned by Herdr", async () => {
   ]);
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend(),
-    channel: new FakeChildChannel({ body: "finished" }),
+    worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(executor),

@@ -15,7 +15,7 @@ export interface Result {
 }
 
 export type OperationFailureReason =
-  | "backend_start_failed"
+  | "worker_start_failed"
   | "worker_protocol_failed"
   | "descendant_failed";
 

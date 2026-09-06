@@ -8,8 +8,9 @@ import type {
 } from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
 import type {
-  BackendCancellationEvidence,
+  WorkerCancellationEvidence,
   RuntimeServices,
+  Worker,
 } from "./services.js";
 import {
   CancellationRejectedError,
@@ -58,6 +59,7 @@ interface OperationRecord {
   pendingAdmissions: number;
   finalizing?: Promise<void>;
   resultDeliveryError?: ResultConflictError;
+  worker?: Worker;
 }
 
 function deferredResult(): {
@@ -81,7 +83,6 @@ function isTerminal(operation: Operation): boolean {
 
 export function makeRuntime(services: RuntimeServices): Runtime {
   const resultAcceptance = makeResultAcceptance({
-    channel: services.channel,
     store: services.store,
   });
   const records = new Map<string, OperationRecord>();
@@ -179,7 +180,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       );
     } else {
       const reason =
-        operation.terminalReason === "backend_start_failed" ||
+        operation.terminalReason === "worker_start_failed" ||
         operation.terminalReason === "worker_protocol_failed" ||
         operation.terminalReason === "descendant_failed"
           ? operation.terminalReason
@@ -260,64 +261,63 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       );
       await runEffect(project(operation));
 
-      const backendStart = await Effect.runPromise(
-        Effect.either(services.backend.start(operation)),
-      );
-      if (backendStart._tag === "Left") {
-        const reason = backendStart.left.reason;
-        await runEffect(
-          Effect.catchAllCause(
-            services.presentation.onBackendStartFailure(operation),
-            () => Effect.void,
-          ),
-        );
+      const worker = record.worker;
+      if (worker === undefined) {
+        throw new Error("Worker was not opened");
+      }
+      const workerOutcome = await runEffect(worker.run({
+        workerLaunched: () => advanceOperation(record.operationId, {
+          type: "worker_launched",
+        }).pipe(
+          Effect.tap((launched) => project(launched)),
+          Effect.asVoid,
+        ),
+        workerIdentified: (workerIdentity) => advanceOperation(
+          record.operationId,
+          { type: "operation_started" },
+        ).pipe(
+          Effect.tap((started) => project(started)),
+          Effect.flatMap((started) => advanceOperation(record.operationId, {
+            type: "worker_identified",
+            workerIdentity: {
+              processInstanceId: workerIdentity.processInstanceId,
+              paneId: started.presentation?.paneId ?? "",
+            },
+          })),
+          Effect.tap((identified) => project(identified)),
+          Effect.asVoid,
+        ),
+        acceptResults: (deliveries) => resultAcceptance.accept(
+          record.operationId,
+          deliveries,
+        ),
+      }));
+      if (workerOutcome.state !== "result_acknowledged") {
+        const current = await runEffect(getOperation(record.operationId));
+        if (isTerminal(current) || current.state === "cancelling") return;
+        if (workerOutcome.state === "worker_start_failed") {
+          await runEffect(
+            Effect.catchAllCause(
+              services.presentation.onWorkerStartFailure(current),
+              () => Effect.void,
+            ),
+          );
+        }
         operation = await runEffect(
           advanceOperation(record.operationId, {
             type: "self_settled",
             outcome: "failed",
-            reason,
+            reason: workerOutcome.state,
           }),
         );
         await runEffect(project(operation));
         await tryFinalize(record);
         return;
       }
-
-      operation = await runEffect(
-        advanceOperation(record.operationId, { type: "operation_started" }),
-      );
-      await runEffect(project(operation));
-
-      const workerIdentity = await runEffect(services.channel.receiveStarted(operation));
-      operation = await runEffect(
-        advanceOperation(record.operationId, {
-          type: "worker_identified",
-          workerIdentity: {
-            processInstanceId: workerIdentity.processInstanceId,
-            paneId: operation.presentation?.paneId ?? "",
-          },
-        }),
-      );
-      await runEffect(project(operation));
-      const acceptance = await runEffect(
-        resultAcceptance.acceptFromWorker(record.operationId),
-      );
-      if (acceptance.state === "protocol_failed") {
-        operation = await runEffect(
-          advanceOperation(record.operationId, {
-            type: "self_settled",
-            outcome: "failed",
-            reason: "worker_protocol_failed",
-          }),
-        );
-        await runEffect(project(operation));
-        await tryFinalize(record);
-        return;
-      }
-      if (acceptance.resultDeliveryError === undefined) {
+      if (workerOutcome.resultDeliveryError === undefined) {
         delete record.resultDeliveryError;
       } else {
-        record.resultDeliveryError = acceptance.resultDeliveryError;
+        record.resultDeliveryError = workerOutcome.resultDeliveryError;
       }
 
       operation = await runEffect(
@@ -336,27 +336,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ) {
         return;
       }
-      if (typeof error === "object" && error !== null && "_tag" in error && error._tag === "ChannelError") {
-        const failed = await runEffect(
-          advanceOperation(record.operationId, {
-            type: "self_settled",
-            outcome: "failed",
-            reason: "worker_protocol_failed",
-          }),
-        );
-        await runEffect(project(failed));
-        await tryFinalize(record);
-      } else {
-        record.rejectTerminal(
-          error instanceof ResultConflictError ||
-          error instanceof OperationPersistenceError
-            ? error
-            : new RuntimeError(
-                "operation_failed",
-                error instanceof Error ? error.message : String(error),
-              ),
-        );
-      }
+      record.rejectTerminal(
+        error instanceof ResultConflictError ||
+        error instanceof OperationPersistenceError
+          ? error
+          : new RuntimeError(
+              "operation_failed",
+              error instanceof Error ? error.message : String(error),
+            ),
+      );
     }
   };
 
@@ -492,6 +480,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       throw error;
     }
     await runEffect(project(operation));
+    record.worker = services.worker.open(operation);
     return record;
   };
 
@@ -582,7 +571,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       return postOrder;
     }).then(async (postOrder) => {
       const responses: Array<
-        Promise<BackendCancellationEvidence | undefined>
+        Promise<WorkerCancellationEvidence | undefined>
       > = [];
       for (const { record } of postOrder) {
         const operation = await runEffect(
@@ -593,7 +582,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         );
         await runEffect(project(operation));
         const response = Promise.race([
-          runEffect(services.backend.cancel(operation, epoch)),
+          record.worker === undefined
+            ? Promise.resolve(undefined)
+            : runEffect(record.worker.cancel(epoch)),
           runEffect(services.clock.sleep(options.timeoutMs ?? 1_000)).then(
             () => undefined,
           ),

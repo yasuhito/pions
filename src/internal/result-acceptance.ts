@@ -1,32 +1,33 @@
 import { Effect } from "effect";
 
 import type { EventStore, StoreError } from "./event-store/index.js";
-import type { ChildChannel } from "./services.js";
 import {
   OperationPersistenceError,
   ResultConflictError,
 } from "../public.js";
 import type { Result } from "../public.js";
+import { resultDeliveryViolation } from "./worker-protocol.js";
+import type {
+  ResultAcceptanceProof,
+  ResultDelivery,
+} from "./worker-protocol.js";
 
 export type ResultAcceptanceOutcome =
   | {
       readonly state: "accepted";
-      readonly result: Result;
+      readonly proofs: ReadonlyArray<ResultAcceptanceProof>;
       readonly resultDeliveryError?: ResultConflictError;
     }
-  | {
-      readonly state: "protocol_failed";
-      readonly acceptedResult?: Result;
-    };
+  | { readonly state: "protocol_failed" };
 
 export interface ResultAcceptance {
-  acceptFromWorker(
+  accept(
     operationId: string,
+    deliveries: ReadonlyArray<ResultDelivery>,
   ): Effect.Effect<ResultAcceptanceOutcome, OperationPersistenceError>;
 }
 
 interface ResultAcceptanceDependencies {
-  readonly channel: ChildChannel;
   readonly store: EventStore;
 }
 
@@ -44,20 +45,22 @@ export function makeResultAcceptance(
   dependencies: ResultAcceptanceDependencies,
 ): ResultAcceptance {
   return {
-    acceptFromWorker(operationId) {
+    accept(operationId, deliveries) {
       return Effect.gen(function* () {
-        const reception = yield* Effect.either(
-          dependencies.channel.receiveResults(operationId),
-        );
-        if (reception._tag === "Left" || reception.right.deliveries.length === 0) {
+        if (
+          deliveries.length === 0 ||
+          deliveries.some((delivery) =>
+            resultDeliveryViolation(operationId, delivery) !== undefined
+          )
+        ) {
           return { state: "protocol_failed" } as const;
         }
 
         let acceptedResult: Result | undefined;
         let resultDeliveryError: ResultConflictError | undefined;
-        let acknowledgementFailed = false;
+        const proofs: Array<ResultAcceptanceProof> = [];
 
-        for (const delivery of reception.right.deliveries) {
+        for (const delivery of deliveries) {
           const acceptance = yield* Effect.either(
             dependencies.store.advance(operationId, {
               type: "accept_result",
@@ -66,7 +69,7 @@ export function makeResultAcceptance(
           );
           if (acceptance._tag === "Left") {
             if (acceptance.left instanceof ResultConflictError) {
-              resultDeliveryError = acceptance.left;
+              resultDeliveryError ??= acceptance.left;
               if (acceptedResult === undefined) {
                 const snapshot = yield* dependencies.store.read(operationId).pipe(
                   Effect.mapError((error) => persistenceError(operationId, error)),
@@ -78,7 +81,7 @@ export function makeResultAcceptance(
                 }
                 acceptedResult = snapshot.result;
               }
-              break;
+              continue;
             }
             return yield* Effect.fail(
               persistenceError(operationId, acceptance.left),
@@ -94,26 +97,15 @@ export function makeResultAcceptance(
             );
           }
           acceptedResult = acceptance.right.result;
-          const acknowledgement = yield* Effect.either(
-            dependencies.channel.acknowledgeResult(
-              acceptance.right.resultAcceptanceProof,
-            ),
-          );
-          if (acknowledgement._tag === "Left") acknowledgementFailed = true;
+          proofs.push(acceptance.right.resultAcceptanceProof);
         }
 
         if (acceptedResult === undefined) {
           return { state: "protocol_failed" } as const;
         }
-        if (acknowledgementFailed) {
-          return {
-            state: "protocol_failed",
-            acceptedResult,
-          } as const;
-        }
         return {
           state: "accepted",
-          result: acceptedResult,
+          proofs,
           ...(resultDeliveryError === undefined ? {} : { resultDeliveryError }),
         } as const;
       });

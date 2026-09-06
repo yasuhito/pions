@@ -14,50 +14,32 @@ import {
   CancellationRejectedError,
   OperationCancelledError,
   OperationFailedError,
+  OperationPersistenceError,
   ResultConflictError,
   SpawnRejectedError,
 } from "../src/index.js";
 import type { Operation } from "../src/internal/event-store/index.js";
 import type { ResultDelivery } from "../src/internal/worker-protocol.js";
+import {
+  acknowledgeResultAcceptance,
+  makeSingleRunWorker,
+} from "../src/internal/services.js";
 import type {
-  BackendCancellationEvidence,
-  ChildChannel,
+  WorkerCancellationEvidence,
   RuntimeClock,
+  Worker,
+  WorkerRunHooks,
+  WorkerRunOutcome,
+  WorkerAdapter,
 } from "../src/internal/services.js";
 import {
-  FakeAgentBackend,
-  FakeChildChannel,
+  FakeWorkerAdapter,
   FakeClock,
   FakeIdGenerator,
   FakePresentation,
   InMemoryEventStore,
 } from "../src/internal/testing.js";
-
-class ControlledCancellationBackend extends FakeAgentBackend {
-  readonly cancelTrace: Array<string> = [];
-  private readonly responders = new Map<
-    string,
-    (effect: Effect.Effect<BackendCancellationEvidence>) => void
-  >();
-
-  override cancel(
-    operation: Operation,
-    cancellationEpoch: number,
-  ): Effect.Effect<BackendCancellationEvidence> {
-    return Effect.async((resume) => {
-      this.cancelTrace.push(`${operation.operationId}:${cancellationEpoch}`);
-      this.responders.set(operation.operationId, resume);
-    });
-  }
-
-  acknowledge(operationId: string): void {
-    const resume = this.responders.get(operationId);
-    if (resume === undefined) {
-      throw new Error(`No cancellation for ${operationId}`);
-    }
-    resume(Effect.succeed({ proof: "acknowledgement" }));
-  }
-}
+import type { FakeWorkerAdapterOptions } from "../src/internal/testing.js";
 
 class ControlledTestClock implements RuntimeClock {
   private readonly runtime = ManagedRuntime.make(TestContext.TestContext);
@@ -84,64 +66,77 @@ class ControlledTestClock implements RuntimeClock {
   }
 }
 
-class FailingResultChannel implements ChildChannel {
-  receiveStarted(_operation: Operation) {
-    return Effect.succeed({ processInstanceId: "failed-process-instance" });
-  }
-
-  receiveResults(_operationId: string) {
-    return Effect.fail({ _tag: "ChannelError" as const, message: "disconnected" });
-  }
-
-  acknowledgeResult() {
-    return Effect.void;
-  }
-}
-
-class FailingAcknowledgementChannel extends FakeChildChannel {
-  constructor() {
-    super({ body: "accepted" });
-  }
-
-  override acknowledgeResult() {
-    return Effect.fail({
-      _tag: "ChannelError" as const,
-      message: "acknowledgement failed",
-    });
-  }
-}
-
-class ControlledChildChannel implements ChildChannel {
+class ControlledWorkerAdapter implements WorkerAdapter {
+  startCount = 0;
+  readonly cancelTrace: Array<string> = [];
   private readonly receivers = new Map<
     string,
-    (effect: Effect.Effect<{
-      readonly deliveries: ReadonlyArray<ResultDelivery>;
-    }>) => void
+    (effect: Effect.Effect<ReadonlyArray<ResultDelivery>>) => void
+  >();
+  private readonly cancellationResponders = new Map<
+    string,
+    (effect: Effect.Effect<WorkerCancellationEvidence | undefined>) => void
   >();
 
-  receiveStarted(operation: Operation) {
-    return Effect.succeed({ processInstanceId: `process:${operation.operationId}` });
-  }
-
-  receiveResults(operationId: string) {
-    return Effect.async<{
-      readonly deliveries: ReadonlyArray<ResultDelivery>;
-    }>((resume) => {
-      this.receivers.set(operationId, resume);
+  open(operation: Operation): Worker {
+    return makeSingleRunWorker({
+      run: (hooks) => this.run(operation, hooks),
+      cancel: (cancellationEpoch) => Effect.async((resume) => {
+        this.cancelTrace.push(`${operation.operationId}:${cancellationEpoch}`);
+        this.cancellationResponders.set(operation.operationId, resume);
+      }),
     });
   }
 
-  acknowledgeResult(): Effect.Effect<void> {
-    return Effect.void;
+  protected run(
+    operation: Operation,
+    hooks: Readonly<WorkerRunHooks>,
+  ): Effect.Effect<
+    WorkerRunOutcome,
+    OperationPersistenceError | ResultConflictError
+  > {
+    return Effect.gen(this, function* () {
+      this.startCount += 1;
+      yield* hooks.workerLaunched();
+      yield* hooks.workerIdentified({ processInstanceId: `process:${operation.operationId}` });
+      const deliveries = yield* Effect.async<ReadonlyArray<ResultDelivery>>((resume) => {
+        this.receivers.set(operation.operationId, resume);
+      });
+      const acceptance = yield* hooks.acceptResults(deliveries);
+      return yield* acknowledgeResultAcceptance(
+        acceptance,
+        () => Effect.void,
+      );
+    });
   }
 
   deliver(operationId: string, body = "finished"): void {
     const resume = this.receivers.get(operationId);
     if (resume === undefined) throw new Error(`No receiver for ${operationId}`);
     const digest = `sha256:${createHash("sha256").update(body).digest("hex")}` as const;
-    resume(Effect.succeed({
-      deliveries: [{ body, digest, sequenceNumber: 1 }],
-    }));
+    resume(Effect.succeed([{ operationId, body, digest, sequenceNumber: 1 }]));
+  }
+
+  acknowledge(operationId: string): void {
+    const resume = this.cancellationResponders.get(operationId);
+    if (resume === undefined) throw new Error(`No cancellation for ${operationId}`);
+    resume(Effect.succeed({ proof: "acknowledgement" }));
+  }
+}
+
+class FailingChildWorkerAdapter extends ControlledWorkerAdapter {
+  protected override run(
+    operation: Operation,
+    hooks: Readonly<WorkerRunHooks>,
+  ): Effect.Effect<
+    WorkerRunOutcome,
+    OperationPersistenceError | ResultConflictError
+  > {
+    if (operation.operationId === "child") {
+      this.startCount += 1;
+      return Effect.succeed({ state: "worker_start_failed" });
+    }
+    return super.run(operation, hooks);
   }
 }
 
@@ -166,14 +161,13 @@ function operationEvents(trace: ReadonlyArray<string>, operationId: string) {
 }
 
 async function completeOperation(
-  messages: ConstructorParameters<typeof FakeChildChannel>[0] = {
+  messages: NonNullable<FakeWorkerAdapterOptions["messages"]> = {
     body: "finished",
   },
   presentationFails = false,
 ) {
   const trace: Array<string> = [];
-  const backend = new FakeAgentBackend(trace);
-  const channel = new FakeChildChannel(messages, trace);
+  const worker = new FakeWorkerAdapter({ messages, trace });
   const clock = new FakeClock([
     "2026-09-06T10:00:00.000Z",
     "2026-09-06T10:00:01.000Z",
@@ -184,6 +178,7 @@ async function completeOperation(
     "2026-09-06T10:00:06.000Z",
     "2026-09-06T10:00:07.000Z",
     "2026-09-06T10:00:08.000Z",
+    "2026-09-06T10:00:09.000Z",
   ]);
   const store = new InMemoryEventStore(trace, clock);
   const presentation = new FakePresentation(
@@ -192,8 +187,7 @@ async function completeOperation(
     presentationFails,
   );
   const runtime = makeRuntime({
-    backend,
-    channel,
+    worker,
     clock,
     ids: new FakeIdGenerator(["operation-1"]),
     presentation,
@@ -207,7 +201,7 @@ async function completeOperation(
   });
 
   return {
-    backend,
+    worker,
     handle,
     presentation,
     result: await handle.result(),
@@ -217,11 +211,10 @@ async function completeOperation(
 }
 
 test("each Operation records root, parent, and depth lineage", async () => {
-  const channel = new ControlledChildChannel();
+  const worker = new ControlledWorkerAdapter();
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend(),
-    channel,
+    worker,
     clock: new FakeClock(Array.from({ length: 30 }, (_, index) =>
       `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
     )),
@@ -255,14 +248,12 @@ test("each Operation records root, parent, and depth lineage", async () => {
 });
 
 function nestedRuntime(operationIds: ReadonlyArray<string>) {
-  const backend = new FakeAgentBackend();
-  const channel = new ControlledChildChannel();
+  const worker = new ControlledWorkerAdapter();
   const ids = new FakeIdGenerator(operationIds);
   const presentation = new FakePresentation();
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
-    backend,
-    channel,
+    worker,
     clock: new FakeClock(
       Array.from({ length: 100 }, (_, index) =>
         `2026-09-06T10:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
@@ -272,7 +263,7 @@ function nestedRuntime(operationIds: ReadonlyArray<string>) {
     presentation,
     store,
   });
-  return { backend, channel, ids, presentation, runtime, store };
+  return { ids, presentation, runtime, store, worker };
 }
 
 async function spawnNested(
@@ -287,22 +278,20 @@ async function spawnNested(
 }
 
 function cancellableNestedRuntime(operationIds: ReadonlyArray<string>) {
-  const backend = new ControlledCancellationBackend();
-  const channel = new ControlledChildChannel();
+  const worker = new ControlledWorkerAdapter();
   const clock = new ControlledTestClock(
     Array.from({ length: 100 }, (_, index) => `cancel-time-${index}`),
   );
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(trace);
   const runtime = makeRuntime({
-    backend,
-    channel,
+    worker,
     clock,
     ids: new FakeIdGenerator(operationIds),
     presentation: new FakePresentation(),
     store,
   });
-  return { backend, channel, clock, runtime, store, trace };
+  return { clock, runtime, store, trace, worker };
 }
 
 async function spawnCancellationTree() {
@@ -339,7 +328,7 @@ test("subtree cancellation freezes new descendants before dispatch", async () =>
 });
 
 test("cancellation remains the outcome when Result acceptance loses the persistence race", async () => {
-  const { backend, channel, runtime } = cancellableNestedRuntime(["root"]);
+  const { runtime, worker } = cancellableNestedRuntime(["root"]);
   const root = await runtime.spawn({
     promptRef: "root",
     profile: "coding",
@@ -348,9 +337,9 @@ test("cancellation remains the outcome when Result acceptance loses the persiste
   await waitForReceiver();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  channel.deliver(root.operationId);
+  worker.deliver(root.operationId);
   await waitForReceiver();
-  backend.acknowledge(root.operationId);
+  worker.acknowledge(root.operationId);
   await cancellation;
 
   await assert.rejects(
@@ -360,23 +349,23 @@ test("cancellation remains the outcome when Result acceptance loses the persiste
 });
 
 test("subtree cancellation dispatches from grandchild to parent", async () => {
-  const { backend, clock, root } = await spawnCancellationTree();
+  const { clock, root, worker } = await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
   await clock.advanceBy(1_000);
   await cancellation;
 
-  assert.deepEqual(backend.cancelTrace, ["grandchild:1", "child:1", "root:1"]);
+  assert.deepEqual(worker.cancelTrace, ["grandchild:1", "child:1", "root:1"]);
 });
 
 test("acknowledged subtree cancellation ends as cancelled", async () => {
-  const { backend, child, clock, grandchild, root, store } =
+  const { child, clock, grandchild, root, store, worker } =
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  backend.acknowledge(grandchild.operationId);
-  backend.acknowledge(child.operationId);
-  backend.acknowledge(root.operationId);
+  worker.acknowledge(grandchild.operationId);
+  worker.acknowledge(child.operationId);
+  worker.acknowledge(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
@@ -384,12 +373,12 @@ test("acknowledged subtree cancellation ends as cancelled", async () => {
 });
 
 test("an unproven descendant makes subtree cancellation unknown", async () => {
-  const { backend, clock, grandchild, root, store } =
+  const { clock, grandchild, root, store, worker } =
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  backend.acknowledge(grandchild.operationId);
-  backend.acknowledge(root.operationId);
+  worker.acknowledge(grandchild.operationId);
+  worker.acknowledge(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
@@ -403,12 +392,12 @@ test("an unproven descendant makes subtree cancellation unknown", async () => {
 });
 
 test("an acknowledged parent retains its evidence when a descendant is unproven", async () => {
-  const { backend, clock, grandchild, root, trace } =
+  const { clock, grandchild, root, trace, worker } =
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  backend.acknowledge(grandchild.operationId);
-  backend.acknowledge(root.operationId);
+  worker.acknowledge(grandchild.operationId);
+  worker.acknowledge(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
@@ -419,14 +408,14 @@ test("an acknowledged parent retains its evidence when a descendant is unproven"
 });
 
 test("retrying one cancellation epoch is idempotent", async () => {
-  const { backend, child, clock, grandchild, root } =
+  const { child, clock, grandchild, root, worker } =
     await spawnCancellationTree();
   const first = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
   const retry = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
   await waitForReceiver();
-  backend.acknowledge(grandchild.operationId);
-  backend.acknowledge(child.operationId);
-  backend.acknowledge(root.operationId);
+  worker.acknowledge(grandchild.operationId);
+  worker.acknowledge(child.operationId);
+  worker.acknowledge(root.operationId);
   await clock.advanceBy(1_000);
   await first;
 
@@ -434,13 +423,13 @@ test("retrying one cancellation epoch is idempotent", async () => {
 });
 
 test("Runtime rejects an older cancellation epoch", async () => {
-  const { backend, child, clock, grandchild, root } =
+  const { child, clock, grandchild, root, worker } =
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
   await waitForReceiver();
-  backend.acknowledge(grandchild.operationId);
-  backend.acknowledge(child.operationId);
-  backend.acknowledge(root.operationId);
+  worker.acknowledge(grandchild.operationId);
+  worker.acknowledge(child.operationId);
+  worker.acknowledge(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
@@ -452,14 +441,14 @@ test("Runtime rejects an older cancellation epoch", async () => {
 });
 
 test("subtree cancellation preserves an already completed descendant", async () => {
-  const { backend, channel, child, clock, grandchild, root, store } =
+  const { child, clock, grandchild, root, store, worker } =
     await spawnCancellationTree();
-  channel.deliver(grandchild.operationId);
+  worker.deliver(grandchild.operationId);
   await grandchild.result();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  backend.acknowledge(child.operationId);
-  backend.acknowledge(root.operationId);
+  worker.acknowledge(child.operationId);
+  worker.acknowledge(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
@@ -467,66 +456,51 @@ test("subtree cancellation preserves an already completed descendant", async () 
 });
 
 test("a self-settled parent drains while its child is still running", async () => {
-  const { channel, runtime, store } = nestedRuntime(["root", "child"]);
+  const { runtime, store, worker } = nestedRuntime(["root", "child"]);
   const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
   await spawnNested(runtime, root.operationId, "child");
   await waitForReceiver();
 
-  channel.deliver(root.operationId);
+  worker.deliver(root.operationId);
   await waitForReceiver();
 
   assert.equal((await storedOperation(store, root.operationId)).state, "draining_descendants");
 });
 
 test("a parent completes after its child result handoff terminates", async () => {
-  const { channel, runtime, store } = nestedRuntime(["root", "child"]);
+  const { runtime, store, worker } = nestedRuntime(["root", "child"]);
   const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
   const child = await spawnNested(runtime, root.operationId, "child");
   await waitForReceiver();
-  channel.deliver(root.operationId);
-  channel.deliver(child.operationId);
+  worker.deliver(root.operationId);
+  worker.deliver(child.operationId);
   await Promise.all([root.result(), child.result()]);
 
   assert.equal((await storedOperation(store, root.operationId)).state, "completed");
 });
 
 test("a grandparent completes only after its grandchild terminates", async () => {
-  const { channel, runtime, store } = nestedRuntime(["root", "child", "grandchild"]);
+  const { runtime, store, worker } = nestedRuntime(["root", "child", "grandchild"]);
   const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
   const child = await spawnNested(runtime, root.operationId, "child");
   const grandchild = await spawnNested(runtime, child.operationId, "grandchild");
   await waitForReceiver();
-  channel.deliver(root.operationId);
-  channel.deliver(child.operationId);
+  worker.deliver(root.operationId);
+  worker.deliver(child.operationId);
   await waitForReceiver();
 
   const beforeGrandchild = (await storedOperation(store, root.operationId)).state;
-  channel.deliver(grandchild.operationId);
+  worker.deliver(grandchild.operationId);
   await Promise.all([root.result(), child.result(), grandchild.result()]);
 
   assert.equal(beforeGrandchild, "draining_descendants");
 });
 
 test("the default descendant failure policy fails a successful parent", async () => {
-  const channel = new ControlledChildChannel();
+  const worker = new FailingChildWorkerAdapter();
   const store = new InMemoryEventStore();
-  const backend = {
-    start(operation: Operation) {
-      return operation.operationId === "child"
-        ? Effect.fail({
-            _tag: "BackendError" as const,
-            reason: "backend_start_failed" as const,
-            message: "child failed",
-          })
-        : Effect.void;
-    },
-    cancel() {
-      return Effect.succeed({ proof: "backend-stop" as const });
-    },
-  };
   const runtime = makeRuntime({
-    backend,
-    channel,
+    worker,
     clock: new FakeClock(Array.from({ length: 30 }, (_, index) => `time-${index}`)),
     ids: new FakeIdGenerator(["root", "child"]),
     presentation: new FakePresentation(),
@@ -535,7 +509,7 @@ test("the default descendant failure policy fails a successful parent", async ()
   const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
   await spawnNested(runtime, root.operationId, "child");
   await waitForReceiver();
-  channel.deliver(root.operationId);
+  worker.deliver(root.operationId);
 
   await assert.rejects(
     root.result(),
@@ -591,8 +565,8 @@ test("Runtime rejects a fifth live descendant of one root", async () => {
   );
 });
 
-test("a rejected child creates no identifier, backend, or Presentation resource", async () => {
-  const { backend, ids, presentation, runtime } = nestedRuntime([
+async function rejectedChildResources() {
+  const { ids, presentation, runtime, worker } = nestedRuntime([
     "root",
     "child-1",
     "child-2",
@@ -605,14 +579,32 @@ test("a rejected child creates no identifier, backend, or Presentation resource"
     spawnNested(runtime, root.operationId, "child-3"),
   ]);
   await waitForReceiver();
-  const before = [ids.issuedCount, backend.startCount, presentation.projections.length];
+  const before = {
+    issuedIdentifiers: ids.issuedCount,
+    presentations: presentation.projections.length,
+    workerStarts: worker.startCount,
+  };
   await spawnNested(runtime, root.operationId, "child-4").catch(() => undefined);
   await waitForReceiver();
+  return { before, ids, presentation, worker };
+}
 
-  assert.deepEqual(
-    [ids.issuedCount, backend.startCount, presentation.projections.length],
-    before,
-  );
+test("a rejected child creates no identifier", async () => {
+  const { before, ids } = await rejectedChildResources();
+
+  assert.equal(ids.issuedCount, before.issuedIdentifiers);
+});
+
+test("a rejected child creates no Worker resource", async () => {
+  const { before, worker } = await rejectedChildResources();
+
+  assert.equal(worker.startCount, before.workerStarts);
+});
+
+test("a rejected child creates no Presentation resource", async () => {
+  const { before, presentation } = await rejectedChildResources();
+
+  assert.equal(presentation.projections.length, before.presentations);
 });
 
 test("retrying the same child acceptance returns one child", async () => {
@@ -642,10 +634,10 @@ test("OperationHandle exposes the Operation identifier", async () => {
   assert.equal(handle.operationId, "operation-1");
 });
 
-test("Runtime starts the AgentBackend once", async () => {
-  const { backend } = await completeOperation();
+test("Runtime starts the Worker once", async () => {
+  const { worker } = await completeOperation();
 
-  assert.equal(backend.startCount, 1);
+  assert.equal(worker.startCount, 1);
 });
 
 test("Operation records the worker process instance identity", async () => {
@@ -669,6 +661,7 @@ test("Runtime records the successful Operation event sequence", async () => {
       "operation_requested",
       "presentation_owned",
       "operation_starting",
+      "worker_launched",
       "operation_started",
       "worker_identified",
       "result_persisted",
@@ -692,6 +685,7 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
       { seq: 6, timestamp: "2026-09-06T10:00:05.000Z" },
       { seq: 7, timestamp: "2026-09-06T10:00:06.000Z" },
       { seq: 8, timestamp: "2026-09-06T10:00:07.000Z" },
+      { seq: 9, timestamp: "2026-09-06T10:00:08.000Z" },
     ],
   );
 });
@@ -715,10 +709,9 @@ test("Presentation failure cannot prevent terminal completion", async () => {
 });
 
 async function retryOperation(options?: { readonly parentOperationId?: string }) {
-  const backend = new FakeAgentBackend();
+  const worker = new FakeWorkerAdapter({ messages: { body: "finished" } });
   const runtime = makeRuntime({
-    backend,
-    channel: new FakeChildChannel({ body: "finished" }),
+    worker,
     clock: new FakeClock([
       "2026-09-06T10:00:00.000Z",
       "2026-09-06T10:00:01.000Z",
@@ -728,6 +721,7 @@ async function retryOperation(options?: { readonly parentOperationId?: string })
       "2026-09-06T10:00:05.000Z",
       "2026-09-06T10:00:06.000Z",
       "2026-09-06T10:00:07.000Z",
+      "2026-09-06T10:00:08.000Z",
     ]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
@@ -745,7 +739,7 @@ async function retryOperation(options?: { readonly parentOperationId?: string })
   ]);
   await handles[0]?.result();
 
-  return { backend, handles };
+  return { handles, worker };
 }
 
 test("Runtime returns the same OperationHandle for an idempotent spawn", async () => {
@@ -754,10 +748,10 @@ test("Runtime returns the same OperationHandle for an idempotent spawn", async (
   assert.equal(handles[0], handles[1]);
 });
 
-test("Runtime starts the AgentBackend once for an idempotent spawn", async () => {
-  const { backend } = await retryOperation();
+test("Runtime starts the Worker once for an idempotent spawn", async () => {
+  const { worker } = await retryOperation();
 
-  assert.equal(backend.startCount, 1);
+  assert.equal(worker.startCount, 1);
 });
 
 test("Runtime rejects a conflicting Result with a typed error", async () => {
@@ -773,11 +767,12 @@ test("Runtime rejects a conflicting Result with a typed error", async () => {
 async function conflictResult() {
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend(),
-    channel: new FakeChildChannel([
-      { body: "finished", sequenceNumber: 1 },
-      { body: "conflicting", sequenceNumber: 1 },
-    ]),
+    worker: new FakeWorkerAdapter({
+      messages: [
+        { body: "finished", sequenceNumber: 1 },
+        { body: "conflicting", sequenceNumber: 1 },
+      ],
+    }),
     clock: new FakeClock([
       "2026-09-06T10:00:00.000Z",
       "2026-09-06T10:00:01.000Z",
@@ -833,12 +828,11 @@ async function failOperation() {
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(trace);
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend(trace, {
-      _tag: "BackendError",
-      reason: "backend_start_failed",
-      message: "worker executable unavailable",
+    worker: new FakeWorkerAdapter({
+      messages: { body: "must not be returned" },
+      trace,
+      failure: "worker_start_failed",
     }),
-    channel: new FakeChildChannel({ body: "must not be returned" }),
     clock: new FakeClock([
       "2026-09-06T10:00:00.000Z",
       "2026-09-06T10:00:01.000Z",
@@ -860,11 +854,13 @@ async function failOperation() {
   return { handle, store, trace };
 }
 
-test("a ChildChannel failure is durably classified without fake completion", async () => {
+test("a Worker protocol failure is durably classified without fake completion", async () => {
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
-    backend: new FakeAgentBackend(),
-    channel: new FailingResultChannel(),
+    worker: new FakeWorkerAdapter({
+      messages: { body: "unused" },
+      failure: "worker_protocol_failed",
+    }),
     clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
@@ -875,35 +871,59 @@ test("a ChildChannel failure is durably classified without fake completion", asy
 
   assert.equal((await storedOperation(store, "operation-1")).terminalReason, "worker_protocol_failed");
 });
+
+async function acknowledgementFailure(
+  messages: NonNullable<FakeWorkerAdapterOptions["messages"]> = { body: "accepted" },
+): Promise<InMemoryEventStore> {
+  const store = new InMemoryEventStore();
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter({ messages, acknowledgementFails: true }),
+    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  await handle.result().catch(() => undefined);
+  return store;
+}
 
 test("an acknowledgement failure is durably classified", async () => {
-  const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
-    backend: new FakeAgentBackend(),
-    channel: new FailingAcknowledgementChannel(),
-    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
-  await handle.result().catch(() => undefined);
+  const store = await acknowledgementFailure();
 
   assert.equal((await storedOperation(store, "operation-1")).terminalReason, "worker_protocol_failed");
 });
 
-test("OperationHandle reports backend failure as a bounded typed failure", async () => {
+test("an acknowledgement failure retains the accepted Result", async () => {
+  const store = await acknowledgementFailure();
+
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).result?.body, "accepted");
+});
+
+test("an acknowledgement failure retains Result conflict evidence", async () => {
+  const store = await acknowledgementFailure([
+    { body: "accepted", sequenceNumber: 1 },
+    { body: "conflicting", sequenceNumber: 2 },
+  ]);
+
+  assert.equal(
+    (await storedOperation(store, "operation-1")).resultConflict?.deliverySequenceNumber,
+    2,
+  );
+});
+
+test("OperationHandle reports Worker start failure as a bounded typed failure", async () => {
   const { handle } = await failOperation();
 
   await assert.rejects(
     handle.result(),
     (error) =>
       error instanceof OperationFailedError &&
-      error.reason === "backend_start_failed",
+      error.reason === "worker_start_failed",
   );
 });
 
-test("backend failure records the failed terminal result", async () => {
+test("Worker start failure records the failed terminal result", async () => {
   const { trace } = await failOperation();
 
   assert.deepEqual(
@@ -918,7 +938,7 @@ test("backend failure records the failed terminal result", async () => {
   );
 });
 
-test("backend failure does not publish a successful Result", async () => {
+test("Worker start failure does not publish a successful Result", async () => {
   const { store } = await failOperation();
 
   assert.equal((await Effect.runPromise(store.read("operation-1"))).result, undefined);

@@ -13,7 +13,10 @@ import type {
   HostProtocolEvent,
   WorkerConfig,
 } from "../src/internal/worker-protocol.js";
-import { resultAcceptanceProof } from "./worker-protocol-fixtures.js";
+import {
+  resultAcceptanceProof,
+  resultDigest,
+} from "./worker-protocol-fixtures.js";
 
 const authority = {
   operationId: "operation-1",
@@ -65,6 +68,7 @@ test("Worker protocol returns the authenticated Result reception", () => {
     type: "results_received",
     reception: {
       deliveries: [{
+        operationId: "operation-1",
         body: "finished",
         digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
         sequenceNumber: 1,
@@ -115,6 +119,10 @@ test("Worker protocol rejects a stale Worker sequence", () => {
     () => host.receive(started),
     (error) => error instanceof ProtocolViolation && error.reason === "sequence_mismatch",
   );
+});
+
+test("Worker protocol uses version 2", () => {
+  assert.equal(WORKER_PROTOCOL_VERSION, 2);
 });
 
 test("Worker protocol rejects a different frame version", () => {
@@ -287,7 +295,8 @@ test("Worker protocol makes a premature ACK reception terminal", () => {
   const acknowledgement = Buffer.from(`${JSON.stringify({
     protocolVersion: WORKER_PROTOCOL_VERSION,
     operationId: authority.operationId,
-    sequenceNumber: 1,
+    digest: resultDigest("finished"),
+    deliverySequenceNumber: 1,
     type: "ack",
   })}\n`, "utf8");
   try {
@@ -314,7 +323,7 @@ test("Worker protocol makes a failed ACK reception terminal", () => {
   const first = host.acknowledgeResult(resultAcceptanceProof(authority.operationId, "finished", 1));
   const invalid = rewriteFrame(
     host.acknowledgeResult(resultAcceptanceProof(authority.operationId, "finished", 2)).bytes,
-    { sequenceNumber: 99 },
+    { deliverySequenceNumber: 99 },
   );
   try {
     worker.receive(Buffer.concat([first.bytes, invalid]));
@@ -326,6 +335,22 @@ test("Worker protocol makes a failed ACK reception terminal", () => {
     () => worker.receive(first.bytes),
     (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
   );
+});
+
+test("ACK distinguishes conflicting Results with the same delivery sequence", () => {
+  const { host, worker } = peers();
+  host.receive(Buffer.concat([
+    worker.send({ type: "hello", processInstanceId }),
+    worker.send({ type: "started" }),
+    worker.send({ type: "result", body: "accepted", deliverySequenceNumber: 1 }),
+    worker.send({ type: "result", body: "conflicting", deliverySequenceNumber: 1 }),
+    worker.send({ type: "done" }),
+  ]));
+  const acknowledgement = host.acknowledgeResult(
+    resultAcceptanceProof(authority.operationId, "accepted", 1),
+  );
+
+  assert.equal(worker.receive(acknowledgement.bytes).acknowledgementsComplete, false);
 });
 
 test("Worker protocol rejects ACK before Result reception completes", () => {

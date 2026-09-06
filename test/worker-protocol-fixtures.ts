@@ -16,6 +16,7 @@ export function resultAcceptanceProof(
   sequenceNumber = 1,
 ): ResultAcceptanceProof {
   const delivery: ResultDelivery = {
+    operationId,
     body,
     digest: resultDigest(body),
     sequenceNumber,

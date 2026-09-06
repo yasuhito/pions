@@ -5,7 +5,7 @@ import { Schema } from "effect";
 import type { Result } from "../public.js";
 import { resultDigest } from "./result-digest.js";
 
-export const WORKER_PROTOCOL_VERSION = 1 as const;
+export const WORKER_PROTOCOL_VERSION = 2 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -87,7 +87,8 @@ const DoneSchema = Schema.Struct({
 const AcknowledgementSchema = Schema.Struct({
   protocolVersion: Schema.Number,
   operationId: Schema.NonEmptyString,
-  sequenceNumber: Schema.Number,
+  digest: DigestSchema,
+  deliverySequenceNumber: Schema.Number,
   type: Schema.Literal("ack"),
 });
 
@@ -113,9 +114,26 @@ export interface WorkerConfig {
 }
 
 export interface ResultDelivery {
+  readonly operationId: string;
   readonly body: string;
   readonly digest: Result["digest"];
   readonly sequenceNumber: number;
+}
+
+export function resultDeliveryViolation(
+  operationId: string,
+  delivery: Readonly<ResultDelivery>,
+): "authority_mismatch" | "invalid_frame" | "digest_mismatch" | undefined {
+  if (delivery.operationId !== operationId) return "authority_mismatch";
+  if (
+    typeof delivery.body !== "string" ||
+    !Number.isSafeInteger(delivery.sequenceNumber) ||
+    delivery.sequenceNumber <= 0
+  ) return "invalid_frame";
+  if (delivery.digest !== resultDigest(Buffer.from(delivery.body, "utf8"))) {
+    return "digest_mismatch";
+  }
+  return undefined;
 }
 
 declare const resultAcceptanceProof: unique symbol;
@@ -393,7 +411,8 @@ export class HostProtocolPeer extends FramedPeer {
     const bytes = this.encodeFrame({
       protocolVersion: WORKER_PROTOCOL_VERSION,
       operationId: this.authority.operationId,
-      sequenceNumber: acceptance.sequenceNumber,
+      digest: acceptance.digest,
+      deliverySequenceNumber: acceptance.sequenceNumber,
       type: "ack",
     });
     if (pending === 1) this.pendingAcknowledgements.delete(key);
@@ -449,20 +468,22 @@ export class HostProtocolPeer extends FramedPeer {
       if (this.state !== "receiving_results") {
         throw violation("invalid_transition", "Result arrived before started notification");
       }
-      validateSafePositiveInteger(result.deliverySequenceNumber, "deliverySequenceNumber");
-      this.resultBudget.accept(result.body);
-      if (result.digest !== resultDigest(Buffer.from(result.body, "utf8"))) {
-        throw violation("digest_mismatch", "Result digest does not match its body");
-      }
-      this.deliveries.push({
+      const delivery: ResultDelivery = {
+        operationId: this.authority.operationId,
         body: result.body,
         digest: result.digest as Result["digest"],
         sequenceNumber: result.deliverySequenceNumber,
-      });
-      const key = deliveryKey({
-        digest: result.digest as Result["digest"],
-        sequenceNumber: result.deliverySequenceNumber,
-      });
+      };
+      const deliveryViolation = resultDeliveryViolation(
+        this.authority.operationId,
+        delivery,
+      );
+      if (deliveryViolation !== undefined) {
+        throw violation(deliveryViolation, "Result delivery is invalid");
+      }
+      this.resultBudget.accept(delivery.body);
+      this.deliveries.push(delivery);
+      const key = deliveryKey(delivery);
       this.pendingAcknowledgements.set(
         key,
         (this.pendingAcknowledgements.get(key) ?? 0) + 1,
@@ -523,7 +544,7 @@ export class WorkerProtocolPeer extends FramedPeer {
     | "failed" = "new";
   private sequenceNumber = 1;
   private readonly resultBudget: ResultBudget;
-  private readonly pendingAcknowledgements = new Map<number, number>();
+  private readonly pendingAcknowledgements = new Map<string, number>();
 
   constructor(
     private readonly authority: Readonly<ProtocolAuthority>,
@@ -560,17 +581,22 @@ export class WorkerProtocolPeer extends FramedPeer {
         }
         validateSafePositiveInteger(event.deliverySequenceNumber, "deliverySequenceNumber");
         const bodyBytes = this.resultBudget.check(event.body);
+        const digest = resultDigest(Buffer.from(event.body, "utf8"));
         const bytes = this.encodeWorkerFrame({
           type: "result",
           body: event.body,
-          digest: resultDigest(Buffer.from(event.body, "utf8")),
+          digest,
           deliverySequenceNumber: event.deliverySequenceNumber,
         });
         this.resultBudget.commit(bodyBytes);
         this.state = "delivering";
+        const key = deliveryKey({
+          digest,
+          sequenceNumber: event.deliverySequenceNumber,
+        });
         this.pendingAcknowledgements.set(
-          event.deliverySequenceNumber,
-          (this.pendingAcknowledgements.get(event.deliverySequenceNumber) ?? 0) + 1,
+          key,
+          (this.pendingAcknowledgements.get(key) ?? 0) + 1,
         );
         return bytes;
       }
@@ -599,13 +625,20 @@ export class WorkerProtocolPeer extends FramedPeer {
         if (acknowledgement.operationId !== this.authority.operationId) {
           throw violation("authority_mismatch", "Acknowledgement operation does not match");
         }
-        validateSafePositiveInteger(acknowledgement.sequenceNumber, "sequenceNumber");
-        const pending = this.pendingAcknowledgements.get(acknowledgement.sequenceNumber) ?? 0;
+        validateSafePositiveInteger(
+          acknowledgement.deliverySequenceNumber,
+          "deliverySequenceNumber",
+        );
+        const key = deliveryKey({
+          digest: acknowledgement.digest as Result["digest"],
+          sequenceNumber: acknowledgement.deliverySequenceNumber,
+        });
+        const pending = this.pendingAcknowledgements.get(key) ?? 0;
         if (pending === 0) {
           throw violation("unexpected_acknowledgement", "Acknowledgement does not match a Result delivery");
         }
-        if (pending === 1) this.pendingAcknowledgements.delete(acknowledgement.sequenceNumber);
-        else this.pendingAcknowledgements.set(acknowledgement.sequenceNumber, pending - 1);
+        if (pending === 1) this.pendingAcknowledgements.delete(key);
+        else this.pendingAcknowledgements.set(key, pending - 1);
       });
       const acknowledgementsComplete = this.pendingAcknowledgements.size === 0;
       if (acknowledgementsComplete) {

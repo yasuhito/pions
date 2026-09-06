@@ -5,92 +5,107 @@ import type {
   Operation,
   OperationState,
 } from "./event-store/index.js";
-import type {
-  ResultAcceptanceProof,
-  ResultDelivery,
-} from "./worker-protocol.js";
+import type { ResultAcceptanceProof } from "./worker-protocol.js";
 export { InMemoryEventStore } from "./event-store/memory-storage.js";
+import {
+  acknowledgeResultAcceptance,
+  makeSingleRunWorker,
+} from "./services.js";
 import type {
-  AgentBackend,
-  ChildChannel,
-  ChannelError,
-  ChannelReception,
+  WorkerCancellationEvidence,
   IdGenerator,
   Presentation,
   RuntimeClock,
-  BackendError,
-  BackendCancellationEvidence,
+  Worker,
+  WorkerRunHooks,
+  WorkerRunOutcome,
+  WorkerAdapter,
 } from "./services.js";
-import type { Result } from "../public.js";
+import type {
+  OperationPersistenceError,
+  Result,
+  ResultConflictError,
+} from "../public.js";
 import { resultDigest } from "./result-digest.js";
 
-export class FakeAgentBackend implements AgentBackend {
-  startCount = 0;
-
-  constructor(
-    private readonly trace: Array<string> = [],
-    private readonly failure?: BackendError,
-  ) {}
-
-  start(_operation: Operation): Effect.Effect<void, BackendError> {
-    return Effect.suspend(() => {
-      this.startCount += 1;
-      this.trace.push("backend:start");
-      return this.failure === undefined
-        ? Effect.void
-        : Effect.fail(this.failure);
-    });
-  }
-
-  cancel(
-    _operation: Operation,
-    _cancellationEpoch: number,
-  ): Effect.Effect<BackendCancellationEvidence, BackendError> {
-    return Effect.succeed({ proof: "backend-stop" });
-  }
-}
-
-interface FakeResultMessage {
+export interface FakeResultMessage {
   readonly body: string;
   readonly digest?: Result["digest"];
   readonly sequenceNumber?: number;
 }
 
-export class FakeChildChannel implements ChildChannel {
+export interface FakeWorkerAdapterOptions {
+  readonly messages?: FakeResultMessage | ReadonlyArray<FakeResultMessage>;
+  readonly trace?: Array<string>;
+  readonly failure?: "worker_start_failed" | "worker_protocol_failed";
+  readonly acknowledgementFails?: boolean;
+}
+
+export class FakeWorkerAdapter implements WorkerAdapter {
+  startCount = 0;
+  private readonly acknowledgementFails: boolean;
+  private readonly failure: "worker_start_failed" | "worker_protocol_failed" | undefined;
   private readonly messages: ReadonlyArray<FakeResultMessage>;
+  private readonly trace: Array<string>;
 
-  constructor(
-    messages: FakeResultMessage | ReadonlyArray<FakeResultMessage>,
-    private readonly trace: Array<string> = [],
-  ) {
+  constructor(options: FakeWorkerAdapterOptions = {}) {
+    const messages = options.messages ?? { body: "finished" };
     this.messages = Array.isArray(messages) ? messages : [messages];
+    this.trace = options.trace ?? [];
+    this.failure = options.failure;
+    this.acknowledgementFails = options.acknowledgementFails ?? false;
   }
 
-  receiveStarted(_operation: Operation) {
-    return Effect.succeed({ processInstanceId: "fake-process-instance" });
-  }
-
-  receiveResults(
-    _operationId: string,
-  ): Effect.Effect<ChannelReception, ChannelError> {
-    return Effect.sync(() => {
-      this.trace.push("channel:receive-result");
-      return {
-        deliveries: this.messages.map((message) => ({
-          body: message.body,
-          digest: message.digest ?? resultDigest(Buffer.from(message.body, "utf8")),
-          sequenceNumber: message.sequenceNumber ?? 1,
-        })),
-      };
+  open(operation: Operation): Worker {
+    return makeSingleRunWorker({
+      run: (hooks) => this.run(operation, hooks),
+      cancel: (epoch) => this.cancel(operation, epoch),
     });
   }
 
-  acknowledgeResult(
-    acceptance: Readonly<ResultAcceptanceProof>,
-  ): Effect.Effect<void, ChannelError> {
-    return Effect.sync(() => {
-      this.trace.push(`channel:ack:${acceptance.sequenceNumber}`);
+  protected run(
+    operation: Operation,
+    hooks: Readonly<WorkerRunHooks>,
+  ): Effect.Effect<
+    WorkerRunOutcome,
+    OperationPersistenceError | ResultConflictError
+  > {
+    return Effect.gen(this, function* () {
+      this.startCount += 1;
+      this.trace.push("worker:start");
+      if (this.failure === "worker_start_failed") {
+        return { state: "worker_start_failed" } as const;
+      }
+      yield* hooks.workerLaunched();
+      if (this.failure === "worker_protocol_failed") {
+        return { state: "worker_protocol_failed" } as const;
+      }
+      yield* hooks.workerIdentified({ processInstanceId: "fake-process-instance" });
+      this.trace.push("worker-protocol:receive-result");
+      const acceptance = yield* hooks.acceptResults(this.messages.map((message) => ({
+        operationId: operation.operationId,
+        body: message.body,
+        digest: message.digest ?? resultDigest(Buffer.from(message.body, "utf8")),
+        sequenceNumber: message.sequenceNumber ?? 1,
+      })));
+      return yield* acknowledgeResultAcceptance(
+        acceptance,
+        (proof) => this.acknowledgementFails
+          ? Effect.fail(new Error("Fake Worker acknowledgement failed"))
+          : Effect.sync(() => this.acknowledge(proof)),
+      );
     });
+  }
+
+  protected acknowledge(acceptance: Readonly<ResultAcceptanceProof>): void {
+    this.trace.push(`worker-protocol:ack:${acceptance.sequenceNumber}`);
+  }
+
+  protected cancel(
+    _operation: Operation,
+    _cancellationEpoch: number,
+  ): Effect.Effect<WorkerCancellationEvidence | undefined> {
+    return Effect.succeed({ proof: "worker-stop" });
   }
 }
 
@@ -176,7 +191,7 @@ export class FakePresentation implements Presentation {
     });
   }
 
-  onBackendStartFailure(_operation: Operation): Effect.Effect<void> {
+  onWorkerStartFailure(_operation: Operation): Effect.Effect<void> {
     return Effect.void;
   }
 

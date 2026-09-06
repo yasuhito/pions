@@ -41,6 +41,7 @@ export interface Operation {
   readonly workerIdentity?: Readonly<WorkerIdentity>;
   readonly state: OperationState;
   readonly stateSeq: number;
+  readonly workerLaunched: boolean;
   readonly task: Readonly<TaskSpec>;
   readonly childOperationIds: ReadonlyArray<string>;
   readonly settledChildOperationIds: ReadonlyArray<string>;
@@ -67,7 +68,7 @@ export interface ResultConflictEvidence {
   readonly deliverySequenceNumber: number;
 }
 
-export const EVENT_SCHEMA_VERSION = 2 as const;
+export const EVENT_SCHEMA_VERSION = 3 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 

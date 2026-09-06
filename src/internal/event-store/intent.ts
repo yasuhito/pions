@@ -27,6 +27,7 @@ export type OperationIntent =
       readonly outcome: "succeeded" | "failed";
     }
   | { readonly type: "operation_starting" }
+  | { readonly type: "worker_launched" }
   | { readonly type: "operation_started" }
   | {
       readonly type: "worker_identified";
@@ -53,7 +54,7 @@ export type OperationIntent =
   | {
       readonly type: "cancel_acknowledged";
       readonly cancellationEpoch: number;
-      readonly proof: "acknowledgement" | "backend-stop";
+      readonly proof: "acknowledgement" | "worker-stop";
     }
   | {
       readonly type: "operation_cancelled";

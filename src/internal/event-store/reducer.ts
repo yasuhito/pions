@@ -94,6 +94,7 @@ export function reduceOperation(
       lineage: { ...event.lineage },
       state: "queued",
       stateSeq: event.seq,
+      workerLaunched: false,
       task: { ...event.task },
       childOperationIds: [],
       settledChildOperationIds: [],
@@ -189,8 +190,14 @@ export function reduceOperation(
       }
       return immutable({ ...current, state: "starting", stateSeq: event.seq });
 
+    case "worker_launched":
+      if (current.state !== "starting" || current.workerLaunched) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({ ...current, workerLaunched: true, stateSeq: event.seq });
+
     case "operation_started":
-      if (current.state !== "starting") {
+      if (current.state !== "starting" || !current.workerLaunched) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({ ...current, state: "running", stateSeq: event.seq });

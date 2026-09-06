@@ -72,11 +72,11 @@ const ResultConflict = Schema.Struct({
   deliverySequenceNumber: SafeInteger,
 });
 const FailureReason = Schema.Literal(
-  "backend_start_failed",
+  "worker_start_failed",
   "worker_protocol_failed",
   "descendant_failed",
 );
-const CancellationProof = Schema.Literal("acknowledgement", "backend-stop");
+const CancellationProof = Schema.Literal("acknowledgement", "worker-stop");
 
 const OperationEventSchema = Schema.Union(
   Schema.Struct({
@@ -102,6 +102,7 @@ const OperationEventSchema = Schema.Union(
     outcome: Schema.Literal("succeeded", "failed"),
   }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_starting") }),
+  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("worker_launched") }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_started") }),
   Schema.Struct({
     ...EventMetadataFields,

@@ -113,7 +113,7 @@ async function main(): Promise<void> {
       }
     });
     socket.once("error", reject);
-    socket.once("end", () => reject(new Error("ChildChannel disconnected before ACK")));
+    socket.once("end", () => reject(new Error("Worker protocol disconnected before ACK")));
   });
   socket.end();
 }

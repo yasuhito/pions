@@ -11,18 +11,25 @@ import {
 } from "./worker-protocol.js";
 import type {
   ResultAcceptanceProof,
+  ResultDelivery,
   WorkerConfig,
 } from "./worker-protocol.js";
 import type { Operation } from "./event-store/index.js";
 import { operationDirectoryKey } from "./event-store/index.js";
-import type {
-  AgentBackend,
-  BackendCancellationEvidence,
-  BackendError,
-  ChannelError,
-  ChannelReception,
-  ChildChannel,
+import {
+  acknowledgeResultAcceptance,
+  makeSingleRunWorker,
 } from "./services.js";
+import type {
+  Worker,
+  WorkerAdapter,
+  WorkerRunHooks,
+  WorkerRunOutcome,
+} from "./services.js";
+import type {
+  OperationPersistenceError,
+  ResultConflictError,
+} from "../public.js";
 import type { CommandExecutor } from "./herdr-presentation.js";
 
 const DIRECTORY_MODE = 0o700;
@@ -46,29 +53,64 @@ export interface VisibleWorkerOptions {
   readonly capabilityGenerator?: WorkerCapabilityGenerator;
   readonly promptReader?: PromptReader;
   readonly profiles?: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly serverFactory?: () => Server;
+}
+
+interface WorkerProtocolError {
+  readonly _tag: "WorkerProtocolError";
+  readonly message: string;
+}
+
+interface ResultDeliveryReception {
+  readonly deliveries: ReadonlyArray<ResultDelivery>;
+}
+
+class WorkerCancellation {
+  private isRequested = false;
+
+  request(): void {
+    this.isRequested = true;
+  }
+
+  get requested(): boolean {
+    return this.isRequested;
+  }
+
+  requireLaunchAllowed(phase: "before" | "during" = "before"): void {
+    if (this.requested) {
+      throw new Error(`Worker was cancelled ${phase} launch`);
+    }
+  }
 }
 
 interface Session {
   readonly operation: Operation;
   readonly server: Server;
   readonly socketPath: string;
-  readonly reception: Promise<ChannelReception>;
-  resolveReception(value: ChannelReception): void;
-  rejectReception(error: ChannelError): void;
+  readonly reception: Promise<ResultDeliveryReception>;
+  resolveReception(value: ResultDeliveryReception): void;
+  rejectReception(error: WorkerProtocolError): void;
   readonly startedReception: Promise<{ readonly processInstanceId: string }>;
   resolveStarted(value: { readonly processInstanceId: string }): void;
-  rejectStarted(error: ChannelError): void;
+  rejectStarted(error: WorkerProtocolError): void;
   socket?: Socket;
   receptionCompleted: boolean;
   readonly protocol: HostProtocolPeer;
 }
 
-function channelError(message: string): ChannelError {
-  return { _tag: "ChannelError", message };
+function protocolError(message: string): WorkerProtocolError {
+  return { _tag: "WorkerProtocolError", message };
 }
 
-function backendError(message: string): BackendError {
-  return { _tag: "BackendError", reason: "backend_start_failed", message };
+function receiveWorkerProtocol<Value>(
+  reception: Promise<Value>,
+): Effect.Effect<Value, WorkerProtocolError> {
+  return Effect.tryPromise({
+    try: () => reception,
+    catch: (error) => protocolError(
+      error instanceof Error ? error.message : String(error),
+    ),
+  });
 }
 
 function writeSocket(socket: Socket, bytes: Buffer): Promise<void> {
@@ -102,69 +144,102 @@ const defaultCapabilityGenerator: WorkerCapabilityGenerator = {
   nextCapability: () => randomBytes(32).toString("hex"),
 };
 
-export class VisibleWorker implements AgentBackend, ChildChannel {
+export class VisibleWorker implements WorkerAdapter {
   private readonly sessions = new Map<string, Session>();
   private readonly capabilityGenerator: WorkerCapabilityGenerator;
   private readonly promptReader: PromptReader;
+  private readonly serverFactory: () => Server;
 
   constructor(private readonly options: VisibleWorkerOptions) {
     this.capabilityGenerator = options.capabilityGenerator ?? defaultCapabilityGenerator;
     this.promptReader = options.promptReader ?? defaultPromptReader;
+    this.serverFactory = options.serverFactory ?? createServer;
   }
 
-  start(operation: Operation): Effect.Effect<void, BackendError> {
-    return Effect.tryPromise({
-      try: () => this.startWorker(operation),
-      catch: (error) => backendError(error instanceof Error ? error.message : String(error)),
+  open(operation: Operation): Worker {
+    const cancellation = new WorkerCancellation();
+    return makeSingleRunWorker({
+      run: (hooks) => this.runSession(operation, hooks, cancellation),
+      cancel: (_cancellationEpoch) => Effect.sync(() => {
+        cancellation.request();
+        const session = this.sessions.get(operation.operationId);
+        if (session?.socket !== undefined) {
+          const cancellation = session.protocol.requestCancellation();
+          if (cancellation !== undefined) session.socket.write(cancellation);
+        }
+        if (session !== undefined) {
+          this.reject(session, "Visible Worker cancellation has no stop evidence");
+        }
+        return undefined;
+      }),
     });
   }
 
-  receiveStarted(operation: Operation) {
-    const session = this.sessions.get(operation.operationId);
-    return session === undefined
-      ? Effect.fail(channelError("ChildChannel was not prepared"))
-      : Effect.tryPromise({
-          try: () => session.startedReception,
-          catch: (error) => error as ChannelError,
-        });
+  private runSession(
+    operation: Operation,
+    hooks: Readonly<WorkerRunHooks>,
+    cancellation: WorkerCancellation,
+  ): Effect.Effect<
+    WorkerRunOutcome,
+    OperationPersistenceError | ResultConflictError
+  > {
+    let session: Session | undefined;
+    return Effect.gen(this, function* () {
+      if (cancellation.requested) {
+        return { state: "worker_protocol_failed" } as const;
+      }
+      const launch = yield* Effect.either(Effect.tryPromise({
+        try: () => this.startWorker(operation, cancellation),
+        catch: (error) => error instanceof Error ? error : new Error(String(error)),
+      }));
+      if (launch._tag === "Left") {
+        return {
+          state: cancellation.requested
+            ? "worker_protocol_failed"
+            : "worker_start_failed",
+        } as const;
+      }
+      session = launch.right;
+      if (cancellation.requested) {
+        return { state: "worker_protocol_failed" } as const;
+      }
+      yield* hooks.workerLaunched();
+
+      return yield* Effect.gen(this, function* () {
+        const started = yield* receiveWorkerProtocol(session!.startedReception);
+        yield* hooks.workerIdentified(started);
+        const reception = yield* receiveWorkerProtocol(session!.reception);
+        const acceptance = yield* hooks.acceptResults(reception.deliveries);
+        return yield* acknowledgeResultAcceptance(
+          acceptance,
+          (proof) => Effect.tryPromise({
+            try: () => this.sendAcknowledgement(session!, proof),
+            catch: (error) => error instanceof Error ? error : new Error(String(error)),
+          }),
+        );
+      }).pipe(
+        Effect.catchTag(
+          "WorkerProtocolError",
+          () => Effect.succeed({ state: "worker_protocol_failed" } as const),
+        ),
+      );
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => {
+        if (
+          session !== undefined &&
+          this.sessions.get(session.operation.operationId) === session
+        ) {
+          this.closeSession(session);
+        }
+      })),
+    );
   }
 
-  receiveResults(operationId: string): Effect.Effect<ChannelReception, ChannelError> {
-    const session = this.sessions.get(operationId);
-    return session === undefined
-      ? Effect.fail(channelError("ChildChannel was not prepared"))
-      : Effect.tryPromise({
-          try: () => session.reception,
-          catch: (error) => error as ChannelError,
-        });
-  }
-
-  acknowledgeResult(
-    acceptance: Readonly<ResultAcceptanceProof>,
-  ): Effect.Effect<void, ChannelError> {
-    return Effect.tryPromise({
-      try: () => this.sendAcknowledgement(acceptance),
-      catch: (error) => (typeof error === "object" && error !== null && "_tag" in error)
-        ? error as ChannelError
-        : channelError(error instanceof Error ? error.message : String(error)),
-    });
-  }
-
-  cancel(operation: Operation): Effect.Effect<BackendCancellationEvidence, BackendError> {
-    const session = this.sessions.get(operation.operationId);
-    if (session?.socket !== undefined) {
-      const cancellation = session.protocol.requestCancellation();
-      if (cancellation !== undefined) session.socket.write(cancellation);
-    }
-    return Effect.fail(backendError("Visible worker stop has not been acknowledged"));
-  }
-
-  close(operation: Operation): void {
-    const session = this.sessions.get(operation.operationId);
-    if (session !== undefined) this.closeSession(session);
-  }
-
-  private async startWorker(operation: Operation): Promise<void> {
+  private async startWorker(
+    operation: Operation,
+    cancellation: WorkerCancellation,
+  ): Promise<Session> {
+    cancellation.requireLaunchAllowed();
     if (operation.presentation === undefined) throw new Error("Worker pane ownership is missing");
     const directory = join(this.options.rootDirectory, operationDirectoryKey(operation.operationId));
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
@@ -173,6 +248,7 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
     const configPath = join(directory, "worker.v1.json");
     const socketPath = join(directory, "child.sock");
     const prompt = await this.promptReader.read(operation.task.promptRef);
+    cancellation.requireLaunchAllowed();
     if (prompt.byteLength > DEFAULT_MAX_PROMPT_BYTES) throw new Error("Prompt exceeds the configured size limit");
     const capability = this.capabilityGenerator.nextCapability();
     const agentArgs = (this.options.profiles ?? { coding: [] })[operation.task.profile];
@@ -191,47 +267,56 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
     await chmod(promptPath, FILE_MODE);
     await writeFile(configPath, encodedConfig, { mode: FILE_MODE, flag: "wx" });
     await chmod(configPath, FILE_MODE);
+    cancellation.requireLaunchAllowed();
     const session = this.createSession(operation, capability, socketPath);
     this.sessions.set(operation.operationId, session);
-    await new Promise<void>((resolve, reject) => {
-      session.server.once("error", reject);
-      session.server.listen(socketPath, () => {
-        session.server.unref();
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        session.server.once("error", reject);
+        session.server.listen(socketPath, () => {
+          session.server.unref();
+          resolve();
+        });
       });
-    });
-    await chmod(socketPath, FILE_MODE);
+      await chmod(socketPath, FILE_MODE);
 
-    const command = [
-      this.options.nodeExecutable ?? process.execPath,
-      this.options.wrapperEntryPath,
-      configPath,
-    ].map(shellQuote).join(" ");
-    const output = await Effect.runPromise(this.options.executor.execute({
-      executable: "herdr",
-      args: ["pane", "run", operation.presentation.paneId, command],
-      cwd: this.options.cwd,
-      shell: false,
-    }));
-    if (output.exitCode !== 0) throw new Error(output.stderr.trim() || "Unable to launch visible worker");
+      cancellation.requireLaunchAllowed();
+      const command = [
+        this.options.nodeExecutable ?? process.execPath,
+        this.options.wrapperEntryPath,
+        configPath,
+      ].map(shellQuote).join(" ");
+      const output = await Effect.runPromise(this.options.executor.execute({
+        executable: "herdr",
+        args: ["pane", "run", operation.presentation.paneId, command],
+        cwd: this.options.cwd,
+        shell: false,
+      }));
+      if (output.exitCode !== 0) throw new Error(output.stderr.trim() || "Unable to launch visible worker");
+      cancellation.requireLaunchAllowed("during");
+      return session;
+    } catch (error) {
+      this.closeSession(session);
+      throw error;
+    }
   }
 
   private createSession(operation: Operation, capability: string, socketPath: string): Session {
-    let resolveReception!: (value: ChannelReception) => void;
-    let rejectReception!: (error: ChannelError) => void;
-    const reception = new Promise<ChannelReception>((resolve, reject) => {
+    let resolveReception!: (value: ResultDeliveryReception) => void;
+    let rejectReception!: (error: WorkerProtocolError) => void;
+    const reception = new Promise<ResultDeliveryReception>((resolve, reject) => {
       resolveReception = resolve;
       rejectReception = reject;
     });
     let resolveStarted!: (value: { readonly processInstanceId: string }) => void;
-    let rejectStarted!: (error: ChannelError) => void;
+    let rejectStarted!: (error: WorkerProtocolError) => void;
     const startedReception = new Promise<{ readonly processInstanceId: string }>((resolve, reject) => {
       resolveStarted = resolve;
       rejectStarted = reject;
     });
     void reception.catch(() => undefined);
     void startedReception.catch(() => undefined);
-    const server = createServer();
+    const server = this.serverFactory();
     const session: Session = {
       operation,
       server,
@@ -288,11 +373,14 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
   }
 
   private async sendAcknowledgement(
+    session: Session,
     acceptance: Readonly<ResultAcceptanceProof>,
   ): Promise<void> {
-    const session = this.sessions.get(acceptance.operationId);
-    if (session?.socket === undefined) {
-      throw channelError("No child connection to acknowledge");
+    if (acceptance.operationId !== session.operation.operationId) {
+      throw protocolError("Result acceptance belongs to another Operation");
+    }
+    if (session.socket === undefined) {
+      throw protocolError("No Worker connection to acknowledge");
     }
     try {
       const acknowledgement = session.protocol.acknowledgeResult(acceptance);
@@ -305,6 +393,11 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
   }
 
   private closeSession(session: Session, graceful = false): void {
+    session.server.removeAllListeners("connection");
+    session.server.removeAllListeners("error");
+    session.socket?.removeAllListeners("data");
+    session.socket?.removeAllListeners("end");
+    session.socket?.removeAllListeners("error");
     if (graceful) session.socket?.end();
     else session.socket?.destroy();
     if (session.server.listening) session.server.close();
@@ -319,10 +412,8 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
       return;
     }
     session.receptionCompleted = true;
-    session.rejectStarted(channelError(message));
-    session.rejectReception(channelError(message));
-    session.socket?.destroy();
-    session.server.close();
-    this.sessions.delete(session.operation.operationId);
+    session.rejectStarted(protocolError(message));
+    session.rejectReception(protocolError(message));
+    this.closeSession(session);
   }
 }

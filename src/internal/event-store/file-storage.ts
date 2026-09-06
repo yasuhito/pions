@@ -16,7 +16,7 @@ import type { RuntimeClock } from "../services.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
-const RECORD_FILE = "events.v2.json";
+const RECORD_FILE = "events.v3.json";
 const RESULT_FILE = "result.utf8";
 
 function hasCode(error: unknown, code: string): boolean {

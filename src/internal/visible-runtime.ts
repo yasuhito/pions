@@ -34,8 +34,7 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     wrapperEntryPath: options.wrapperEntryPath ?? fileURLToPath(new URL("../worker-wrapper.js", import.meta.url)),
   });
   return makeRuntime({
-    backend: worker,
-    channel: worker,
+    worker,
     clock: systemClock,
     ids: { nextOperationId: () => Effect.sync(() => randomUUID()) },
     presentation: new HerdrPresentation({
