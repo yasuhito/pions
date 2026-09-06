@@ -64,9 +64,9 @@ export interface AgentBackend {
 
 export interface ChildChannel {
   receiveStarted(operation: Operation): Effect.Effect<WorkerProcessIdentity, ChannelError>;
-  receiveResults(operation: Operation): Effect.Effect<ChannelReception, ChannelError>;
+  receiveResults(operationId: string): Effect.Effect<ChannelReception, ChannelError>;
   acknowledgeResult(
-    operation: Operation,
+    operationId: string,
     sequenceNumber: number,
   ): Effect.Effect<void, ChannelError>;
 }

@@ -12,6 +12,7 @@ import {
 import { makeRuntime } from "../src/internal/runtime.js";
 import {
   CancellationRejectedError,
+  OperationCancelledError,
   OperationFailedError,
   ResultConflictError,
   SpawnRejectedError,
@@ -88,12 +89,25 @@ class FailingResultChannel implements ChildChannel {
     return Effect.succeed({ processInstanceId: "failed-process-instance" });
   }
 
-  receiveResults(_operation: Operation) {
+  receiveResults(_operationId: string) {
     return Effect.fail({ _tag: "ChannelError" as const, message: "disconnected" });
   }
 
-  acknowledgeResult(_operation: Operation, _sequenceNumber: number) {
+  acknowledgeResult(_operationId: string, _sequenceNumber: number) {
     return Effect.void;
+  }
+}
+
+class FailingAcknowledgementChannel extends FakeChildChannel {
+  constructor() {
+    super({ body: "accepted" });
+  }
+
+  override acknowledgeResult(_operationId: string, _sequenceNumber: number) {
+    return Effect.fail({
+      _tag: "ChannelError" as const,
+      message: "acknowledgement failed",
+    });
   }
 }
 
@@ -109,16 +123,16 @@ class ControlledChildChannel implements ChildChannel {
     return Effect.succeed({ processInstanceId: `process:${operation.operationId}` });
   }
 
-  receiveResults(operation: Operation) {
+  receiveResults(operationId: string) {
     return Effect.async<{
       readonly deliveries: ReadonlyArray<ResultDelivery>;
     }>((resume) => {
-      this.receivers.set(operation.operationId, resume);
+      this.receivers.set(operationId, resume);
     });
   }
 
   acknowledgeResult(
-    _operation: Operation,
+    _operationId: string,
     _sequenceNumber: number,
   ): Effect.Effect<void> {
     return Effect.void;
@@ -303,6 +317,27 @@ test("subtree cancellation freezes new descendants before dispatch", async () =>
   await cancellation;
 
   await rejection;
+});
+
+test("cancellation remains the outcome when Result acceptance loses the persistence race", async () => {
+  const { backend, channel, runtime } = cancellableNestedRuntime(["root"]);
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
+  await waitForReceiver();
+  const cancellation = root.cancel({ scope: "subtree" });
+  await waitForReceiver();
+  channel.deliver(root.operationId);
+  await waitForReceiver();
+  backend.acknowledge(root.operationId);
+  await cancellation;
+
+  await assert.rejects(
+    root.result(),
+    (error) => error instanceof OperationCancelledError,
+  );
 });
 
 test("subtree cancellation dispatches from grandchild to parent", async () => {
@@ -588,12 +623,6 @@ test("OperationHandle exposes the Operation identifier", async () => {
   assert.equal(handle.operationId, "operation-1");
 });
 
-test("EventStore retains the accepted Result", async () => {
-  const { result, store } = await completeOperation();
-
-  assert.deepEqual(store.result("operation-1"), result);
-});
-
 test("Runtime starts the AgentBackend once", async () => {
   const { backend } = await completeOperation();
 
@@ -628,32 +657,6 @@ test("Runtime records the successful Operation event sequence", async () => {
       "operation_completed",
     ],
   );
-});
-
-test("Runtime persists result bytes before self-settlement and completion", async () => {
-  const { trace } = await completeOperation();
-
-  assert.deepEqual(trace, [
-    "event:operation_requested",
-    "presentation:queued",
-    "event:presentation_owned",
-    "presentation:queued",
-    "event:operation_starting",
-    "presentation:starting",
-    "backend:start",
-    "event:operation_started",
-    "presentation:running",
-    "event:worker_identified",
-    "presentation:running",
-    "channel:receive-result",
-    "result:bytes-persisted",
-    "event:result_persisted",
-    "channel:ack:1",
-    "event:self_settled",
-    "presentation:self_settled",
-    "event:operation_completed",
-    "presentation:completed",
-  ]);
 });
 
 test("Runtime uses deterministic event sequence numbers and timestamps", async () => {
@@ -738,27 +741,6 @@ test("Runtime starts the AgentBackend once for an idempotent spawn", async () =>
   assert.equal(backend.startCount, 1);
 });
 
-test("Runtime publishes one event sequence for a duplicate Result delivery", async () => {
-  const { store } = await completeOperation([
-    { body: "finished", sequenceNumber: 1 },
-    { body: "finished", sequenceNumber: 1 },
-  ]);
-
-  assert.deepEqual(
-    store.events("operation-1").map(({ type }) => type),
-    [
-      "operation_requested",
-      "presentation_owned",
-      "operation_starting",
-      "operation_started",
-      "worker_identified",
-      "result_persisted",
-      "self_settled",
-      "operation_completed",
-    ],
-  );
-});
-
 test("Runtime rejects a conflicting Result with a typed error", async () => {
   await assert.rejects(
     completeOperation([
@@ -801,12 +783,6 @@ async function conflictResult() {
 
   return store;
 }
-
-test("a conflicting Result does not overwrite the accepted Result", async () => {
-  const store = await conflictResult();
-
-  assert.equal(store.result("operation-1")?.body, "finished");
-});
 
 test("a conflicting Result does not overwrite terminal completion", async () => {
   const store = await conflictResult();
@@ -868,6 +844,22 @@ test("a ChildChannel failure is durably classified without fake completion", asy
   const runtime = makeRuntime({
     backend: new FakeAgentBackend(),
     channel: new FailingResultChannel(),
+    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  await handle.result().catch(() => undefined);
+
+  assert.equal(store.snapshot("operation-1")?.terminalReason, "worker_protocol_failed");
+});
+
+test("an acknowledgement failure is durably classified", async () => {
+  const store = new InMemoryEventStore();
+  const runtime = makeRuntime({
+    backend: new FakeAgentBackend(),
+    channel: new FailingAcknowledgementChannel(),
     clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),

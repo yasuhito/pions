@@ -5,6 +5,7 @@ import type {
   Operation,
   OperationLineage,
 } from "./domain.js";
+import { makeResultAcceptance } from "./result-acceptance.js";
 import type {
   BackendCancellationEvidence,
   RuntimeServices,
@@ -83,6 +84,10 @@ function isTerminal(operation: Operation): boolean {
 }
 
 export function makeDurableOperations(services: RuntimeServices): DurableOperations {
+  const resultAcceptance = makeResultAcceptance({
+    channel: services.channel,
+    store: services.store,
+  });
   const records = new Map<string, OperationRecord>();
   const cancellations = new Map<string, Promise<CancellationResult>>();
   const cancellingSubtreeRoots = new Set<string>();
@@ -285,31 +290,25 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
         }),
       );
       await runEffect(project(operation));
-      const reception = await runEffect(services.channel.receiveResults(operation));
-      const firstDelivery = reception.deliveries[0];
-      if (firstDelivery === undefined) {
-        throw new Error("ChildChannel returned no Result");
+      const acceptance = await runEffect(
+        resultAcceptance.acceptFromWorker(record.operationId),
+      );
+      if (acceptance.state === "protocol_failed") {
+        operation = await runEffect(
+          append(record.operationId, {
+            type: "self_settled",
+            outcome: "failed",
+            reason: "worker_protocol_failed",
+          }),
+        );
+        await runEffect(project(operation));
+        await tryFinalize(record);
+        return;
       }
-
-      for (const delivery of reception.deliveries) {
-        try {
-          await runEffect(
-            services.store.acceptResult(record.operationId, delivery).pipe(
-              Effect.mapError((error) =>
-                error instanceof ResultConflictError
-                  ? error
-                  : persistenceError(record.operationId, error),
-              ),
-            ),
-          );
-          await runEffect(services.channel.acknowledgeResult(operation, delivery.sequenceNumber));
-        } catch (error) {
-          if (delivery !== firstDelivery && error instanceof ResultConflictError) {
-            record.resultDeliveryError = error;
-          } else {
-            throw error;
-          }
-        }
+      if (acceptance.resultDeliveryError === undefined) {
+        delete record.resultDeliveryError;
+      } else {
+        record.resultDeliveryError = acceptance.resultDeliveryError;
       }
 
       operation = await runEffect(
@@ -322,7 +321,12 @@ export function makeDurableOperations(services: RuntimeServices): DurableOperati
       await tryFinalize(record);
     } catch (error) {
       const current = await runEffect(getOperation(record.operationId)).catch(() => undefined);
-      if (current !== undefined && isTerminal(current)) return;
+      if (
+        current !== undefined &&
+        (isTerminal(current) || current.state === "cancelling")
+      ) {
+        return;
+      }
       if (typeof error === "object" && error !== null && "_tag" in error && error._tag === "ChannelError") {
         const failed = await runEffect(
           append(record.operationId, {

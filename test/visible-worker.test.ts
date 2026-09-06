@@ -108,7 +108,7 @@ async function deliver(fixtureValue: Awaited<ReturnType<typeof fixture>>, body =
   send(client, frame(fixtureValue.capability, 2, "started"));
   send(client, frame(fixtureValue.capability, 3, "result", { body, digest: digest(body), deliverySequenceNumber: 1 }));
   send(client, frame(fixtureValue.capability, 4, "done"));
-  const reception = await Effect.runPromise(fixtureValue.worker.receiveResults(fixtureValue.current));
+  const reception = await Effect.runPromise(fixtureValue.worker.receiveResults(fixtureValue.current.operationId));
   return { client, reception };
 }
 
@@ -201,9 +201,23 @@ test("Result ACK is emitted only when explicitly requested after persistence", a
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const { client } = await deliver(value);
   const ack = new Promise<string>((resolve) => client.once("data", (bytes) => resolve(bytes.toString("utf8"))));
-  await Effect.runPromise(value.worker.acknowledgeResult(value.current, 1));
+  await Effect.runPromise(value.worker.acknowledgeResult(value.current.operationId, 1));
 
   assert.equal(JSON.parse(await ack).type, "ack");
+});
+
+test("Result acknowledgement discards the visible Worker session", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await deliver(value);
+  await Effect.runPromise(
+    value.worker.acknowledgeResult(value.current.operationId, 1),
+  );
+
+  await assert.rejects(
+    Effect.runPromise(value.worker.receiveResults(value.current.operationId)),
+    /not prepared/,
+  );
 });
 
 test("same-delivery retries with monotonic frames reach the Runtime contract", async (context) => {
@@ -215,7 +229,7 @@ test("same-delivery retries with monotonic frames reach the Runtime contract", a
   send(client, frame(value.capability, 3, "result", { body: "finished", digest: digest("finished"), deliverySequenceNumber: 1 }));
   send(client, frame(value.capability, 4, "result", { body: "finished", digest: digest("finished"), deliverySequenceNumber: 1 }));
   send(client, frame(value.capability, 5, "done"));
-  const reception = await Effect.runPromise(value.worker.receiveResults(value.current));
+  const reception = await Effect.runPromise(value.worker.receiveResults(value.current.operationId));
 
   assert.deepEqual(reception.deliveries.map(({ sequenceNumber }) => sequenceNumber), [1, 1]);
 });
@@ -226,7 +240,20 @@ test("an invalid Operation capability cannot create a Result", async (context) =
   const client = await socket(value.config.socketPath);
   send(client, frame("cd".repeat(32), 1, "hello", { processInstanceId }));
 
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current)), /authority/);
+  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /authority/);
+});
+
+test("protocol rejection discards the visible Worker session", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame("cd".repeat(32), 1, "hello", { processInstanceId }));
+  await Effect.runPromise(value.worker.receiveResults(value.current.operationId)).catch(() => undefined);
+
+  await assert.rejects(
+    Effect.runPromise(value.worker.receiveResults(value.current.operationId)),
+    /not prepared/,
+  );
 });
 
 test("a stale child sequence number cannot create a Result", async (context) => {
@@ -236,7 +263,7 @@ test("a stale child sequence number cannot create a Result", async (context) => 
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(client, frame(value.capability, 1, "started"));
 
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current)), /sequence/);
+  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /sequence/);
 });
 
 test("an oversized first frame cannot create a Result", async (context) => {
@@ -245,7 +272,7 @@ test("an oversized first frame cannot create a Result", async (context) => {
   const client = await socket(value.config.socketPath);
   client.write("x".repeat(65));
 
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current)), /size limit/);
+  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /size limit/);
 });
 
 test("an oversized coalesced remainder cannot bypass the message limit", async (context) => {
@@ -254,7 +281,7 @@ test("an oversized coalesced remainder cannot bypass the message limit", async (
   const client = await socket(value.config.socketPath);
   client.write(`${JSON.stringify(frame(value.capability, 1, "hello", { processInstanceId }))}\n${"x".repeat(257)}`);
 
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current)), /size limit/);
+  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /size limit/);
 });
 
 test("coalesced post-authentication frames use the message limit", async (context) => {
@@ -268,7 +295,7 @@ test("coalesced post-authentication frames use the message limit", async (contex
     frame(value.capability, 3, "result", { body, digest: digest(body), deliverySequenceNumber: 1 }),
     frame(value.capability, 4, "done"),
   ].map((value) => JSON.stringify(value)).join("\n") + "\n");
-  const reception = await Effect.runPromise(value.worker.receiveResults(value.current));
+  const reception = await Effect.runPromise(value.worker.receiveResults(value.current.operationId));
 
   assert.equal(reception.deliveries[0]?.body.length, 5 * 1024);
 });
@@ -287,5 +314,5 @@ test("disconnect before Result cannot create completion", async (context) => {
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   client.end();
 
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current)), /disconnected/);
+  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /disconnected/);
 });

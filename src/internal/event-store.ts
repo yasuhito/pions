@@ -391,22 +391,36 @@ export abstract class ValidatedEventStore implements EventStore {
           digest,
           deliverySequenceNumber: delivery.sequenceNumber,
         });
+        const seq = loaded.operation.stateSeq + 1;
+        const eventWithoutTimestamp = {
+          type: "result_persisted",
+          result: reference,
+          actorId: RUNTIME_ACTOR_ID,
+          authority: OPERATION_AUTHORITY,
+          eventId: `${operationId}:${seq}`,
+          operationId,
+          schemaVersion: EVENT_SCHEMA_VERSION,
+          seq,
+        } as const;
+        let operation: Operation;
+        try {
+          operation = reduceOperation(loaded.operation, {
+            ...eventWithoutTimestamp,
+            timestamp: "result-acceptance-preflight",
+          });
+        } catch (error) {
+          throw failure(
+            "corrupt_record",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
         try {
           await this.writeResultBytes(operationId, bytes);
           this.didPersistResultBytes(operationId);
-          const seq = loaded.operation.stateSeq + 1;
           const event = {
-            type: "result_persisted",
-            result: reference,
-            actorId: RUNTIME_ACTOR_ID,
-            authority: OPERATION_AUTHORITY,
-            eventId: `${operationId}:${seq}`,
-            operationId,
-            schemaVersion: EVENT_SCHEMA_VERSION,
-            seq,
+            ...eventWithoutTimestamp,
             timestamp: await Effect.runPromise(this.clock.now()),
           } satisfies OperationEvent;
-          const operation = reduceOperation(loaded.operation, event);
           await this.writeRecord(operationId, {
             ...loaded.record,
             events: [...loaded.record.events, event],

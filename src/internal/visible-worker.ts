@@ -143,8 +143,8 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
         });
   }
 
-  receiveResults(operation: Operation): Effect.Effect<ChannelReception, ChannelError> {
-    const session = this.sessions.get(operation.operationId);
+  receiveResults(operationId: string): Effect.Effect<ChannelReception, ChannelError> {
+    const session = this.sessions.get(operationId);
     return session === undefined
       ? Effect.fail(channelError("ChildChannel was not prepared"))
       : Effect.tryPromise({
@@ -154,12 +154,12 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
   }
 
   acknowledgeResult(
-    operation: Operation,
+    operationId: string,
     sequenceNumber: number,
   ): Effect.Effect<void, ChannelError> {
     return Effect.try({
       try: () => {
-        const session = this.sessions.get(operation.operationId);
+        const session = this.sessions.get(operationId);
         if (session?.socket === undefined || !session.authenticated) {
           throw channelError("No authenticated child connection to acknowledge");
         }
@@ -169,13 +169,14 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
         else session.pendingAcknowledgements.set(sequenceNumber, pending - 1);
         session.socket.write(`${JSON.stringify({
           protocolVersion: CHILD_PROTOCOL_VERSION,
-          operationId: operation.operationId,
+          operationId,
           sequenceNumber,
           type: "ack",
         })}\n`);
         if (session.pendingAcknowledgements.size === 0) {
           session.socket.end();
           session.server.close();
+          this.sessions.delete(operationId);
         }
       },
       catch: (error) => (typeof error === "object" && error !== null && "_tag" in error)
@@ -422,5 +423,6 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
     session.rejectReception(channelError(message));
     session.socket?.destroy();
     session.server.close();
+    this.sessions.delete(session.operation.operationId);
   }
 }

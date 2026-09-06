@@ -16,6 +16,8 @@ import type { StoredOperationRecord } from "./event-store.js";
 import type {
   AgentBackend,
   ChildChannel,
+  ChannelError,
+  ChannelReception,
   IdGenerator,
   Presentation,
   ResultDelivery,
@@ -76,8 +78,8 @@ export class FakeChildChannel implements ChildChannel {
   }
 
   receiveResults(
-    _operation: Operation,
-  ) {
+    _operationId: string,
+  ): Effect.Effect<ChannelReception, ChannelError> {
     return Effect.sync(() => {
       this.trace.push("channel:receive-result");
       return {
@@ -91,9 +93,9 @@ export class FakeChildChannel implements ChildChannel {
   }
 
   acknowledgeResult(
-    _operation: Operation,
+    _operationId: string,
     sequenceNumber: number,
-  ): Effect.Effect<void> {
+  ): Effect.Effect<void, ChannelError> {
     return Effect.sync(() => {
       this.trace.push(`channel:ack:${sequenceNumber}`);
     });
