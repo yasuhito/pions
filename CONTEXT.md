@@ -1,29 +1,29 @@
-# Pions domain glossary
+# Pions ドメイン用語集
 
-## Operation
+## Operation（オペレーション）
 
-A durable, uniquely identified request for one worker execution. An operation owns its lifecycle evidence, result, lineage, effective policy, and presentation identity.
+1回のワーカー実行を要求する、永続的で一意に識別されるリクエスト。オペレーションは、自身のライフサイクルの証跡、結果、系譜、実効ポリシー、表示上の識別情報を所有する。
 
-## Worker
+## Worker（ワーカー）
 
-The executor assigned to one operation. A worker's process or visible terminal state is liveness evidence, not proof of semantic completion.
+1つのオペレーションに割り当てられた実行主体。ワーカーのプロセスや目に見えるターミナル状態は稼働中であることの証跡であり、意味上の完了を証明するものではない。
 
-## Result
+## Result（結果）
 
-The durable semantic output accepted from one worker. An operation refers to its result by location, byte count, and digest; reconstruction returns the output only after its integrity is verified.
+1つのワーカーから受理された、永続的な意味上の出力。オペレーションは、場所、バイト数、ダイジェストによって自身の結果を参照する。再構築時には、完全性を検証した後にのみ出力を返す。
 
-## Runtime
+## Runtime（ランタイム）
 
-The caller-facing module that starts operations, returns their results, and cancels operation subtrees. Callers do not coordinate backend, persistence, child-channel, or presentation details directly.
+オペレーションを開始し、その結果を返し、オペレーションのサブツリーをキャンセルする、呼び出し元向けのモジュール。呼び出し元が、バックエンド、永続化、子チャネル、表示の詳細を直接調整することはない。
 
-## Self-settlement
+## Self-settlement（自己確定）
 
-The point at which a worker has produced its own success or failure outcome. Self-settlement is distinct from terminal completion when descendants or result handoffs remain outstanding.
+ワーカーが自身の成功または失敗という結果を生成した時点。子孫や結果の引き渡しが未確定のまま残っている場合、自己確定は終端完了とは異なる。
 
-## Terminal completion
+## Terminal completion（終端完了）
 
-The immutable end of an operation after its own outcome is durable and every required descendant and result handoff has settled.
+自身の結果が永続化され、必要なすべての子孫と結果の引き渡しが確定した後に到達する、オペレーションの変更不能な終端。
 
-## Presentation
+## Presentation（表示）
 
-A projection of operation state for humans or external observers. Presentation can report liveness and attention, but cannot create or override semantic operation state.
+人間または外部の観測者に向けたオペレーション状態の投影。表示は稼働状況や注意の必要性を報告できるが、意味上のオペレーション状態を作成したり上書きしたりすることはできない。

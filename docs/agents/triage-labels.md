@@ -1,13 +1,13 @@
-# Triage labels
+# トリアージラベル
 
-The engineering skills use these canonical triage roles and GitHub label strings.
+エンジニアリング用スキルでは、次の標準的なトリアージ役割とGitHubラベルの対応を使用する。
 
-| Role | GitHub label | Meaning |
+| 役割 | GitHubラベル | 意味 |
 | --- | --- | --- |
-| `needs-triage` | `needs-triage` | Maintainer evaluation required |
-| `needs-info` | `needs-info` | Waiting for reporter information |
-| `ready-for-agent` | `ready-for-agent` | Fully specified and safe for an AFK agent |
-| `ready-for-human` | `ready-for-human` | Requires human implementation |
-| `wontfix` | `wontfix` | Will not be actioned |
+| `needs-triage` | `needs-triage` | メンテナーによる評価が必要 |
+| `needs-info` | `needs-info` | 報告者からの情報を待っている |
+| `ready-for-agent` | `ready-for-agent` | 仕様が確定し、無人のエージェントが安全に実行できる |
+| `ready-for-human` | `ready-for-human` | 人間による実装が必要 |
+| `wontfix` | `wontfix` | 対応しない |
 
-When a skill names a triage role, use the corresponding GitHub label from this table.
+スキルがトリアージ役割を指定した場合は、この表に対応するGitHubラベルを使用する。

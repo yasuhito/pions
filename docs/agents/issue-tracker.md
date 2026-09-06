@@ -1,26 +1,25 @@
-# Issue tracker: GitHub
+# Issue管理：GitHub
 
-Issues and specs for this repository live in GitHub Issues at `yasuhito/pions`. Use the `gh` CLI for operations.
+このリポジトリのIssueと仕様は、`yasuhito/pions`のGitHub Issuesで管理する。操作には`gh`コマンドを使用する。
 
-Until the local Git remote identifies this repository, pass `-R yasuhito/pions` explicitly. Once the remote exists, either explicit `-R` or repository inference is acceptable.
+ローカルのGit remoteから対象リポジトリを判別できない間は、`-R yasuhito/pions`を明示する。remoteが存在する場合は、明示的な`-R`とリポジトリの自動判別のどちらを使用してもよい。
 
-## Conventions
+## 操作方法
 
-- Create: `gh issue create -R yasuhito/pions --title "..." --body-file <file>`.
-- Read with comments and labels: `gh issue view -R yasuhito/pions <number> --comments`.
-- List: `gh issue list -R yasuhito/pions --state open --json number,title,body,labels,comments`.
-- Comment: `gh issue comment -R yasuhito/pions <number> --body-file <file>`.
-- Change labels: `gh issue edit -R yasuhito/pions <number> --add-label "..."` or `--remove-label "..."`.
-- Close: `gh issue close -R yasuhito/pions <number> --comment "..."`.
+- 作成：`gh issue create -R yasuhito/pions --title "..." --body-file <file>`
+- コメントとラベルを含む参照：`gh issue view -R yasuhito/pions <number> --comments`
+- 一覧：`gh issue list -R yasuhito/pions --state open --json number,title,body,labels,comments`
+- コメント：`gh issue comment -R yasuhito/pions <number> --body-file <file>`
+- ラベル追加：`gh issue edit -R yasuhito/pions <number> --add-label "..."`
+- ラベル削除：`gh issue edit -R yasuhito/pions <number> --remove-label "..."`
+- クローズ：`gh issue close -R yasuhito/pions <number> --comment "..."`
 
-GitHub Issues and pull requests share one number space. Resolve an ambiguous number with `gh pr view` and fall back to `gh issue view`.
+GitHubのIssueとプルリクエストは番号空間を共有する。番号の種別が不明な場合は、まず`gh pr view`で確認し、該当しなければ`gh issue view`を使用する。
 
-## Pull requests as a triage surface
+## 公開作業
 
-**PRs as a request surface: no.**
+プルリクエストをトリアージ対象の依頼として扱わない。
 
-## Publishing work
+スキルから仕様やチケットの公開を求められた場合は、項目ごとに1件のGitHub Issueを作成する。依存先となるIssueを先に公開する。GitHubでIssue間の依存関係を設定できる場合はその機能を使用し、できない場合は依存するIssueの本文冒頭付近に`Blocked by: #<number>`を記載する。
 
-When a skill says to publish a spec or ticket, create one GitHub issue per item. Publish blocker tickets first. Represent blocking edges with GitHub native issue dependencies when available; otherwise put `Blocked by: #<number>` near the top of the dependent issue.
-
-A ticket is ready to start only when every blocker is closed. Apply `ready-for-agent` to agent-ready tickets produced from an approved spec.
+すべての依存先がクローズされているチケットだけを着手可能とする。承認済みの仕様から作成され、エージェントが実行可能なチケットには`ready-for-agent`を付与する。

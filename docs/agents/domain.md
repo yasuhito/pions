@@ -1,12 +1,12 @@
-# Domain docs
+# ドメイン文書
 
-Pions is a single-context repository.
+Pionsは、単一のコンテキストで構成されるリポジトリである。
 
-Before exploring, designing, specifying, or implementing, read:
+調査、設計、仕様策定、実装に着手する前に、次の文書を読む。
 
-- `CONTEXT.md` for the domain glossary;
-- relevant decisions under `docs/adr/`.
+- ドメイン用語集である`CONTEXT.md`
+- 関連する決定を記録した`docs/adr/`配下の文書
 
-Use glossary terms in issue titles, tests, code, and design documents. When required language is missing, resolve it through domain modeling and update `CONTEXT.md`. Surface any proposal that contradicts an ADR instead of silently overriding it.
+Issueのタイトル、テスト、コード、設計文書では、用語集の用語を使用する。必要な用語がない場合は、ドメインモデリングによって解決し、`CONTEXT.md`を更新する。提案がADRと矛盾する場合は、黙って上書きせず明示する。
 
-`CONTEXT.md` contains domain language only. Record hard-to-reverse implementation decisions as concise ADRs under `docs/adr/`.
+`CONTEXT.md`にはドメイン用語だけを記載する。変更が難しい実装上の決定は、`docs/adr/`配下の簡潔なADRとして記録する。

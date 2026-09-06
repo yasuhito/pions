@@ -1,23 +1,25 @@
-# Agent instructions
+# エージェント向け指示
 
-## Agent skills
+## エージェント用スキル
 
-### Issue tracker
+### Issue管理
 
-Track issues and specs in GitHub Issues at `yasuhito/pions`. Read `docs/agents/issue-tracker.md` before creating, changing, or implementing an issue.
+Issueと仕様は、`yasuhito/pions`のGitHub Issuesで管理する。Issueの作成、変更、実装に着手する前に、`docs/agents/issue-tracker.md`を読む。
 
-### Triage labels
+### トリアージラベル
 
-Use the canonical triage roles mapped in `docs/agents/triage-labels.md` when triaging incoming issues.
+新しいIssueをトリアージするときは、`docs/agents/triage-labels.md`に定義された標準の役割とラベルの対応を使用する。
 
-### Domain docs
+### ドメイン文書
 
-Read `CONTEXT.md` and relevant files under `docs/adr/` before designing, specifying, or implementing Pions. See `docs/agents/domain.md`.
+Pionsの調査、設計、仕様策定、実装に着手する前に、`CONTEXT.md`と`docs/adr/`にある関連文書を読む。詳細は`docs/agents/domain.md`に従う。
 
-## Testing
+## テスト
 
 各テストケースは、1つの振る舞いを1つのアサーションで検証する。複数のアサーションが必要な場合は、観測対象ごとに適切な名前のテストケースへ分割する。
 
-## Writing
+## 文書作成
+
+人向け文書は日本語で作成・更新する。ADR、調査記録、GitHub Issue、Markdown文書、HTMLレポートもこれに含む。
 
 日本語文では、一般語を自然な日本語または定着したカタカナ語で書く。正確さに必要なコード識別子、パッケージ名、コマンド、プロトコルリテラルだけをバッククォートで残す。

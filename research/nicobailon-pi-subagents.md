@@ -1,396 +1,394 @@
-# Static review: `nicobailon/pi-subagents` at `7fe9dee1bc186592e3f2b95c07d86c02f2edd57a`
+# 静的レビュー：`7fe9dee1bc186592e3f2b95c07d86c02f2edd57a` 時点の `nicobailon/pi-subagents`
 
-**Review revision:** [`7fe9dee1bc186592e3f2b95c07d86c02f2edd57a`](https://github.com/nicobailon/pi-subagents/tree/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a)  
-**Commit timestamp/message:** 2026-09-06 00:09:30 UTC, `fix(runtime): keep unconfigured prompt-runtime loads inert (#1984)`  
-**Manifest version at that revision:** `pi-subagents` 0.65.1  
-**Release caveat:** annotated tag object `v0.65.1` is `dbe28f181fc5c17c6c62de28c396e6cbf6fefa3b` and peels to commit `83be9c3de2cde1553c0269f383efc1eb1194dc8b`, not the reviewed commit. The reviewed snapshot is current `HEAD` with the same manifest version and must not be described as the tagged release artifact.  
-**Method:** static inspection of the commit-pinned README, manifest, documentation, relevant TypeScript runtime modules, and relevant unit/integration tests. The package was **not installed or executed**. No live Herdr pane/workspace and no Qoral artifact was inspected or operated.
+**レビュー対象リビジョン：** [`7fe9dee1bc186592e3f2b95c07d86c02f2edd57a`](https://github.com/nicobailon/pi-subagents/tree/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a)
+**コミットのタイムスタンプ／メッセージ：** 2026-09-06 00:09:30 UTC、`fix(runtime): keep unconfigured prompt-runtime loads inert (#1984)`
+**当該リビジョンでのマニフェストバージョン：** `pi-subagents` 0.65.1
+**リリースに関する注意事項：** 注釈付きタグオブジェクト `v0.65.1` は `dbe28f181fc5c17c6c62de28c396e6cbf6fefa3b` であり、レビュー対象コミットではなく、コミット `83be9c3de2cde1553c0269f383efc1eb1194dc8b` を指す。レビュー対象スナップショットは同じマニフェストバージョンを持つ現在の `HEAD` であり、タグ付きリリース成果物として記述してはならない。
+**手法：** コミットに固定された README、マニフェスト、ドキュメント、関連する TypeScript ランタイムモジュール、および関連する単体／統合テストを静的に調査した。パッケージは**インストールも実行もしていない**。稼働中の Herdr ペイン／ワークスペースおよび Qoral 成果物の調査や操作は行っていない。
 
-## Follow-up architecture decision
+## 後続のアーキテクチャ決定
 
-After this review, the user selected TypeScript/Node for Pions to reduce cross-language dependencies and align with Pi. This removes the report's original language-shape objection, but does not change the lifecycle and Herdr incompatibilities documented below. `nicobailon/pi-subagents` is therefore a primary reference implementation, not a selected dependency or a drop-in Pions runtime.
+このレビューの後、ユーザーは言語間依存を減らして Pi と整合させるため、Pions に TypeScript/Node を選択した。これにより、レポート当初の言語／形態に関する異議は解消されるが、以下に記載するライフサイクルおよび Herdr との非互換性は変わらない。したがって、`nicobailon/pi-subagents` は主要な参照実装ではあるが、選択された依存関係でも、そのまま置き換え可能な Pions ランタイムでもない。
 
-## Executive conclusion
+## エグゼクティブ結論
 
-### Package identity
+### パッケージの実体
 
-**Source fact.** This is a **TypeScript/Node Pi extension**, not a Python backend. The manifest declares `type: "module"`, exports `index.ts` and TypeScript API subpaths, registers `./index.ts` under `pi.extensions`, and depends on Pi's JavaScript packages. Its foreground path creates Pi `AgentSession` objects in the parent process; its background path starts a detached Node/Jiti runner that creates Pi sessions in that runner process. [manifest](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/package.json) · [child session factory](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-session.ts) · [background launch](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts)
+**ソース上の事実。** これは Python バックエンドではなく、**TypeScript/Node の Pi 拡張機能**である。マニフェストは `type: "module"` を宣言し、`index.ts` と TypeScript API サブパスをエクスポートし、`pi.extensions` 配下に `./index.ts` を登録し、Pi の JavaScript パッケージに依存している。フォアグラウンド経路は親プロセス内で Pi `AgentSession` オブジェクトを作成し、バックグラウンド経路は切り離された Node/Jiti ランナーを起動して、そのランナープロセス内で Pi セッションを作成する。[マニフェスト](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/package.json) · [子セッションファクトリ](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-session.ts) · [バックグラウンド起動](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts)
 
-**Interpretation.** It cannot close Phase 0/1 Decision P-001 as the intended Python agent package. It is a feature-rich orchestration extension and a useful source of design patterns, but using it as the Pions backend would require a Node/Pi sidecar or a redesign of Pions around Pi's extension runtime.
+**解釈。** これは、想定されていた Python エージェントパッケージとして Phase 0/1 Decision P-001 を満たすことはできない。機能豊富なオーケストレーション拡張機能であり、設計パターンの有用な情報源ではあるが、Pions のバックエンドとして使用するには Node/Pi サイドカー、または Pi の拡張ランタイムを中心とした Pions の再設計が必要になる。
 
-### Overall fit
+### 全体的な適合性
 
-| Question | Verdict |
+| 問い | 判定 |
 |---|---|
-| Candidate Python `AgentBackend` | **Conflict** — wrong runtime/package shape; no Python API. |
-| Independent-process async backend | **Partial fit** — background runs have a detached Node runner, but foreground runs are in-process and the public structured delegation API is foreground-only. |
-| Phase 1 visible Herdr worker | **Conflict** — ordinary runs are intentionally headless; Herdr is metadata/inspection/peer-pane integration, not the child presentation substrate. |
-| Semantic result/event source | **Good design input** — native child sessions are observed directly, with typed results and Pi events rather than terminal scraping. |
-| Required Pions state/event protocol | **Adapter-solvable only with substantial wrapper state** — package status files are useful but are not Pions' append-only authenticated operation protocol. |
-| Required nested settlement/cancellation | **Conflict** — nesting and limits exist, but a parent may finish while descendants continue; stop marks the parent stopped before descendant acknowledgement and dispatch traversal is not post-order. |
-| Persistence/recovery | **Mixed** — strong operational artifacts, session identity, stale-run repair, and reload restoration; not an authoritative permanent event store and not equivalent to Pions' exact replayable reducer. |
-| Security boundary | **Mixed** — tool ceilings, path checks, private selected files, shell-free process launch, and fail-closed proofs are valuable; ordinary native children inherit process credentials, worktrees are not sandboxes, and several artifact/control files are not an authenticated child channel. |
+| Python `AgentBackend` の候補 | **競合** — ランタイム／パッケージ形態が異なり、Python API がない。 |
+| 独立プロセス型の非同期バックエンド | **部分的に適合** — バックグラウンド実行には切り離された Node ランナーがあるが、フォアグラウンド実行はプロセス内であり、公開されている構造化委譲 API はフォアグラウンド専用である。 |
+| Phase 1 の可視 Herdr ワーカー | **競合** — 通常の実行は意図的にヘッドレスである。Herdr はメタデータ／調査／ピアペイン統合であり、子の表示基盤ではない。 |
+| セマンティックな結果／イベントソース | **優れた設計材料** — ネイティブな子セッションを直接監視し、端末のスクレイピングではなく、型付きの結果と Pi イベントを使用している。 |
+| Pions に必要な状態／イベントプロトコル | **相当量のラッパー状態があればアダプターで解決可能** — パッケージのステータスファイルは有用だが、Pions の追記専用で認証済みの操作プロトコルではない。 |
+| 必須の入れ子型完了待機／キャンセル | **競合** — 入れ子と制限は存在するが、子孫が継続中でも親が終了し得る。stop は子孫の確認応答より前に親を stopped とし、ディスパッチの走査順は後行順ではない。 |
+| 永続化／復旧 | **混在** — 運用成果物、セッション識別、陳腐化した実行の修復、および再読み込み時の復元は強力だが、権威ある永続イベントストアではなく、Pions の厳密に再生可能な reducer と同等でもない。 |
+| セキュリティ境界 | **混在** — ツールの上限、パス検査、非公開の選択ファイル、シェルを介さないプロセス起動、およびフェイルクローズな証明は有用だが、通常のネイティブな子はプロセスの認証情報を継承し、worktree はサンドボックスではなく、複数の成果物／制御ファイルは認証済みの子チャネルではない。 |
 
-**Recommendation.** Do **not** select this package as Pions' Python backend or use its ordinary Herdr integration for the Phase 1 visible-worker slice. Reuse selected ideas—direct Pi event subscription, explicit `agent_settled` handling, process-instance proof, model verification, capability ceilings, bounded fan-out claims, session leases, and fail-closed worktree cleanup—behind Pions' own Python contracts.
+**推奨。** このパッケージを Pions の Python バックエンドとして選択したり、通常の Herdr 統合を Phase 1 の可視ワーカーの縦断的スライスに使用したりしては**ならない**。直接的な Pi イベント購読、明示的な `agent_settled` の処理、プロセスインスタンスの証明、モデル検証、ケイパビリティ上限、制限付きファンアウトの主張、セッションリース、フェイルクローズな worktree クリーンアップといった選定したアイデアを、Pions 独自の Python コントラクトの背後で再利用すること。
 
-## Evidence and classification rules
+## エビデンスと分類ルール
 
-- **Fit:** the fixed source already satisfies the relevant requirement or supplies the required evidence without weakening it.
-- **Adapter-solvable gap:** Pions can add the missing projection, persistence, or wrapper behavior while retaining the package's underlying semantics.
-- **Conflict:** package shape or lifecycle semantics contradict a Phase 0/1 invariant; resolving it requires bypassing or materially changing the package.
-- “Source fact” reports what the fixed commit implements. “Interpretation” compares that implementation with the Pions requirements. “Recommendation” is prescriptive and is not a claim about upstream behavior.
+- **適合：** 固定されたソースが、関連要件をすでに満たしているか、要件を弱めずに必要なエビデンスを提供している。
+- **アダプターで解決可能なギャップ：** Pions は、パッケージの基礎的なセマンティクスを維持しながら、不足している投影、永続化、またはラッパーの振る舞いを追加できる。
+- **競合：** パッケージ形態またはライフサイクルのセマンティクスが Phase 0/1 の不変条件と矛盾しており、解消するにはパッケージを迂回するか、実質的に変更する必要がある。
+- 「ソース上の事実」は、固定されたコミットが実装している内容を報告する。「解釈」は、その実装を Pions の要件と比較する。「推奨」は規範的なものであり、アップストリームの振る舞いについての主張ではない。
 
-## 1. Process and execution model
+## 1. プロセスと実行モデル
 
-### 1.1 Process isolation
+### 1.1 プロセス分離
 
-**Source facts.**
+**ソース上の事実。**
 
-- Foreground (`async: false`) children are Pi sessions created **inside the parent Pi process**. The factory shares one `ModelRuntime`, creates a separate session manager/resource loader per child, serializes the temporary `process.env` application window, and resets Pi's extension cache when possible. [README](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/README.md) · [child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-session.ts)
-- Background children run in a detached Node process. The launcher writes a private runner config, starts Node + Jiti + `subagent-runner.ts` with argv-array `spawn`, redirects stdout/stderr to files, records PID plus a random `runnerProcessInstanceId`, and unrefs the process. POSIX uses `detached: true`; Windows does not. [async-execution.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts) · [background-process-options.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/background-process-options.ts)
-- A background runner can host multiple child Pi sessions. Therefore a logical operation/step is not necessarily one OS process, even though a top-level async run has a runner process boundary. [subagent-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/subagent-runner.ts)
-- Optional `external-cli` profiles launch an argv-array process with prompt delivery over stdin or an adapter-owned mode; their process groups can be terminated and verified on POSIX. They deliberately lack many native-Pi capabilities. [external-cli-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/external-cli-runner.ts) · [tool reference](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/tool-reference.md#external-cli-agent-profiles)
+- フォアグラウンド（`async: false`）の子は、**親 Pi プロセス内**で作成される Pi セッションである。ファクトリは 1 つの `ModelRuntime` を共有し、子ごとに個別のセッションマネージャー／リソースローダーを作成し、一時的に `process.env` を適用する時間帯を直列化し、可能であれば Pi の拡張機能キャッシュをリセットする。[README](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/README.md) · [child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-session.ts)
+- バックグラウンドの子は、切り離された Node プロセス内で実行される。ランチャーは非公開のランナー設定を書き込み、argv 配列を使う `spawn` で Node + Jiti + `subagent-runner.ts` を起動し、stdout/stderr をファイルへリダイレクトし、PID とランダムな `runnerProcessInstanceId` を記録して、プロセスを unref する。POSIX は `detached: true` を使用するが、Windows は使用しない。[async-execution.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts) · [background-process-options.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/background-process-options.ts)
+- 1 つのバックグラウンドランナーが複数の子 Pi セッションをホストできる。したがって、トップレベルの非同期実行にはランナープロセス境界があるものの、論理的な操作／ステップが必ずしも 1 つの OS プロセスに対応するとは限らない。[subagent-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/subagent-runner.ts)
+- オプションの `external-cli` プロファイルは、stdin 経由またはアダプター所有モードでプロンプトを渡し、argv 配列のプロセスを起動する。そのプロセスグループは POSIX 上で終了および検証できる。これらには、ネイティブ Pi の多くのケイパビリティが意図的に欠けている。[external-cli-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/external-cli-runner.ts) · [ツールリファレンス](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/tool-reference.md#external-cli-agent-profiles)
 
-**Interpretation.** Backend acceptance gate 1 is met only by the background runner interpretation (“inside an independent wrapper process”). Foreground execution is not process-isolated. The shared runner/process environment is weaker than Pions' desired one-operation/worker boundary.
+**解釈。** バックエンド受け入れゲート 1 を満たすのは、バックグラウンドランナーという解釈（「独立したラッパープロセス内」）の場合に限られる。フォアグラウンド実行はプロセス分離されていない。共有ランナー／プロセス環境は、Pions が望む 1 操作／ワーカー単位の境界よりも弱い。
 
-**Classification:** **adapter-solvable gap** for a background-only Node adapter; **conflict** if foreground mode or one-process-per-operation is required.
+**分類：** バックグラウンド専用 Node アダプターについては**アダプターで解決可能なギャップ**。フォアグラウンドモードまたは 1 操作 1 プロセスが必要な場合は**競合**。
 
-### 1.2 Foreground, background, parallel, and chain execution
+### 1.2 フォアグラウンド、バックグラウンド、並列、およびチェーン実行
 
-**Source facts.**
+**ソース上の事実。**
 
-- `async:false` blocks and streams a foreground in-process child. Default workflow execution is background; detached foreground execution is also supported. [README](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/README.md) · [observability](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/observability.md)
-- Current composition is `workflowScript`: `runs.run` for keyed/sequential work, `runs.all` for parallel work, `runs.lanes` for parallel sequential lanes, and ordinary Promise combinators for rolling fan-out. Legacy top-level `chain`, `tasks`, and `parallel` inputs are rejected. [workflows](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/workflows.md) · [tool reference](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/tool-reference.md)
-- Parallel tasks are bounded by task and concurrency configuration; the default ordinary concurrency is 4, with a workflow-wide default `globalConcurrencyLimit` of 20. [configuration](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/configuration.md#parallel)
+- `async:false` はブロックし、プロセス内のフォアグラウンドな子をストリーミングする。デフォルトのワークフロー実行はバックグラウンドであり、切り離されたフォアグラウンド実行もサポートされる。[README](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/README.md) · [可観測性](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/observability.md)
+- 現在の合成方法は `workflowScript` である。キー付き／逐次処理には `runs.run`、並列処理には `runs.all`、並列な逐次レーンには `runs.lanes`、ローリングファンアウトには通常の Promise コンビネーターを用いる。レガシーなトップレベルの `chain`、`tasks`、`parallel` 入力は拒否される。[ワークフロー](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/workflows.md) · [ツールリファレンス](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/tool-reference.md)
+- 並列タスクは、タスクおよび並行性の設定によって制限される。通常のデフォルト並行数は 4 で、ワークフロー全体のデフォルト `globalConcurrencyLimit` は 20 である。[設定](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/configuration.md#parallel)
 
-**Interpretation.** This is substantially beyond Phase 1, where public background/parallel APIs are deferred. Its internal execution primitives are useful evidence, but adopting the extension would enlarge the MVP surface and introduce another workflow/state model.
+**解釈。** これは、公開のバックグラウンド／並列 API が延期されている Phase 1 の範囲を大幅に超えている。その内部実行プリミティブは有用なエビデンスだが、この拡張機能を採用すると MVP の対象範囲が拡大し、別のワークフロー／状態モデルが持ち込まれる。
 
-**Classification:** execution capability **fit**; Phase 0/1 scope alignment **conflict**.
+**分類：** 実行能力は**適合**。Phase 0/1 のスコープ整合性は**競合**。
 
-### 1.3 Async, deadlines, steering, interruption, and cancellation
+### 1.3 非同期、期限、ステアリング、中断、およびキャンセル
 
-**Source facts.**
+**ソース上の事実。**
 
-- Background runs return immediately and are controlled by a file inbox. `interrupt` pauses/resumably aborts a live child turn; `stop` is terminal/non-resumable; `steer` and `follow_up` have acknowledgement receipts. Run and per-tool deadlines abort sessions. [control-channel.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/control-channel.ts) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts) · [tool reference](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/tool-reference.md#status-and-control-actions)
-- Foreground execution listens to an `AbortSignal`, calls `session.abort()`, and has bounded hard-finish fallbacks when the session does not settle. [foreground execution](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/foreground/execution.ts)
-- On POSIX, owned external process groups receive `SIGTERM`, then `SIGKILL`, followed by `ps`-based verification. Unsupported or unverifiable cases return `unknown`. [owned-process-tree.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/owned-process-tree.ts) · [test](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/owned-process-tree.test.ts)
+- バックグラウンド実行は即座に戻り、ファイルの受信箱によって制御される。`interrupt` は実行中の子ターンを一時停止／再開可能な形で中止する。`stop` は終端的で再開不能である。`steer` と `follow_up` には確認応答レシートがある。実行期限とツール単位の期限はセッションを中止する。[control-channel.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/control-channel.ts) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts) · [ツールリファレンス](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/tool-reference.md#status-and-control-actions)
+- フォアグラウンド実行は `AbortSignal` をリッスンし、`session.abort()` を呼び出し、セッションが完了しない場合には時間制限付きの強制終了フォールバックを備えている。[フォアグラウンド実行](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/foreground/execution.ts)
+- POSIX 上では、所有している外部プロセスグループへ `SIGTERM`、次に `SIGKILL` を送り、その後 `ps` に基づいて検証する。未対応または検証不能な場合は `unknown` を返す。[owned-process-tree.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/owned-process-tree.ts) · [テスト](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/owned-process-tree.test.ts)
 
-**Interpretation.** Gate 2 (async and cancellation) is broadly met for native background runs. However, package `stop` is not Pions' proven subtree-cancellation protocol, and native child session abortion is logically distinct from OS process-tree proof.
+**解釈。** ゲート 2（非同期とキャンセル）は、ネイティブなバックグラウンド実行について概ね満たされている。ただし、パッケージの `stop` は Pions の証明済みサブツリーキャンセルプロトコルではなく、ネイティブ子セッションの中止は OS プロセスツリーの証明とは論理的に別物である。
 
-**Classification:** basic async/deadline propagation **fit**; Pions cancellation semantics **conflict** (details in §5).
+**分類：** 基本的な非同期／期限伝播は**適合**。Pions のキャンセルセマンティクスは**競合**（詳細は §5）。
 
-## 2. Result and completion semantics
+## 2. 結果と完了のセマンティクス
 
-### 2.1 Native Pi semantic result
+### 2.1 ネイティブ Pi のセマンティックな結果
 
-**Source facts.** Both native launch paths subscribe directly to the child `AgentSession`; they collect final assistant messages, usage, tool events, model, errors, session identity, structured-output captures, and acceptance evidence. They do not derive native Pi success by scraping terminal text. [foreground execution](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/foreground/execution.ts) · [background child driver](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
+**ソース上の事実。** ネイティブな両起動経路は子 `AgentSession` を直接購読し、最終的なアシスタントメッセージ、使用量、ツールイベント、モデル、エラー、セッション識別情報、構造化出力のキャプチャ、および受け入れエビデンスを収集する。ネイティブ Pi の成功を端末テキストのスクレイピングから導出することはない。[フォアグラウンド実行](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/foreground/execution.ts) · [バックグラウンド子ドライバー](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
 
-Native text, file-only output, and schema-validated structured output are distinct result modes. Empty terminal output, model mismatch, missing required output, extension/tool setup errors, timeout, stop, and provider failures can turn the result into a typed failure. [structured-output.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/structured-output.ts) · [single-output.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/single-output.ts)
+ネイティブテキスト、ファイルのみの出力、およびスキーマ検証済みの構造化出力は、それぞれ異なる結果モードである。空の終端出力、モデル不一致、必須出力の欠落、拡張機能／ツールのセットアップエラー、タイムアウト、stop、およびプロバイダー障害は、結果を型付きの失敗に変え得る。[structured-output.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/structured-output.ts) · [single-output.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/single-output.ts)
 
-**Interpretation.** This satisfies acceptance gate 3 for native Pi sessions. It does not provide Pions' authenticated result message/ACK transaction; background result authority is implemented through package-owned local files and the runner/watcher relationship.
+**解釈。** これはネイティブ Pi セッションに関する受け入れゲート 3 を満たしている。ただし、Pions の認証済み結果メッセージ／ACK トランザクションは提供しない。バックグラウンドの結果の権威性は、パッケージ所有のローカルファイルとランナー／ウォッチャーの関係によって実装されている。
 
-**Classification:** semantic typed result **fit**; Pions result-channel contract **adapter-solvable gap**.
+**分類：** セマンティックな型付き結果は**適合**。Pions の結果チャネルコントラクトは**アダプターで解決可能なギャップ**。
 
-### 2.2 `agent_end` versus `agent_settled`
+### 2.2 `agent_end` と `agent_settled` の比較
 
-**Source facts.** `projectChildLifecycle` explicitly cancels the final-drain timer when `agent_end.willRetry === true`; `agent_settled` starts the terminal drain unless a compaction retry remains active. A terminal assistant `stop` can also start a short drain. If the prompt/session remains stuck, the host aborts after a one-second grace and hard-finishes after a further three seconds. [child-lifecycle.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-lifecycle.ts) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
+**ソース上の事実。** `projectChildLifecycle` は、`agent_end.willRetry === true` の場合に最終ドレインタイマーを明示的にキャンセルする。compaction の再試行がアクティブなままでない限り、`agent_settled` が終端ドレインを開始する。終端のアシスタント `stop` も短いドレインを開始できる。プロンプト／セッションがスタックしたままの場合、ホストは 1 秒の猶予後に中止し、さらに 3 秒後に強制終了する。[child-lifecycle.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-lifecycle.ts) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
 
-Integration tests specifically cover retrying `agent_end`, compaction retry, and `agent_settled` as a clean terminal watermark in foreground and background paths. [foreground tests](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/integration/single-execution.part-2.test.ts) · [background tests](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/integration/async-execution.part-1.test.ts)
+統合テストは、再試行する `agent_end`、compaction の再試行、およびフォアグラウンド／バックグラウンド経路におけるクリーンな終端ウォーターマークとしての `agent_settled` を明示的にカバーしている。[フォアグラウンドテスト](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/integration/single-execution.part-2.test.ts) · [バックグラウンドテスト](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/integration/async-execution.part-1.test.ts)
 
-**Interpretation.** The package correctly avoids treating retrying `agent_end` as final and recognizes `agent_settled` as the stronger Pi watermark. Its additional “terminal assistant stop + bounded forced cleanup” path means `agent_settled` is not an absolute prerequisite for a package terminal result. That is acceptable as a defensive package policy only if Pions records the missing watermark and resulting evidence explicitly.
+**解釈。** このパッケージは、再試行する `agent_end` を最終状態として扱うことを正しく回避し、`agent_settled` をより強い Pi ウォーターマークとして認識している。追加の「終端アシスタント stop + 時間制限付き強制クリーンアップ」経路があるため、`agent_settled` はパッケージの終端結果にとって絶対的な前提条件ではない。これは、Pions がウォーターマークの欠落と、その結果として得られるエビデンスを明示的に記録する場合に限り、防御的なパッケージポリシーとして許容できる。
+**分類:** イベント間の区別は **適合**。Pions の厳密な証拠ポリシーには **アダプターで解決可能なギャップ**。
 
-**Classification:** distinction between events **fit**; exact Pions evidence policy **adapter-solvable gap**.
+### 2.3 公開と at-most-once の動作
 
-### 2.3 Publication and at-most-once behavior
+**ソース上の事実。** 非同期の結果は、まずセッションで修飾された pending パス配下に書き込まれ、アトミックに昇格される。watcher は配信後に one-shot の結果を削除する前に、サイズ制限付きの replay/archive を書き込む。インメモリ/TTL の完了重複排除キーには、session、run、state が含まれる。リプレイには有効期限があり、永続的な台帳ではなく、ベストエフォートの一時状態として説明されている。[result-files.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/result-files.ts) · [completion-replay.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/completion-replay.ts) · [completion-dedupe.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/completion-dedupe.ts)
 
-**Source facts.** Async results are first written under a session-qualified pending path and atomically promoted. A watcher writes a bounded replay/archive before deleting the one-shot result after delivery. In-memory/TTL completion dedupe keys include session, run, and state. Replays expire and are described as best-effort temporary state, not a permanent ledger. [result-files.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/result-files.ts) · [completion-replay.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/completion-replay.ts) · [completion-dedupe.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/completion-dedupe.ts)
+**解釈。** これは優れた配信実装だが、Phase 0 の永続的な、settlement より前に結果を記録する追記専用イベント履歴ではない。重複し競合する子の結果は、Pions の単一 writer 認証済みプロトコルによって管理されない。
 
-**Interpretation.** This is a good delivery implementation, but it is not Phase 0's permanent append-only result-before-settlement event history. A duplicate conflicting child result is not governed by Pions' single-writer authenticated protocol.
+**分類:** 配信順序/重複排除は **部分的に適合**。永続的でリプレイ可能な settlement には **アダプターで解決可能なギャップ**。
 
-**Classification:** delivery ordering/dedupe **partial fit**; permanent replayable settlement **adapter-solvable gap**.
+## 3. イベント、コールバック、設定、可観測性
 
-## 3. Events, callbacks, configuration, and observability
+### 3.1 イベントとコールバック
 
-### 3.1 Events and callbacks
+**ソース上の事実。** ネイティブセッションは、`agent_start`、`message_end`、`message_update`、`tool_execution_start/end`、`tool_result_end`、compaction/retry イベント、`agent_end`、`agent_settled` の直接コールバックを公開する。バックグラウンド実行は、サイズ制限付きの子イベントを `events.jsonl` にミラーリングする。`message_update` はサイズ無制限の部分本文を省略する。公開/API プロセス内 API は、started/completed、control、process-terminal、構造化された delegation update/terminal response、Fleet status、extension acknowledgement イベントを公開する。`pi.events` は明示的にプロセスローカルである。[child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-session.ts) · [可観測性](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/observability.md#events) · [extension API](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#structured-delegation-api)
 
-**Source facts.** Native sessions expose direct callbacks for `agent_start`, `message_end`, `message_update`, `tool_execution_start/end`, `tool_result_end`, compaction/retry events, `agent_end`, and `agent_settled`. Background runs mirror bounded child events to `events.jsonl`; `message_update` omits the unbounded partial body. Public/in-process APIs expose started/completed, control, process-terminal, structured delegation update/terminal response, Fleet status, and extension acknowledgement events. `pi.events` is explicitly process-local. [child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-session.ts) · [observability](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/observability.md#events) · [extension API](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#structured-delegation-api)
+**解釈。** 受け入れゲート 4 は十分にサポートされている。パッケージのイベント語彙とアーティファクトは、なお Pions の operation ごとに単調増加するイベントスキーマへ変換する必要がある。upstream のレコードは、Pions の `event_id`、actor、schema version、認証済み capability、operation ローカルな `seq` を一様には保持していない。
 
-**Interpretation.** Acceptance gate 4 is well supported. The package event vocabulary and artifacts must still be translated to Pions' monotonic per-operation event schema; upstream records do not uniformly carry Pions' `event_id`, actor, schema version, authenticated capability, and operation-local `seq`.
+**分類:** イベントの可用性は **適合**。Pions の語彙/認証には **アダプターで解決可能なギャップ**。
 
-**Classification:** event availability **fit**; Pions vocabulary/authentication **adapter-solvable gap**.
+### 3.2 モデルと thinking
 
-### 3.2 Model and thinking
+**ソース上の事実。** モデルの優先順位は、run ごとの指定 → provider スコープの role override → 通常の role override → agent frontmatter → グローバルな subagent default → parent model である。モデルには fallback candidate を設定できる。runtime は Pi を通じて model/thinking を解決し、試行したモデルと最終モデルの情報を記録し、明示的に設定された alias を考慮しつつ、terminal response のモデル ID を要求された provider-qualified candidate と比較する。Thinking は明示的な level と継承された ceiling をサポートし、ソースは解決済み/実効 thinking 値を記録する。[モデルのドキュメント](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/models.md) · [model-fallback.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/model-fallback.ts) · [foreground の検証](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/foreground/execution.ts)
 
-**Source facts.** Model precedence is per-run → provider-scoped role override → ordinary role override → agent frontmatter → global subagent default → parent model. Models may have fallback candidates. The runtime resolves model/thinking through Pi, records attempted/final model information, and compares terminal response model IDs against the requested provider-qualified candidate, with explicit configured aliases. Thinking supports explicit levels and inherited ceilings; source records the resolved/effective thinking value. [models documentation](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/models.md) · [model-fallback.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/model-fallback.ts) · [foreground verification](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/foreground/execution.ts)
+**解釈。** 要求/実効/最終モデルと fallback の試行は、高い可観測性を備えている。Thinking は主として解決済みのポリシーであり、観測されたモデル ID に相当する、provider が報告する独立した「観測済み reasoning level」は存在しない。曖昧なモデル解決と設定済み fallback は意図的であり、暗黙的ではないが、Pions では要求/実効/観測済みフィールドを一つにまとめず、個別に保持する必要がある。
 
-**Interpretation.** Requested/effective/final model and fallback attempts are strongly observable. Thinking is chiefly resolved policy; there is no independent provider-reported “observed reasoning level” equivalent to observed model identity. Fuzzy model resolution and configured fallbacks are deliberate, not silent, but Pions would need to preserve requested/effective/observed fields separately rather than collapse them.
+**分類:** モデルの選択/検証は **適合**。観測済み thinking は、捏造せず unavailable として表現するなら **アダプターで解決可能なギャップ**。
 
-**Classification:** model selection/verification **fit**; observed thinking **adapter-solvable gap** if represented as unavailable rather than fabricated.
+### 3.3 ツール、extension、cwd
 
-### 3.3 Tools, extensions, and cwd
+**ソース上の事実。** Agent profile は、builtin tool、除外、MCP-direct tool、extension、ambient-extension discovery、skill、permission、ネストされた subagent の認可を制御する。Capability ceiling は許可された agent/tool の積集合を取り、extension を拒否でき、ネストされた子/バックグラウンドの子へ伝播し、必要な tool が欠けている場合は spawn 前に拒否する。各 run は cwd と launch-contract の digest/projection を記録する。[child-tool-plan.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-tool-plan.ts) · [child-launch.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-launch.ts) · [capability API](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#capability-ceilings)
 
-**Source facts.** Agent profiles control builtin tools, exclusions, MCP-direct tools, extensions, ambient-extension discovery, skills, permissions, and nested-subagent authorization. Capability ceilings intersect allowed agents/tools, can deny extensions, propagate to nested/background children, and reject missing required tools before spawn. Each run records cwd and launch-contract digests/projections. [child-tool-plan.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-tool-plan.ts) · [child-launch.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-launch.ts) · [capability API](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#capability-ceilings)
+foreground セッションは意図的に parent の ambient extension をロードしない。background セッションは、明示的な extension リストまたは capability ceiling によって無効化されない限り、ロードする場合がある。[extension API](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#background-work-provider-api)
 
-Foreground sessions intentionally do not load parent ambient extensions; background sessions may do so unless an explicit extension list or capability ceiling disables them. [extension API](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#background-work-provider-api)
+**解釈。** ネイティブな子については、受け入れゲート 6 を満たしている。要求された設定と実効設定は launch planning と result metadata から導出できるが、Pions の正確な `TaskSpec`/`Operation` 形式ではない。
 
-**Interpretation.** Acceptance gate 6 is met for native children. The requested/effective configuration can be derived from launch planning and result metadata, but not in the exact Pions `TaskSpec`/`Operation` shape.
+**分類:** 小規模な projection adapter を伴う **適合**。
 
-**Classification:** **fit**, with a small projection adapter.
+### 3.4 使用量とライブ可観測性
 
-### 3.4 Usage and live observability
+**ソース上の事実。** Progress は、現在の tool/path、サイズ制限付きの最近の output/tool summary、input/output/cache token count、cost、turn、duration、attention state、model、thinking を記録する。Status、FleetView、transcript inspection、JSONL、output log、metadata、result detail は、制限付きでこれらのフィールドを公開する。[可観測性](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/observability.md) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
 
-**Source facts.** Progress records current tool/path, bounded recent output/tool summaries, input/output/cache token counts, cost, turns, duration, attention state, model, and thinking. Status, FleetView, transcript inspection, JSONL, output logs, metadata, and result details expose these fields with bounds. [observability](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/observability.md) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
+**解釈。** これは backend 受け入れゲートの可観測性に関する最低要件を上回り、有用なマッピング入力を提供する。使用量は報告されるが予約されないため、厳格な使用量 budget は後続の launch を拒否できるものの、すでに実行中の子を停止しない。
 
-**Interpretation.** This exceeds the backend acceptance gate's observability minimum and offers useful mapping input. Usage is reported, not reserved, so hard usage budgets can reject later launches but do not stop already-running children.
+**分類:** 観測については **適合**。厳格な tree-wide budget reservation には **ギャップ**。
 
-**Classification:** **fit** for observation; **gap** for strict tree-wide budget reservation.
+## 4. ネストされた spawn、lineage、limit、budget
 
-## 4. Nested spawn, lineage, limits, and budgets
+### 4.1 ネストされた spawn と lineage
 
-### 4.1 Nested spawn and lineage
+**ソース上の事実。** 子にはデフォルトで `subagent` が与えられない。解決済み tool にそれを明示的に含む子、または profile がネストされた subagent を許可する子には、子にとって安全な fan-out extension が与えられる。Runtime config は depth/max depth、root route、parent run/index、path、継承された capability/thinking ceiling、root fan-out budget を保持する。ネストされた started/updated/completed レコードは capability-bearing file route に書き込まれ、tree としてレンダリングされる。[workflows recursion guard](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/workflows.md#recursion-guard) · [child-runtime-config.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-runtime-config.ts) · [fanout-child.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/extension/fanout-child.ts) · [nested-events.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/nested-events.ts)
 
-**Source facts.** Children do not receive `subagent` by default. A child whose resolved tools explicitly include it, or whose profile allows nested subagents, receives a child-safe fan-out extension. Runtime config carries depth/max depth, root route, parent run/index, path, inherited capability/thinking ceilings, and a root fan-out budget. Nested started/updated/completed records are written to a capability-bearing file route and rendered as a tree. [workflows recursion guard](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/workflows.md#recursion-guard) · [child-runtime-config.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-runtime-config.ts) · [fanout-child.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/extension/fanout-child.ts) · [nested-events.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/nested-events.ts)
+**解釈。** ゲート 7 は概念的に満たされている。子は不可視のパッケージ再帰プリミティブではなく、明示的な runtime の `subagent` tool を呼び出す。lineage は Pions の operation ID ではなく run ID と step index を使用し、Pions の idempotency key を実装していない。
 
-**Interpretation.** Gate 7 is conceptually met: a child calls an explicit runtime `subagent` tool, not an invisible package recursion primitive. The lineage uses run IDs and step indexes rather than Pions operation IDs and does not implement Pions' idempotency key.
+**分類:** 明示的なネストされた tool と lineage は **適合**。Pions の identity/idempotency には **アダプターで解決可能なギャップ**。
 
-**Classification:** explicit nested tool and lineage **fit**; Pions identity/idempotency **adapter-solvable gap**.
+### 4.2 depth、fan-out、concurrency、使用量 limit
 
-### 4.2 Depth, fan-out, concurrency, and usage limits
+**ソース上の事実。** デフォルトの最大 depth は 2。agent ごとの値は、継承した最大値を厳しくすることしかできない。セッション全体の累積 spawn budget は任意である。root run にはデフォルトで累積 fan-out limit 64 があり、`0700` の budget directory 配下にアトミックに claim される `0600` file として表現される。parallel/task/global active limit はそれぞれ独立している。報告された token/cost budget は reconciliation 後の子を拒否するが、使用量を予約せず、既存の子を cancel しない。[recursion tests](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/recursion-guard.test.ts) · [run-fanout-budget.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/run-fanout-budget.ts) · [設定](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/configuration.md#maxsubagentspawnsperrun)
 
-**Source facts.** Default maximum depth is 2. Per-agent values can only tighten the inherited maximum. A session-wide cumulative spawn budget is optional; a root run has a default cumulative fan-out limit of 64, represented by atomically claimed `0600` files under a `0700` budget directory. Parallel/task/global active limits are separate. Reported token/cost budgets reject later children after reconciliation but do not reserve usage or cancel existing children. [recursion tests](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/recursion-guard.test.ts) · [run-fanout-budget.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/run-fanout-budget.ts) · [configuration](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/configuration.md#maxsubagentspawnsperrun)
+**解釈。** depth と累積 run limit はよく整合している。Phase 0 は明確に、operation ごとの最大 child 数と root ごとの最大 live descendant 数を、型付きの拒否および作成リソース数ゼロとともに要求する。一方、upstream はスコープの異なる複数の limit を提供し、そのデフォルトの concurrency 動作は常に拒否するのではなく queue に入れる。累積 claim directory は有用な実装上の参考になる。
 
-**Interpretation.** Depth and cumulative run limits align well. Phase 0 specifically requires max children per operation and max live descendants per root with typed rejection and zero created resources; upstream instead offers several differently scoped limits, and its default concurrency queues rather than always rejects. The cumulative claim directory is a useful implementation reference.
+**分類:** depth/累積 budget は **適合**。正確な fan-out/live-descendant policy には **アダプターで解決可能なギャップ**。
 
-**Classification:** depth/cumulative budget **fit**; exact fan-out/live-descendant policy **adapter-solvable gap**.
+## 5. 子孫の settlement、drain、cancel
 
-## 5. Descendant settlement, drain, and cancellation
+### 5.1 生存中の子孫がいる場合の parent settlement
 
-### 5.1 Parent settlement with live descendants
+**ソース上の事実。** このパッケージは、foreground の parent が完了した後も nested route を保持し、UI/status layer が生存中の子孫を追跡し続けられるようにする。保持された tracker は、生存中の子孫がいなくなった後にのみ route を削除する。ドキュメントには、detached child は host-session の shutdown 後も継続でき、nested run は個別に表示されるとも記載されている。[retained-nested-route-tracker.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/retained-nested-route-tracker.ts) · [extension API、host lifetime](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#host-session-lifetime-and-completion-wakes)
 
-**Source facts.** The package retains a nested route after a foreground parent finishes so the UI/status layer can continue tracking live descendants; the retained tracker removes the route only after no live descendants remain. The documentation also says detached children can continue after host-session shutdown and that nested runs are separately visible. [retained-nested-route-tracker.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/retained-nested-route-tracker.ts) · [extension API, host lifetime](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#host-session-lifetime-and-completion-wakes)
+**解釈。** これは、parent の意味上の完了が、必ずしも子孫の terminal state と保留中の handoff の drain が完了するまで遅延されないことを示す直接的な証拠である。これは Phase 0 の `self_settled -> draining_descendants -> terminal` invariant および `parent_exit_policy: cancel_descendants` と競合する。
 
-**Interpretation.** This is direct evidence that parent semantic completion is not necessarily delayed until descendant terminal states and pending handoffs drain. It conflicts with Phase 0's `self_settled -> draining_descendants -> terminal` invariant and `parent_exit_policy: cancel_descendants`.
+**分類:** **競合**。
 
-**Classification:** **conflict**.
+### 5.2 subtree の stop/cancel 順序と acknowledgement
 
-### 5.2 Subtree stop/cancel ordering and acknowledgement
+**ソース上の事実。** stop 時、runner は自身の status/step を直ちに stopped としてマークし、`subagent.run.stopped` を書き込んだ後、stop controller を abort し、ネストされた子孫に stop request を dispatch し、active な direct child を停止する。子孫の traversal は、再帰的にその子孫を yield する前に各 child を yield し（pre-order）、dispatch は parent の stop state を公開する前に terminal acknowledgement を待機しない。失敗は診断用の `subagent.nested.stop_failed` イベントになる。[subagent-runner stop path](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/subagent-runner.ts)
 
-**Source facts.** On stop, the runner immediately marks its own status/steps stopped and writes `subagent.run.stopped`, then aborts its stop controller, dispatches stop requests to nested descendants, and stops active direct children. Descendant traversal yields each child before recursively yielding its descendants (pre-order), and dispatch does not await terminal acknowledgements before parent stop state publication. Failures are diagnostic `subagent.nested.stop_failed` events. [subagent-runner stop path](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/subagent-runner.ts)
+**解釈。** これは、spawn をアトミックに freeze し、生存中の子孫の snapshot を取得し、post-order で cancel し、acknowledgement/death proof を待機し、`cancelled` と `unknown(cancel_unproven)` のいずれかを選択するという Phase 0 の cancel 要件に違反する。要件に一致する cancellation epoch/idempotency protocol は存在しない。
 
-**Interpretation.** This violates Phase 0 cancellation requirements to atomically freeze spawning, snapshot live descendants, cancel post-order, await acknowledgement/death proof, and choose `cancelled` versus `unknown(cancel_unproven)`. There is no cancellation epoch/idempotency protocol matching the requirement.
+**分類:** **競合**。
 
-**Classification:** **conflict**.
+**推奨。** upstream の `stop` を、Pions のセマンティクスを備えているかのように `Runtime.cancel(scope="subtree")` へ適応してはならない。Pions supervisor は、freeze、post-order dispatch、acknowledgement、`unknown` classification を独立して管理しなければならない。
 
-**Recommendation.** Do not adapt upstream `stop` into `Runtime.cancel(scope="subtree")` as though it had Pions semantics. A Pions supervisor must own freeze, post-order dispatch, acknowledgements, and `unknown` classification independently.
+## 6. prompt、secret、result transport
 
-## 6. Prompt, secret, and result transport
+### 6.1 prompt transport
 
-### 6.1 Prompt transport
+**ソース上の事実。**
 
-**Source facts.**
+- foreground の prompt text は、`session.prompt()` へのインメモリ引数として渡される。
+- background の prompt/system instruction は、private な `0600` async config JSON file にシリアライズされる。spawn された runner の argv に含まれるのは config path のみであり、prompt は含まれない。runner は後に、その prompt を使用して in-process child session を呼び出す。[async-execution.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
+- 外部 CLI profile は stdin 経由で結合済み prompt を受け取る。file を必要とする adapter は mode `0600` で作成する。[external-cli-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/external-cli-runner.ts)
+- artifact metadata/input placeholder は複数の path で raw task を秘匿し、Herdr metadata は raw task/goal prompt ではなく、サイズ制限付きの明示的な label を使用する。それでも child Pi session の transcript には、必然的に prompt が含まれる。[foreground execution](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/foreground/execution.ts) · [Herdr status](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/integrations/herdr-status.ts)
 
-- Foreground prompt text is passed as an in-memory argument to `session.prompt()`.
-- Background prompt/system instructions are serialized in a private `0600` async config JSON file; the spawned runner argv contains only the config path, not the prompt. The runner later calls the in-process child session with the prompt. [async-execution.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
-- External CLI profiles receive the combined prompt over stdin; adapters that require a file create it with mode `0600`. [external-cli-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/external-cli-runner.ts)
-- Artifact metadata/input placeholders redact the raw task in several paths, and Herdr metadata uses bounded explicit labels rather than raw task/goal prompts. Child Pi session transcripts still necessarily contain prompts. [foreground execution](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/foreground/execution.ts) · [Herdr status](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/integrations/herdr-status.ts)
+**解釈。** 受け入れゲート 8 は満たされている。prompt text を process argv に含める必要はない。Pions の `prompt_ref` または認証済み Unix socket protocol は使用していない。
 
-**Interpretation.** Acceptance gate 8 is met: prompt text need not appear in process argv. It does not use Pions' `prompt_ref` or authenticated Unix socket protocol.
+**分類:** argv に prompt がない点は **適合**。Pions の transport 形式には **アダプターで解決可能なギャップ**。
+### 6.2 シークレットとチャネル認証
 
-**Classification:** no-prompt-in-argv **fit**; Pions transport shape **adapter-solvable gap**.
+**ソースから確認できる事実。** ネイティブのバックグラウンドランナーは、パッケージの拡張バインディング変数を除いて親の環境を継承し、ネイティブの Pi 子拡張はそのプロセス内で実行される。外部 CLI アダプターは環境変数の許可リストを使用できるが、通常のネイティブランナーは最小権限の環境変数許可リストを実装していない。[async-execution.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts) · [external-cli-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/external-cli-runner.ts)
 
-### 6.2 Secrets and channel authentication
+ネストされたイベント／制御ルートは、ランダムな UUID ケイパビリティトークンを使用し、ルートが所定の範囲内に収まっていることとメタデータの一致を検証し、イベントサイズを制限し、result-intercom の投影からケイパビリティフィールドを除外する。それでもトークンはルート／インデックス JSON に永続化され、子ランタイム設定にも含まれる。これはローカルの非公開ファイルシステムケイパビリティであり、送信者の単調増加シーケンスを備えた 256 ビットの Pions ソケットトークンではない。[nested-events.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/nested-events.ts) · [result-intercom テスト](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/result-intercom.test.ts)
 
-**Source facts.** Native background runners inherit the parent environment except a package extension-binding variable; native Pi child extensions run in that process. External CLI adapters can use an environment allowlist, but the ordinary native runner does not implement a least-privilege environment allowlist. [async-execution.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts) · [external-cli-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/external-cli-runner.ts)
+非同期制御 inbox は形状と境界を検証するが、通常の停止／割り込みファイルは主としてファイルシステムパスの所有権によって保護されており、メッセージごとのケイパビリティ認証やシーケンス番号によって保護されているわけではない。[control-channel.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/control-channel.ts)
 
-Nested event/control routes use a random UUID capability token, validate route containment and matching metadata, cap event size, and suppress capability fields from result-intercom projection. The token is nevertheless persisted in route/index JSON and carried in child runtime configuration; this is a private local filesystem capability, not a 256-bit Pions socket token with monotonic sender sequence. [nested-events.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/nested-events.ts) · [result-intercom test](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/result-intercom.test.ts)
+**解釈。** Pions のケイパビリティの秘匿性、認証済みの閉じたメッセージ集合、子の単調増加シーケンス、および「境界のないペイロードを解析する前に認証する」という契約は存在しない。一部のファイルは `0600`、一部のディレクトリは `0700` だが、汎用的なすべての成果物ライターがこれらのモードを強制するわけではない。
 
-The async control inbox validates shapes and bounds, but ordinary stop/interrupt files are protected primarily by filesystem path ownership, not per-message capability authentication or sequence numbers. [control-channel.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/control-channel.ts)
+**分類：** Pions が別個のチャネルを所有する場合に限り **アダプターで解決可能なギャップ**。上流のファイル inbox を同等の認証として扱う場合は **競合**。
 
-**Interpretation.** Pions' capability secrecy, authenticated closed message set, monotonic child sequence, and “authenticate before parsing unbounded payload” contract are not present. Selected files are `0600` and selected directories `0700`, but not every general artifact writer forces those modes.
+## 7. セッションとプロセスのアイデンティティ
 
-**Classification:** **adapter-solvable gap** only if Pions owns a separate channel; **conflict** if upstream file inbox is treated as equivalent authentication.
+**ソースから確認できる事実。** パッケージは、トップレベルの実行 ID、ステップのインデックス／キー、親／ルートのネスト ID、Pi `sessionId`、セッションファイル、親セッションの所有権、ランナー PID、ランダムなランナープロセスインスタンス ID、および外部ライターのプロセスインスタンスレコードを記録する。完了通知の配信は、発生元のセッションと、プロセス内で安定した完了所有者 UUID にスコープされる。保持された状態からの復旧では、正規のセッションファイルと、プロセス間で排他的なセッションリースが使用される。[child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-session.ts) · [session-identity.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/shared/session-identity.ts) · [completion-owner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/shared/completion-owner.ts) · [process-terminal.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/process-terminal.ts) · [session-lease.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/session-lease.ts)
 
-## 7. Session and process identity
+**解釈。** 受け入れゲート 9 は十分に満たされている。それでも Pions には、独自の安定した `operation_id/root_operation_id/parent_operation_id`、冪等性キー、およびこれらのバックエンドアイデンティティへの厳密なマッピングが必要である。
 
-**Source facts.** The package records top-level run ID, step index/key, parent/root nested IDs, Pi `sessionId`, session file, parent session ownership, runner PID, random runner process-instance ID, and external writer process-instance records. Completion delivery is scoped to the originating session and a process-stable completion-owner UUID. Retained revival uses canonical session files and an exclusive cross-process session lease. [child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/child-session.ts) · [session-identity.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/shared/session-identity.ts) · [completion-owner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/shared/completion-owner.ts) · [process-terminal.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/process-terminal.ts) · [session-lease.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/session-lease.ts)
+**分類：** アイデンティティマッピングアダプターを伴う **適合**。
 
-**Interpretation.** Acceptance gate 9 is strongly met. Pions still needs its own stable `operation_id/root_operation_id/parent_operation_id`, idempotency key, and exact mapping to these backend identities.
+## 8. 永続化、再読み込み、再起動、クラッシュリカバリー
 
-**Classification:** **fit**, with an identity-mapping adapter.
+### 8.1 永続化されるもの
 
-## 8. Persistence, reload, restart, and crash recovery
+**ソースから確認できる事実。** バックグラウンド実行は、`status.json`、サイズ制限付きの `events.jsonl`、出力ログ、結果ファイル、セッション JSONL、プロセス終端サイドカー、復旧記述子、アクティブインデックス、任意のワークフロー／ミッション／ハンドオフレコード、およびネストされたレジストリを書き込む。セッションの開始／再読み込みにより、アクティブなジョブ、結果監視、待機サブスクリプション、フォアグラウンド履歴、スケジュール、および Herdr 投影が復元される。[可観測性](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/observability.md#async-run-artifacts) · [拡張ライフサイクル](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/extension/index.ts)
 
-### 8.1 What persists
+所有元の Pi セッションが終了しても、デタッチされた子は実行を継続する。失われるのは即時通知である。後から一致するセッション／ランタイムが結果を再発見できる。[拡張 API](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#host-session-lifetime-and-completion-wakes)
 
-**Source facts.** Background runs write `status.json`, bounded `events.jsonl`, output logs, result files, session JSONL, process-terminal sidecars, recovery descriptors, active indexes, optional workflow/mission/handoff records, and nested registries. Session start/reload restores active jobs, result watching, wait subscriptions, foreground history, schedules, and Herdr projections. [observability](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/observability.md#async-run-artifacts) · [extension lifecycle](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/extension/index.ts)
+### 8.2 照合と証明
 
-A detached child continues if the owning Pi session shuts down; what is lost is immediate notification. A later matching session/runtime can rediscover results. [extension API](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#host-session-lifetime-and-completion-wakes)
+**ソースから確認できる事実。** 古い実行の照合では、既存の結果ファイルから実行中ステータスを修復できる。正確な PID の終了が観測され、結果が存在しない場合は、失敗結果／ステータスを書き込む。`EPERM` やその他の不確実な生存状態は、終了ではなく不明として扱われる。プロセス終端の証明が `observed` になるのは、稼働中のランチャーがそのランナーの正確な close を確認し、かつライタープロセスツリー／セッションリースの証拠に整合性がある場合に限られる。それ以外では証明は `unknown` となる。[stale-run-reconciler.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/stale-run-reconciler.ts) · [process-terminal.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/process-terminal.ts) · [process-terminal テスト](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/process-terminal.test.ts)
 
-### 8.2 Reconciliation and proof
+**解釈。** これは単純な PID ポーリングよりも大幅に堅牢であり、設計上の有益な参考情報である。ただし、以下の点がある。
 
-**Source facts.** Stale-run reconciliation can repair running status from an existing result file; if exact PID death is observed and no result exists, it writes a failed result/status. `EPERM` and other uncertain liveness become unknown rather than dead. Process-terminal proof is `observed` only after the live launcher sees the exact runner close and writer process-tree/session-lease evidence is consistent; otherwise proof is `unknown`. [stale-run-reconciler.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/stale-run-reconciler.ts) · [process-terminal.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/process-terminal.ts) · [process-terminal tests](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/process-terminal.test.ts)
+1. `events.jsonl` は診断用でサイズ制限があり（デフォルトは 50 MiB）、正規の追記専用状態ログではない。
+2. `status.json` と複数の可変サイドカーは、単一の認証済みイベントストリームから再構築可能な純粋な reducer スナップショットではなく、共同で権威を持つ運用レコードである。
+3. 配信済みの結果ファイルは削除され、リプレイ／アーカイブレコードには有効期限がある。
+4. 再起動後の照合では、ランチャーによる正確な `close` の観測を遡及的に取得できないため、プロセス証明が正しく不明のままになることがある。
+5. 完了所有者のアイデンティティは再読み込みをまたいで同一プロセス内では安定しているが、新しい親プロセスをまたいで永続的ではない。
 
-**Interpretation.** This is substantially stronger than simple PID polling and is valuable design input. Nevertheless:
+**分類：** 同一プロセスでの再読み込みと運用上の復旧は **適合**。Phase 0 のイベントストア／reducer と永続的なクラッシュリカバリーの権威性は **アダプターで解決可能なギャップ**。
 
-1. `events.jsonl` is diagnostic and bounded (default 50 MiB), not the canonical append-only state log.
-2. `status.json` and multiple mutable sidecars are co-authoritative operational records rather than a pure reducer snapshot reconstructible from one authenticated event stream.
-3. delivered result files are removed; replay/archive records expire.
-4. restart reconciliation cannot retroactively obtain the launcher's exact `close` observation, so process proof may correctly remain unknown.
-5. completion-owner identity is process-stable across reload, not durable across a new parent process.
+## 9. 失敗セマンティクス
 
-**Classification:** same-process reload and operational recovery **fit**; Phase 0 event-store/reducer and durable crash-recovery authority **adapter-solvable gap**.
+**ソースから確認できる事実。** パッケージは、完了、失敗、部分完了、一時停止、停止、拒否、タイムアウト、およびプロセス証明不明の各状態を区別する。モデルの不一致、必須出力の欠落、不正な構造化出力、ツール／拡張の拒否、子ランタイムの利用不能、起動ハンドシェイクの失敗、結果を残さず終了したランナー、worktree の不確実性、プロセスツリー検証の失敗は、暗黙に成功へ変換されることなく表面化される。外部ランナーでサポートされていないケイパビリティは、起動前に拒否される。[ツールリファレンス](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/tool-reference.md) · [stale-run-reconciler.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/stale-run-reconciler.ts) · [process-terminal.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/process-terminal.ts)
 
-## 9. Failure semantics
+ただし、Pions 形式の単一の状態機械は存在しない。特に、パッケージの「stopped」は子孫／プロセス終端の証明より先に公開されることがあり、その間もプロセス証明は別のサイドカーに残る。正常な終端アシスタントメッセージの後に強制ドレインが行われると、通常のセッション確定がなくても論理的成功となる場合がある。[subagent-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/subagent-runner.ts) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
 
-**Source facts.** The package distinguishes complete, failed, partial, paused, stopped, rejected, timed-out, and process-proof unknown states. Model mismatch, missing required output, malformed structured output, denied tools/extensions, unavailable child runtime, startup-handshake failure, dead runner without result, worktree uncertainty, and process-tree verification failure are surfaced rather than silently converted to success. Unsupported external-runner capabilities are rejected before launch. [tool reference](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/tool-reference.md) · [stale-run-reconciler.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/stale-run-reconciler.ts) · [process-terminal.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/process-terminal.ts)
+**解釈。** 多くのケイパビリティおよびプロセス証明の経路で受け入れゲート 10 は満たされているが、パッケージの論理状態名を Pions の終端状態へ一対一でマッピングすることはできない。Pions は、別個の停止証明なしに `stopped` を `cancelled` へ変換してはならない。
 
-There is, however, no single Pions-style state machine. In particular, package “stopped” can be published before descendant/process terminal proof, while process proof remains a separate sidecar. Forced drain after a clean terminal assistant message may produce logical success even without normal session settlement. [subagent-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/subagent-runner.ts) · [run-child-session.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/run-child-session.ts)
+**分類：** フェイルクローズなケイパビリティ報告は **適合**。Pions の終端状態マッピングは **アダプターで解決可能なギャップ**であり、サブツリー停止セマンティクスは **競合**。
 
-**Interpretation.** Acceptance gate 10 is met in many capability and process-proof paths, but package logical state names cannot be mapped one-to-one to Pions terminal states. Pions must not translate `stopped` to `cancelled` without separate stop proof.
+## 10. Worktree とセキュリティ境界
 
-**Classification:** fail-closed capability reporting **fit**; Pions terminal-state mapping **adapter-solvable gap**, with subtree stop semantics a **conflict**.
+**ソースから確認できる事実。** 管理対象の worktree には Git が必要で、通常はソースチェックアウトがクリーンであることを要求し、ベース ref を検証し、安全でない割り当てルートを拒否し、個別のブランチ／worktree を作成し、バイナリパッチとハンドオフ証拠を取得し、不確実／ダーティな作業を削除せず保持する。クリーンアップ権限はレーン表示メタデータとは分離され、最新のチェックを必要とする。[ワークフローの worktree セクション](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/workflows.md#worktree-isolation) · [worktree.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/worktree.ts)
 
-## 10. Worktrees and security boundaries
+ツールと拡張の許可リストは明示的なポリシー制御だが、上流ドキュメントが正しく述べているとおり、これは OS サンドボックスではなく同一プロセス内のポリシーである。子の Bash／カスタムツールは、そのプロセスユーザーのファイルシステム権限と継承された認証情報で実行される。ホストのワークフローコマンドは、信頼済みリソースの付与を使用するが、それでもワークフローの cwd／環境と PATH の信頼性を継承する。[ケイパビリティ上限](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#capability-ceilings) · [信頼済みワークフローリソース](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#trusted-workflow-resources)
 
-**Source facts.** Managed worktrees require Git, normally require a clean source checkout, validate base refs, reject unsafe allocation roots, create separate branches/worktrees, capture binary patches and handoff evidence, and preserve uncertain/dirty work rather than deleting it. Cleanup authority is separate from lane display metadata and requires fresh checks. [workflows worktree section](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/workflows.md#worktree-isolation) · [worktree.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/worktree.ts)
+**解釈。** worktree の実装は整合性／クリーンアップの優れた参考例だが、OS セキュリティ境界を満たすものではない。Phase 1 では worktree の作成が明示的に禁止されているため、MVP ではこれらの機能を使用してはならない。
 
-Tool and extension allowlists are explicit policy controls, but upstream documentation correctly says they are same-process policy rather than an OS sandbox. Child Bash/custom tools run with the process user's filesystem and inherited credentials. Host workflow commands use trusted resource grants but still inherit workflow cwd/environment and PATH trust. [capability ceilings](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#capability-ceilings) · [trusted workflow resources](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#trusted-workflow-resources)
+**分類：** worktree の安全対策は **後続設計への参考として適合**。サンドボックスは **提供されない**。Phase 1 での使用は **スコープと競合**。
 
-**Interpretation.** The worktree implementation is an excellent consistency/cleanup reference, but it does not satisfy an OS security boundary. Phase 1 explicitly forbids creating worktrees, so these facilities must remain unused in the MVP.
+## 11. Herdr 統合
 
-**Classification:** worktree safety practices **fit as later design input**; sandboxing **not provided**; Phase 1 use **conflict with scope**.
+### 11.1 通常の実行の挙動
 
-## 11. Herdr integration
+**ソースから確認できる事実。** 通常のネイティブサブエージェントはヘッドレスのままである。所有元の対話型 Pi が Herdr 内で実行されている場合（`HERDR_ENV=1` および `HERDR_PANE_ID`）、拡張は `herdr pane report-metadata` を使用して **既存の親ペイン** に非同期処理の集計数／ラベルを報告し、`herdr:busy` と `herdr:blocked` を発行し、再読み込み／再開後に投影を復元し、完了／シャットダウン時に消去する。ワーカーごとにペインを分割することはない。[Herdr ステータスのソース](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/integrations/herdr-status.ts) · [Herdr テスト](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/herdr-status-bridge.test.ts)
 
-### 11.1 What ordinary runs do
+任意の Herdr インスペクターペインは、既存の非同期成果物／制御 inbox に対するダッシュボードであり、子セッションでも文字どおりのアタッチでもないことが明記されている。任意のプロジェクトペインは独立した対等な Pi セッションを作成するが、親はその内部のサブエージェントを所有／制御しない。[拡張 API、Herdr](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#herdr-integration)
 
-**Source facts.** Ordinary native subagents remain headless. When the owning interactive Pi runs inside Herdr (`HERDR_ENV=1` and `HERDR_PANE_ID`), the extension reports aggregate async counts/labels on the **existing parent pane** using `herdr pane report-metadata`, emits `herdr:busy` and `herdr:blocked`, restores the projection after reload/resume, and clears it at completion/shutdown. It does not split a pane for each worker. [Herdr status source](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/integrations/herdr-status.ts) · [Herdr tests](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/herdr-status-bridge.test.ts)
+### 11.2 Phase 1 との比較
 
-Optional Herdr inspector panes are dashboards over existing async artifacts/control inboxes, explicitly not child sessions or literal attaches. Optional project panes create independent peer Pi sessions, but the parent does not own/control subagents within them. [extension API, Herdr](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/docs/extension-api.md#herdr-integration)
+**解釈。** これは中心的な可視ワーカー要件を満たさない。
 
-### 11.2 Comparison with Phase 1
+- オペレーションごとに現在の Pions ペインを分割しない。
+- `--no-focus` による子ワーカー起動トランザクションがない。
+- 新たに作成された正確なワーカーペインのアイデンティティをオペレーションに対応付けて保存しない。
+- そのペイン内でワーカーラッパーを実行しない。
+- Phase 1 の前提条件違反として失敗するのではなく、Herdr 外でも通常の実行が有効なままである。
+- Herdr メタデータは親の集計表示であり、可視ワーカーのオペレーションレベルの生存状態ではない。
 
-**Interpretation.** This fails the central visible-worker requirement:
+このブリッジは、2 つの優れた要件を具体化している。`pi.exec` を介して argv 配列を使用し、Herdr 投影を意味上の結果の権威ではなくベストエフォートとして扱う。また、生のプロンプトをメタデータに含めることも避けている。
 
-- no split of the current Pions pane for each operation;
-- no `--no-focus` child worker launch transaction;
-- no exact newly-created worker pane identity stored against the operation;
-- no worker wrapper running in that pane;
-- ordinary execution remains valid outside Herdr, rather than failing a Phase 1 precondition;
-- Herdr metadata is parent aggregate presentation, not operation-level liveness for a visible worker.
+**分類：** 任意の親メタデータは **補助的な投影として適合**。Phase 1 の `HerdrPresentation` とは **競合**。
 
-The bridge does embody two good requirements: it uses argv arrays through `pi.exec`, and Herdr projection is best-effort rather than semantic result authority. It also avoids putting raw prompts in metadata.
+**推奨事項。** インスペクターやプロジェクトペインのアクションを Phase 1 のワーカーペインとして再解釈しようとしてはならない。Pions が将来この拡張を統合する場合、Pions 自身が正確なペインを作成して所有し、そこで専用ラッパーを起動し、上流のステータスをバックエンドの観測情報としてのみ扱う必要がある。
 
-**Classification:** optional parent metadata **fit as an ancillary projection**; Phase 1 `HerdrPresentation` **conflict**.
+## 12. 要件別マトリックス
 
-**Recommendation.** Do not attempt to reinterpret its inspector or project-pane actions as a Phase 1 worker pane. If Pions ever integrates the extension, Pions must create and own the exact pane itself, launch a dedicated wrapper there, and treat upstream status only as backend observation.
+### 12.1 バックエンド受け入れゲート（§1）
 
-## 12. Requirement-by-requirement matrix
-
-### 12.1 Backend acceptance gate (§1)
-
-| # | Requirement | Fixed-commit evidence | Classification |
+| # | 要件 | 固定コミットでの証拠 | 分類 |
 |---:|---|---|---|
-| 1 | Independent OS process or backend inside independent wrapper | Detached Node runner for async; foreground in parent process | **Adapter-solvable gap** (background-only); foreground **conflict** |
-| 2 | Async and cancellation/deadline propagation | Async runner, control inbox, aborts and deadlines | **Fit** for basic operation; subtree proof differs |
-| 3 | Typed semantic result/failure, no terminal scraping | Direct `AgentSession` events/messages and structured result | **Fit** |
-| 4 | Lifecycle/tool/message/usage stream or callback | Rich direct subscriptions and bounded JSONL/progress callbacks | **Fit** |
-| 5 | Requested/observed model and reasoning; no silent fallback | Model candidates/attempts and terminal model verification; effective thinking, no independent observed thinking | **Adapter-solvable gap** |
-| 6 | Per-operation tool restriction | Profile tool plan, capability ceilings, required-tool preflight | **Fit** |
-| 7 | Child can call Pions Runtime spawn | Child can call package's child-safe `subagent`, not Python Pions Runtime | **Conflict** for Pions; useful design analogue |
-| 8 | Prompt/token/result absent from argv | Native background prompt in `0600` config; external CLI stdin/file | **Fit** for prompt; Pions token channel absent |
-| 9 | Backend session/process identity | Run/session/PID/process-instance/writer identity | **Fit** |
-| 10 | Unsupported capability not disguised as success | Extensive preflight rejection and unknown process proof | **Fit**, except package states need careful mapping |
+| 1 | 独立した OS プロセス、または独立したラッパー内のバックエンド | 非同期用のデタッチされた Node ランナー。フォアグラウンドは親プロセス内 | **アダプターで解決可能なギャップ**（バックグラウンドのみ）。フォアグラウンドは **競合** |
+| 2 | 非同期処理とキャンセル／デッドラインの伝播 | 非同期ランナー、制御 inbox、中断とデッドライン | 基本的なオペレーションには **適合**。サブツリーの証明は異なる |
+| 3 | 型付きの意味的な結果／失敗。終端出力のスクレイピングなし | `AgentSession` のイベント／メッセージを直接取得し、構造化された結果を使用 | **適合** |
+| 4 | ライフサイクル／ツール／メッセージ／使用量のストリームまたはコールバック | 豊富な直接サブスクリプションと、サイズ制限付き JSONL／進捗コールバック | **適合** |
+| 5 | 要求／観測されたモデルと推論。暗黙のフォールバックなし | モデル候補／試行と終端時のモデル検証。実効的な thinking はあるが、独立して観測された thinking はない | **アダプターで解決可能なギャップ** |
+| 6 | オペレーション単位のツール制限 | プロファイルのツール計画、ケイパビリティ上限、必須ツールの事前チェック | **適合** |
+| 7 | 子が Pions Runtime の spawn を呼び出せる | 子はパッケージの子向けに安全な `subagent` を呼び出せるが、Python の Pions Runtime ではない | Pions には **競合**。有用な設計上の類例 |
+| 8 | argv にプロンプト/token/result が存在しない | `0600` の設定にあるネイティブのバックグラウンドプロンプト、外部 CLI の stdin/ファイル | プロンプトには **適合**、Pions の token チャネルは存在しない |
+| 9 | バックエンドのセッション/プロセス ID | 実行/セッション/PID/プロセスインスタンス/writer ID | **適合** |
+| 10 | サポートされていない機能を成功に見せかけない | 広範な事前チェックによる拒否と unknown のプロセス証明 | **適合**、ただしパッケージの状態は慎重なマッピングが必要 |
 
-### 12.2 Shared domain and state machine (§§2–4)
+### 12.2 共有ドメインとステートマシン（§§2–4）
 
-| Requirement | Classification | Reason |
+| 要件 | 分類 | 理由 |
 |---|---|---|
-| `Runtime` is the only caller-facing seam; backend/presentation/store/channel separated | **Conflict** | Package exposes a Pi tool, workflow DSL, RPC, files, TUI, and Herdr APIs; it is an orchestration product, not a replaceable Python backend seam. |
-| `TaskSpec.prompt_ref`, profile, idempotency key | **Gap/conflict** | Profiles exist; raw prompt is in memory/private config; no Pions prompt reference or parent-scope idempotency key. |
-| Full Pions `Operation` fields | **Adapter-solvable gap** | Most backend/session/model/cwd/timing fields exist, but Pions lineage, state sequence, cancellation epoch, result digest, and pane ownership do not. |
-| Exact Pions nonterminal/terminal states | **Conflict** | Upstream has running/attention/paused/stopped/partial etc.; no `self_settled`/`draining_descendants`, and stopped does not imply proven cancellation. |
-| Legal reducer transitions and terminal immutability | **Conflict** | No pure reducer or authoritative append-only transition model. Mutable status repair is intentional. |
-| Process/Herdr state cannot alone manufacture success | **Fit** | Native result comes from session semantics; process proof remains separate. |
-| Monotonic authenticated event envelope | **Adapter-solvable gap** | Some event timestamps/versions/capabilities exist, but not uniformly the required envelope or sequence validation. |
-| Deterministic Phase 0 fake backend/store/clock/IDs | **Conflict as deliverable** | Upstream tests have injectable factories/fakes, but no Pions reducer package or deterministic domain harness. |
-| Depth 2, fan-out 3, live descendants 4, reject without resources | **Partial/gap** | Depth 2 exists; other upstream limits have different scopes/defaults and may queue. |
-| Result persisted before self-settlement and at-most-once parent publication | **Partial fit** | Async pending/promoted result precedes watcher delivery, with dedupe/replay; no Pions self-settlement transition or permanent single-writer event. |
-| Parent waits for descendants before terminal | **Conflict** | Retained descendant tracking explicitly permits parent completion first. |
-| Atomic spawn freeze + post-order cancel + ack/death proof + unknown | **Conflict** | No cancellation epoch/freeze; nested dispatch is pre-order and parent stopped state is written first. |
-| Required Phase 0 property/table tests | **Conflict as deliverable** | Extensive upstream tests cover its own contracts, not Pions' transition invariants. |
+| `Runtime` が呼び出し側に公開される唯一の境界であり、バックエンド/プレゼンテーション/store/channel が分離されている | **競合** | パッケージは Pi ツール、ワークフロー DSL、RPC、ファイル、TUI、Herdr API を公開している。これはオーケストレーション製品であり、交換可能な Python バックエンド境界ではない。 |
+| `TaskSpec.prompt_ref`、profile、idempotency key | **不足/競合** | profile は存在する。生のプロンプトはメモリ/非公開設定内にある。Pions のプロンプト参照や親スコープの idempotency key はない。 |
+| Pions の完全な `Operation` フィールド | **アダプターで解決可能な不足** | backend/session/model/cwd/timing のフィールドは大半が存在するが、Pions の lineage、状態シーケンス、キャンセル epoch、result digest、pane 所有権は存在しない。 |
+| Pions の厳密な非終端/終端状態 | **競合** | アップストリームには running/attention/paused/stopped/partial などがあるが、`self_settled`/`draining_descendants` はなく、stopped はキャンセルが証明済みであることを意味しない。 |
+| 正当な reducer 遷移と終端状態の不変性 | **競合** | 純粋な reducer も、権威ある追記専用の遷移モデルもない。可変な状態修復は意図的な設計である。 |
+| プロセス/Herdr の状態だけでは成功を作り出せない | **適合** | ネイティブの結果はセッションのセマンティクスから得られ、プロセス証明は分離されたままである。 |
+| 単調な認証済みイベント envelope | **アダプターで解決可能な不足** | 一部のイベント timestamp/version/capability は存在するが、要求される envelope やシーケンス検証が一律に備わっているわけではない。 |
+| 決定論的な Phase 0 の fake backend/store/clock/ID | **成果物として競合** | アップストリームのテストには注入可能な factory/fake があるが、Pions reducer パッケージや決定論的ドメインハーネスはない。 |
+| 深さ 2、fan-out 3、live descendants 4、リソースなしなら拒否 | **部分的/不足** | 深さ 2 は存在する。他のアップストリームの制限はスコープ/デフォルトが異なり、キューに入る場合がある。 |
+| 自己 settlement 前の結果永続化と、親への高々一回の publish | **部分的に適合** | 非同期の pending/promoted result は watcher への配信に先行し、重複排除/replay がある。Pions の自己 settlement 遷移や永続的な single-writer イベントはない。 |
+| 親は終端になる前に子孫を待つ | **競合** | 保持された子孫追跡では、親が先に完了することが明示的に許可されている。 |
+| アトミックな spawn freeze + post-order cancel + ack/death proof + unknown | **競合** | キャンセル epoch/freeze はない。ネストした dispatch は pre-order で、親の stopped 状態が最初に書き込まれる。 |
+| 必須の Phase 0 property/table テスト | **成果物として競合** | 広範なアップストリームテストは自身の契約を対象としており、Pions の遷移不変条件を対象としていない。 |
 
-### 12.3 Phase 1 visible-worker MVP (§5)
+### 12.3 Phase 1 visible-worker MVP（§5）
 
-| Requirement | Classification | Reason |
+| 要件 | 分類 | 理由 |
 |---|---|---|
-| One operation, no nesting, blocking vertical slice | **Adapter-solvable** | Foreground single run exists, but is in-process and not a visible separate worker. |
-| Strict Herdr env preflight; no headless fallback | **Conflict** | Herdr is optional and ordinary launches remain headless. |
-| Split current Pions pane, no focus, explicit cwd, returned opaque pane ID | **Conflict** | Ordinary child launch performs no pane split. |
-| Persist exact Pions-owned pane and never target pre-existing/Qoral panes | **Conflict/not implemented** | No per-operation worker pane ownership exists. Project/inspector panes are different features. |
-| Private `0700` run dir and `0600` prompt/config/result/error | **Partial gap** | Selected config/budget/recovery files are `0600` and some dirs `0700`; generic async/artifact/result writers do not uniformly impose the Pions modes. |
-| Worker authenticated `hello/started/activity/.../result/cancel_ack` channel | **Conflict** | Native sessions use direct callbacks; detached coordination uses package file artifacts/inboxes, not this protocol. |
-| 256-bit capability, hidden from argv/log/metadata, monotonic sequence | **Conflict** | Nested UUID capability is persisted and narrower; ordinary result/control path has no equivalent token/sequence. |
-| Persist/hash result, ACK, then settle | **Adapter-solvable gap** | Atomic result publication exists, but no Pions ACK/hash/state transaction. |
-| Herdr is projection/liveness only | **Fit** | Upstream Herdr bridge is best effort and not result authority. |
-| Exact per-operation Herdr model/state/usage projection | **Gap** | Aggregate parent-pane metadata only. |
-| Process exit without result => failed if proven; unproven => unknown | **Partial fit** | Stale reconciler marks proven dead runner without result failed; process-terminal sidecar preserves unknown proof. Mapping must remain explicit. |
-| Cancel backend first; proven stop cancelled, otherwise unknown | **Conflict** | Upstream publishes stopped before full descendant/process proof. |
-| Retain blocked/failed/unknown/success panes | **Conflict/not applicable** | Ordinary runs have no worker panes. |
-| Fake-Herdr argv/ownership/security tests | **Conflict as deliverable** | Herdr bridge/project/inspector tests cover upstream interfaces, not Pions' pane transaction fixtures. |
-| Reconstruct final result without terminal output | **Fit** | Native session/result/status artifacts suffice. |
+| 1 operation、ネストなし、blocking vertical slice | **アダプターで解決可能** | foreground の単一実行は存在するが、in-process であり、可視の別 worker ではない。 |
+| 厳格な Herdr 環境事前チェック、headless fallback なし | **競合** | Herdr は任意であり、通常の起動は headless のままである。 |
+| 現在の Pions pane を split、focus なし、明示的な cwd、返される opaque pane ID | **競合** | 通常の子起動では pane の split は行われない。 |
+| Pions が所有する正確な pane を永続化し、既存/Qoral pane を決して対象にしない | **競合/未実装** | operation ごとの worker pane 所有権は存在しない。Project/inspector pane は別機能である。 |
+| 非公開の `0700` run dir と `0600` prompt/config/result/error | **部分的な不足** | 選択された config/budget/recovery ファイルは `0600` で、一部のディレクトリは `0700` だが、汎用の async/artifact/result writer は Pions の mode を一律には適用しない。 |
+| worker の認証済み `hello/started/activity/.../result/cancel_ack` チャネル | **競合** | ネイティブセッションは直接 callback を使用する。detached coordination はパッケージのファイル artifact/inbox を使用し、このプロトコルではない。 |
+| 256-bit capability、argv/log/metadata から隠蔽、単調なシーケンス | **競合** | ネスト用 UUID capability は永続化され、より限定的である。通常の result/control パスには同等の token/sequence がない。 |
+| result を永続化/hash 化し、ACK 後に settle | **アダプターで解決可能な不足** | アトミックな result publish は存在するが、Pions の ACK/hash/state transaction はない。 |
+| Herdr は projection/liveness 専用 | **適合** | アップストリームの Herdr bridge は best effort であり、result authority ではない。 |
+| operation ごとの正確な Herdr model/state/usage projection | **不足** | 親 pane の集約 metadata のみ。 |
+| result なしのプロセス終了 => 証明済みなら failed、未証明なら unknown | **部分的に適合** | stale reconciler は、result がなく停止が証明された runner を failed とする。process-terminal sidecar は unknown の証明を保持する。マッピングは明示的なままにする必要がある。 |
+| まず backend をキャンセルし、停止が証明されれば cancelled、そうでなければ unknown | **競合** | アップストリームは子孫/プロセスの完全な証明より先に stopped を publish する。 |
+| blocked/failed/unknown/success pane を保持 | **競合/該当なし** | 通常の実行には worker pane がない。 |
+| fake-Herdr の argv/ownership/security テスト | **成果物として競合** | Herdr bridge/project/inspector テストはアップストリームのインターフェースを対象としており、Pions の pane transaction fixture を対象としていない。 |
+| terminal output なしで最終結果を再構築 | **適合** | ネイティブの session/result/status artifact で十分である。 |
 
-## 13. Relevant test evidence inspected
+## 13. 確認した関連テストの証拠
 
-No tests were run. Static inspection included tests for:
+テストは実行していない。静的調査には以下のテストが含まれる。
 
-- foreground/background `agent_end.willRetry` and `agent_settled` behavior: [single execution](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/integration/single-execution.part-2.test.ts), [async execution](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/integration/async-execution.part-1.test.ts);
-- nested control routing, route scoping, reload listener replacement, and trusted session-root checks: [nested-control.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/nested-control.test.ts);
-- depth and inherited-limit behavior: [recursion-guard.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/recursion-guard.test.ts);
-- exact runner/writer process-terminal proof and unknown outcomes: [process-terminal.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/process-terminal.test.ts);
-- POSIX descendant termination/verification: [owned-process-tree.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/owned-process-tree.test.ts);
-- Herdr enablement, parent-pane metadata, prompt-label redaction, reload projection, and inert behavior outside Herdr: [herdr-status-bridge.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/herdr-status-bridge.test.ts);
-- external CLI stdin prompt delivery and process-group stop behavior: [external-cli-runner.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/external-cli-runner.test.ts);
-- result capability redaction: [result-intercom.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/result-intercom.test.ts).
+- foreground/background の `agent_end.willRetry` および `agent_settled` の挙動：[single execution](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/integration/single-execution.part-2.test.ts)、[async execution](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/integration/async-execution.part-1.test.ts)
+- ネストした control routing、route scoping、reload 時の listener 置換、trusted session-root のチェック：[nested-control.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/nested-control.test.ts)
+- depth と継承された limit の挙動：[recursion-guard.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/recursion-guard.test.ts)
+- 正確な runner/writer の process-terminal 証明と unknown の結果：[process-terminal.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/process-terminal.test.ts)
+- POSIX の子孫 termination/verification：[owned-process-tree.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/owned-process-tree.test.ts)
+- Herdr の有効化、親 pane の metadata、prompt-label の redaction、reload projection、Herdr 外での inert な挙動：[herdr-status-bridge.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/herdr-status-bridge.test.ts)
+- 外部 CLI の stdin によるプロンプト配信と process-group の停止動作：[external-cli-runner.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/external-cli-runner.test.ts)
+- result capability の redaction：[result-intercom.test.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/test/unit/result-intercom.test.ts)
 
-These tests support upstream's own behavior. They are not evidence that the Phase 0 reducer tests or Phase 1 fake-Herdr safety suite already exist.
+これらのテストは、アップストリーム自身の挙動を裏付けるものである。Phase 0 reducer テストや Phase 1 fake-Herdr safety suite がすでに存在する証拠ではない。
 
-## 14. Drift from the prior report
+## 14. 以前のレポートからの差異
 
-The prior report, [`herdr-pi-extensions.md`](./herdr-pi-extensions.md), did **not** review `nicobailon/pi-subagents` at this revision. Its similarly named entry was **`@minhduydev/pi-subagents` 0.13.0** at a different repository and commit (`MinhDuyDEV/pi-subagents@6df615…`). Those findings must not be attributed to this package.
+以前のレポート [`herdr-pi-extensions.md`](./herdr-pi-extensions.md) は、このリビジョンの `nicobailon/pi-subagents` をレビューして**いない**。そこにある名前の似たエントリは、別のリポジトリおよび commit（`MinhDuyDEV/pi-subagents@6df615…`）の **`@minhduydev/pi-subagents` 0.13.0** だった。これらの所見をこのパッケージに帰属させてはならない。
 
-Material differences from the prior report's general picture are:
+以前のレポートの全体像との重要な相違点は以下のとおりである。
 
-1. **Package shape:** this fixed revision is explicitly a TypeScript Pi extension with a large in-process/public TypeScript API, not the still-undecided Python backend assumed by Pions.
-2. **Herdr role:** unlike visible-pane subagent packages emphasized in the prior report, ordinary children here remain headless. Herdr integration projects aggregate state onto the parent pane and opens optional inspectors/project peers.
-3. **Completion handling:** this revision has strong direct handling of `agent_end.willRetry` versus `agent_settled`, matching the prior report's recommendation not to treat `agent_end` as final.
-4. **Process proof:** this revision adds unusually explicit runner-instance, writer-process-tree, and session-lease terminal evidence, including durable `unknown` proof when observation is unavailable.
-5. **Nested lifecycle:** despite first-class lineage, depth, visibility, and cumulative fan-out claims, it does **not** implement the qcts-style descendant-drained parent settlement/cancellation recommended in the prior report. Parent completion can precede descendant completion, and stop is not descendant-first acknowledged cancellation.
-6. **Persistence:** the package has much richer status/result/recovery/mission/worktree artifacts than the small ephemeral designs in the prior report, but its diagnostic JSONL and expiring completion replay are not a permanent Pions event store.
-7. **Security:** model/tool/extension ceilings and worktree cleanup evidence are more developed than many reviewed packages, while ordinary native child processes still share user authority and inherited environment; neither a worktree nor a Pi extension policy is an OS sandbox.
+1. **パッケージ形態：** この固定リビジョンは、大規模な in-process/public TypeScript API を備えた TypeScript Pi extension であることが明確であり、Pions が想定する未決定の Python backend ではない。
+2. **Herdr の役割：** 以前のレポートで重視された visible-pane subagent パッケージとは異なり、通常の子はここでは headless のままである。Herdr integration は集約された状態を親 pane に projection し、任意の inspector/project peer を開く。
+3. **完了処理：** このリビジョンは `agent_end.willRetry` と `agent_settled` の違いを直接かつ堅牢に処理しており、`agent_end` を最終とみなさないという以前のレポートの推奨事項に合致する。
+4. **プロセス証明：** このリビジョンでは、runner-instance、writer-process-tree、session-lease の終端証拠が非常に明示的に追加されており、観測できない場合の永続的な `unknown` 証明も含まれる。
+5. **ネストしたライフサイクル：** first-class の lineage、depth、visibility、累積 fan-out claim があるにもかかわらず、以前のレポートで推奨された qcts-style の descendant-drained な親 settlement/cancellation は実装して**いない**。親の完了が子孫の完了に先行でき、停止は descendant-first の acknowledged cancellation ではない。
+6. **永続化：** このパッケージには、以前のレポートにある小規模な ephemeral 設計よりはるかに豊富な status/result/recovery/mission/worktree artifact があるが、その診断用 JSONL と期限付き completion replay は永続的な Pions event store ではない。
+7. **セキュリティ：** model/tool/extension ceiling と worktree cleanup の証拠は、レビューされた多くのパッケージより発達している一方、通常のネイティブ子プロセスは依然としてユーザー権限と継承された環境を共有する。worktree も Pi extension policy も OS sandbox ではない。
 
-## 15. Final recommendation
+## 15. 最終推奨
 
-### Source-derived decision
+### ソースに基づく判断
 
-Reject `nicobailon/pi-subagents@7fe9dee1bc186592e3f2b95c07d86c02f2edd57a` as the package that resolves Pions Decision P-001. It is not Python, does not expose the required Python backend contract, does not create Phase 1 visible Herdr workers, and conflicts with required descendant settlement/cancellation semantics.
+Pions Decision P-001 を解決するパッケージとして `nicobailon/pi-subagents@7fe9dee1bc186592e3f2b95c07d86c02f2edd57a` を却下する。これは Python ではなく、必要な Python backend contract を公開せず、Phase 1 の可視 Herdr worker を作成せず、必要な子孫 settlement/cancellation セマンティクスと競合する。
 
-### Concepts worth adapting
+### 適用する価値のある概念
 
-1. Subscribe directly to backend/Pi events and retain `agent_settled` as the strongest normal terminal watermark.
-2. Record requested model candidates, attempted models, final observed model, and explicit alias/fallback policy.
-3. Keep logical completion separate from exact process-terminal proof; represent unavailable proof as `unknown`.
-4. Use random process-instance identity in addition to PID and require canonical-session lease release for revival/terminal proof.
-5. Use capability/tool/thinking ceilings that only tighten through descendants.
-6. Use atomic, no-refund root fan-out claims and fail an admission group before starting any child.
-7. Preserve uncertain worktrees and require fresh identity/Git evidence before destructive cleanup.
-8. Bound event, transcript, output, steering, and metadata projections and keep raw prompts out of Herdr metadata.
+1. backend/Pi event を直接 subscribe し、通常の終端を示す最も強い watermark として `agent_settled` を保持する。
+2. 要求された model candidate、試行した model、最終的に観測された model、および明示的な alias/fallback policy を記録する。
+3. 論理的な完了を正確な process-terminal 証明から分離し、利用できない証明を `unknown` として表す。
+4. PID に加えてランダムな process-instance ID を使用し、復活/終端証明には canonical-session lease の解放を必須とする。
+5. 子孫を通じて厳しくなることしかない capability/tool/thinking ceiling を使用する。
+6. アトミックで払い戻しのない root fan-out claim を使用し、子を起動する前に admission group を失敗させる。
+7. 不確実な worktree を保持し、破壊的 cleanup の前に新鮮な ID/Git の証拠を必須とする。
+8. event、transcript、output、steering、metadata の projection に上限を設け、生のプロンプトを Herdr metadata に含めない。
 
-### Concepts not to copy into Phase 0/1
+### Phase 0/1 にコピーすべきでない概念
 
-1. A second workflow DSL/state model around the Pions reducer.
-2. Parent terminal publication while descendants remain live.
-3. Pre-order fire-and-forget descendant stop with parent `stopped` published first.
-4. Treating a local unauthenticated file inbox as the Pions child capability channel.
-5. Optional/headless Herdr behavior in the Phase 1 visible-worker adapter.
-6. Treating worktrees, tool allowlists, or same-process extension ceilings as OS isolation.
+1. Pions reducer を取り巻く第 2 の workflow DSL/state model。
+2. 子孫が live のままでの親 terminal publish。
+3. 親の `stopped` を先に publish する pre-order の fire-and-forget 子孫停止。
+4. ローカルの未認証 file inbox を Pions の子 capability channel として扱うこと。
+5. Phase 1 visible-worker adapter における任意/headless の Herdr 挙動。
+6. worktree、tool allowlist、または同一プロセスの extension ceiling を OS isolation として扱うこと。

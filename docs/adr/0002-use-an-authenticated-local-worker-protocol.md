@@ -2,6 +2,6 @@
 status: accepted
 ---
 
-# Use an authenticated local protocol for visible workers
+# 可視ワーカーに認証済みローカルプロトコルを使用する
 
-Pions will launch each visible worker through a private per-Operation configuration file and receive lifecycle and Result frames over a Unix domain socket, rather than passing prompts or authority in process arguments or deriving completion from terminal screen state. The wrapper may consume Pi's machine-readable lifecycle event stream directly; rendered terminal contents remain presentation evidence only. The versioned protocol authenticates every child frame with at least 256 bits of Operation authority, enforces monotonic sequence numbers and bounded frames, and acknowledges a Result only after durable acceptance so transport retries cannot manufacture or erase semantic completion.
+Pions は、プロセス引数でプロンプトや権限を渡したり、ターミナル画面の状態から完了を導出したりするのではなく、オペレーションごとの非公開設定ファイルを介して各可視ワーカーを起動し、Unix ドメインソケット経由でライフサイクルフレームと結果フレームを受信する。ラッパーは Pi の機械可読なライフサイクルイベントストリームを直接利用してもよい。レンダリングされたターミナルの内容は、表示の証跡にすぎない。バージョン管理されたプロトコルは、少なくとも256ビットのオペレーション権限で各子フレームを認証し、単調増加するシーケンス番号とサイズ制限付きフレームを強制する。また、結果が永続的に受理された後にのみ確認応答を行うため、転送の再試行によって意味上の完了が作り出されたり消去されたりすることはない。
