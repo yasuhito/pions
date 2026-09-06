@@ -121,6 +121,26 @@ function parseEvent(value: unknown): OperationEvent {
       };
       break;
     }
+    case "presentation_owned": {
+      const presentation = value.presentation;
+      if (!isObject(presentation)) throw failure("corrupt_record", "Invalid Presentation ownership");
+      if (
+        stringField(presentation, "kind") !== "herdr_pane" ||
+        presentation.ownedByPions !== true
+      ) {
+        throw failure("corrupt_record", "Invalid Presentation ownership");
+      }
+      event = {
+        ...base,
+        type,
+        presentation: {
+          kind: "herdr_pane",
+          paneId: stringField(presentation, "paneId"),
+          ownedByPions: true,
+        },
+      };
+      break;
+    }
     case "child_attached":
       event = { ...base, type, childOperationId: stringField(value, "childOperationId") };
       break;

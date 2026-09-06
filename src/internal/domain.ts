@@ -23,9 +23,19 @@ export interface OperationLineage {
   readonly depth: number;
 }
 
+export interface CreatedPresentation {
+  readonly kind: "herdr_pane";
+  readonly paneId: string;
+}
+
+export interface PresentationOwnership extends CreatedPresentation {
+  readonly ownedByPions: true;
+}
+
 export interface Operation {
   readonly operationId: string;
   readonly lineage: Readonly<OperationLineage>;
+  readonly presentation?: Readonly<PresentationOwnership>;
   readonly state: OperationState;
   readonly stateSeq: number;
   readonly task: Readonly<TaskSpec>;
@@ -67,6 +77,10 @@ export type OperationEvent = EventMetadata &
         readonly type: "operation_requested";
         readonly task: Readonly<TaskSpec>;
         readonly lineage: Readonly<OperationLineage>;
+      }
+    | {
+        readonly type: "presentation_owned";
+        readonly presentation: Readonly<PresentationOwnership>;
       }
     | {
         readonly type: "child_attached";

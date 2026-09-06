@@ -253,6 +253,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       );
       if (backendStart._tag === "Left") {
         const reason = backendStart.left.reason;
+        await run(
+          Effect.catchAllCause(
+            services.presentation.onBackendStartFailure(operation),
+            () => Effect.void,
+          ),
+        );
         operation = await run(
           append(record.operationId, {
             type: "self_settled",
@@ -337,6 +343,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     taskInput: TaskSpec,
     options: SpawnOptions | undefined,
   ): Promise<OperationHandle> => {
+    await run(services.presentation.preflight());
     const task = await Effect.runPromise(
       Schema.decodeUnknown(TaskSpecSchema)(taskInput),
     );
@@ -423,9 +430,29 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
 
     records.set(operationId, record);
-    const operation = await run(
+    let operation = await run(
       append(operationId, { type: "operation_requested", task, lineage }),
     );
+    await run(project(operation));
+
+    const createdPresentation = await run(services.presentation.create(operation));
+    try {
+      operation = await run(
+        append(operationId, {
+          type: "presentation_owned",
+          presentation: { ...createdPresentation, ownedByPions: true },
+        }),
+      );
+    } catch (error) {
+      await run(
+        Effect.catchAllCause(
+          services.presentation.rollbackCreated(createdPresentation),
+          () => Effect.void,
+        ),
+      );
+      records.delete(operationId);
+      throw error;
+    }
     await run(project(operation));
 
     const handle: OperationHandle = {

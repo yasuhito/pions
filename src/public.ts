@@ -18,6 +18,14 @@ export type OperationFailureReason =
   | "backend_start_failed"
   | "descendant_failed";
 
+export class HerdrPreconditionError extends Error {
+  override readonly name = "HerdrPreconditionError";
+
+  constructor(readonly missingVariables: ReadonlyArray<string>) {
+    super(`Herdr environment is unavailable: ${missingVariables.join(", ")}`);
+  }
+}
+
 export type SpawnRejectionReason =
   | "parent_not_found"
   | "cancellation_in_progress"

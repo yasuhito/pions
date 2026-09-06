@@ -40,6 +40,7 @@ export class TransitionError extends Error {
 function immutable(operation: Operation): Operation {
   Object.freeze(operation.task);
   Object.freeze(operation.lineage);
+  if (operation.presentation !== undefined) Object.freeze(operation.presentation);
   Object.freeze(operation.childOperationIds);
   Object.freeze(operation.settledChildOperationIds);
   if (operation.result !== undefined) Object.freeze(operation.result);
@@ -119,6 +120,23 @@ export function reduceOperation(
   }
 
   switch (event.type) {
+    case "presentation_owned":
+      if (current.state !== "queued" || current.presentation !== undefined) {
+        throw new TransitionError("illegal_transition");
+      }
+      if (
+        event.presentation.kind !== "herdr_pane" ||
+        event.presentation.paneId.length === 0 ||
+        event.presentation.ownedByPions !== true
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        presentation: { ...event.presentation },
+        stateSeq: event.seq,
+      });
+
     case "child_attached":
       if (current.spawnFrozen || current.state === "draining_descendants") {
         throw new TransitionError("illegal_transition");

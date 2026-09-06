@@ -125,6 +125,7 @@ async function completeOperation(
     "2026-09-06T10:00:03.000Z",
     "2026-09-06T10:00:04.000Z",
     "2026-09-06T10:00:05.000Z",
+    "2026-09-06T10:00:06.000Z",
   ]);
   const store = new InMemoryEventStore(trace, clock);
   const presentation = new FakePresentation(
@@ -576,6 +577,7 @@ test("Runtime records the successful Operation event sequence", async () => {
     store.events("operation-1").map(({ type }) => type),
     [
       "operation_requested",
+      "presentation_owned",
       "operation_starting",
       "operation_started",
       "result_persisted",
@@ -590,6 +592,8 @@ test("Runtime persists result bytes before self-settlement and completion", asyn
 
   assert.deepEqual(trace, [
     "event:operation_requested",
+    "presentation:queued",
+    "event:presentation_owned",
     "presentation:queued",
     "event:operation_starting",
     "presentation:starting",
@@ -618,6 +622,7 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
       { seq: 4, timestamp: "2026-09-06T10:00:03.000Z" },
       { seq: 5, timestamp: "2026-09-06T10:00:04.000Z" },
       { seq: 6, timestamp: "2026-09-06T10:00:05.000Z" },
+      { seq: 7, timestamp: "2026-09-06T10:00:06.000Z" },
     ],
   );
 });
@@ -652,6 +657,7 @@ async function retryOperation(options?: { readonly parentOperationId?: string })
       "2026-09-06T10:00:03.000Z",
       "2026-09-06T10:00:04.000Z",
       "2026-09-06T10:00:05.000Z",
+      "2026-09-06T10:00:06.000Z",
     ]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
@@ -694,6 +700,7 @@ test("Runtime publishes one event sequence for a duplicate Result delivery", asy
     store.events("operation-1").map(({ type }) => type),
     [
       "operation_requested",
+      "presentation_owned",
       "operation_starting",
       "operation_started",
       "result_persisted",
@@ -728,6 +735,7 @@ async function conflictResult() {
       "2026-09-06T10:00:03.000Z",
       "2026-09-06T10:00:04.000Z",
       "2026-09-06T10:00:05.000Z",
+      "2026-09-06T10:00:06.000Z",
     ]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
@@ -789,6 +797,7 @@ async function failOperation() {
       "2026-09-06T10:00:01.000Z",
       "2026-09-06T10:00:02.000Z",
       "2026-09-06T10:00:03.000Z",
+      "2026-09-06T10:00:04.000Z",
     ]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
@@ -822,6 +831,7 @@ test("backend failure records the failed terminal result", async () => {
     store.events("operation-1").map(({ type }) => type),
     [
       "operation_requested",
+      "presentation_owned",
       "operation_starting",
       "self_settled",
       "operation_failed",

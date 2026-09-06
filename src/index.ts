@@ -1,5 +1,6 @@
 export {
   CancellationRejectedError,
+  HerdrPreconditionError,
   OperationCancelledError,
   OperationUnknownError,
   OperationFailedError,

@@ -3,7 +3,12 @@ import { createHash } from "node:crypto";
 import { Effect } from "effect";
 
 import { replayOperation } from "./reducer.js";
-import type { Operation, OperationEvent, OperationState } from "./domain.js";
+import type {
+  CreatedPresentation,
+  Operation,
+  OperationEvent,
+  OperationState,
+} from "./domain.js";
 import {
   ValidatedEventStore,
 } from "./event-store.js";
@@ -136,6 +141,7 @@ export class FakeIdGenerator implements IdGenerator {
 
 export class FakePresentation implements Presentation {
   readonly projections: Array<Operation> = [];
+  readonly rolledBackPaneIds: Array<string> = [];
   stateChangeSucceeded = false;
 
   constructor(
@@ -143,6 +149,27 @@ export class FakePresentation implements Presentation {
     private readonly attemptedState?: OperationState,
     private readonly fails = false,
   ) {}
+
+  preflight(): Effect.Effect<void> {
+    return Effect.void;
+  }
+
+  create(operation: Operation): Effect.Effect<CreatedPresentation> {
+    return Effect.succeed({
+      kind: "herdr_pane",
+      paneId: `fake-pane:${operation.operationId}`,
+    });
+  }
+
+  rollbackCreated(presentation: CreatedPresentation): Effect.Effect<void> {
+    return Effect.sync(() => {
+      this.rolledBackPaneIds.push(presentation.paneId);
+    });
+  }
+
+  onBackendStartFailure(_operation: Operation): Effect.Effect<void> {
+    return Effect.void;
+  }
 
   project(operation: Operation): Effect.Effect<void> {
     return Effect.sync(() => {

@@ -1,6 +1,11 @@
 import type { Effect } from "effect";
 
-import type { EventInput, Operation } from "./domain.js";
+import type {
+  CreatedPresentation,
+  EventInput,
+  Operation,
+  PresentationOwnership,
+} from "./domain.js";
 import type {
   OperationFailureReason,
   Result,
@@ -65,6 +70,10 @@ export interface IdGenerator {
 }
 
 export interface Presentation {
+  preflight(): Effect.Effect<void, unknown>;
+  create(operation: Operation): Effect.Effect<CreatedPresentation, unknown>;
+  rollbackCreated(presentation: CreatedPresentation): Effect.Effect<void, unknown>;
+  onBackendStartFailure(operation: Operation): Effect.Effect<void, unknown>;
   project(operation: Operation): Effect.Effect<void, unknown>;
 }
 
