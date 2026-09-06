@@ -266,6 +266,24 @@ test("a persisted Result event contains only its durable reference", async (cont
   });
 });
 
+test("a Result retry must match its claimed digest", async (context) => {
+  const root = await privateRoot();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const store = new PrivateFileEventStore(root, clock());
+  await complete(store);
+
+  const error = await storeFailure(store.advance("operation-1", {
+    type: "accept_result",
+    delivery: {
+      body: "tampered",
+      digest: digest("finished"),
+      sequenceNumber: 2,
+    },
+  }) as Effect.Effect<unknown, StoreError>);
+
+  assert.equal(error.code, "corrupt_record");
+});
+
 async function interruptResultPublication(root: string) {
   const store = new PrivateFileEventStore(root, new FakeClock(["time-0", "time-1", "time-2"]));
   await Effect.runPromise(store.create({

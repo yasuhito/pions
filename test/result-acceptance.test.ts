@@ -52,11 +52,13 @@ class FailingReceptionChannel extends FakeChildChannel {
 }
 
 class FailingAcknowledgementChannel extends FakeChildChannel {
-  constructor() {
-    super({ body: "accepted" });
+  constructor(
+    messages: ConstructorParameters<typeof FakeChildChannel>[0] = { body: "accepted" },
+  ) {
+    super(messages);
   }
 
-  override acknowledgeResult(_operationId: string, _sequenceNumber: number) {
+  override acknowledgeResult() {
     return Effect.fail({
       _tag: "ChannelError" as const,
       message: "acknowledgement failed",
@@ -101,6 +103,26 @@ test("an acknowledgement failure retains the accepted Result", async () => {
     outcome.state === "protocol_failed" ? outcome.acceptedResult?.body : undefined,
     "accepted",
   );
+});
+
+test("an acknowledgement failure does not prevent recording a later Result conflict", async () => {
+  const store = new InMemoryEventStore(
+    [],
+    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
+  );
+  await runningOperation(store);
+  const acceptance = makeResultAcceptance({
+    channel: new FailingAcknowledgementChannel([
+      { body: "accepted", sequenceNumber: 1 },
+      { body: "conflicting", sequenceNumber: 2 },
+    ]),
+    store,
+  });
+  await Effect.runPromise(acceptance.acceptFromWorker("operation-1"));
+
+  const snapshot = await Effect.runPromise(store.read("operation-1"));
+
+  assert.equal(snapshot.operation.resultConflict?.deliverySequenceNumber, 2);
 });
 
 test("Result acceptance persists bytes and evidence before acknowledgement", async () => {

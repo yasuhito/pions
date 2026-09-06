@@ -17,7 +17,8 @@ import {
   ResultConflictError,
   SpawnRejectedError,
 } from "../src/index.js";
-import type { Operation, ResultDelivery } from "../src/internal/event-store/index.js";
+import type { Operation } from "../src/internal/event-store/index.js";
+import type { ResultDelivery } from "../src/internal/worker-protocol.js";
 import type {
   BackendCancellationEvidence,
   ChildChannel,
@@ -92,7 +93,7 @@ class FailingResultChannel implements ChildChannel {
     return Effect.fail({ _tag: "ChannelError" as const, message: "disconnected" });
   }
 
-  acknowledgeResult(_operationId: string, _sequenceNumber: number) {
+  acknowledgeResult() {
     return Effect.void;
   }
 }
@@ -102,7 +103,7 @@ class FailingAcknowledgementChannel extends FakeChildChannel {
     super({ body: "accepted" });
   }
 
-  override acknowledgeResult(_operationId: string, _sequenceNumber: number) {
+  override acknowledgeResult() {
     return Effect.fail({
       _tag: "ChannelError" as const,
       message: "acknowledgement failed",
@@ -130,10 +131,7 @@ class ControlledChildChannel implements ChildChannel {
     });
   }
 
-  acknowledgeResult(
-    _operationId: string,
-    _sequenceNumber: number,
-  ): Effect.Effect<void> {
+  acknowledgeResult(): Effect.Effect<void> {
     return Effect.void;
   }
 

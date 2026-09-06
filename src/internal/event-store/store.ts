@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { Effect } from "effect";
 
 import {
@@ -22,12 +20,16 @@ import type {
   OperationIntent,
   OperationRequest,
   OperationSnapshot,
-  ResultDelivery,
   StoreError,
   StoreErrorCode,
 } from "./index.js";
 import { ResultConflictError } from "../../public.js";
 import type { Result } from "../../public.js";
+import type {
+  ResultAcceptanceProof,
+  ResultDelivery,
+} from "../worker-protocol.js";
+import { resultDigest } from "../result-digest.js";
 
 export type { StoredOperationRecord } from "./codec.js";
 
@@ -62,8 +64,15 @@ function asStoreError(error: unknown, fallback: StoreErrorCode): StoreError {
   };
 }
 
-function resultDigest(bytes: Buffer): Result["digest"] {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+function acceptedDeliveryProof(
+  operationId: string,
+  delivery: Readonly<ResultDelivery>,
+): ResultAcceptanceProof {
+  return Object.freeze({
+    operationId,
+    digest: delivery.digest,
+    sequenceNumber: delivery.sequenceNumber,
+  }) as ResultAcceptanceProof;
 }
 
 export abstract class ValidatedEventStore implements EventStore {
@@ -151,7 +160,11 @@ export abstract class ValidatedEventStore implements EventStore {
   ): Effect.Effect<OperationSnapshot, StoreError | ResultConflictError> {
     if (intent.type === "accept_result") {
       return this.acceptResult(operationId, intent.delivery).pipe(
-        Effect.map(({ operation, result }) => ({ operation, result })),
+        Effect.map(({ operation, result, resultAcceptanceProof }) => ({
+          operation,
+          result,
+          resultAcceptanceProof,
+        })),
       );
     }
     return this.appendEvent(operationId, intent);
@@ -208,16 +221,29 @@ export abstract class ValidatedEventStore implements EventStore {
   }
 
   private acceptResult(operationId: string, delivery: ResultDelivery): Effect.Effect<
-    { readonly operation: Operation; readonly result: Result },
+    {
+      readonly operation: Operation;
+      readonly result: Result;
+      readonly resultAcceptanceProof: ResultAcceptanceProof;
+    },
     StoreError | ResultConflictError
   > {
     return Effect.tryPromise({
       try: () => this.serialize(operationId, async () => {
         const loaded = await this.load(operationId, true);
         if (loaded === undefined) throw failure("not_found", `Operation not found: ${operationId}`);
+        const bytes = Buffer.from(delivery.body, "utf8");
+        const digest = resultDigest(bytes);
+        if (delivery.digest !== digest) {
+          throw failure("corrupt_record", "Result digest does not match body");
+        }
         if (loaded.result !== undefined && loaded.resultReference !== undefined) {
           if (loaded.result.digest === delivery.digest) {
-            return { operation: loaded.operation, result: loaded.result };
+            return {
+              operation: loaded.operation,
+              result: loaded.result,
+              resultAcceptanceProof: acceptedDeliveryProof(operationId, delivery),
+            };
           }
           if (loaded.operation.resultConflict !== undefined) {
             throw new ResultConflictError(
@@ -275,9 +301,6 @@ export abstract class ValidatedEventStore implements EventStore {
             conflict.conflictingDigest,
           );
         }
-        const bytes = Buffer.from(delivery.body, "utf8");
-        const digest = resultDigest(bytes);
-        if (delivery.digest !== digest) throw failure("corrupt_record", "Result digest does not match body");
         const result: Result = Object.freeze({ body: delivery.body, byteCount: bytes.byteLength, digest });
         const reference: ResultReference = Object.freeze({
           location: "result.utf8",
@@ -320,7 +343,11 @@ export abstract class ValidatedEventStore implements EventStore {
             events: [...loaded.record.events, event],
           });
           this.didAppend(event);
-          return { operation, result };
+          return {
+            operation,
+            result,
+            resultAcceptanceProof: acceptedDeliveryProof(operationId, delivery),
+          };
         } catch (error) {
           throw failure("write_failed", error instanceof Error ? error.message : String(error));
         }

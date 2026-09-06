@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
@@ -11,10 +10,12 @@ import { Effect } from "effect";
 import type { Operation } from "../src/internal/event-store/index.js";
 import type { CommandInvocation } from "../src/internal/herdr-presentation.js";
 import { operationDirectoryKey } from "../src/internal/event-store/index.js";
+import { VisibleWorker } from "../src/internal/visible-worker.js";
+import { WORKER_PROTOCOL_VERSION } from "../src/internal/worker-protocol.js";
 import {
-  CHILD_PROTOCOL_VERSION,
-  VisibleWorker,
-} from "../src/internal/visible-worker.js";
+  resultAcceptanceProof,
+  resultDigest,
+} from "./worker-protocol-fixtures.js";
 import { HerdrPreconditionError, makeVisibleRuntime } from "../src/index.js";
 
 class FakeExecutor {
@@ -44,11 +45,7 @@ function operation(): Operation {
   };
 }
 
-async function fixture(options: {
-  readonly maxFirstFrameBytes?: number;
-  readonly maxMessageBytes?: number;
-  readonly maxResultBytes?: number;
-} = {}) {
+async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
   const executor = new FakeExecutor();
   const capability = "ab".repeat(32);
@@ -60,7 +57,6 @@ async function fixture(options: {
     nodeExecutable: "/node/bin/node",
     capabilityGenerator: { nextCapability: () => capability },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
-    ...options,
   });
   const current = operation();
   await Effect.runPromise(worker.start(current));
@@ -89,7 +85,7 @@ const processInstanceId = "12".repeat(32);
 
 function frame(capability: string, sequenceNumber: number, type: string, fields: Readonly<Record<string, unknown>> = {}) {
   return {
-    protocolVersion: CHILD_PROTOCOL_VERSION,
+    protocolVersion: WORKER_PROTOCOL_VERSION,
     operationId: "operation-1",
     capability,
     sequenceNumber,
@@ -98,15 +94,11 @@ function frame(capability: string, sequenceNumber: number, type: string, fields:
   };
 }
 
-function digest(body: string): string {
-  return `sha256:${createHash("sha256").update(body).digest("hex")}`;
-}
-
 async function deliver(fixtureValue: Awaited<ReturnType<typeof fixture>>, body = "finished") {
   const client = await socket(fixtureValue.config.socketPath);
   send(client, frame(fixtureValue.capability, 1, "hello", { processInstanceId }));
   send(client, frame(fixtureValue.capability, 2, "started"));
-  send(client, frame(fixtureValue.capability, 3, "result", { body, digest: digest(body), deliverySequenceNumber: 1 }));
+  send(client, frame(fixtureValue.capability, 3, "result", { body, digest: resultDigest(body), deliverySequenceNumber: 1 }));
   send(client, frame(fixtureValue.capability, 4, "done"));
   const reception = await Effect.runPromise(fixtureValue.worker.receiveResults(fixtureValue.current.operationId));
   return { client, reception };
@@ -169,6 +161,24 @@ test("visible worker configuration uses private permissions", async (context) =>
   assert.equal(await mode(join(value.directory, "worker.v1.json")), 0o600);
 });
 
+test("invalid Worker configuration creates no prompt file", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const worker = new VisibleWorker({
+    rootDirectory: root,
+    cwd: "/work/project",
+    executor: new FakeExecutor(),
+    wrapperEntryPath: "/pions/worker-wrapper.js",
+    capabilityGenerator: { nextCapability: () => "invalid" },
+    promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
+  });
+  await Effect.runPromise(worker.start(operation())).catch(() => undefined);
+  const promptPath = join(root, operationDirectoryKey("operation-1"), "prompt.utf8");
+
+  await assert.rejects(stat(promptPath), (error) =>
+    error instanceof Error && "code" in error && error.code === "ENOENT");
+});
+
 test("visible worker socket uses private permissions", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -182,7 +192,7 @@ test("authenticated started and Result frames are accepted without terminal pars
   const { reception } = await deliver(value);
 
   assert.deepEqual(reception, {
-    deliveries: [{ body: "finished", digest: digest("finished"), sequenceNumber: 1 }],
+    deliveries: [{ body: "finished", digest: resultDigest("finished"), sequenceNumber: 1 }],
   });
 });
 
@@ -201,9 +211,27 @@ test("Result ACK is emitted only when explicitly requested after persistence", a
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const { client } = await deliver(value);
   const ack = new Promise<string>((resolve) => client.once("data", (bytes) => resolve(bytes.toString("utf8"))));
-  await Effect.runPromise(value.worker.acknowledgeResult(value.current.operationId, 1));
+  await Effect.runPromise(
+    value.worker.acknowledgeResult(resultAcceptanceProof(value.current.operationId)),
+  );
 
   assert.equal(JSON.parse(await ack).type, "ack");
+});
+
+test("Result acknowledgement reports a Worker disconnect", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const { client } = await deliver(value);
+  client.end();
+  await new Promise<void>((resolve) => client.once("close", resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  await assert.rejects(
+    Effect.runPromise(
+      value.worker.acknowledgeResult(resultAcceptanceProof(value.current.operationId)),
+    ),
+    /No child connection|closed before acknowledgement/,
+  );
 });
 
 test("Result acknowledgement discards the visible Worker session", async (context) => {
@@ -211,36 +239,13 @@ test("Result acknowledgement discards the visible Worker session", async (contex
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await deliver(value);
   await Effect.runPromise(
-    value.worker.acknowledgeResult(value.current.operationId, 1),
+    value.worker.acknowledgeResult(resultAcceptanceProof(value.current.operationId)),
   );
 
   await assert.rejects(
     Effect.runPromise(value.worker.receiveResults(value.current.operationId)),
     /not prepared/,
   );
-});
-
-test("same-delivery retries with monotonic frames reach the Runtime contract", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  const client = await socket(value.config.socketPath);
-  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
-  send(client, frame(value.capability, 2, "started"));
-  send(client, frame(value.capability, 3, "result", { body: "finished", digest: digest("finished"), deliverySequenceNumber: 1 }));
-  send(client, frame(value.capability, 4, "result", { body: "finished", digest: digest("finished"), deliverySequenceNumber: 1 }));
-  send(client, frame(value.capability, 5, "done"));
-  const reception = await Effect.runPromise(value.worker.receiveResults(value.current.operationId));
-
-  assert.deepEqual(reception.deliveries.map(({ sequenceNumber }) => sequenceNumber), [1, 1]);
-});
-
-test("an invalid Operation capability cannot create a Result", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  const client = await socket(value.config.socketPath);
-  send(client, frame("cd".repeat(32), 1, "hello", { processInstanceId }));
-
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /authority/);
 });
 
 test("protocol rejection discards the visible Worker session", async (context) => {
@@ -256,55 +261,20 @@ test("protocol rejection discards the visible Worker session", async (context) =
   );
 });
 
-test("a stale child sequence number cannot create a Result", async (context) => {
+test("a frame received after done discards the visible Worker session", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  const client = await socket(value.config.socketPath);
-  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
-  send(client, frame(value.capability, 1, "started"));
+  const { client } = await deliver(value);
+  const closed = new Promise<void>((resolve) => client.once("close", () => resolve()));
+  send(client, {});
+  await closed;
 
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /sequence/);
-});
-
-test("an oversized first frame cannot create a Result", async (context) => {
-  const value = await fixture({ maxFirstFrameBytes: 64 });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  const client = await socket(value.config.socketPath);
-  client.write("x".repeat(65));
-
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /size limit/);
-});
-
-test("an oversized coalesced remainder cannot bypass the message limit", async (context) => {
-  const value = await fixture({ maxMessageBytes: 256 });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  const client = await socket(value.config.socketPath);
-  client.write(`${JSON.stringify(frame(value.capability, 1, "hello", { processInstanceId }))}\n${"x".repeat(257)}`);
-
-  await assert.rejects(Effect.runPromise(value.worker.receiveResults(value.current.operationId)), /size limit/);
-});
-
-test("coalesced post-authentication frames use the message limit", async (context) => {
-  const value = await fixture({ maxResultBytes: 8 * 1024 });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  const client = await socket(value.config.socketPath);
-  const body = "x".repeat(5 * 1024);
-  client.write([
-    frame(value.capability, 1, "hello", { processInstanceId }),
-    frame(value.capability, 2, "started"),
-    frame(value.capability, 3, "result", { body, digest: digest(body), deliverySequenceNumber: 1 }),
-    frame(value.capability, 4, "done"),
-  ].map((value) => JSON.stringify(value)).join("\n") + "\n");
-  const reception = await Effect.runPromise(value.worker.receiveResults(value.current.operationId));
-
-  assert.equal(reception.deliveries[0]?.body.length, 5 * 1024);
-});
-
-test("an oversized Result cannot create completion", async (context) => {
-  const value = await fixture({ maxResultBytes: 4 });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  await assert.rejects(deliver(value, "finished"), /size limit/);
+  await assert.rejects(
+    Effect.runPromise(
+      value.worker.acknowledgeResult(resultAcceptanceProof(value.current.operationId)),
+    ),
+    /No child connection/,
+  );
 });
 
 test("disconnect before Result cannot create completion", async (context) => {

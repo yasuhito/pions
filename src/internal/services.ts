@@ -4,8 +4,11 @@ import type {
   CreatedPresentation,
   EventStore,
   Operation,
-  ResultDelivery,
 } from "./event-store/index.js";
+import type {
+  ResultAcceptanceProof,
+  ResultDelivery,
+} from "./worker-protocol.js";
 import type { OperationFailureReason } from "../public.js";
 
 export interface WorkerProcessIdentity {
@@ -43,8 +46,7 @@ export interface ChildChannel {
   receiveStarted(operation: Operation): Effect.Effect<WorkerProcessIdentity, ChannelError>;
   receiveResults(operationId: string): Effect.Effect<ChannelReception, ChannelError>;
   acknowledgeResult(
-    operationId: string,
-    sequenceNumber: number,
+    acceptance: Readonly<ResultAcceptanceProof>,
   ): Effect.Effect<void, ChannelError>;
 }
 

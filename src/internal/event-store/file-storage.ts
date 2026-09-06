@@ -3,12 +3,12 @@ import {
   chmod,
   lstat,
   mkdir,
+  open,
   readFile,
   rename,
   unlink,
-  writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { ValidatedEventStore } from "./store.js";
 import type { StoredOperationRecord } from "./store.js";
@@ -19,8 +19,12 @@ const FILE_MODE = 0o600;
 const RECORD_FILE = "events.v2.json";
 const RESULT_FILE = "result.utf8";
 
+function hasCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
 function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
+  return hasCode(error, "ENOENT");
 }
 
 async function validateDirectory(path: string): Promise<boolean> {
@@ -49,6 +53,36 @@ async function validateRegularFile(path: string): Promise<boolean> {
   }
 }
 
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+
+async function createPrivateDirectoryTree(path: string): Promise<void> {
+  const missing: Array<string> = [];
+  let current = path;
+  while (!(await validateDirectory(current))) {
+    missing.push(current);
+    const parent = dirname(current);
+    if (parent === current) throw new Error(`Unable to find an existing parent directory: ${path}`);
+    current = parent;
+  }
+  for (const directory of missing.reverse()) {
+    try {
+      await mkdir(directory, { mode: DIRECTORY_MODE });
+    } catch (error) {
+      if (!hasCode(error, "EEXIST")) throw error;
+    }
+    await chmod(directory, DIRECTORY_MODE);
+    await validateDirectory(directory);
+    await syncDirectory(dirname(directory));
+  }
+}
+
 export function operationDirectoryKey(operationId: string): string {
   return createHash("sha256").update(operationId, "utf8").digest("hex");
 }
@@ -65,17 +99,13 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     const rootExists = await validateDirectory(this.rootDirectory);
     if (!rootExists) {
       if (!create) return undefined;
-      await mkdir(this.rootDirectory, { recursive: true, mode: DIRECTORY_MODE });
-      await chmod(this.rootDirectory, DIRECTORY_MODE);
-      await validateDirectory(this.rootDirectory);
+      await createPrivateDirectoryTree(this.rootDirectory);
     }
     const directory = join(this.rootDirectory, operationDirectoryKey(operationId));
     const exists = await validateDirectory(directory);
     if (!exists) {
       if (!create) return undefined;
-      await mkdir(directory, { mode: DIRECTORY_MODE });
-      await chmod(directory, DIRECTORY_MODE);
-      await validateDirectory(directory);
+      await createPrivateDirectoryTree(directory);
     }
     return directory;
   }
@@ -90,11 +120,18 @@ export class PrivateFileEventStore extends ValidatedEventStore {
       // Existing regular files may be replaced atomically.
     }
     const temporary = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+    let temporaryFile: Awaited<ReturnType<typeof open>> | undefined;
     try {
-      await writeFile(temporary, bytes, { flag: "wx", mode: FILE_MODE });
-      await chmod(temporary, FILE_MODE);
+      temporaryFile = await open(temporary, "wx", FILE_MODE);
+      await temporaryFile.writeFile(bytes);
+      await temporaryFile.chmod(FILE_MODE);
+      await temporaryFile.sync();
+      await temporaryFile.close();
+      temporaryFile = undefined;
       await rename(temporary, path);
+      await syncDirectory(dirname(path));
     } catch (error) {
+      await temporaryFile?.close().catch(() => undefined);
       await unlink(temporary).catch(() => undefined);
       throw error;
     }

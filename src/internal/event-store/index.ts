@@ -12,12 +12,12 @@ import type {
 import type {
   OperationIntent,
 } from "./intent.js";
+import type { ResultAcceptanceProof } from "../worker-protocol.js";
 
 export type {
   CreatedPresentation,
   OperationIntent,
   PresentationOwnership,
-  ResultDelivery,
   WorkerIdentity,
 } from "./intent.js";
 export type {
@@ -50,6 +50,7 @@ export interface OperationRequest {
 export interface OperationSnapshot {
   readonly operation: Operation;
   readonly result?: Result;
+  readonly resultAcceptanceProof?: ResultAcceptanceProof;
 }
 
 export interface EventStore {

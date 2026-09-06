@@ -5,14 +5,10 @@ import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 
 import {
-  CHILD_PROTOCOL_VERSION,
-  DEFAULT_MAX_FIRST_FRAME_BYTES,
-  resultDigest,
-} from "./internal/child-protocol.js";
-import type {
-  WorkerConfig,
-  WorkerOutboundFrame,
-} from "./internal/child-protocol.js";
+  WorkerProtocolPeer,
+  decodeWorkerConfig,
+} from "./internal/worker-protocol.js";
+import type { WorkerProtocolEvent } from "./internal/worker-protocol.js";
 
 function assistantOutcome(message: unknown): { readonly text: string; readonly succeeded: boolean } | undefined {
   if (typeof message !== "object" || message === null) return undefined;
@@ -41,7 +37,7 @@ function assistantOutcome(message: unknown): { readonly text: string; readonly s
 async function main(): Promise<void> {
   const configPath = process.argv[2];
   if (configPath === undefined) throw new Error("Worker configuration path is required");
-  const config = JSON.parse(await readFile(configPath, "utf8")) as WorkerConfig;
+  const config = decodeWorkerConfig(await readFile(configPath, "utf8"));
   await readFile(config.promptPath);
   const socket = connect(config.socketPath);
   await new Promise<void>((resolve, reject) => {
@@ -49,16 +45,12 @@ async function main(): Promise<void> {
     socket.once("error", reject);
   });
   const processInstanceId = randomBytes(32).toString("hex");
-  let sequenceNumber = 1;
-  if (config.protocolVersion !== CHILD_PROTOCOL_VERSION) throw new Error("Unsupported child protocol version");
-  const send = (frame: WorkerOutboundFrame): void => {
-    socket.write(`${JSON.stringify({
-      protocolVersion: config.protocolVersion,
-      operationId: config.operationId,
-      capability: config.capability,
-      sequenceNumber: sequenceNumber++,
-      ...frame,
-    })}\n`);
+  const protocol = new WorkerProtocolPeer({
+    operationId: config.operationId,
+    capability: config.capability,
+  });
+  const send = (event: WorkerProtocolEvent): void => {
+    socket.write(protocol.send(event));
   };
   send({ type: "hello", processInstanceId });
   send({ type: "started" });
@@ -110,23 +102,15 @@ async function main(): Promise<void> {
     await chmod(errorPath, 0o600);
     throw new Error("Pi exited without authenticated semantic completion");
   }
-  const digest = resultDigest(assistantResult);
-  send({ type: "result", body: assistantResult, digest, deliverySequenceNumber: 1 });
+  send({ type: "result", body: assistantResult, deliverySequenceNumber: 1 });
   send({ type: "done" });
   await new Promise<void>((resolve, reject) => {
-    let buffered = "";
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk: string) => {
-      buffered += chunk;
-      if (Buffer.byteLength(buffered, "utf8") > DEFAULT_MAX_FIRST_FRAME_BYTES) {
-        reject(new Error("ChildChannel acknowledgement exceeds the frame limit"));
-        return;
+    socket.on("data", (chunk: Buffer) => {
+      try {
+        if (protocol.receive(chunk).acknowledgementsComplete) resolve();
+      } catch (error) {
+        reject(error);
       }
-      const newline = buffered.indexOf("\n");
-      if (newline < 0) return;
-      const ack = JSON.parse(buffered.slice(0, newline)) as { readonly type?: unknown };
-      if (ack.type === "ack") resolve();
-      else reject(new Error("Worker received an invalid acknowledgement"));
     });
     socket.once("error", reject);
     socket.once("end", () => reject(new Error("ChildChannel disconnected before ACK")));

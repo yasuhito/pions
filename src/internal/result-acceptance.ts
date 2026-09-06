@@ -55,6 +55,7 @@ export function makeResultAcceptance(
 
         let acceptedResult: Result | undefined;
         let resultDeliveryError: ResultConflictError | undefined;
+        let acknowledgementFailed = false;
 
         for (const delivery of reception.right.deliveries) {
           const acceptance = yield* Effect.either(
@@ -84,7 +85,10 @@ export function makeResultAcceptance(
             );
           }
 
-          if (acceptance.right.result === undefined) {
+          if (
+            acceptance.right.result === undefined ||
+            acceptance.right.resultAcceptanceProof === undefined
+          ) {
             return yield* Effect.fail(
               new OperationPersistenceError(operationId, "incomplete_record"),
             );
@@ -92,20 +96,20 @@ export function makeResultAcceptance(
           acceptedResult = acceptance.right.result;
           const acknowledgement = yield* Effect.either(
             dependencies.channel.acknowledgeResult(
-              operationId,
-              delivery.sequenceNumber,
+              acceptance.right.resultAcceptanceProof,
             ),
           );
-          if (acknowledgement._tag === "Left") {
-            return {
-              state: "protocol_failed",
-              acceptedResult: acceptance.right.result,
-            } as const;
-          }
+          if (acknowledgement._tag === "Left") acknowledgementFailed = true;
         }
 
         if (acceptedResult === undefined) {
           return { state: "protocol_failed" } as const;
+        }
+        if (acknowledgementFailed) {
+          return {
+            state: "protocol_failed",
+            acceptedResult,
+          } as const;
         }
         return {
           state: "accepted",

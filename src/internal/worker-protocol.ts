@@ -1,0 +1,672 @@
+import { timingSafeEqual } from "node:crypto";
+
+import { Schema } from "effect";
+
+import type { Result } from "../public.js";
+import { resultDigest } from "./result-digest.js";
+
+export const WORKER_PROTOCOL_VERSION = 1 as const;
+
+export interface ProtocolAuthority {
+  readonly operationId: string;
+  readonly capability: string;
+}
+
+export interface ProtocolLimits {
+  readonly firstFrameBytes: number;
+  readonly frameBytes: number;
+  readonly resultBytes: number;
+  readonly sessionResultBytes: number;
+  readonly resultDeliveries: number;
+}
+
+export const DEFAULT_PROTOCOL_LIMITS: ProtocolLimits = Object.freeze({
+  firstFrameBytes: 4 * 1024,
+  frameBytes: 1024 * 1024,
+  resultBytes: 1024 * 1024,
+  sessionResultBytes: 1024 * 1024,
+  resultDeliveries: 16,
+});
+
+export type ProtocolViolationReason =
+  | "invalid_frame"
+  | "version_mismatch"
+  | "authority_mismatch"
+  | "sequence_mismatch"
+  | "frame_too_large"
+  | "result_too_large"
+  | "session_result_too_large"
+  | "too_many_results"
+  | "digest_mismatch"
+  | "invalid_transition"
+  | "unexpected_acknowledgement"
+  | "incomplete_session";
+
+export class ProtocolViolation extends Error {
+  override readonly name = "ProtocolViolation";
+
+  constructor(
+    readonly reason: ProtocolViolationReason,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const CapabilitySchema = Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64,}$/u));
+const ProcessInstanceIdSchema = Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/u));
+const DigestSchema = Schema.String.pipe(Schema.pattern(/^sha256:[0-9a-f]{64}$/u));
+
+const CommonWorkerFrameFields = {
+  protocolVersion: Schema.Number,
+  operationId: Schema.NonEmptyString,
+  capability: CapabilitySchema,
+  sequenceNumber: Schema.Number,
+};
+
+const HelloSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("hello"),
+  processInstanceId: ProcessInstanceIdSchema,
+});
+const StartedSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("started"),
+});
+const ResultSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("result"),
+  body: Schema.String,
+  digest: DigestSchema,
+  deliverySequenceNumber: Schema.Number,
+});
+const DoneSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("done"),
+});
+const AcknowledgementSchema = Schema.Struct({
+  protocolVersion: Schema.Number,
+  operationId: Schema.NonEmptyString,
+  sequenceNumber: Schema.Number,
+  type: Schema.Literal("ack"),
+});
+
+const WorkerConfigSchema = Schema.Struct({
+  protocolVersion: Schema.Number,
+  operationId: Schema.NonEmptyString,
+  capability: CapabilitySchema,
+  socketPath: Schema.NonEmptyString,
+  promptPath: Schema.NonEmptyString,
+  cwd: Schema.NonEmptyString,
+  profile: Schema.NonEmptyString,
+  agentArgs: Schema.Array(Schema.String),
+});
+
+export interface WorkerConfig {
+  readonly operationId: string;
+  readonly capability: string;
+  readonly socketPath: string;
+  readonly promptPath: string;
+  readonly cwd: string;
+  readonly profile: string;
+  readonly agentArgs: ReadonlyArray<string>;
+}
+
+export interface ResultDelivery {
+  readonly body: string;
+  readonly digest: Result["digest"];
+  readonly sequenceNumber: number;
+}
+
+declare const resultAcceptanceProof: unique symbol;
+
+export interface ResultAcceptanceProof {
+  readonly operationId: string;
+  readonly digest: Result["digest"];
+  readonly sequenceNumber: number;
+  readonly [resultAcceptanceProof]: true;
+}
+
+export interface ResultReception {
+  readonly deliveries: ReadonlyArray<ResultDelivery>;
+}
+
+export interface WorkerProtocolReception {
+  readonly acknowledgementsComplete: boolean;
+}
+
+export type HostProtocolEvent =
+  | {
+      readonly type: "started";
+      readonly processInstanceId: string;
+    }
+  | {
+      readonly type: "results_received";
+      readonly reception: ResultReception;
+    };
+
+export type WorkerProtocolEvent =
+  | { readonly type: "hello"; readonly processInstanceId: string }
+  | { readonly type: "started" }
+  | {
+      readonly type: "result";
+      readonly body: string;
+      readonly deliverySequenceNumber: number;
+    }
+  | { readonly type: "done" };
+
+function violation(
+  reason: ProtocolViolationReason,
+  message: string,
+): ProtocolViolation {
+  return new ProtocolViolation(reason, message);
+}
+
+function validateProtocolVersion(value: unknown, subject: string): void {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "protocolVersion" in value &&
+    typeof value.protocolVersion === "number" &&
+    value.protocolVersion !== WORKER_PROTOCOL_VERSION
+  ) {
+    throw violation("version_mismatch", `${subject} version does not match`);
+  }
+}
+
+function parseFrame(bytes: Buffer): unknown {
+  try {
+    return JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch {
+    throw violation("invalid_frame", "Worker protocol frame is not valid JSON");
+  }
+}
+
+function decodeShape<Decoded>(
+  schema: Schema.Schema<Decoded>,
+  value: unknown,
+  message: string,
+): Decoded {
+  try {
+    return Schema.decodeUnknownSync(schema)(value);
+  } catch {
+    throw violation("invalid_frame", message);
+  }
+}
+
+function validateSafePositiveInteger(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw violation("invalid_frame", `${field} must be a positive safe integer`);
+  }
+}
+
+function encode(value: unknown): Buffer {
+  return Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+}
+
+function deliveryKey(delivery: {
+  readonly digest: Result["digest"];
+  readonly sequenceNumber: number;
+}): string {
+  return `${delivery.sequenceNumber}:${delivery.digest}`;
+}
+
+function sameSecret(expectedValue: string, actualValue: string): boolean {
+  const expected = Buffer.from(expectedValue, "utf8");
+  const actual = Buffer.from(actualValue, "utf8");
+  return expected.byteLength === actual.byteLength && timingSafeEqual(expected, actual);
+}
+
+function completeLimits(overrides?: Partial<ProtocolLimits>): ProtocolLimits {
+  const limits = { ...DEFAULT_PROTOCOL_LIMITS, ...overrides };
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`Worker protocol limit ${name} must be a positive safe integer`);
+    }
+  }
+  return Object.freeze(limits);
+}
+
+class ResultBudget {
+  private bytes = 0;
+  private deliveries = 0;
+
+  constructor(private readonly limits: ProtocolLimits) {}
+
+  check(body: string): number {
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    if (bodyBytes > this.limits.resultBytes) {
+      throw violation("result_too_large", "Result exceeds its size limit");
+    }
+    if (this.bytes + bodyBytes > this.limits.sessionResultBytes) {
+      throw violation("session_result_too_large", "Result delivery exceeds its session size limit");
+    }
+    if (this.deliveries + 1 > this.limits.resultDeliveries) {
+      throw violation("too_many_results", "Result delivery exceeds its count limit");
+    }
+    return bodyBytes;
+  }
+
+  commit(bodyBytes: number): void {
+    this.bytes += bodyBytes;
+    this.deliveries += 1;
+  }
+
+  accept(body: string): void {
+    this.commit(this.check(body));
+  }
+}
+
+abstract class FramedPeer {
+  private buffered = Buffer.alloc(0);
+
+  protected constructor(protected readonly limits: ProtocolLimits) {}
+
+  protected encodeFrame(value: unknown, firstFrame = false): Buffer {
+    const bytes = encode(value);
+    const limit = firstFrame ? this.limits.firstFrameBytes : this.limits.frameBytes;
+    if (bytes.byteLength - 1 > limit) {
+      throw violation("frame_too_large", "Worker protocol frame exceeds its size limit");
+    }
+    return bytes;
+  }
+
+  protected acceptBytes(
+    bytes: Buffer,
+    firstFrame: boolean,
+    acceptFrame: (frame: Buffer) => void,
+  ): void {
+    let offset = 0;
+    let first = firstFrame;
+    while (offset < bytes.byteLength) {
+      const newline = bytes.indexOf(0x0a, offset);
+      const end = newline < 0 ? bytes.byteLength : newline;
+      const fragment = bytes.subarray(offset, end);
+      const limit = first ? this.limits.firstFrameBytes : this.limits.frameBytes;
+      if (this.buffered.byteLength + fragment.byteLength > limit) {
+        throw violation("frame_too_large", "Worker protocol frame exceeds its size limit");
+      }
+      if (newline < 0) {
+        this.buffered = this.buffered.byteLength === 0
+          ? Buffer.from(fragment)
+          : Buffer.concat([this.buffered, fragment]);
+        return;
+      }
+      const frame = this.buffered.byteLength === 0
+        ? fragment
+        : Buffer.concat([this.buffered, fragment]);
+      this.buffered = Buffer.alloc(0);
+      acceptFrame(frame);
+      first = false;
+      offset = newline + 1;
+    }
+  }
+
+  protected requireFrameBoundary(): void {
+    if (this.buffered.byteLength !== 0) {
+      throw violation("invalid_frame", "Worker protocol ended with an incomplete frame");
+    }
+  }
+}
+
+export class HostProtocolPeer extends FramedPeer {
+  private state:
+    | "awaiting_hello"
+    | "awaiting_started"
+    | "receiving_results"
+    | "done"
+    | "failed" = "awaiting_hello";
+  private lastSequenceNumber = 0;
+  private processInstanceId = "";
+  private readonly resultBudget: ResultBudget;
+  private readonly deliveries: Array<ResultDelivery> = [];
+  private readonly pendingAcknowledgements = new Map<string, number>();
+
+  constructor(
+    private readonly authority: Readonly<ProtocolAuthority>,
+    limits?: Partial<ProtocolLimits>,
+  ) {
+    const resolvedLimits = completeLimits(limits);
+    super(resolvedLimits);
+    this.resultBudget = new ResultBudget(resolvedLimits);
+  }
+
+  receive(bytes: Buffer): ReadonlyArray<HostProtocolEvent> {
+    const events: Array<HostProtocolEvent> = [];
+    try {
+      if (this.state === "failed" || this.state === "done") {
+        throw violation("invalid_transition", "Worker protocol session is already terminal");
+      }
+      this.acceptBytes(bytes, this.state === "awaiting_hello", (frame) => {
+        const event = this.acceptFrame(frame);
+        if (event !== undefined) events.push(event);
+      });
+      this.requireTerminalFrameBoundary();
+      return events;
+    } catch (error) {
+      this.state = "failed";
+      throw error;
+    }
+  }
+
+  disconnect(): void {
+    if (this.state !== "done") {
+      this.state = "failed";
+      throw violation(
+        "incomplete_session",
+        "Worker protocol disconnected before delivering a Result",
+      );
+    }
+  }
+
+  requestCancellation(): Buffer | undefined {
+    if (
+      this.state === "awaiting_hello" ||
+      this.state === "failed" ||
+      this.state === "done"
+    ) return undefined;
+    return this.encodeFrame({
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+      operationId: this.authority.operationId,
+      type: "cancel",
+    });
+  }
+
+  acknowledgeResult(acceptance: Readonly<ResultAcceptanceProof>): {
+    readonly bytes: Buffer;
+    readonly complete: boolean;
+  } {
+    if (this.state !== "done") {
+      throw violation("invalid_transition", "Result cannot be acknowledged before reception completes");
+    }
+    if (acceptance.operationId !== this.authority.operationId) {
+      throw violation("unexpected_acknowledgement", "Result acceptance belongs to another Operation");
+    }
+    const key = deliveryKey(acceptance);
+    const pending = this.pendingAcknowledgements.get(key) ?? 0;
+    if (pending === 0) {
+      throw violation(
+        "unexpected_acknowledgement",
+        "Result acknowledgement does not match a received delivery",
+      );
+    }
+    const bytes = this.encodeFrame({
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+      operationId: this.authority.operationId,
+      sequenceNumber: acceptance.sequenceNumber,
+      type: "ack",
+    });
+    if (pending === 1) this.pendingAcknowledgements.delete(key);
+    else this.pendingAcknowledgements.set(key, pending - 1);
+    return {
+      bytes,
+      complete: this.pendingAcknowledgements.size === 0,
+    };
+  }
+
+  private requireTerminalFrameBoundary(): void {
+    if (this.state === "done") this.requireFrameBoundary();
+  }
+
+  private acceptFrame(bytes: Buffer): HostProtocolEvent | undefined {
+    if (this.state === "done") {
+      throw violation("invalid_transition", "Worker protocol sent a frame after completion");
+    }
+    const value = parseFrame(bytes);
+    validateProtocolVersion(value, "Worker protocol");
+    const object = value as { readonly type?: unknown };
+
+    if (this.state === "awaiting_hello") {
+      const hello = decodeShape(
+        HelloSchema,
+        value,
+        "Worker protocol frame has an invalid shape",
+      );
+      this.validateCommon(hello, true);
+      this.state = "awaiting_started";
+      return undefined;
+    }
+    if (object.type === "started") {
+      const started = decodeShape(
+        StartedSchema,
+        value,
+        "Worker protocol frame has an invalid shape",
+      );
+      this.validateCommon(started);
+      if (this.state !== "awaiting_started") {
+        throw violation("invalid_transition", "Worker started more than once");
+      }
+      this.state = "receiving_results";
+      return { type: "started", processInstanceId: this.processInstanceId };
+    }
+    if (object.type === "result") {
+      const result = decodeShape(
+        ResultSchema,
+        value,
+        "Worker protocol frame has an invalid shape",
+      );
+      this.validateCommon(result);
+      if (this.state !== "receiving_results") {
+        throw violation("invalid_transition", "Result arrived before started notification");
+      }
+      validateSafePositiveInteger(result.deliverySequenceNumber, "deliverySequenceNumber");
+      this.resultBudget.accept(result.body);
+      if (result.digest !== resultDigest(Buffer.from(result.body, "utf8"))) {
+        throw violation("digest_mismatch", "Result digest does not match its body");
+      }
+      this.deliveries.push({
+        body: result.body,
+        digest: result.digest as Result["digest"],
+        sequenceNumber: result.deliverySequenceNumber,
+      });
+      const key = deliveryKey({
+        digest: result.digest as Result["digest"],
+        sequenceNumber: result.deliverySequenceNumber,
+      });
+      this.pendingAcknowledgements.set(
+        key,
+        (this.pendingAcknowledgements.get(key) ?? 0) + 1,
+      );
+      return undefined;
+    }
+    if (object.type === "done") {
+      const done = decodeShape(
+        DoneSchema,
+        value,
+        "Worker protocol frame has an invalid shape",
+      );
+      this.validateCommon(done);
+      if (this.state !== "receiving_results" || this.deliveries.length === 0) {
+        throw violation("invalid_transition", "Worker finished without a Result");
+      }
+      this.state = "done";
+      return {
+        type: "results_received",
+        reception: { deliveries: [...this.deliveries] },
+      };
+    }
+    throw violation("invalid_frame", "Unknown worker protocol frame type");
+  }
+
+  private validateCommon(
+    frame: {
+      readonly operationId: string;
+      readonly capability: string;
+      readonly sequenceNumber: number;
+      readonly processInstanceId?: string;
+    },
+    hello = false,
+  ): void {
+    if (
+      frame.operationId !== this.authority.operationId ||
+      !sameSecret(this.authority.capability, frame.capability)
+    ) {
+      throw violation("authority_mismatch", "Worker protocol authority does not match the Operation");
+    }
+    validateSafePositiveInteger(frame.sequenceNumber, "sequenceNumber");
+    if (frame.sequenceNumber !== this.lastSequenceNumber + 1) {
+      throw violation("sequence_mismatch", "Worker protocol sequence is stale or out of order");
+    }
+    this.lastSequenceNumber = frame.sequenceNumber;
+    if (hello) this.processInstanceId = frame.processInstanceId ?? "";
+  }
+}
+
+export class WorkerProtocolPeer extends FramedPeer {
+  private state:
+    | "new"
+    | "identified"
+    | "started"
+    | "delivering"
+    | "done"
+    | "acknowledged"
+    | "failed" = "new";
+  private sequenceNumber = 1;
+  private readonly resultBudget: ResultBudget;
+  private readonly pendingAcknowledgements = new Map<number, number>();
+
+  constructor(
+    private readonly authority: Readonly<ProtocolAuthority>,
+    limits?: Partial<ProtocolLimits>,
+  ) {
+    const resolvedLimits = completeLimits(limits);
+    super(resolvedLimits);
+    this.resultBudget = new ResultBudget(resolvedLimits);
+  }
+
+  send(event: WorkerProtocolEvent): Buffer {
+    switch (event.type) {
+      case "hello": {
+        if (this.state !== "new") return this.invalidSend(event.type);
+        if (!/^[0-9a-f]{64}$/u.test(event.processInstanceId)) {
+          throw violation("invalid_frame", "processInstanceId has an invalid shape");
+        }
+        const bytes = this.encodeWorkerFrame({
+          type: "hello",
+          processInstanceId: event.processInstanceId,
+        });
+        this.state = "identified";
+        return bytes;
+      }
+      case "started": {
+        if (this.state !== "identified") return this.invalidSend(event.type);
+        const bytes = this.encodeWorkerFrame({ type: "started" });
+        this.state = "started";
+        return bytes;
+      }
+      case "result": {
+        if (this.state !== "started" && this.state !== "delivering") {
+          return this.invalidSend(event.type);
+        }
+        validateSafePositiveInteger(event.deliverySequenceNumber, "deliverySequenceNumber");
+        const bodyBytes = this.resultBudget.check(event.body);
+        const bytes = this.encodeWorkerFrame({
+          type: "result",
+          body: event.body,
+          digest: resultDigest(Buffer.from(event.body, "utf8")),
+          deliverySequenceNumber: event.deliverySequenceNumber,
+        });
+        this.resultBudget.commit(bodyBytes);
+        this.state = "delivering";
+        this.pendingAcknowledgements.set(
+          event.deliverySequenceNumber,
+          (this.pendingAcknowledgements.get(event.deliverySequenceNumber) ?? 0) + 1,
+        );
+        return bytes;
+      }
+      case "done": {
+        if (this.state !== "delivering") return this.invalidSend(event.type);
+        const bytes = this.encodeWorkerFrame({ type: "done" });
+        this.state = "done";
+        return bytes;
+      }
+    }
+  }
+
+  receive(bytes: Buffer): WorkerProtocolReception {
+    try {
+      if (this.state !== "done") {
+        throw violation("invalid_transition", "Acknowledgement arrived outside the completed delivery state");
+      }
+      this.acceptBytes(bytes, false, (frameBytes) => {
+        const value = parseFrame(frameBytes);
+        validateProtocolVersion(value, "Worker protocol");
+        const acknowledgement = decodeShape(
+          AcknowledgementSchema,
+          value,
+          "Worker protocol frame has an invalid shape",
+        );
+        if (acknowledgement.operationId !== this.authority.operationId) {
+          throw violation("authority_mismatch", "Acknowledgement operation does not match");
+        }
+        validateSafePositiveInteger(acknowledgement.sequenceNumber, "sequenceNumber");
+        const pending = this.pendingAcknowledgements.get(acknowledgement.sequenceNumber) ?? 0;
+        if (pending === 0) {
+          throw violation("unexpected_acknowledgement", "Acknowledgement does not match a Result delivery");
+        }
+        if (pending === 1) this.pendingAcknowledgements.delete(acknowledgement.sequenceNumber);
+        else this.pendingAcknowledgements.set(acknowledgement.sequenceNumber, pending - 1);
+      });
+      const acknowledgementsComplete = this.pendingAcknowledgements.size === 0;
+      if (acknowledgementsComplete) {
+        this.requireFrameBoundary();
+        this.state = "acknowledged";
+      }
+      return { acknowledgementsComplete };
+    } catch (error) {
+      this.state = "failed";
+      throw error;
+    }
+  }
+
+  private encodeWorkerFrame(fields: Readonly<Record<string, unknown>>): Buffer {
+    const sequenceNumber = this.sequenceNumber;
+    const bytes = this.encodeFrame({
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+      operationId: this.authority.operationId,
+      capability: this.authority.capability,
+      sequenceNumber,
+      ...fields,
+    }, sequenceNumber === 1);
+    this.sequenceNumber += 1;
+    return bytes;
+  }
+
+  private invalidSend(type: WorkerProtocolEvent["type"]): never {
+    throw violation("invalid_transition", `Worker cannot send ${type} while ${this.state}`);
+  }
+}
+
+export function encodeWorkerConfig(config: WorkerConfig): string {
+  const wireConfig = decodeWorkerConfigValue({
+    ...config,
+    protocolVersion: WORKER_PROTOCOL_VERSION,
+  });
+  return `${JSON.stringify(wireConfig)}\n`;
+}
+
+export function decodeWorkerConfig(text: string): WorkerConfig {
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch {
+    throw violation("invalid_frame", "Worker configuration is not valid JSON");
+  }
+  const decoded = decodeWorkerConfigValue(value);
+  const { protocolVersion: _protocolVersion, ...config } = decoded;
+  return {
+    ...config,
+    agentArgs: [...config.agentArgs],
+  };
+}
+
+function decodeWorkerConfigValue(
+  value: unknown,
+): Schema.Schema.Type<typeof WorkerConfigSchema> {
+  validateProtocolVersion(value, "Worker configuration");
+  try {
+    return Schema.decodeUnknownSync(WorkerConfigSchema)(value);
+  } catch {
+    throw violation("invalid_frame", "Worker configuration has an invalid shape");
+  }
+}

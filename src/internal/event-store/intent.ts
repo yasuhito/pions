@@ -1,7 +1,5 @@
-import type {
-  OperationFailureReason,
-  Result,
-} from "../../public.js";
+import type { OperationFailureReason } from "../../public.js";
+import type { ResultDelivery } from "../worker-protocol.js";
 
 export interface CreatedPresentation {
   readonly kind: "herdr_pane";
@@ -15,12 +13,6 @@ export interface PresentationOwnership extends CreatedPresentation {
 export interface WorkerIdentity {
   readonly processInstanceId: string;
   readonly paneId: string;
-}
-
-export interface ResultDelivery {
-  readonly body: string;
-  readonly digest: Result["digest"];
-  readonly sequenceNumber: number;
 }
 
 export type OperationIntent =

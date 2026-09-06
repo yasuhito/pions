@@ -1,23 +1,19 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
 
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 
 import {
-  CHILD_PROTOCOL_VERSION,
-  DEFAULT_MAX_FIRST_FRAME_BYTES,
-  DEFAULT_MAX_MESSAGE_BYTES,
-  DEFAULT_MAX_RESULT_BYTES,
-  DoneSchema,
-  HelloSchema,
-  ResultSchema,
-  StartedSchema,
-  resultDigest,
-} from "./child-protocol.js";
-import type { WorkerConfig } from "./child-protocol.js";
-import type { Operation, ResultDelivery } from "./event-store/index.js";
+  HostProtocolPeer,
+  encodeWorkerConfig,
+} from "./worker-protocol.js";
+import type {
+  ResultAcceptanceProof,
+  WorkerConfig,
+} from "./worker-protocol.js";
+import type { Operation } from "./event-store/index.js";
 import { operationDirectoryKey } from "./event-store/index.js";
 import type {
   AgentBackend,
@@ -31,13 +27,7 @@ import type { CommandExecutor } from "./herdr-presentation.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
-
-export {
-  CHILD_PROTOCOL_VERSION,
-  DEFAULT_MAX_FIRST_FRAME_BYTES,
-  DEFAULT_MAX_MESSAGE_BYTES,
-  DEFAULT_MAX_RESULT_BYTES,
-} from "./child-protocol.js";
+const DEFAULT_MAX_PROMPT_BYTES = 1024 * 1024;
 
 export interface WorkerCapabilityGenerator {
   nextCapability(): string;
@@ -56,14 +46,10 @@ export interface VisibleWorkerOptions {
   readonly capabilityGenerator?: WorkerCapabilityGenerator;
   readonly promptReader?: PromptReader;
   readonly profiles?: Readonly<Record<string, ReadonlyArray<string>>>;
-  readonly maxFirstFrameBytes?: number;
-  readonly maxMessageBytes?: number;
-  readonly maxResultBytes?: number;
 }
 
 interface Session {
   readonly operation: Operation;
-  readonly capability: string;
   readonly server: Server;
   readonly socketPath: string;
   readonly reception: Promise<ChannelReception>;
@@ -73,14 +59,8 @@ interface Session {
   resolveStarted(value: { readonly processInstanceId: string }): void;
   rejectStarted(error: ChannelError): void;
   socket?: Socket;
-  lastSequenceNumber: number;
-  authenticated: boolean;
-  started: boolean;
   receptionCompleted: boolean;
-  processInstanceId?: string;
-  readonly deliveries: Array<ResultDelivery>;
-  readonly pendingAcknowledgements: Map<number, number>;
-  receivedResultBytes: number;
+  readonly protocol: HostProtocolPeer;
 }
 
 function channelError(message: string): ChannelError {
@@ -89,6 +69,19 @@ function channelError(message: string): ChannelError {
 
 function backendError(message: string): BackendError {
   return { _tag: "BackendError", reason: "backend_start_failed", message };
+}
+
+function writeSocket(socket: Socket, bytes: Buffer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (socket.destroyed || !socket.writable || socket.writableEnded) {
+      reject(new Error("Child connection closed before acknowledgement"));
+      return;
+    }
+    socket.write(bytes, (error) => {
+      if (error === undefined || error === null) resolve();
+      else reject(error);
+    });
+  });
 }
 
 function shellQuote(value: string): string {
@@ -113,16 +106,10 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
   private readonly sessions = new Map<string, Session>();
   private readonly capabilityGenerator: WorkerCapabilityGenerator;
   private readonly promptReader: PromptReader;
-  private readonly maxFirstFrameBytes: number;
-  private readonly maxMessageBytes: number;
-  private readonly maxResultBytes: number;
 
   constructor(private readonly options: VisibleWorkerOptions) {
     this.capabilityGenerator = options.capabilityGenerator ?? defaultCapabilityGenerator;
     this.promptReader = options.promptReader ?? defaultPromptReader;
-    this.maxFirstFrameBytes = options.maxFirstFrameBytes ?? DEFAULT_MAX_FIRST_FRAME_BYTES;
-    this.maxMessageBytes = options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
-    this.maxResultBytes = options.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES;
   }
 
   start(operation: Operation): Effect.Effect<void, BackendError> {
@@ -153,31 +140,10 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
   }
 
   acknowledgeResult(
-    operationId: string,
-    sequenceNumber: number,
+    acceptance: Readonly<ResultAcceptanceProof>,
   ): Effect.Effect<void, ChannelError> {
-    return Effect.try({
-      try: () => {
-        const session = this.sessions.get(operationId);
-        if (session?.socket === undefined || !session.authenticated) {
-          throw channelError("No authenticated child connection to acknowledge");
-        }
-        const pending = session.pendingAcknowledgements.get(sequenceNumber) ?? 0;
-        if (pending === 0) throw channelError("Result acknowledgement does not match a received delivery");
-        if (pending === 1) session.pendingAcknowledgements.delete(sequenceNumber);
-        else session.pendingAcknowledgements.set(sequenceNumber, pending - 1);
-        session.socket.write(`${JSON.stringify({
-          protocolVersion: CHILD_PROTOCOL_VERSION,
-          operationId,
-          sequenceNumber,
-          type: "ack",
-        })}\n`);
-        if (session.pendingAcknowledgements.size === 0) {
-          session.socket.end();
-          session.server.close();
-          this.sessions.delete(operationId);
-        }
-      },
+    return Effect.tryPromise({
+      try: () => this.sendAcknowledgement(acceptance),
       catch: (error) => (typeof error === "object" && error !== null && "_tag" in error)
         ? error as ChannelError
         : channelError(error instanceof Error ? error.message : String(error)),
@@ -186,21 +152,16 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
 
   cancel(operation: Operation): Effect.Effect<BackendCancellationEvidence, BackendError> {
     const session = this.sessions.get(operation.operationId);
-    if (session?.socket !== undefined && session.authenticated) {
-      session.socket.write(`${JSON.stringify({
-        protocolVersion: CHILD_PROTOCOL_VERSION,
-        operationId: operation.operationId,
-        type: "cancel",
-      })}\n`);
+    if (session?.socket !== undefined) {
+      const cancellation = session.protocol.requestCancellation();
+      if (cancellation !== undefined) session.socket.write(cancellation);
     }
     return Effect.fail(backendError("Visible worker stop has not been acknowledged"));
   }
 
   close(operation: Operation): void {
     const session = this.sessions.get(operation.operationId);
-    session?.socket?.destroy();
-    session?.server.close();
-    this.sessions.delete(operation.operationId);
+    if (session !== undefined) this.closeSession(session);
   }
 
   private async startWorker(operation: Operation): Promise<void> {
@@ -212,15 +173,11 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
     const configPath = join(directory, "worker.v1.json");
     const socketPath = join(directory, "child.sock");
     const prompt = await this.promptReader.read(operation.task.promptRef);
-    if (prompt.byteLength > this.maxMessageBytes) throw new Error("Prompt exceeds the configured size limit");
+    if (prompt.byteLength > DEFAULT_MAX_PROMPT_BYTES) throw new Error("Prompt exceeds the configured size limit");
     const capability = this.capabilityGenerator.nextCapability();
-    if (!/^[0-9a-f]{64,}$/u.test(capability)) throw new Error("Operation capability must contain at least 256 bits");
-    await writeFile(promptPath, prompt, { mode: FILE_MODE, flag: "wx" });
-    await chmod(promptPath, FILE_MODE);
     const agentArgs = (this.options.profiles ?? { coding: [] })[operation.task.profile];
     if (agentArgs === undefined) throw new Error(`Unknown visible worker profile: ${operation.task.profile}`);
     const config: WorkerConfig = {
-      protocolVersion: CHILD_PROTOCOL_VERSION,
       operationId: operation.operationId,
       capability,
       socketPath,
@@ -229,7 +186,10 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
       profile: operation.task.profile,
       agentArgs: [...agentArgs],
     };
-    await writeFile(configPath, `${JSON.stringify(config)}\n`, { mode: FILE_MODE, flag: "wx" });
+    const encodedConfig = encodeWorkerConfig(config);
+    await writeFile(promptPath, prompt, { mode: FILE_MODE, flag: "wx" });
+    await chmod(promptPath, FILE_MODE);
+    await writeFile(configPath, encodedConfig, { mode: FILE_MODE, flag: "wx" });
     await chmod(configPath, FILE_MODE);
     const session = this.createSession(operation, capability, socketPath);
     this.sessions.set(operation.operationId, session);
@@ -274,7 +234,6 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
     const server = createServer();
     const session: Session = {
       operation,
-      capability,
       server,
       socketPath,
       reception,
@@ -283,13 +242,11 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
       startedReception,
       resolveStarted,
       rejectStarted,
-      lastSequenceNumber: 0,
-      authenticated: false,
-      started: false,
       receptionCompleted: false,
-      deliveries: [],
-      pendingAcknowledgements: new Map(),
-      receivedResultBytes: 0,
+      protocol: new HostProtocolPeer({
+        operationId: operation.operationId,
+        capability,
+      }),
     };
     server.on("connection", (socket) => this.acceptConnection(session, socket));
     return session;
@@ -302,121 +259,65 @@ export class VisibleWorker implements AgentBackend, ChildChannel {
     }
     session.socket = socket;
     socket.unref();
-    let buffered = Buffer.alloc(0);
     socket.on("data", (chunk: Buffer) => {
-      buffered = Buffer.concat([buffered, chunk]);
-      const firstNewline = buffered.indexOf(0x0a);
-      if (!session.authenticated && firstNewline < 0 && buffered.byteLength > this.maxFirstFrameBytes) {
-        this.reject(session, "Child frame exceeds the configured size limit");
-        return;
-      }
-      if (buffered.byteLength > this.maxMessageBytes && firstNewline < 0) {
-        this.reject(session, "Child frame exceeds the configured size limit");
-        return;
-      }
-      let newline = buffered.indexOf(0x0a);
-      while (newline >= 0) {
-        const frame = buffered.subarray(0, newline);
-        buffered = buffered.subarray(newline + 1);
-        this.acceptFrame(session, frame);
-        newline = buffered.indexOf(0x0a);
-      }
-      if (buffered.byteLength > this.maxMessageBytes) {
-        this.reject(session, "Child frame exceeds the configured size limit");
+      try {
+        for (const event of session.protocol.receive(chunk)) {
+          if (event.type === "started") {
+            session.resolveStarted({ processInstanceId: event.processInstanceId });
+          } else {
+            session.receptionCompleted = true;
+            session.resolveReception(event.reception);
+          }
+        }
+      } catch (error) {
+        this.reject(session, error instanceof Error ? error.message : String(error));
       }
     });
     socket.on("end", () => {
-      if (!session.receptionCompleted) this.reject(session, "Child disconnected before delivering a Result");
+      if (session.receptionCompleted) {
+        this.closeSession(session);
+        return;
+      }
+      try {
+        session.protocol.disconnect();
+      } catch (error) {
+        this.reject(session, error instanceof Error ? error.message : String(error));
+      }
     });
     socket.on("error", (error) => this.reject(session, error.message));
   }
 
-  private acceptFrame(session: Session, bytes: Buffer): void {
+  private async sendAcknowledgement(
+    acceptance: Readonly<ResultAcceptanceProof>,
+  ): Promise<void> {
+    const session = this.sessions.get(acceptance.operationId);
+    if (session?.socket === undefined) {
+      throw channelError("No child connection to acknowledge");
+    }
     try {
-      const limit = session.authenticated ? this.maxMessageBytes : this.maxFirstFrameBytes;
-      if (bytes.byteLength > limit) throw new Error("Child frame exceeds the configured size limit");
-      const unknownFrame = JSON.parse(bytes.toString("utf8")) as unknown;
-      if (!session.authenticated) {
-        const hello = Schema.decodeUnknownSync(HelloSchema)(unknownFrame);
-        this.validateAuthority(session, hello);
-        session.authenticated = true;
-        session.lastSequenceNumber = hello.sequenceNumber;
-        session.processInstanceId = hello.processInstanceId;
-        return;
-      }
-      const object = unknownFrame as { readonly type?: unknown };
-      if (object.type === "started") {
-        const started = Schema.decodeUnknownSync(StartedSchema)(unknownFrame);
-        this.validateSequence(session, started);
-        session.started = true;
-        session.resolveStarted({ processInstanceId: session.processInstanceId ?? "" });
-        return;
-      }
-      if (object.type === "result") {
-        const result = Schema.decodeUnknownSync(ResultSchema)(unknownFrame);
-        this.validateSequence(session, result);
-        if (!session.started) throw new Error("Result arrived before started notification");
-        const bodyBytes = Buffer.from(result.body, "utf8");
-        if (bodyBytes.byteLength > this.maxResultBytes) throw new Error("Result exceeds the configured size limit");
-        session.receivedResultBytes += bodyBytes.byteLength;
-        if (session.receivedResultBytes > this.maxMessageBytes || session.deliveries.length >= 16) {
-          throw new Error("Result reception exceeds the configured aggregate limit");
-        }
-        if (result.digest !== resultDigest(result.body)) throw new Error("Result digest does not match its body");
-        const delivery = {
-          body: result.body,
-          digest: result.digest as ResultDelivery["digest"],
-          sequenceNumber: result.deliverySequenceNumber,
-        };
-        session.deliveries.push(delivery);
-        session.pendingAcknowledgements.set(
-          delivery.sequenceNumber,
-          (session.pendingAcknowledgements.get(delivery.sequenceNumber) ?? 0) + 1,
-        );
-        return;
-      }
-      if (object.type === "done") {
-        const done = Schema.decodeUnknownSync(DoneSchema)(unknownFrame);
-        this.validateSequence(session, done);
-        if (session.deliveries.length === 0) throw new Error("Child finished without a Result");
-        session.receptionCompleted = true;
-        session.resolveReception({ deliveries: [...session.deliveries] });
-        return;
-      }
-      throw new Error("Unknown child message type");
+      const acknowledgement = session.protocol.acknowledgeResult(acceptance);
+      await writeSocket(session.socket, acknowledgement.bytes);
+      if (acknowledgement.complete) this.closeSession(session, true);
     } catch (error) {
-      this.reject(session, error instanceof Error ? error.message : String(error));
+      this.closeSession(session);
+      throw error;
     }
   }
 
-  private validateAuthority(
-    session: Session,
-    frame: { readonly operationId: string; readonly capability: string },
-  ): void {
-    const expected = Buffer.from(session.capability, "utf8");
-    const actual = Buffer.from(frame.capability, "utf8");
-    if (
-      frame.operationId !== session.operation.operationId ||
-      expected.byteLength !== actual.byteLength ||
-      !timingSafeEqual(expected, actual)
-    ) {
-      throw new Error("Child authority does not match the Operation");
+  private closeSession(session: Session, graceful = false): void {
+    if (graceful) session.socket?.end();
+    else session.socket?.destroy();
+    if (session.server.listening) session.server.close();
+    if (this.sessions.get(session.operation.operationId) === session) {
+      this.sessions.delete(session.operation.operationId);
     }
-  }
-
-  private validateSequence(
-    session: Session,
-    frame: { readonly operationId: string; readonly capability: string; readonly sequenceNumber: number },
-  ): void {
-    this.validateAuthority(session, frame);
-    if (!Number.isSafeInteger(frame.sequenceNumber) || frame.sequenceNumber !== session.lastSequenceNumber + 1) {
-      throw new Error("Child sequence number is stale or out of order");
-    }
-    session.lastSequenceNumber = frame.sequenceNumber;
   }
 
   private reject(session: Session, message: string): void {
-    if (session.receptionCompleted) return;
+    if (session.receptionCompleted) {
+      this.closeSession(session);
+      return;
+    }
     session.receptionCompleted = true;
     session.rejectStarted(channelError(message));
     session.rejectReception(channelError(message));

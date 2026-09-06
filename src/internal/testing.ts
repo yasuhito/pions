@@ -1,13 +1,14 @@
-import { createHash } from "node:crypto";
-
 import { Effect } from "effect";
 
 import type {
   CreatedPresentation,
   Operation,
   OperationState,
-  ResultDelivery,
 } from "./event-store/index.js";
+import type {
+  ResultAcceptanceProof,
+  ResultDelivery,
+} from "./worker-protocol.js";
 export { InMemoryEventStore } from "./event-store/memory-storage.js";
 import type {
   AgentBackend,
@@ -21,6 +22,7 @@ import type {
   BackendCancellationEvidence,
 } from "./services.js";
 import type { Result } from "../public.js";
+import { resultDigest } from "./result-digest.js";
 
 export class FakeAgentBackend implements AgentBackend {
   startCount = 0;
@@ -54,10 +56,6 @@ interface FakeResultMessage {
   readonly sequenceNumber?: number;
 }
 
-function digest(body: string): Result["digest"] {
-  return `sha256:${createHash("sha256").update(Buffer.from(body, "utf8")).digest("hex")}`;
-}
-
 export class FakeChildChannel implements ChildChannel {
   private readonly messages: ReadonlyArray<FakeResultMessage>;
 
@@ -80,7 +78,7 @@ export class FakeChildChannel implements ChildChannel {
       return {
         deliveries: this.messages.map((message) => ({
           body: message.body,
-          digest: message.digest ?? digest(message.body),
+          digest: message.digest ?? resultDigest(Buffer.from(message.body, "utf8")),
           sequenceNumber: message.sequenceNumber ?? 1,
         })),
       };
@@ -88,11 +86,10 @@ export class FakeChildChannel implements ChildChannel {
   }
 
   acknowledgeResult(
-    _operationId: string,
-    sequenceNumber: number,
+    acceptance: Readonly<ResultAcceptanceProof>,
   ): Effect.Effect<void, ChannelError> {
     return Effect.sync(() => {
-      this.trace.push(`channel:ack:${sequenceNumber}`);
+      this.trace.push(`channel:ack:${acceptance.sequenceNumber}`);
     });
   }
 }
