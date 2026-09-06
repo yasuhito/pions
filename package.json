@@ -9,6 +9,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
+    "check:test-assertions": "npm run build:test --silent && node .test-dist/scripts/check-test-assertions.js",
+    "check": "npm run typecheck && npm run check:test-assertions && npm test",
     "test": "npm run build:test && node --test .test-dist/test/*.test.js",
     "build:test": "rm -rf .test-dist && tsc --outDir .test-dist"
   },
@@ -16,6 +18,7 @@
     "effect": "3.22.1"
   },
   "devDependencies": {
+    "@babel/parser": "8.0.4",
     "@types/node": "26.4.1",
     "typescript": "7.0.2"
   }
