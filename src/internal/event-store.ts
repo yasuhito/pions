@@ -376,9 +376,6 @@ export abstract class ValidatedEventStore implements EventStore {
           if (loaded.result.digest !== delivery.digest) {
             throw new ResultConflictError(operationId, loaded.result.digest, delivery.digest);
           }
-          if (loaded.resultReference.deliverySequenceNumber !== delivery.sequenceNumber) {
-            throw failure("corrupt_record", "Result sequence number does not match accepted delivery");
-          }
           return { operation: loaded.operation, result: loaded.result };
         }
         const bytes = Buffer.from(delivery.body, "utf8");

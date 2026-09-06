@@ -61,13 +61,13 @@ export function makeResultAcceptance(
           );
           if (acceptance._tag === "Left") {
             if (acceptance.left instanceof ResultConflictError) {
-              resultDeliveryError ??= acceptance.left;
+              resultDeliveryError = acceptance.left;
               if (acceptedResult === undefined) {
                 acceptedResult = yield* dependencies.store.readResult(operationId).pipe(
                   Effect.mapError((error) => persistenceError(operationId, error)),
                 );
               }
-              continue;
+              break;
             }
             return yield* Effect.fail(
               persistenceError(operationId, acceptance.left),
