@@ -2,33 +2,23 @@ import { createHash } from "node:crypto";
 
 import { Effect } from "effect";
 
-import {
-  reduceOperation,
-  replayOperation,
-  TransitionError,
-} from "./reducer.js";
+import { replayOperation } from "./reducer.js";
 import type { Operation, OperationEvent, OperationState } from "./domain.js";
+import {
+  ValidatedEventStore,
+} from "./event-store.js";
+import type { StoredOperationRecord } from "./event-store.js";
 import type {
   AgentBackend,
   ChildChannel,
-  EventStore,
   IdGenerator,
   Presentation,
   ResultDelivery,
   RuntimeClock,
-  StoreError,
   BackendError,
   BackendCancellationEvidence,
 } from "./services.js";
-import { ResultConflictError } from "../public.js";
 import type { Result } from "../public.js";
-
-function storeError(error: unknown): StoreError {
-  return {
-    _tag: "StoreError",
-    message: error instanceof Error ? error.message : String(error),
-  };
-}
 
 export class FakeAgentBackend implements AgentBackend {
   startCount = 0;
@@ -168,121 +158,65 @@ export class FakePresentation implements Presentation {
   }
 }
 
-export class InMemoryEventStore implements EventStore {
-  private readonly eventLog = new Map<string, Array<OperationEvent>>();
-  private readonly eventIds = new Set<string>();
-  private readonly operations = new Map<string, Operation>();
-  private readonly results = new Map<string, Result>();
-  private readonly resultDeliveries = new Map<string, ResultDelivery>();
+const systemClock: RuntimeClock = {
+  now: () => Effect.sync(() => new Date().toISOString()),
+  sleep: (milliseconds) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, milliseconds))),
+};
 
-  constructor(private readonly trace: Array<string> = []) {}
+export class InMemoryEventStore extends ValidatedEventStore {
+  private readonly records = new Map<string, StoredOperationRecord>();
+  private readonly resultBytes = new Map<string, Buffer>();
 
-  append(event: OperationEvent): Effect.Effect<Operation, StoreError> {
-    return Effect.try({
-      try: () => {
-        if (this.eventIds.has(event.eventId)) {
-          throw new TransitionError("duplicate_event");
-        }
-        const current = this.operations.get(event.operationId);
-        const next = reduceOperation(current, event);
-        this.eventIds.add(event.eventId);
-        this.operations.set(event.operationId, next);
-        const events = this.eventLog.get(event.operationId) ?? [];
-        events.push(event);
-        this.eventLog.set(event.operationId, events);
-        this.trace.push(`event:${event.type}`);
-        return next;
-      },
-      catch: storeError,
-    });
+  constructor(
+    private readonly trace: Array<string> = [],
+    clock: RuntimeClock = systemClock,
+  ) {
+    super(clock);
   }
 
-  acceptResult(
-    operationId: string,
-    delivery: ResultDelivery,
-    metadata: Omit<OperationEvent, "type" | "result">,
-  ): Effect.Effect<
-    { readonly operation: Operation; readonly result: Result },
-    StoreError | ResultConflictError
-  > {
-    return Effect.try({
-      try: () => {
-        const existingDelivery = this.resultDeliveries.get(operationId);
-        const existingResult = this.results.get(operationId);
-        const existingOperation = this.operations.get(operationId);
-        if (
-          existingDelivery !== undefined &&
-          existingResult !== undefined &&
-          existingOperation !== undefined
-        ) {
-          if (existingDelivery.digest !== delivery.digest) {
-            throw new ResultConflictError(
-              operationId,
-              existingDelivery.digest,
-              delivery.digest,
-            );
-          }
-          if (existingDelivery.sequenceNumber !== delivery.sequenceNumber) {
-            throw new Error(
-              "Result sequence number does not match accepted delivery",
-            );
-          }
-          return { operation: existingOperation, result: existingResult };
-        }
-
-        const bytes = Buffer.from(delivery.body, "utf8");
-        const computedDigest = digest(delivery.body);
-        if (delivery.digest !== computedDigest) {
-          throw new Error("Result digest does not match body");
-        }
-        const result: Result = Object.freeze({
-          body: delivery.body,
-          byteCount: bytes.byteLength,
-          digest: computedDigest,
-        });
-        const event = {
-          ...metadata,
-          operationId,
-          type: "result_persisted",
-          result,
-        } as OperationEvent;
-        if (this.eventIds.has(event.eventId)) {
-          throw new TransitionError("duplicate_event");
-        }
-        const next = reduceOperation(existingOperation, event);
-
-        this.trace.push("result:bytes-persisted");
-        this.eventIds.add(event.eventId);
-        this.results.set(operationId, result);
-        this.resultDeliveries.set(operationId, Object.freeze({ ...delivery }));
-        this.operations.set(operationId, next);
-        const events = this.eventLog.get(operationId) ?? [];
-        events.push(event);
-        this.eventLog.set(operationId, events);
-        this.trace.push("event:result_persisted");
-        return { operation: next, result };
-      },
-      catch: (error) =>
-        error instanceof ResultConflictError ? error : storeError(error),
-    });
+  protected readRecord(operationId: string): Promise<unknown | undefined> {
+    return Promise.resolve(this.records.get(operationId));
   }
 
-  get(operationId: string): Effect.Effect<Operation, StoreError> {
-    return Effect.fromNullable(this.operations.get(operationId)).pipe(
-      Effect.mapError(() => storeError(`Operation not found: ${operationId}`)),
-    );
+  protected writeRecord(operationId: string, record: StoredOperationRecord): Promise<void> {
+    this.records.set(operationId, structuredClone(record));
+    return Promise.resolve();
+  }
+
+  protected readResultBytes(operationId: string): Promise<Buffer | undefined> {
+    const bytes = this.resultBytes.get(operationId);
+    return Promise.resolve(bytes === undefined ? undefined : Buffer.from(bytes));
+  }
+
+  protected writeResultBytes(operationId: string, bytes: Buffer): Promise<void> {
+    this.resultBytes.set(operationId, Buffer.from(bytes));
+    return Promise.resolve();
+  }
+
+  protected override didPersistResultBytes(): void {
+    this.trace.push("result:bytes-persisted");
+  }
+
+  protected override didAppend(event: OperationEvent): void {
+    this.trace.push(`event:${event.type}`);
   }
 
   events(operationId: string): ReadonlyArray<OperationEvent> {
-    return [...(this.eventLog.get(operationId) ?? [])];
+    return [...(this.records.get(operationId)?.events ?? [])];
   }
 
   result(operationId: string): Result | undefined {
-    return this.results.get(operationId);
+    const bytes = this.resultBytes.get(operationId);
+    if (bytes === undefined) return undefined;
+    return {
+      body: bytes.toString("utf8"),
+      byteCount: bytes.byteLength,
+      digest: digest(bytes.toString("utf8")),
+    };
   }
 
   snapshot(operationId: string): Operation | undefined {
-    return this.operations.get(operationId);
+    return replayOperation(this.events(operationId));
   }
 
   rebuild(operationId: string): Operation | undefined {

@@ -80,6 +80,23 @@ export class OperationFailedError extends Error {
   }
 }
 
+export type PersistenceFailureReason =
+  | "write_failed"
+  | "incomplete_record"
+  | "corrupt_record"
+  | "unsupported_schema";
+
+export class OperationPersistenceError extends Error {
+  override readonly name = "OperationPersistenceError";
+
+  constructor(
+    readonly operationId: string,
+    readonly reason: PersistenceFailureReason,
+  ) {
+    super(`Operation ${operationId} persistence failed: ${reason}`);
+  }
+}
+
 export class ResultConflictError extends Error {
   override readonly name = "ResultConflictError";
 

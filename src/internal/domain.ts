@@ -34,13 +34,20 @@ export interface Operation {
   readonly descendantFailure: boolean;
   readonly spawnFrozen: boolean;
   readonly cancellationEpoch: number;
-  readonly result?: Readonly<Result>;
+  readonly result?: Readonly<ResultReference>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
   readonly terminalReason?: OperationFailureReason | "cancel-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 1 as const;
+export interface ResultReference {
+  readonly location: "result.utf8";
+  readonly byteCount: number;
+  readonly digest: Result["digest"];
+  readonly deliverySequenceNumber: number;
+}
+
+export const EVENT_SCHEMA_VERSION = 2 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -76,7 +83,7 @@ export type OperationEvent = EventMetadata &
     | { readonly type: "operation_unblocked" }
     | {
         readonly type: "result_persisted";
-        readonly result: Readonly<Result>;
+        readonly result: Readonly<ResultReference>;
       }
     | {
         readonly type: "self_settled";

@@ -1,24 +1,20 @@
 import { Cause, Effect, Exit, Schema } from "effect";
 
-import {
-  EVENT_SCHEMA_VERSION,
-  OPERATION_AUTHORITY,
-  RUNTIME_ACTOR_ID,
-} from "./domain.js";
 import type {
   EventInput,
   Operation,
-  OperationEvent,
   OperationLineage,
 } from "./domain.js";
 import type {
   BackendCancellationEvidence,
   RuntimeServices,
+  StoreError,
 } from "./services.js";
 import {
   CancellationRejectedError,
   OperationCancelledError,
   OperationFailedError,
+  OperationPersistenceError,
   OperationUnknownError,
   ResultConflictError,
   SpawnRejectedError,
@@ -92,7 +88,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   >();
   const records = new Map<string, OperationRecord>();
   const liveDescendantsByRoot = new Map<string, number>();
-  const operationMutationTails = new Map<string, Promise<void>>();
   const cancellations = new Map<string, Promise<CancellationResult>>();
   const cancellingSubtreeRoots = new Set<string>();
   let treeMutationTail = Promise.resolve();
@@ -113,53 +108,27 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   };
 
-  const serializeOperationMutation = async <Value>(
+  const persistenceError = (
     operationId: string,
-    mutation: () => Promise<Value>,
-  ): Promise<Value> => {
-    const previous = operationMutationTails.get(operationId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    operationMutationTails.set(operationId, current);
-    await previous;
-    try {
-      return await mutation();
-    } finally {
-      release();
-      if (operationMutationTails.get(operationId) === current) {
-        operationMutationTails.delete(operationId);
-      }
-    }
-  };
+    error: StoreError,
+  ): OperationPersistenceError =>
+    new OperationPersistenceError(
+      operationId,
+      error.code === "not_found" ? "corrupt_record" : error.code,
+    );
 
   const append = (
     operationId: string,
     input: EventInput,
-  ): Effect.Effect<Operation, unknown> =>
-    Effect.tryPromise({
-      try: () =>
-        serializeOperationMutation(operationId, async () => {
-          const current = await Effect.runPromise(
-            Effect.option(services.store.get(operationId)),
-          );
-          const seq = current._tag === "Some" ? current.value.stateSeq + 1 : 1;
-          const timestamp = await Effect.runPromise(services.clock.now());
-          const event = {
-            ...input,
-            actorId: RUNTIME_ACTOR_ID,
-            authority: OPERATION_AUTHORITY,
-            eventId: `${operationId}:${seq}`,
-            operationId,
-            schemaVersion: EVENT_SCHEMA_VERSION,
-            seq,
-            timestamp,
-          } as OperationEvent;
-          return Effect.runPromise(services.store.append(event));
-        }),
-      catch: (error) => error,
-    });
+  ): Effect.Effect<Operation, OperationPersistenceError> =>
+    services.store.append(operationId, input).pipe(
+      Effect.mapError((error) => persistenceError(operationId, error)),
+    );
+
+  const getOperation = (operationId: string) =>
+    services.store.get(operationId).pipe(
+      Effect.mapError((error) => persistenceError(operationId, error)),
+    );
 
   const project = (operation: Operation): Effect.Effect<void> =>
     Effect.catchAllCause(services.presentation.project(operation), () => Effect.void);
@@ -227,7 +196,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     if (record.terminal || !record.selfSettled || record.pendingAdmissions > 0) {
       return;
     }
-    const operation = await run(services.store.get(record.operationId));
+    const operation = await run(getOperation(record.operationId));
     if (
       operation.childOperationIds.length !==
       operation.settledChildOperationIds.length
@@ -308,41 +277,25 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         throw new Error("ChildChannel returned no Result");
       }
 
-      const accepted = await serializeOperationMutation(
-        record.operationId,
-        async () => {
-          const current = await run(services.store.get(record.operationId));
-          const seq = current.stateSeq + 1;
-          const timestamp = await run(services.clock.now());
-          const resultMetadata = {
-            actorId: RUNTIME_ACTOR_ID,
-            authority: OPERATION_AUTHORITY,
-            eventId: `${record.operationId}:${seq}`,
-            operationId: record.operationId,
-            schemaVersion: EVENT_SCHEMA_VERSION,
-            seq,
-            timestamp,
-          };
-          const acceptance = await run(
-            services.store.acceptResult(
-              record.operationId,
-              firstDelivery,
-              resultMetadata,
-            ),
-          );
-          return { acceptance, resultMetadata };
-        },
+      const accepted = await run(
+        services.store.acceptResult(record.operationId, firstDelivery).pipe(
+          Effect.mapError((error) =>
+            error instanceof ResultConflictError
+              ? error
+              : persistenceError(record.operationId, error),
+          ),
+        ),
       );
-      record.result = accepted.acceptance.result;
+      record.result = accepted.result;
 
       for (const delivery of deliveries.slice(1)) {
         try {
-          await serializeOperationMutation(record.operationId, () =>
-            run(
-              services.store.acceptResult(
-                record.operationId,
-                delivery,
-                accepted.resultMetadata,
+          await run(
+            services.store.acceptResult(record.operationId, delivery).pipe(
+              Effect.mapError((error) =>
+                error instanceof ResultConflictError
+                  ? error
+                  : persistenceError(record.operationId, error),
               ),
             ),
           );
@@ -368,7 +321,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (!record.terminal) {
         record.terminal = true;
         record.rejectResult(
-          error instanceof ResultConflictError
+          error instanceof ResultConflictError ||
+          error instanceof OperationPersistenceError
             ? error
             : new RuntimeError(
                 "operation_failed",

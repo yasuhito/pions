@@ -220,7 +220,7 @@ test("replay reconstructs the same snapshot", () => {
 });
 
 test("reducer rejects an unsupported event schema", () => {
-  const invalid = { ...event(4, { type: "operation_blocked" }), schemaVersion: 2 };
+  const invalid = { ...event(4, { type: "operation_blocked" }), schemaVersion: 1 };
 
   assert.throws(
     () => reduceOperation(runningOperation(), invalid as OperationEvent),

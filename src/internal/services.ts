@@ -1,6 +1,6 @@
 import type { Effect } from "effect";
 
-import type { Operation, OperationEvent } from "./domain.js";
+import type { EventInput, Operation } from "./domain.js";
 import type {
   OperationFailureReason,
   Result,
@@ -13,8 +13,16 @@ export interface ResultDelivery {
   readonly sequenceNumber: number;
 }
 
+export type StoreErrorCode =
+  | "not_found"
+  | "write_failed"
+  | "incomplete_record"
+  | "corrupt_record"
+  | "unsupported_schema";
+
 export interface StoreError {
   readonly _tag: "StoreError";
+  readonly code: StoreErrorCode;
   readonly message: string;
 }
 
@@ -61,16 +69,16 @@ export interface Presentation {
 }
 
 export interface EventStore {
-  append(event: OperationEvent): Effect.Effect<Operation, StoreError>;
+  append(operationId: string, event: EventInput): Effect.Effect<Operation, StoreError>;
   acceptResult(
     operationId: string,
     delivery: ResultDelivery,
-    metadata: Omit<OperationEvent, "type" | "result">,
   ): Effect.Effect<
     { readonly operation: Operation; readonly result: Result },
     StoreError | ResultConflictError
   >;
   get(operationId: string): Effect.Effect<Operation, StoreError>;
+  readResult(operationId: string): Effect.Effect<Result, StoreError>;
 }
 
 export interface RuntimeServices {

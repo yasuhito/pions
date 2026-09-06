@@ -118,7 +118,15 @@ async function completeOperation(
   const trace: Array<string> = [];
   const backend = new FakeAgentBackend(trace);
   const channel = new FakeChildChannel(messages, trace);
-  const store = new InMemoryEventStore(trace);
+  const clock = new FakeClock([
+    "2026-09-06T10:00:00.000Z",
+    "2026-09-06T10:00:01.000Z",
+    "2026-09-06T10:00:02.000Z",
+    "2026-09-06T10:00:03.000Z",
+    "2026-09-06T10:00:04.000Z",
+    "2026-09-06T10:00:05.000Z",
+  ]);
+  const store = new InMemoryEventStore(trace, clock);
   const presentation = new FakePresentation(
     trace,
     "completed",
@@ -127,14 +135,7 @@ async function completeOperation(
   const runtime = makeRuntime({
     backend,
     channel,
-    clock: new FakeClock([
-      "2026-09-06T10:00:00.000Z",
-      "2026-09-06T10:00:01.000Z",
-      "2026-09-06T10:00:02.000Z",
-      "2026-09-06T10:00:03.000Z",
-      "2026-09-06T10:00:04.000Z",
-      "2026-09-06T10:00:05.000Z",
-    ]),
+    clock,
     ids: new FakeIdGenerator(["operation-1"]),
     presentation,
     store,
