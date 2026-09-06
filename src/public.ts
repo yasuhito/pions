@@ -20,10 +20,43 @@ export type OperationFailureReason =
 
 export type SpawnRejectionReason =
   | "parent_not_found"
+  | "cancellation_in_progress"
   | "parent_terminal"
   | "depth_limit_exceeded"
   | "child_limit_exceeded"
   | "live_descendant_limit_exceeded";
+
+export type CancellationRejectionReason = "stale_epoch" | "future_epoch";
+
+export class CancellationRejectedError extends Error {
+  override readonly name = "CancellationRejectedError";
+
+  constructor(
+    readonly reason: CancellationRejectionReason,
+    readonly cancellationEpoch: number,
+  ) {
+    super(`Cancellation epoch ${cancellationEpoch} rejected: ${reason}`);
+  }
+}
+
+export class OperationCancelledError extends Error {
+  override readonly name = "OperationCancelledError";
+
+  constructor(readonly operationId: string) {
+    super(`Operation ${operationId} was cancelled`);
+  }
+}
+
+export class OperationUnknownError extends Error {
+  override readonly name = "OperationUnknownError";
+
+  constructor(
+    readonly operationId: string,
+    readonly reason: "cancel-unproven",
+  ) {
+    super(`Operation ${operationId} has unknown outcome: ${reason}`);
+  }
+}
 
 export class SpawnRejectedError extends Error {
   override readonly name = "SpawnRejectedError";
@@ -59,9 +92,22 @@ export class ResultConflictError extends Error {
   }
 }
 
+export interface CancelOptions {
+  readonly scope: "subtree";
+  readonly cancellationEpoch?: number;
+  readonly timeoutMs?: number;
+}
+
+export interface CancellationResult {
+  readonly cancellationEpoch: number;
+  readonly state: "cancelled" | "unknown";
+  readonly reason?: "cancel-unproven";
+}
+
 export interface OperationHandle {
   readonly operationId: string;
   result(): Promise<Result>;
+  cancel(options: CancelOptions): Promise<CancellationResult>;
 }
 
 export interface Runtime {

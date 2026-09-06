@@ -18,6 +18,7 @@ import type {
   RuntimeClock,
   StoreError,
   BackendError,
+  BackendCancellationEvidence,
 } from "./services.js";
 import { ResultConflictError } from "../public.js";
 import type { Result } from "../public.js";
@@ -45,6 +46,13 @@ export class FakeAgentBackend implements AgentBackend {
         ? Effect.void
         : Effect.fail(this.failure);
     });
+  }
+
+  cancel(
+    _operation: Operation,
+    _cancellationEpoch: number,
+  ): Effect.Effect<BackendCancellationEvidence, BackendError> {
+    return Effect.succeed({ proof: "backend-stop" });
   }
 }
 
@@ -84,6 +92,11 @@ export class FakeChildChannel implements ChildChannel {
 
 export class FakeClock implements RuntimeClock {
   private index = 0;
+  private elapsed = 0;
+  private readonly sleepers: Array<{
+    readonly deadline: number;
+    readonly resume: (effect: Effect.Effect<void>) => void;
+  }> = [];
 
   constructor(private readonly timestamps: ReadonlyArray<string>) {}
 
@@ -93,6 +106,23 @@ export class FakeClock implements RuntimeClock {
       if (timestamp === undefined) throw new Error("FakeClock exhausted");
       return timestamp;
     });
+  }
+
+  sleep(milliseconds: number): Effect.Effect<void> {
+    return Effect.async((resume) => {
+      this.sleepers.push({ deadline: this.elapsed + milliseconds, resume });
+    });
+  }
+
+  advanceBy(milliseconds: number): void {
+    this.elapsed += milliseconds;
+    for (const sleeper of this.sleepers.splice(0)) {
+      if (sleeper.deadline <= this.elapsed) {
+        sleeper.resume(Effect.void);
+      } else {
+        this.sleepers.push(sleeper);
+      }
+    }
   }
 }
 

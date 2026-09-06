@@ -87,6 +87,56 @@ test("a blocked Operation resumes running after input arrives", () => {
   );
 });
 
+test("a cancellation request atomically freezes spawning", () => {
+  const cancelling = reduceOperation(
+    runningOperation(),
+    event(4, { type: "cancellation_requested", cancellationEpoch: 1 }),
+  );
+
+  assert.deepEqual(
+    [cancelling.state, cancelling.spawnFrozen, cancelling.cancellationEpoch],
+    ["cancelling", true, 1],
+  );
+});
+
+test("reducer rejects an older cancellation epoch", () => {
+  const cancelling = reduceOperation(
+    runningOperation(),
+    event(4, { type: "cancellation_requested", cancellationEpoch: 2 }),
+  );
+
+  assert.throws(
+    () =>
+      reduceOperation(
+        cancelling,
+        event(5, { type: "cancellation_requested", cancellationEpoch: 1 }),
+      ),
+    (error) =>
+      error instanceof TransitionError &&
+      error.code === "stale_cancellation_epoch",
+  );
+});
+
+test("unproven cancellation reaches unknown with its reason", () => {
+  const cancelling = reduceOperation(
+    runningOperation(),
+    event(4, { type: "cancellation_requested", cancellationEpoch: 1 }),
+  );
+  const unknown = reduceOperation(
+    cancelling,
+    event(5, {
+      type: "operation_unknown",
+      cancellationEpoch: 1,
+      reason: "cancel-unproven",
+    }),
+  );
+
+  assert.deepEqual(
+    [unknown.state, unknown.terminalReason],
+    ["unknown", "cancel-unproven"],
+  );
+});
+
 test("a failed self-settlement reaches the failed terminal state", () => {
   const selfSettled = reduceOperation(
     runningOperation(),

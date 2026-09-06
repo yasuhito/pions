@@ -25,7 +25,9 @@ export type TransitionErrorCode =
   | "unknown_child"
   | "child_already_settled"
   | "failed_settlement_required_before_failure"
-  | "failure_reason_mismatch";
+  | "failure_reason_mismatch"
+  | "stale_cancellation_epoch"
+  | "cancellation_epoch_mismatch";
 
 export class TransitionError extends Error {
   override readonly name = "TransitionError";
@@ -93,6 +95,8 @@ export function reduceOperation(
       childOperationIds: [],
       settledChildOperationIds: [],
       descendantFailure: false,
+      spawnFrozen: false,
+      cancellationEpoch: 0,
     });
   }
 
@@ -105,13 +109,18 @@ export function reduceOperation(
   if (event.seq !== current.stateSeq + 1) {
     throw new TransitionError("unexpected_sequence");
   }
-  if (current.state === "completed" || current.state === "failed") {
+  if (
+    current.state === "completed" ||
+    current.state === "failed" ||
+    current.state === "cancelled" ||
+    current.state === "unknown"
+  ) {
     throw new TransitionError("terminal_state_immutable");
   }
 
   switch (event.type) {
     case "child_attached":
-      if (current.state === "draining_descendants") {
+      if (current.spawnFrozen || current.state === "draining_descendants") {
         throw new TransitionError("illegal_transition");
       }
       if (current.childOperationIds.includes(event.childOperationId)) {
@@ -215,6 +224,59 @@ export function reduceOperation(
           ? "draining_descendants"
           : "self_settled",
         stateSeq: event.seq,
+      });
+
+    case "cancellation_requested":
+      if (event.cancellationEpoch <= current.cancellationEpoch) {
+        throw new TransitionError("stale_cancellation_epoch");
+      }
+      return immutable({
+        ...current,
+        state: "cancelling",
+        stateSeq: event.seq,
+        spawnFrozen: true,
+        cancellationEpoch: event.cancellationEpoch,
+      });
+
+    case "cancel_dispatched":
+      if (
+        current.state !== "cancelling" ||
+        event.cancellationEpoch !== current.cancellationEpoch
+      ) {
+        throw new TransitionError("cancellation_epoch_mismatch");
+      }
+      return immutable({ ...current, stateSeq: event.seq });
+
+    case "cancel_acknowledged":
+      if (
+        current.state !== "cancelling" ||
+        event.cancellationEpoch !== current.cancellationEpoch
+      ) {
+        throw new TransitionError("cancellation_epoch_mismatch");
+      }
+      return immutable({ ...current, stateSeq: event.seq });
+
+    case "operation_cancelled":
+      if (
+        current.state !== "cancelling" ||
+        event.cancellationEpoch !== current.cancellationEpoch
+      ) {
+        throw new TransitionError("cancellation_epoch_mismatch");
+      }
+      return immutable({ ...current, state: "cancelled", stateSeq: event.seq });
+
+    case "operation_unknown":
+      if (
+        current.state !== "cancelling" ||
+        event.cancellationEpoch !== current.cancellationEpoch
+      ) {
+        throw new TransitionError("cancellation_epoch_mismatch");
+      }
+      return immutable({
+        ...current,
+        state: "unknown",
+        stateSeq: event.seq,
+        terminalReason: event.reason,
       });
 
     case "operation_completed":

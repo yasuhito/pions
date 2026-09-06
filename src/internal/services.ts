@@ -29,8 +29,16 @@ export interface ChannelError {
   readonly message: string;
 }
 
+export interface BackendCancellationEvidence {
+  readonly proof: "acknowledgement" | "backend-stop";
+}
+
 export interface AgentBackend {
   start(operation: Operation): Effect.Effect<void, BackendError>;
+  cancel(
+    operation: Operation,
+    cancellationEpoch: number,
+  ): Effect.Effect<BackendCancellationEvidence, BackendError>;
 }
 
 export interface ChildChannel {
@@ -41,6 +49,7 @@ export interface ChildChannel {
 
 export interface RuntimeClock {
   now(): Effect.Effect<string>;
+  sleep(milliseconds: number): Effect.Effect<void>;
 }
 
 export interface IdGenerator {

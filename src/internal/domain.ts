@@ -11,8 +11,11 @@ export type OperationState =
   | "blocked"
   | "self_settled"
   | "draining_descendants"
+  | "cancelling"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled"
+  | "unknown";
 
 export interface OperationLineage {
   readonly rootOperationId: string;
@@ -29,10 +32,12 @@ export interface Operation {
   readonly childOperationIds: ReadonlyArray<string>;
   readonly settledChildOperationIds: ReadonlyArray<string>;
   readonly descendantFailure: boolean;
+  readonly spawnFrozen: boolean;
+  readonly cancellationEpoch: number;
   readonly result?: Readonly<Result>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
-  readonly terminalReason?: OperationFailureReason;
+  readonly terminalReason?: OperationFailureReason | "cancel-unproven";
 }
 
 export const EVENT_SCHEMA_VERSION = 1 as const;
@@ -83,6 +88,28 @@ export type OperationEvent = EventMetadata &
         readonly reason: OperationFailureReason;
       }
     | { readonly type: "operation_completed" }
+    | {
+        readonly type: "cancellation_requested";
+        readonly cancellationEpoch: number;
+      }
+    | {
+        readonly type: "cancel_dispatched";
+        readonly cancellationEpoch: number;
+      }
+    | {
+        readonly type: "cancel_acknowledged";
+        readonly cancellationEpoch: number;
+        readonly proof: "acknowledgement" | "backend-stop";
+      }
+    | {
+        readonly type: "operation_cancelled";
+        readonly cancellationEpoch: number;
+      }
+    | {
+        readonly type: "operation_unknown";
+        readonly cancellationEpoch: number;
+        readonly reason: "cancel-unproven";
+      }
     | {
         readonly type: "operation_failed";
         readonly reason: OperationFailureReason;

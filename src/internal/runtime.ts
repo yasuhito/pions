@@ -11,13 +11,21 @@ import type {
   OperationEvent,
   OperationLineage,
 } from "./domain.js";
-import type { RuntimeServices } from "./services.js";
+import type {
+  BackendCancellationEvidence,
+  RuntimeServices,
+} from "./services.js";
 import {
+  CancellationRejectedError,
+  OperationCancelledError,
   OperationFailedError,
+  OperationUnknownError,
   ResultConflictError,
   SpawnRejectedError,
 } from "../public.js";
 import type {
+  CancellationResult,
+  CancelOptions,
   OperationFailureReason,
   OperationHandle,
   Result,
@@ -55,6 +63,8 @@ interface OperationRecord {
   pendingAdmissions: number;
   selfSettled: boolean;
   terminal: boolean;
+  spawnFrozen: boolean;
+  cancellationEpoch: number;
   finalizing?: Promise<void>;
   result?: Result;
   resultDeliveryError?: ResultConflictError;
@@ -83,6 +93,25 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const records = new Map<string, OperationRecord>();
   const liveDescendantsByRoot = new Map<string, number>();
   const operationMutationTails = new Map<string, Promise<void>>();
+  const cancellations = new Map<string, Promise<CancellationResult>>();
+  const cancellingSubtreeRoots = new Set<string>();
+  let treeMutationTail = Promise.resolve();
+
+  const serializeTreeMutation = async <Value>(
+    mutation: () => Promise<Value>,
+  ): Promise<Value> => {
+    const previous = treeMutationTail;
+    let release!: () => void;
+    treeMutationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await mutation();
+    } finally {
+      release();
+    }
+  };
 
   const serializeOperationMutation = async <Value>(
     operationId: string,
@@ -160,11 +189,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       record.rejectResult(record.resultDeliveryError);
     } else if (operation.state === "completed" && record.result !== undefined) {
       record.resolveResult(record.result);
+    } else if (operation.state === "cancelled") {
+      record.rejectResult(new OperationCancelledError(record.operationId));
+    } else if (operation.state === "unknown") {
+      record.rejectResult(
+        new OperationUnknownError(record.operationId, "cancel-unproven"),
+      );
     } else {
       record.rejectResult(
         new OperationFailedError(
           record.operationId,
-          operation.terminalReason ?? "descendant_failed",
+          operation.terminalReason === "backend_start_failed" ||
+          operation.terminalReason === "descendant_failed"
+            ? operation.terminalReason
+            : "descendant_failed",
         ),
       );
     }
@@ -341,7 +379,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   };
 
-  const createOperation = async (
+  const createOperationUnlocked = async (
     taskInput: TaskSpec,
     options: SpawnOptions | undefined,
   ): Promise<OperationHandle> => {
@@ -355,6 +393,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       throw new SpawnRejectedError("parent_not_found", parentId);
     }
     if (parent !== undefined) {
+      if (parent.spawnFrozen) {
+        throw new SpawnRejectedError(
+          "cancellation_in_progress",
+          parent.operationId,
+        );
+      }
       if (parent.terminal || parent.selfSettled) {
         throw new SpawnRejectedError("parent_terminal", parent.operationId);
       }
@@ -406,6 +450,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       pendingAdmissions: 0,
       selfSettled: false,
       terminal: false,
+      spawnFrozen: false,
+      cancellationEpoch: 0,
     };
 
     if (parent !== undefined) {
@@ -431,9 +477,159 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     const handle: OperationHandle = {
       operationId,
       result: () => record.resultPromise,
+      cancel: (cancelOptions) => cancelSubtree(record, cancelOptions),
     };
     void execute(record);
     return handle;
+  };
+
+  const createOperation = (
+    taskInput: TaskSpec,
+    options: SpawnOptions | undefined,
+  ): Promise<OperationHandle> =>
+    serializeTreeMutation(() => createOperationUnlocked(taskInput, options));
+
+  const isAncestor = (
+    possibleAncestor: OperationRecord,
+    operation: OperationRecord,
+  ): boolean => {
+    let current: OperationRecord | undefined = operation;
+    while (current !== undefined) {
+      if (current === possibleAncestor) return true;
+      const parentId: string | undefined = current.lineage.parentOperationId;
+      current = parentId === undefined ? undefined : records.get(parentId);
+    }
+    return false;
+  };
+
+  const cancelSubtree = (
+    root: OperationRecord,
+    options: CancelOptions,
+  ): Promise<CancellationResult> => {
+    const epoch = options.cancellationEpoch ?? root.cancellationEpoch + 1;
+    const key = `${root.operationId}:${epoch}`;
+    const existing = cancellations.get(key);
+    if (existing !== undefined) return existing;
+    if (epoch <= root.cancellationEpoch) {
+      return Promise.reject(new CancellationRejectedError("stale_epoch", epoch));
+    }
+    const overlapsCancellation = [...cancellingSubtreeRoots].some((rootId) => {
+      const activeRoot = records.get(rootId);
+      return (
+        activeRoot !== undefined &&
+        (isAncestor(activeRoot, root) || isAncestor(root, activeRoot))
+      );
+    });
+    if (
+      root.spawnFrozen ||
+      epoch > root.cancellationEpoch + 1 ||
+      overlapsCancellation
+    ) {
+      return Promise.reject(new CancellationRejectedError("future_epoch", epoch));
+    }
+    root.cancellationEpoch = epoch;
+    cancellingSubtreeRoots.add(root.operationId);
+
+    const cancellation: Promise<CancellationResult> = serializeTreeMutation(async () => {
+      const postOrder: Array<OperationRecord> = [];
+      const visit = (record: OperationRecord): void => {
+        for (const childId of record.children) {
+          const child = records.get(childId);
+          if (child !== undefined && !child.terminal) visit(child);
+        }
+        if (!record.terminal) postOrder.push(record);
+      };
+      visit(root);
+
+      for (const record of postOrder) {
+        record.spawnFrozen = true;
+        record.cancellationEpoch = epoch;
+      }
+      for (const record of postOrder) {
+        const operation = await run(
+          append(record.operationId, {
+            type: "cancellation_requested",
+            cancellationEpoch: epoch,
+          }),
+        );
+        await run(project(operation));
+      }
+      return postOrder;
+    }).then(async (postOrder) => {
+      const responses: Array<
+        Promise<BackendCancellationEvidence | undefined>
+      > = [];
+      for (const record of postOrder) {
+        const operation = await run(
+          append(record.operationId, {
+            type: "cancel_dispatched",
+            cancellationEpoch: epoch,
+          }),
+        );
+        await run(project(operation));
+        const response = Promise.race([
+          run(services.backend.cancel(operation, epoch)),
+          run(services.clock.sleep(options.timeoutMs ?? 1_000)).then(
+            () => undefined,
+          ),
+        ]).catch(() => undefined);
+        responses.push(response);
+      }
+
+      const evidence = await Promise.all(responses);
+      const unprovenSubtrees = new Set<string>();
+      let rootState: CancellationResult["state"] = "cancelled";
+      for (let index = 0; index < postOrder.length; index += 1) {
+        const record = postOrder[index];
+        if (record === undefined) continue;
+        const descendantUnproven = [...record.children].some((childId) =>
+          unprovenSubtrees.has(childId),
+        );
+        const response = evidence[index];
+        const unproven = response === undefined || descendantUnproven;
+        if (unproven) unprovenSubtrees.add(record.operationId);
+
+        if (response !== undefined) {
+          const acknowledged = await run(
+            append(record.operationId, {
+              type: "cancel_acknowledged",
+              cancellationEpoch: epoch,
+              proof: response.proof,
+            }),
+          );
+          await run(project(acknowledged));
+        }
+
+        const terminal = unproven
+          ? await run(
+              append(record.operationId, {
+                type: "operation_unknown",
+                cancellationEpoch: epoch,
+                reason: "cancel-unproven",
+              }),
+            )
+          : await run(
+              append(record.operationId, {
+                type: "operation_cancelled",
+                cancellationEpoch: epoch,
+              }),
+            );
+        await settleTerminal(record, terminal);
+        if (record === root) {
+          rootState = terminal.state as CancellationResult["state"];
+        }
+      }
+
+      return rootState === "unknown"
+        ? {
+            cancellationEpoch: epoch,
+            state: rootState,
+            reason: "cancel-unproven" as const,
+          }
+        : { cancellationEpoch: epoch, state: rootState };
+    });
+    cancellations.set(key, cancellation);
+    return cancellation;
   };
 
   return {
