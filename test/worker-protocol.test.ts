@@ -240,8 +240,8 @@ test("Worker protocol rejects a stale Worker sequence", () => {
   );
 });
 
-test("Worker protocol uses version 6", () => {
-  assert.equal(WORKER_PROTOCOL_VERSION, 6);
+test("Worker protocol uses version 7", () => {
+  assert.equal(WORKER_PROTOCOL_VERSION, 7);
 });
 
 test("Worker protocol rejects a different frame version", () => {
@@ -556,6 +556,44 @@ test("Worker protocol encodes cancellation control", () => {
   host.receive(worker.send({ type: "hello", ...processIdentity }));
 
   assert.equal(JSON.parse(host.requestCancellation()?.toString("utf8") ?? "").type, "cancel");
+});
+
+test("Worker protocol authenticates cancellation control", () => {
+  const { host, worker } = peers();
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+
+  assert.equal(
+    JSON.parse(host.requestCancellation()?.toString("utf8") ?? "").capability,
+    authority.capability,
+  );
+});
+
+test("Worker protocol sequences cancellation after begin", () => {
+  const { host, worker } = peers();
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  worker.receive(host.begin());
+
+  assert.equal(
+    JSON.parse(host.requestCancellation()?.toString("utf8") ?? "").sequenceNumber,
+    2,
+  );
+});
+
+test("Worker protocol rejects cancellation from a different authority", () => {
+  const { host, worker } = peers();
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  const cancellation = rewriteFrame(
+    host.requestCancellation() ?? Buffer.alloc(0),
+    { capability: "cd".repeat(32) },
+  );
+
+  assert.throws(
+    () => worker.receive(cancellation),
+    (error) => error instanceof ProtocolViolation && error.reason === "authority_mismatch",
+  );
 });
 
 test("Worker protocol authenticates backend cancellation acknowledgement", () => {

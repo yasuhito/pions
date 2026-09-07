@@ -70,7 +70,7 @@ export type OperationIntent =
   | {
       readonly type: "cancel_acknowledged";
       readonly cancellationEpoch: number;
-      readonly proof: "acknowledgement" | "worker-stop";
+      readonly proof: "worker-stop";
     }
   | {
       readonly type: "operation_cancelled";

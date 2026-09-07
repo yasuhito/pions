@@ -198,7 +198,7 @@ class PiWorkerBridge {
       }
       if (reception.beginReceived && !this.cancelled && !this.began) {
         this.began = true;
-        void this.begin().catch((error) => {
+        void this.begin(ctx).catch((error) => {
           if (this.completionSent) return;
           this.completionSent = true;
           this.send({
@@ -217,8 +217,12 @@ class PiWorkerBridge {
     }
   }
 
-  private async begin(): Promise<void> {
+  private async begin(ctx: ExtensionContext): Promise<void> {
     const prompt = await readFile(this.config.promptPath, "utf8");
+    if (this.cancelled) {
+      this.settle(ctx);
+      return;
+    }
     this.pi.sendUserMessage(prompt);
   }
 

@@ -44,6 +44,7 @@ import {
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const DEFAULT_MAX_PROMPT_BYTES = 1024 * 1024;
+const CANCELLATION_TIMEOUT_BUDGET_RATIO = 0.9;
 
 export interface WorkerCapabilityGenerator {
   nextCapability(): string;
@@ -96,9 +97,28 @@ type WorkerCompletionReception =
 
 class WorkerCancellation {
   private isRequested = false;
+  private isResponsePending = false;
+  private response?: Promise<WorkerCancellationEvidence | undefined>;
 
   request(): void {
     this.isRequested = true;
+  }
+
+  execute(
+    cancellation: () => Promise<WorkerCancellationEvidence | undefined>,
+  ): Promise<WorkerCancellationEvidence | undefined> {
+    this.request();
+    if (this.response === undefined) {
+      this.isResponsePending = true;
+      this.response = cancellation().finally(() => {
+        this.isResponsePending = false;
+      });
+    }
+    return this.response;
+  }
+
+  get responsePending(): boolean {
+    return this.isResponsePending;
   }
 
   get requested(): boolean {
@@ -122,8 +142,8 @@ interface Session {
   readonly startedReception: Promise<WorkerStartReception>;
   resolveStarted(value: WorkerStartReception): void;
   rejectStarted(error: WorkerProtocolError): void;
-  readonly cancellationReception: Promise<WorkerCancellationEvidence>;
-  resolveCancellation(value: WorkerCancellationEvidence): void;
+  readonly cancellationReception: Promise<void>;
+  resolveCancellation(): void;
   socket?: Socket;
   identity?: Readonly<WorkerProcessIdentity>;
   receptionCompleted: boolean;
@@ -199,46 +219,8 @@ export class VisibleWorker implements WorkerAdapter {
     const cancellation = new WorkerCancellation();
     return makeSingleRunWorker({
       run: (hooks) => this.runSession(operation, hooks, cancellation),
-      cancel: (_cancellationEpoch, timeoutMs) => Effect.suspend(() => {
-        cancellation.request();
-        const session = this.sessions.get(operation.operationId);
-        if (session?.socket === undefined) {
-          if (session !== undefined) this.reject(session, "Visible Worker cancelled before protocol identification");
-          return Effect.succeed(undefined);
-        }
-        const request = session.protocol.requestCancellation();
-        if (request === undefined) {
-          const exitObservation = session.successfulExitObservation;
-          if (exitObservation === undefined) {
-            this.reject(session, "Visible Worker cancellation has no active backend");
-            return Effect.succeed(undefined);
-          }
-          return Effect.promise(() => exitObservation).pipe(
-            Effect.map((stopped) => stopped
-              ? { proof: "worker-stop" } as const
-              : undefined),
-          );
-        }
-        session.socket.write(request);
-        const backendResponse = Effect.promise(() => session.cancellationReception);
-        const forcedStop = Effect.sleep(
-          Math.min(this.backendCancellationGraceMs, Math.max(0, Math.floor(timeoutMs * 0.75))),
-        ).pipe(
-          Effect.flatMap(() => session.identity === undefined
-            ? Effect.succeed(undefined)
-            : this.processControl.terminate(session.identity)),
-          Effect.tap((evidence) => Effect.sync(() => {
-            if (evidence === undefined) {
-              this.reject(session, "Visible Worker cancellation has no stop evidence");
-            } else {
-              session.receptionCompleted = true;
-              session.resolveReception({ state: "cancelled" });
-              this.closeSession(session);
-            }
-          })),
-        );
-        return Effect.raceFirst(backendResponse, forcedStop);
-      }),
+      cancel: (_cancellationEpoch, timeoutMs) => Effect.promise(() =>
+        cancellation.execute(() => this.cancelSession(operation, timeoutMs))),
     });
   }
 
@@ -283,6 +265,12 @@ export class VisibleWorker implements WorkerAdapter {
         const mismatch = configurationMismatch(operation.effectiveConfig, started.identity.observedConfig);
         if (mismatch !== undefined) return { state: mismatch } as WorkerRunOutcome;
         yield* hooks.workerIdentified(started.identity);
+        if (cancellation.requested) {
+          if (cancellation.responsePending) {
+            yield* receiveWorkerProtocol(session!.reception);
+          }
+          return { state: "worker_protocol_failed" } as const;
+        }
         yield* Effect.tryPromise({
           try: () => this.sendBegin(session!),
           catch: (error) => protocolError(error instanceof Error ? error.message : String(error)),
@@ -341,7 +329,7 @@ export class VisibleWorker implements WorkerAdapter {
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
-    const configPath = join(directory, "worker.v6.json");
+    const configPath = join(directory, "worker.v7.json");
     await mkdir(this.options.socketDirectory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(this.options.socketDirectory, DIRECTORY_MODE);
     const socketPath = join(this.options.socketDirectory, `${operationDirectoryKey(operation.operationId)}.sock`);
@@ -422,8 +410,8 @@ export class VisibleWorker implements WorkerAdapter {
       resolveStarted = resolve;
       rejectStarted = reject;
     });
-    let resolveCancellation!: (value: WorkerCancellationEvidence) => void;
-    const cancellationReception = new Promise<WorkerCancellationEvidence>((resolve) => {
+    let resolveCancellation!: () => void;
+    const cancellationReception = new Promise<void>((resolve) => {
       resolveCancellation = resolve;
     });
     void reception.catch(() => undefined);
@@ -480,8 +468,7 @@ export class VisibleWorker implements WorkerAdapter {
           } else {
             session.receptionCompleted = true;
             if (event.type === "worker_cancelled") {
-              session.resolveCancellation({ proof: "acknowledgement" });
-              session.resolveReception({ state: "cancelled" });
+              session.resolveCancellation();
             } else {
               session.resolveReception(event.type === "worker_failed"
                 ? { state: "agent_failed", evidence: event.evidence }
@@ -526,6 +513,108 @@ export class VisibleWorker implements WorkerAdapter {
           : { state: "worker_protocol_failed" },
     );
     this.closeSession(session);
+  }
+
+  private async cancelSession(
+    operation: Operation,
+    timeoutMs: number,
+  ): Promise<WorkerCancellationEvidence | undefined> {
+    const session = this.sessions.get(operation.operationId);
+    if (session?.socket === undefined) {
+      if (session !== undefined) {
+        this.reject(session, "Visible Worker cancelled before protocol identification");
+      }
+      return undefined;
+    }
+    const cancellationDeadline = Date.now() + Math.max(
+      0,
+      Math.floor(timeoutMs * CANCELLATION_TIMEOUT_BUDGET_RATIO),
+    );
+    const remaining = () => Math.max(0, cancellationDeadline - Date.now());
+    const request = session.protocol.requestCancellation();
+    if (request === undefined) {
+      const exitObservation = session.successfulExitObservation;
+      if (exitObservation === undefined) return undefined;
+      const stopped = await this.waitForSuccessfulExit(exitObservation, remaining());
+      if (stopped === undefined) return undefined;
+      if (stopped) return { proof: "worker-stop" };
+      if (session.identity === undefined) return undefined;
+      const state = await Effect.runPromise(this.processControl.observe(session.identity));
+      if (state === "stopped") return { proof: "worker-stop" };
+      if (state === "unverifiable" || remaining() === 0) return undefined;
+      return Effect.runPromise(
+        this.processControl.terminate(session.identity, remaining()),
+      );
+    }
+    try {
+      await writeSocket(session.socket, request);
+    } catch {
+      return undefined;
+    }
+    const acknowledged = await this.waitForCancellationAcknowledgement(
+      session,
+      Math.min(this.backendCancellationGraceMs, remaining()),
+    );
+    if (!acknowledged) {
+      if (session.identity === undefined || session.socket.destroyed) return undefined;
+      const evidence = remaining() > 0
+        ? await Effect.runPromise(
+            this.processControl.terminate(session.identity, remaining()),
+          )
+        : undefined;
+      this.completeCancellation(session);
+      return evidence;
+    }
+    if (session.identity === undefined) {
+      this.completeCancellation(session);
+      return undefined;
+    }
+    const state = await Effect.runPromise(
+      this.processControl.waitForStop(
+        session.identity,
+        Math.min(this.exitObservationGraceMs, remaining()),
+      ),
+    );
+    const evidence = state === "stopped"
+      ? { proof: "worker-stop" } as const
+      : state === "running" && remaining() > 0
+        ? await Effect.runPromise(
+            this.processControl.terminate(session.identity, remaining()),
+          )
+        : undefined;
+    this.completeCancellation(session);
+    return evidence;
+  }
+
+  private completeCancellation(session: Session): void {
+    session.resolveReception({ state: "cancelled" });
+    this.closeSession(session);
+  }
+
+  private waitForSuccessfulExit(
+    observation: Promise<boolean>,
+    timeoutMs: number,
+  ): Promise<boolean | undefined> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(undefined), timeoutMs);
+      observation.then((stopped) => {
+        clearTimeout(timeout);
+        resolve(stopped);
+      });
+    });
+  }
+
+  private waitForCancellationAcknowledgement(
+    session: Session,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(false), timeoutMs);
+      session.cancellationReception.then(() => {
+        clearTimeout(timeout);
+        resolve(true);
+      });
+    });
   }
 
   private async sendBegin(session: Session): Promise<void> {

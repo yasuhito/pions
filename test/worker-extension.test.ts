@@ -49,7 +49,7 @@ async function extensionResult() {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-extension-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v6.json");
+  const configPath = join(root, "worker.v7.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",
@@ -162,4 +162,127 @@ test("Pi Worker extension does not request shutdown before Result acknowledgemen
 
 test("Pi Worker extension requests normal shutdown after Result acknowledgement", async () => {
   assert.equal((await extensionResult()).shutdownCount, 1);
+});
+
+async function extensionCancellation(phase: "before-begin" | "during-run") {
+  const root = await mkdtemp(join(tmpdir(), "pions-worker-cancellation-"));
+  const socketPath = join(root, "worker.sock");
+  const promptPath = join(root, "prompt.utf8");
+  const configPath = join(root, "worker.v7.json");
+  const capability = "ab".repeat(32);
+  const config: WorkerConfig = {
+    operationId: "operation-1",
+    capability,
+    socketPath,
+    promptPath,
+    effectiveConfig,
+  };
+  await writeFile(promptPath, "private review task", { mode: 0o600 });
+  await writeFile(configPath, encodeWorkerConfig(config), { mode: 0o600 });
+  await chmod(root, 0o700);
+
+  const handlers: RegisteredHandlers = {
+    session_start: [],
+    message_end: [],
+    agent_settled: [],
+    tool_execution_end: [],
+    session_shutdown: [],
+  };
+  const prompts: Array<string> = [];
+  let abortCount = 0;
+  let shutdownCount = 0;
+  let cancellationCount = 0;
+  const api = {
+    registerFlag: () => undefined,
+    getFlag: () => configPath,
+    getActiveTools: () => [...effectiveConfig.tools],
+    sendUserMessage: (prompt: string) => { prompts.push(prompt); },
+    on: (event: keyof RegisteredHandlers, handler: never) => {
+      handlers[event].push(handler);
+    },
+  } as unknown as ExtensionAPI;
+  pionsWorkerExtension(api);
+  const context = {
+    cwd: effectiveConfig.cwd,
+    model: effectiveConfig.model,
+    thinkingLevel: effectiveConfig.thinkingLevel,
+    sessionManager: {
+      getSessionId: () => "pi-session-1",
+      getSessionFile: () => undefined,
+    },
+    ui: { setEditorComponent: () => undefined },
+    abort: () => { abortCount += 1; },
+    shutdown: () => { shutdownCount += 1; },
+  } as unknown as ExtensionContext;
+
+  const peer = new HostProtocolPeer({ operationId: config.operationId, capability });
+  let accepted!: Socket;
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
+  let resolveCancelled!: () => void;
+  const cancelled = new Promise<void>((resolve) => { resolveCancelled = resolve; });
+  const server = createServer((socket) => {
+    accepted = socket;
+    socket.on("data", (chunk: Buffer) => {
+      for (const event of peer.receive(chunk)) {
+        if (event.type === "started") resolveStarted();
+        if (event.type === "worker_cancelled") {
+          cancellationCount += 1;
+          resolveCancelled();
+        }
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+
+  try {
+    await handlers.session_start[0]?.({}, context);
+    await started;
+    if (phase === "during-run") {
+      accepted.write(peer.begin());
+      while (prompts.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    accepted.write(peer.requestCancellation() ?? Buffer.alloc(0));
+    if (phase === "before-begin") {
+      await cancelled;
+    } else {
+      while (abortCount === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const cancellationCountBeforeSettle = cancellationCount;
+    handlers.agent_settled[0]?.({}, context);
+    await cancelled;
+    while (shutdownCount === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    return {
+      abortCount,
+      cancellationCountBeforeSettle,
+      promptCount: prompts.length,
+      shutdownCount,
+    };
+  } finally {
+    accepted?.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("cancellation before begin starts no Pi prompt", async () => {
+  assert.equal((await extensionCancellation("before-begin")).promptCount, 0);
+});
+
+test("cancellation during a Pi run aborts the current execution", async () => {
+  assert.equal((await extensionCancellation("during-run")).abortCount, 1);
+});
+
+test("Pi Worker extension acknowledges cancellation only after interruption settles", async () => {
+  assert.equal(
+    (await extensionCancellation("during-run")).cancellationCountBeforeSettle,
+    0,
+  );
+});
+
+test("Pi Worker extension requests normal shutdown for a cancelled run", async () => {
+  assert.equal((await extensionCancellation("during-run")).shutdownCount, 1);
 });

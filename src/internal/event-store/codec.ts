@@ -109,7 +109,7 @@ const FailureReason = Schema.Literal(
   "tool_policy_violation",
   "descendant_failed",
 );
-const CancellationProof = Schema.Literal("acknowledgement", "worker-stop");
+const CancellationProof = Schema.Literal("worker-stop");
 
 const OperationEventSchema = Schema.Union(
   Schema.Struct({

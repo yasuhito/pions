@@ -141,10 +141,10 @@ class ControlledWorkerAdapter implements WorkerAdapter {
     resume(Effect.succeed([{ operationId, body, digest, sequenceNumber: 1 }]));
   }
 
-  acknowledge(operationId: string): void {
+  confirmWorkerStopped(operationId: string): void {
     const resume = this.cancellationResponders.get(operationId);
     if (resume === undefined) throw new Error(`No cancellation for ${operationId}`);
-    resume(Effect.succeed({ proof: "acknowledgement" }));
+    resume(Effect.succeed({ proof: "worker-stop" }));
   }
 }
 
@@ -309,14 +309,15 @@ function cancellableNestedRuntime(operationIds: ReadonlyArray<string>) {
   );
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(trace);
+  const presentation = new FakePresentation();
   const runtime = makeRuntime({
     worker,
     clock,
     ids: new FakeIdGenerator(operationIds),
-    presentation: new FakePresentation(),
+    presentation,
     store,
   });
-  return { clock, runtime, store, trace, worker };
+  return { clock, presentation, runtime, store, trace, worker };
 }
 
 async function spawnCancellationTree() {
@@ -364,7 +365,7 @@ test("cancellation remains the outcome when Result acceptance loses the persiste
   await waitForReceiver();
   worker.deliver(root.operationId);
   await waitForReceiver();
-  worker.acknowledge(root.operationId);
+  worker.confirmWorkerStopped(root.operationId);
   await cancellation;
 
   await assert.rejects(
@@ -388,13 +389,27 @@ test("acknowledged subtree cancellation ends as cancelled", async () => {
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  worker.acknowledge(grandchild.operationId);
-  worker.acknowledge(child.operationId);
-  worker.acknowledge(root.operationId);
+  worker.confirmWorkerStopped(grandchild.operationId);
+  worker.confirmWorkerStopped(child.operationId);
+  worker.confirmWorkerStopped(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
   assert.equal((await storedOperation(store, root.operationId)).state, "cancelled");
+});
+
+test("cancelled Operations retain their owned panes", async () => {
+  const { child, clock, grandchild, presentation, root, worker } =
+    await spawnCancellationTree();
+  const cancellation = root.cancel({ scope: "subtree" });
+  await waitForReceiver();
+  worker.confirmWorkerStopped(grandchild.operationId);
+  worker.confirmWorkerStopped(child.operationId);
+  worker.confirmWorkerStopped(root.operationId);
+  await clock.advanceBy(1_000);
+  await cancellation;
+
+  assert.deepEqual(presentation.closedPaneIds, []);
 });
 
 test("an unproven descendant makes subtree cancellation unknown", async () => {
@@ -402,8 +417,8 @@ test("an unproven descendant makes subtree cancellation unknown", async () => {
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  worker.acknowledge(grandchild.operationId);
-  worker.acknowledge(root.operationId);
+  worker.confirmWorkerStopped(grandchild.operationId);
+  worker.confirmWorkerStopped(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
@@ -416,13 +431,23 @@ test("an unproven descendant makes subtree cancellation unknown", async () => {
   );
 });
 
+test("unknown cancellations retain their owned panes", async () => {
+  const { clock, presentation, root } = await spawnCancellationTree();
+  const cancellation = root.cancel({ scope: "subtree" });
+  await waitForReceiver();
+  await clock.advanceBy(1_000);
+  await cancellation;
+
+  assert.deepEqual(presentation.closedPaneIds, []);
+});
+
 test("an acknowledged parent retains its evidence when a descendant is unproven", async () => {
   const { clock, grandchild, root, trace, worker } =
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  worker.acknowledge(grandchild.operationId);
-  worker.acknowledge(root.operationId);
+  worker.confirmWorkerStopped(grandchild.operationId);
+  worker.confirmWorkerStopped(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
@@ -438,9 +463,9 @@ test("retrying one cancellation epoch is idempotent", async () => {
   const first = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
   const retry = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
   await waitForReceiver();
-  worker.acknowledge(grandchild.operationId);
-  worker.acknowledge(child.operationId);
-  worker.acknowledge(root.operationId);
+  worker.confirmWorkerStopped(grandchild.operationId);
+  worker.confirmWorkerStopped(child.operationId);
+  worker.confirmWorkerStopped(root.operationId);
   await clock.advanceBy(1_000);
   await first;
 
@@ -452,9 +477,9 @@ test("Runtime rejects an older cancellation epoch", async () => {
     await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
   await waitForReceiver();
-  worker.acknowledge(grandchild.operationId);
-  worker.acknowledge(child.operationId);
-  worker.acknowledge(root.operationId);
+  worker.confirmWorkerStopped(grandchild.operationId);
+  worker.confirmWorkerStopped(child.operationId);
+  worker.confirmWorkerStopped(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 
@@ -472,8 +497,8 @@ test("subtree cancellation preserves an already completed descendant", async () 
   await grandchild.result();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
-  worker.acknowledge(child.operationId);
-  worker.acknowledge(root.operationId);
+  worker.confirmWorkerStopped(child.operationId);
+  worker.confirmWorkerStopped(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
 

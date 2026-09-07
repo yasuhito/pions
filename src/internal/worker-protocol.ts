@@ -15,7 +15,7 @@ import {
   ObservedWorkerConfigSchema,
 } from "./worker-configuration.js";
 
-export const WORKER_PROTOCOL_VERSION = 6 as const;
+export const WORKER_PROTOCOL_VERSION = 7 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -147,8 +147,7 @@ const BeginRequestSchema = Schema.Struct({
   type: Schema.Literal("begin"),
 });
 const CancellationRequestSchema = Schema.Struct({
-  protocolVersion: Schema.Number,
-  operationId: Schema.NonEmptyString,
+  ...CommonWorkerFrameFields,
   type: Schema.Literal("cancel"),
 });
 
@@ -425,6 +424,7 @@ export class HostProtocolPeer extends FramedPeer {
     | "done"
     | "failed" = "awaiting_hello";
   private lastSequenceNumber = 0;
+  private hostSequenceNumber = 1;
   private processId = 0;
   private processInstanceId = "";
   private processStartToken = "";
@@ -473,13 +473,7 @@ export class HostProtocolPeer extends FramedPeer {
     if (this.state !== "awaiting_begin") {
       throw violation("invalid_transition", "Worker execution cannot begin before identification");
     }
-    const bytes = this.encodeFrame({
-      protocolVersion: WORKER_PROTOCOL_VERSION,
-      operationId: this.authority.operationId,
-      capability: this.authority.capability,
-      sequenceNumber: 1,
-      type: "begin",
-    });
+    const bytes = this.encodeHostFrame("begin");
     this.state = "receiving_results";
     return bytes;
   }
@@ -491,11 +485,7 @@ export class HostProtocolPeer extends FramedPeer {
       this.state === "failed" ||
       this.state === "done"
     ) return undefined;
-    const bytes = this.encodeFrame({
-      protocolVersion: WORKER_PROTOCOL_VERSION,
-      operationId: this.authority.operationId,
-      type: "cancel",
-    });
+    const bytes = this.encodeHostFrame("cancel");
     this.state = "cancelling";
     return bytes;
   }
@@ -531,6 +521,18 @@ export class HostProtocolPeer extends FramedPeer {
       bytes,
       complete: this.pendingAcknowledgements.size === 0,
     };
+  }
+
+  private encodeHostFrame(type: "begin" | "cancel"): Buffer {
+    const bytes = this.encodeFrame({
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+      operationId: this.authority.operationId,
+      capability: this.authority.capability,
+      sequenceNumber: this.hostSequenceNumber,
+      type,
+    });
+    this.hostSequenceNumber += 1;
+    return bytes;
   }
 
   private requireTerminalFrameBoundary(): void {
@@ -847,17 +849,7 @@ export class WorkerProtocolPeer extends FramedPeer {
             value,
             "Worker begin request has an invalid shape",
           );
-          if (
-            begin.operationId !== this.authority.operationId ||
-            !sameSecret(this.authority.capability, begin.capability)
-          ) {
-            throw violation("authority_mismatch", "Begin authority does not match the Operation");
-          }
-          validateSafePositiveInteger(begin.sequenceNumber, "sequenceNumber");
-          if (begin.sequenceNumber !== this.lastHostSequenceNumber + 1) {
-            throw violation("sequence_mismatch", "Host protocol sequence is stale or out of order");
-          }
-          this.lastHostSequenceNumber = begin.sequenceNumber;
+          this.validateHostControl(begin, "Begin");
           if (this.state !== "ready") {
             throw violation("invalid_transition", "Begin arrived before Worker start or more than once");
           }
@@ -871,9 +863,7 @@ export class WorkerProtocolPeer extends FramedPeer {
             value,
             "Worker cancellation request has an invalid shape",
           );
-          if (cancellation.operationId !== this.authority.operationId) {
-            throw violation("authority_mismatch", "Cancellation operation does not match");
-          }
+          this.validateHostControl(cancellation, "Cancellation");
           if (
             this.state !== "ready" &&
             this.state !== "running" &&
@@ -925,6 +915,27 @@ export class WorkerProtocolPeer extends FramedPeer {
       this.state = "failed";
       throw error;
     }
+  }
+
+  private validateHostControl(
+    frame: {
+      readonly operationId: string;
+      readonly capability: string;
+      readonly sequenceNumber: number;
+    },
+    subject: string,
+  ): void {
+    if (
+      frame.operationId !== this.authority.operationId ||
+      !sameSecret(this.authority.capability, frame.capability)
+    ) {
+      throw violation("authority_mismatch", `${subject} authority does not match the Operation`);
+    }
+    validateSafePositiveInteger(frame.sequenceNumber, "sequenceNumber");
+    if (frame.sequenceNumber !== this.lastHostSequenceNumber + 1) {
+      throw violation("sequence_mismatch", "Host protocol sequence is stale or out of order");
+    }
+    this.lastHostSequenceNumber = frame.sequenceNumber;
   }
 
   private encodeWorkerFrame(fields: Readonly<Record<string, unknown>>): Buffer {

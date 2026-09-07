@@ -15,7 +15,10 @@ export interface WorkerProcessControl {
     identity: Readonly<WorkerProcessIdentity>,
     timeoutMilliseconds: number,
   ): Effect.Effect<WorkerProcessState>;
-  terminate(identity: Readonly<WorkerProcessIdentity>): Effect.Effect<WorkerCancellationEvidence | undefined>;
+  terminate(
+    identity: Readonly<WorkerProcessIdentity>,
+    timeoutMilliseconds?: number,
+  ): Effect.Effect<WorkerCancellationEvidence | undefined>;
 }
 
 export interface NodeWorkerProcessControlOptions {
@@ -85,7 +88,10 @@ export class NodeWorkerProcessControl implements WorkerProcessControl {
     });
   }
 
-  terminate(identity: Readonly<WorkerProcessIdentity>): Effect.Effect<WorkerCancellationEvidence | undefined> {
+  terminate(
+    identity: Readonly<WorkerProcessIdentity>,
+    timeoutMilliseconds = this.stopTimeoutMilliseconds,
+  ): Effect.Effect<WorkerCancellationEvidence | undefined> {
     return Effect.promise(async () => {
       const initial = await Effect.runPromise(this.observe(identity));
       if (initial === "stopped") return { proof: "worker-stop" };
@@ -98,7 +104,10 @@ export class NodeWorkerProcessControl implements WorkerProcessControl {
           : undefined;
       }
       const state = await Effect.runPromise(
-        this.waitForStop(identity, this.stopTimeoutMilliseconds),
+        this.waitForStop(
+          identity,
+          Math.min(this.stopTimeoutMilliseconds, Math.max(0, timeoutMilliseconds)),
+        ),
       );
       return state === "stopped" ? { proof: "worker-stop" } : undefined;
     });

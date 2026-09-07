@@ -46,7 +46,7 @@ export interface AgentRunEvidence {
 }
 
 export interface WorkerCancellationEvidence {
-  readonly proof: "acknowledgement" | "worker-stop";
+  readonly proof: "worker-stop";
 }
 
 export interface WorkerRunHooks {

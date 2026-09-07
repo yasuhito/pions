@@ -73,6 +73,7 @@ class FakeProcessControl implements WorkerProcessControl {
 }
 
 class DeferredStopProcessControl implements WorkerProcessControl {
+  readonly terminations: Array<Readonly<WorkerProcessIdentity>> = [];
   private resolveStop!: (state: WorkerProcessState) => void;
   private readonly stop = new Promise<WorkerProcessState>((resolve) => {
     this.resolveStop = resolve;
@@ -91,8 +92,11 @@ class DeferredStopProcessControl implements WorkerProcessControl {
     return Effect.promise(() => this.stop);
   }
 
-  terminate(_identity: Readonly<WorkerProcessIdentity>) {
-    return Effect.succeed(undefined);
+  terminate(identity: Readonly<WorkerProcessIdentity>) {
+    return Effect.sync(() => {
+      this.terminations.push(identity);
+      return { proof: "worker-stop" } as const;
+    });
   }
 
   complete(state: WorkerProcessState): void {
@@ -238,7 +242,7 @@ async function fixture(options: {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const directory = join(root, operationDirectoryKey(current.operationId));
-  const config = JSON.parse(await readFile(join(directory, "worker.v6.json"), "utf8")) as {
+  const config = JSON.parse(await readFile(join(directory, "worker.v7.json"), "utf8")) as {
     readonly socketPath: string;
   };
   const protocolSession = {
@@ -395,7 +399,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   while (executor.invocations.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v6.json");
+  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v7.json");
   const config = JSON.parse(await readFile(configPath, "utf8")) as { readonly socketPath: string };
   const client = await socket(config.socketPath);
   await sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
@@ -454,7 +458,7 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--no-prompt-templates",
     "--no-themes",
     "--approve",
-    "--pions-worker-config", join(value.directory, "worker.v6.json"),
+    "--pions-worker-config", join(value.directory, "worker.v7.json"),
   ]);
 });
 
@@ -487,7 +491,7 @@ test("visible Worker configuration uses private permissions", async (context) =>
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal(await mode(join(value.directory, "worker.v6.json")), 0o600);
+  assert.equal(await mode(join(value.directory, "worker.v7.json")), 0o600);
 });
 
 test("invalid Worker configuration reports a Worker start failure", async (context) => {
@@ -639,6 +643,20 @@ test("visible Worker does not send begin when the launch command times out", asy
   assert.equal(frames.length, 0);
 });
 
+test("a Worker cancelled before identification does not receive begin", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const frames: Array<string> = [];
+  client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
+  await Effect.runPromise(value.worker.cancel(1, 1_000));
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  await value.outcome;
+
+  assert.deepEqual(frames, []);
+});
+
 test("a Worker cancelled before begin does not receive begin", async (context) => {
   let identified!: () => void;
   const identification = new Promise<void>((resolve) => {
@@ -665,6 +683,33 @@ test("a Worker cancelled before begin does not receive begin", async (context) =
   await value.outcome;
 
   assert.equal(receivedControl.type, "cancel");
+});
+
+test("pre-begin cancellation survives concurrent run cleanup", async (context) => {
+  let identified!: () => void;
+  const identification = new Promise<void>((resolve) => {
+    identified = resolve;
+  });
+  let releaseIdentification!: () => void;
+  const value = await fixture({
+    workerIdentified: () => Effect.async<void>((resume) => {
+      identified();
+      releaseIdentification = () => resume(Effect.void);
+    }),
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  await identification;
+  const control = receiveFrame(client);
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  await control;
+  releaseIdentification();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "cancelled"));
+
+  assert.deepEqual(await cancellation, { proof: "worker-stop" });
 });
 
 test("visible Worker sends authenticated begin through the Worker protocol", async (context) => {
@@ -782,6 +827,41 @@ test("confirmed stop during successful-exit cancellation is cancellation evidenc
   const { cancellation } = await cancelDuringExitConfirmation(context);
 
   assert.deepEqual(cancellation, { proof: "worker-stop" });
+});
+
+test("successful-exit confirmation cannot outlive the cancellation budget", async (context) => {
+  const processControl = new DeferredStopProcessControl();
+  const value = await fixture({ processControl });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const delivery = await sendResultDelivery(client, {
+    capability: value.capability,
+    operationId: value.current.operationId,
+    body: "finished",
+  });
+  await delivery.acknowledgement;
+  await processControl.waitStarted;
+
+  assert.equal(await Effect.runPromise(value.worker.cancel(1, 20)), undefined);
+});
+
+test("cancellation during successful-exit confirmation stops a running Pi", async (context) => {
+  const processControl = new DeferredStopProcessControl();
+  const value = await fixture({ processControl });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const delivery = await sendResultDelivery(client, {
+    capability: value.capability,
+    operationId: value.current.operationId,
+    body: "finished",
+  });
+  await delivery.acknowledgement;
+  await processControl.waitStarted;
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  processControl.complete("running");
+  await cancellation;
+
+  assert.equal(processControl.terminations.length, 1);
 });
 
 test("unconfirmed Pi exit after ACK has unknown liveness", async (context) => {
@@ -945,8 +1025,8 @@ test("visible Worker cancellation returns no stop evidence", async (context) => 
   assert.equal(await Effect.runPromise(workerFixture.worker.cancel(1, 1_000)), undefined);
 });
 
-test("backend cancellation acknowledgement is stop evidence", async (context) => {
-  const value = await fixture();
+test("backend cancellation acknowledgement requires confirmed process stop", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("stopped") });
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
@@ -958,10 +1038,28 @@ test("backend cancellation acknowledgement is stop evidence", async (context) =>
   await new Promise<void>((resolve) => setImmediate(resolve));
   send(client, frame(value.capability, 3, "cancelled"));
 
-  assert.deepEqual(await cancellation, { proof: "acknowledgement" });
+  assert.deepEqual(await cancellation, { proof: "worker-stop" });
 });
 
-test("forced termination begins only after the backend grace period", async (context) => {
+test("forced termination begins after cancellation acknowledgement grace", async (context) => {
+  const processControl = new FakeProcessControl("running", { proof: "worker-stop" });
+  const value = await fixture({ processControl, backendCancellationGraceMs: 100 });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "cancelled"));
+  await cancellation;
+
+  assert.equal(processControl.terminations.length, 1);
+});
+
+test("missing cancellation acknowledgement triggers process termination", async (context) => {
   const processControl = new FakeProcessControl("running", { proof: "worker-stop" });
   const value = await fixture({ processControl, backendCancellationGraceMs: 0 });
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -974,6 +1072,61 @@ test("forced termination begins only after the backend grace period", async (con
   await Effect.runPromise(value.worker.cancel(1, 1_000));
 
   assert.equal(processControl.terminations.length, 1);
+});
+
+test("a disconnected cancellation channel retains the unconfirmed process", async (context) => {
+  const processControl = new FakeProcessControl("running", { proof: "worker-stop" });
+  const value = await fixture({ processControl, backendCancellationGraceMs: 10 });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  client.destroy();
+  await cancellation;
+
+  assert.equal(processControl.terminations.length, 0);
+});
+
+test("unverifiable process identity keeps acknowledged cancellation unproven", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("unverifiable") });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "cancelled"));
+
+  assert.equal(await cancellation, undefined);
+});
+
+test("duplicate Worker cancellation sends one backend request", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("stopped") });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const controls: Array<string> = [];
+  client.on("data", (bytes) => {
+    controls.push(...bytes.toString("utf8").trim().split("\n"));
+  });
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const first = Effect.runPromise(value.worker.cancel(1, 1_000));
+  const duplicate = Effect.runPromise(value.worker.cancel(2, 1_000));
+  while (controls.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "cancelled"));
+  await Promise.all([first, duplicate]);
+
+  assert.equal(controls.map((control) => JSON.parse(control).type).filter((type) => type === "cancel").length, 1);
 });
 
 test("cancellation releases Worker protocol listeners", async (context) => {
@@ -1040,8 +1193,8 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   }
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
-  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v6.json"), "utf8")) as { readonly socketPath: string };
-  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v6.json"), "utf8")) as { readonly socketPath: string };
+  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v7.json"), "utf8")) as { readonly socketPath: string };
+  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v7.json"), "utf8")) as { readonly socketPath: string };
   const secondClient = await socket(secondConfig.socketPath);
   await sendResultDelivery(secondClient, {
     capability: "cd".repeat(32),
