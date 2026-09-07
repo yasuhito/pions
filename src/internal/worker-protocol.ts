@@ -92,6 +92,7 @@ const ConfigurationFailedSchema = Schema.Struct({
   type: Schema.Literal("configuration_failed"),
   reason: Schema.Literal(
     "model_mismatch",
+    "thinking_level_mismatch",
     "model_not_found",
     "model_auth_unavailable",
     "unsupported_capability",

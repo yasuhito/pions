@@ -214,6 +214,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         operation.terminalReason === "process-exited-without-result" ||
         operation.terminalReason === "agent_failed" ||
         operation.terminalReason === "model_mismatch" ||
+        operation.terminalReason === "thinking_level_mismatch" ||
         operation.terminalReason === "model_not_found" ||
         operation.terminalReason === "model_auth_unavailable" ||
         operation.terminalReason === "unsupported_capability" ||

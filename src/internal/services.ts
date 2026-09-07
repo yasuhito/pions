@@ -71,6 +71,7 @@ export type WorkerRunOutcome =
   | { readonly state: "process-exited-without-result" }
   | { readonly state: "liveness-unproven" }
   | { readonly state: "model_mismatch" }
+  | { readonly state: "thinking_level_mismatch" }
   | { readonly state: "model_not_found" }
   | { readonly state: "model_auth_unavailable" }
   | { readonly state: "unsupported_capability" }

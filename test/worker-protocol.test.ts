@@ -171,8 +171,8 @@ test("Worker protocol carries a typed pre-start configuration failure", () => {
   host.receive(worker.send({ type: "hello", ...processIdentity }));
 
   assert.deepEqual(
-    host.receive(worker.send({ type: "configuration_failed", reason: "model_mismatch" })),
-    [{ type: "worker_configuration_failed", reason: "model_mismatch" }],
+    host.receive(worker.send({ type: "configuration_failed", reason: "thinking_level_mismatch" })),
+    [{ type: "worker_configuration_failed", reason: "thinking_level_mismatch" }],
   );
 });
 

@@ -915,6 +915,60 @@ test("visible Worker does not send begin when observed configuration mismatches"
   assert.equal(frames.length, 0);
 });
 
+test("observed thinking mismatch becomes a typed Worker failure", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: {
+      ...observedConfig,
+      thinkingLevel: { state: "observed", value: "low" },
+    },
+  }));
+
+  assert.equal((await value.outcome).state, "thinking_level_mismatch");
+});
+
+test("visible Worker does not send begin when observed thinking mismatches", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const frames: Array<string> = [];
+  client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: {
+      ...observedConfig,
+      thinkingLevel: { state: "observed", value: "low" },
+    },
+  }));
+  await value.outcome;
+
+  assert.equal(frames.length, 0);
+});
+
+test("visible Worker does not send begin when observed thinking is unavailable", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const frames: Array<string> = [];
+  client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: {
+      ...observedConfig,
+      thinkingLevel: { state: "unavailable" },
+    },
+  }));
+  await value.outcome;
+
+  assert.equal(frames.length, 0);
+});
+
 test("pre-start configuration failure becomes a typed Worker failure", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));

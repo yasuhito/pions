@@ -29,7 +29,7 @@ export const effectiveConfig: EffectiveWorkerConfig = {
 };
 export const observedConfig: ObservedWorkerConfig = {
   model: { state: "observed", value: { provider: "test", id: "test-model" } },
-  thinkingLevel: { state: "unavailable" },
+  thinkingLevel: { state: "observed", value: "medium" },
   tools: { state: "observed", value: ["read", "bash", "edit", "write"] },
   cwd: { state: "observed", value: "/test/workspace" },
 };

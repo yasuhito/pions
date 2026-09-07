@@ -862,6 +862,22 @@ test("an observed model mismatch becomes a typed Operation failure", async () =>
   );
 });
 
+test("an observed thinking mismatch becomes a typed Operation failure", async () => {
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter({ failure: "thinking_level_mismatch" }),
+    clock: new FakeClock(Array.from({ length: 8 }, (_, index) => `config-time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+  });
+  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+
+  await assert.rejects(
+    handle.result(),
+    (error) => error instanceof OperationFailedError && error.reason === "thinking_level_mismatch",
+  );
+});
+
 test("Operation records the worker process identifier", async () => {
   const { store } = await completeOperation();
 

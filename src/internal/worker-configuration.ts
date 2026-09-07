@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import type {
   EffectiveWorkerConfig,
   ModelReference,
+  ObservedWorkerConfig,
   RequestedWorkerConfig,
   ThinkingLevel,
   WorkerConfigurationFailureReason,
@@ -175,14 +176,14 @@ export function resolveWorkerConfig(options: {
 
 export function configurationMismatch(
   effective: Readonly<EffectiveWorkerConfig>,
-  observed: Readonly<{
-    readonly model: { readonly state: "observed"; readonly value: Readonly<ModelReference> } | { readonly state: "unavailable" };
-    readonly tools: { readonly state: "observed"; readonly value: ReadonlyArray<string> } | { readonly state: "unavailable" };
-    readonly cwd: { readonly state: "observed"; readonly value: string } | { readonly state: "unavailable" };
-  }>,
+  observed: Readonly<ObservedWorkerConfig>,
 ): WorkerConfigurationFailureReason | undefined {
   if (observed.model.state !== "observed" || !sameModel(effective.model, observed.model.value)) {
     return "model_mismatch";
+  }
+  if (observed.thinkingLevel.state !== "observed" ||
+      observed.thinkingLevel.value !== effective.thinkingLevel) {
+    return "thinking_level_mismatch";
   }
   if (observed.tools.state !== "observed" ||
       observed.tools.value.length !== effective.tools.length ||
