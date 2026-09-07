@@ -17,6 +17,7 @@ import {
   OperationPersistenceError,
   ResultConflictError,
   SpawnRejectedError,
+  WorkerConfigurationError,
 } from "../src/index.js";
 import type { Operation } from "../src/internal/event-store/index.js";
 import type { ResultDelivery } from "../src/internal/worker-protocol.js";
@@ -101,6 +102,12 @@ class ControlledWorkerAdapter implements WorkerAdapter {
       yield* hooks.workerIdentified({
         processInstanceId: `process:${operation.operationId}`,
         piSessionId: `session:${operation.operationId}`,
+        observedConfig: {
+          model: { state: "observed", value: { ...operation.effectiveConfig.model } },
+          thinkingLevel: { state: "unavailable" },
+          tools: { state: "observed", value: [...operation.effectiveConfig.tools] },
+          cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+        },
       });
       const deliveries = yield* Effect.async<ReadonlyArray<ResultDelivery>>((resume) => {
         this.receivers.set(operation.operationId, resume);
@@ -653,6 +660,178 @@ test("Runtime starts the Worker once", async () => {
   const { worker } = await completeOperation();
 
   assert.equal(worker.startCount, 1);
+});
+
+test("Operation records requested configuration separately", async () => {
+  const { store } = await completeOperation();
+
+  assert.deepEqual((await storedOperation(store, "operation-1")).requestedConfig, {});
+});
+
+test("Operation records the policy-resolved effective configuration", async () => {
+  const { store } = await completeOperation();
+
+  assert.deepEqual((await storedOperation(store, "operation-1")).effectiveConfig.modelPolicy, {
+    candidates: [{ provider: "test", id: "test-model" }],
+    attempted: [{ provider: "test", id: "test-model" }],
+    maxAttempts: 1,
+    fallback: "forbidden",
+    aliases: [],
+  });
+});
+
+test("Operation does not invent an observed thinking level", async () => {
+  const { store } = await completeOperation();
+
+  assert.deepEqual(
+    (await storedOperation(store, "operation-1")).observedConfig?.thinkingLevel,
+    { state: "unavailable" },
+  );
+});
+
+test("Operation records the observed Worker tool set", async () => {
+  const { store } = await completeOperation();
+
+  assert.deepEqual(
+    (await storedOperation(store, "operation-1")).observedConfig?.tools,
+    { state: "observed", value: ["read", "bash", "edit", "write"] },
+  );
+});
+
+async function rejectedModelConfiguration() {
+  const fixture = nestedRuntime(["operation-1"]);
+  let rejection: unknown;
+  try {
+    await fixture.runtime.spawn({
+      promptRef: "prompt",
+      profile: "coding",
+      idempotencyKey: "task",
+      model: { provider: "other", id: "model" },
+    });
+  } catch (error) {
+    rejection = error;
+  }
+  return { ...fixture, rejection };
+}
+
+test("Runtime rejects a model outside the exact candidate policy", async () => {
+  const { rejection } = await rejectedModelConfiguration();
+
+  assert.equal(
+    rejection instanceof WorkerConfigurationError && rejection.reason === "model_mismatch",
+    true,
+  );
+});
+
+test("a rejected model creates no identifier", async () => {
+  const { ids } = await rejectedModelConfiguration();
+
+  assert.equal(ids.issuedCount, 0);
+});
+
+test("a rejected model creates no Presentation resource", async () => {
+  const { presentation } = await rejectedModelConfiguration();
+
+  assert.equal(presentation.createdPaneIds.length, 0);
+});
+
+test("a rejected model creates no Worker resource", async () => {
+  const { worker } = await rejectedModelConfiguration();
+
+  assert.equal(worker.startCount, 0);
+});
+
+test("Runtime rejects tools above the profile ceiling before resources", async () => {
+  const { ids, runtime } = nestedRuntime(["operation-1"]);
+
+  await assert.rejects(
+    runtime.spawn({
+      promptRef: "prompt",
+      profile: "coding",
+      idempotencyKey: "task",
+      tools: ["read", "network"],
+    }),
+    (error) => error instanceof WorkerConfigurationError &&
+      error.reason === "tool_policy_violation" && ids.issuedCount === 0,
+  );
+});
+
+test("Runtime rejects a profile requiring an unavailable tool before issuing an identifier", async () => {
+  const ids = new FakeIdGenerator(["operation-1"]);
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new FakeClock([]),
+    ids,
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+    configuration: {
+      cwd: "/work/project",
+      profiles: {
+        coding: {
+          modelCandidates: [{ provider: "test", id: "test-model" }],
+          thinkingLevel: "medium",
+          tools: ["read", "network"],
+        },
+      },
+    },
+  });
+
+  await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" })
+    .catch(() => undefined);
+
+  assert.equal(ids.issuedCount, 0);
+});
+
+test("a child cannot raise its inherited thinking ceiling", async () => {
+  const { runtime } = nestedRuntime(["root", "child"]);
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+    thinkingLevel: "low",
+  });
+
+  await assert.rejects(
+    runtime.spawn(
+      { promptRef: "child", profile: "coding", idempotencyKey: "child", thinkingLevel: "medium" },
+      { parentOperationId: root.operationId },
+    ),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "unsupported_capability",
+  );
+});
+
+test("a child cannot raise its inherited tool ceiling", async () => {
+  const { runtime } = nestedRuntime(["root", "child"]);
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+    tools: ["read"],
+  });
+
+  await assert.rejects(
+    runtime.spawn(
+      { promptRef: "child", profile: "coding", idempotencyKey: "child", tools: ["read", "bash"] },
+      { parentOperationId: root.operationId },
+    ),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "tool_policy_violation",
+  );
+});
+
+test("an observed model mismatch becomes a typed Operation failure", async () => {
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter({ failure: "model_mismatch" }),
+    clock: new FakeClock(Array.from({ length: 8 }, (_, index) => `config-time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+  });
+  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+
+  await assert.rejects(
+    handle.result(),
+    (error) => error instanceof OperationFailedError && error.reason === "model_mismatch",
+  );
 });
 
 test("Operation records the worker process instance identity", async () => {

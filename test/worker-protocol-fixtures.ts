@@ -4,8 +4,40 @@ import type {
   ResultAcceptanceProof,
   ResultDelivery,
 } from "../src/internal/worker-protocol.js";
-import type { Result } from "../src/public.js";
+import type {
+  EffectiveWorkerConfig,
+  ObservedWorkerConfig,
+  RequestedWorkerConfig,
+  Result,
+  WorkerProfilePolicy,
+} from "../src/public.js";
 import type { AgentRunEvidence } from "../src/internal/services.js";
+
+export const requestedConfig: RequestedWorkerConfig = {};
+export const effectiveConfig: EffectiveWorkerConfig = {
+  model: { provider: "test", id: "test-model" },
+  thinkingLevel: "medium",
+  tools: ["read", "bash", "edit", "write"],
+  cwd: "/test/workspace",
+  modelPolicy: {
+    candidates: [{ provider: "test", id: "test-model" }],
+    attempted: [{ provider: "test", id: "test-model" }],
+    maxAttempts: 1,
+    fallback: "forbidden",
+    aliases: [],
+  },
+};
+export const observedConfig: ObservedWorkerConfig = {
+  model: { state: "observed", value: { provider: "test", id: "test-model" } },
+  thinkingLevel: { state: "unavailable" },
+  tools: { state: "observed", value: ["read", "bash", "edit", "write"] },
+  cwd: { state: "observed", value: "/test/workspace" },
+};
+export const profilePolicy: WorkerProfilePolicy = {
+  modelCandidates: [{ provider: "test", id: "test-model" }],
+  thinkingLevel: "medium",
+  tools: ["read", "bash", "edit", "write"],
+};
 
 export const piSessionId = "pi-session-1";
 export const agentRunEvidence: AgentRunEvidence = {

@@ -1,4 +1,7 @@
-import type { OperationFailureReason } from "../../public.js";
+import type {
+  ObservedWorkerConfig,
+  OperationFailureReason,
+} from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
 import type { ResultDelivery } from "../worker-protocol.js";
 
@@ -34,6 +37,7 @@ export type OperationIntent =
   | {
       readonly type: "worker_identified";
       readonly workerIdentity: Readonly<WorkerIdentity>;
+      readonly observedConfig: Readonly<ObservedWorkerConfig>;
     }
   | {
       readonly type: "agent_settled";

@@ -2,11 +2,20 @@ import { timingSafeEqual } from "node:crypto";
 
 import { Schema } from "effect";
 
-import type { Result } from "../public.js";
+import type {
+  EffectiveWorkerConfig,
+  ObservedWorkerConfig,
+  Result,
+  WorkerConfigurationFailureReason,
+} from "../public.js";
 import type { AgentRunEvidence } from "./services.js";
 import { resultDigest } from "./result-digest.js";
+import {
+  EffectiveWorkerConfigSchema,
+  ObservedWorkerConfigSchema,
+} from "./worker-configuration.js";
 
-export const WORKER_PROTOCOL_VERSION = 3 as const;
+export const WORKER_PROTOCOL_VERSION = 4 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -74,6 +83,12 @@ const StartedSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("started"),
   piSessionId: Schema.NonEmptyString,
+  observedConfig: ObservedWorkerConfigSchema,
+});
+const ConfigurationFailedSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("configuration_failed"),
+  reason: Schema.Literal("model_mismatch", "unsupported_capability", "tool_policy_violation"),
 });
 const ResultSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
@@ -122,8 +137,7 @@ const WorkerConfigSchema = Schema.Struct({
   capability: CapabilitySchema,
   socketPath: Schema.NonEmptyString,
   promptPath: Schema.NonEmptyString,
-  cwd: Schema.NonEmptyString,
-  profile: Schema.Literal("coding"),
+  effectiveConfig: EffectiveWorkerConfigSchema,
 });
 
 export interface WorkerConfig {
@@ -131,8 +145,7 @@ export interface WorkerConfig {
   readonly capability: string;
   readonly socketPath: string;
   readonly promptPath: string;
-  readonly cwd: string;
-  readonly profile: "coding";
+  readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
 }
 
 export interface ResultDelivery {
@@ -180,6 +193,11 @@ export type HostProtocolEvent =
       readonly type: "started";
       readonly processInstanceId: string;
       readonly piSessionId: string;
+      readonly observedConfig: Readonly<ObservedWorkerConfig>;
+    }
+  | {
+      readonly type: "worker_configuration_failed";
+      readonly reason: WorkerConfigurationFailureReason;
     }
   | {
       readonly type: "results_received";
@@ -194,7 +212,15 @@ export type HostProtocolEvent =
 
 export type WorkerProtocolEvent =
   | { readonly type: "hello"; readonly processInstanceId: string }
-  | { readonly type: "started"; readonly piSessionId: string }
+  | {
+      readonly type: "started";
+      readonly piSessionId: string;
+      readonly observedConfig: Readonly<ObservedWorkerConfig>;
+    }
+  | {
+      readonly type: "configuration_failed";
+      readonly reason: WorkerConfigurationFailureReason;
+    }
   | {
       readonly type: "result";
       readonly body: string;
@@ -490,7 +516,21 @@ export class HostProtocolPeer extends FramedPeer {
         type: "started",
         processInstanceId: this.processInstanceId,
         piSessionId: started.piSessionId,
+        observedConfig: started.observedConfig as ObservedWorkerConfig,
       };
+    }
+    if (object.type === "configuration_failed") {
+      const failed = decodeShape(
+        ConfigurationFailedSchema,
+        value,
+        "Worker configuration failure frame has an invalid shape",
+      );
+      this.validateCommon(failed);
+      if (this.state !== "awaiting_started") {
+        throw violation("invalid_transition", "Configuration failure arrived after Worker start");
+      }
+      this.state = "done";
+      return { type: "worker_configuration_failed", reason: failed.reason };
     }
     if (object.type === "result") {
       const result = decodeShape(
@@ -635,8 +675,18 @@ export class WorkerProtocolPeer extends FramedPeer {
         const bytes = this.encodeWorkerFrame({
           type: "started",
           piSessionId: event.piSessionId,
+          observedConfig: event.observedConfig,
         });
         this.state = "started";
+        return bytes;
+      }
+      case "configuration_failed": {
+        if (this.state !== "identified") return this.invalidSend(event.type);
+        const bytes = this.encodeWorkerFrame({
+          type: "configuration_failed",
+          reason: event.reason,
+        });
+        this.state = "done";
         return bytes;
       }
       case "result": {

@@ -5,8 +5,11 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 import {
   PiAgentFailedError,
+  observePiAgentConfiguration,
   runPiAgentSession,
 } from "../src/internal/pi-agent-backend.js";
+import { WorkerConfigurationError } from "../src/index.js";
+import { effectiveConfig } from "./worker-protocol-fixtures.js";
 
 interface FakeAssistantMessage {
   readonly role: "assistant";
@@ -47,6 +50,8 @@ function assistant(text: string): FakeAssistantMessage {
 
 class FakeSession {
   readonly sessionId = "pi-session-1";
+  readonly model = { provider: "test", id: "test-model" };
+  readonly thinkingLevel = "medium" as const;
   readonly messages: Array<FakeAssistantMessage> = [];
   private listener: ((event: AgentSessionEvent) => void) | undefined;
 
@@ -66,6 +71,10 @@ class FakeSession {
     }
   }
 
+  getActiveToolNames(): string[] {
+    return ["read", "bash", "edit", "write"];
+  }
+
   dispose(): void {}
 }
 
@@ -74,6 +83,70 @@ const settled = { type: "agent_settled" } as const;
 function messageEnd(message: FakeAssistantMessage): AgentSessionEvent {
   return { type: "message_end", message } as unknown as AgentSessionEvent;
 }
+
+test("Pi backend observes the configured model", () => {
+  const session = new FakeSession([]);
+
+  assert.deepEqual(observePiAgentConfiguration(session, effectiveConfig, "/test/workspace").model, {
+    state: "observed",
+    value: { provider: "test", id: "test-model" },
+  });
+});
+
+test("Pi backend represents provider thinking observation as unavailable", () => {
+  const session = new FakeSession([]);
+
+  assert.deepEqual(observePiAgentConfiguration(session, effectiveConfig, "/test/workspace").thinkingLevel, {
+    state: "unavailable",
+  });
+});
+
+test("Pi backend rejects a model mismatch with a typed failure", () => {
+  const session = {
+    ...new FakeSession([]),
+    model: { provider: "other", id: "model" },
+    getActiveToolNames: () => ["read", "bash", "edit", "write"],
+  };
+
+  assert.throws(
+    () => observePiAgentConfiguration(session, effectiveConfig, "/test/workspace"),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "model_mismatch",
+  );
+});
+
+test("Pi backend rejects a changed thinking setting with a typed failure", () => {
+  const session = {
+    ...new FakeSession([]),
+    thinkingLevel: "high" as const,
+    getActiveToolNames: () => ["read", "bash", "edit", "write"],
+  };
+
+  assert.throws(
+    () => observePiAgentConfiguration(session, effectiveConfig, "/test/workspace"),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "unsupported_capability",
+  );
+});
+
+test("Pi backend rejects a changed working directory with a typed failure", () => {
+  const session = new FakeSession([]);
+
+  assert.throws(
+    () => observePiAgentConfiguration(session, effectiveConfig, "/other/workspace"),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "unsupported_capability",
+  );
+});
+
+test("Pi backend rejects a changed tool set with a typed failure", () => {
+  const session = {
+    ...new FakeSession([]),
+    getActiveToolNames: () => ["read", "bash"],
+  };
+
+  assert.throws(
+    () => observePiAgentConfiguration(session, effectiveConfig, "/test/workspace"),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "tool_policy_violation",
+  );
+});
 
 test("Pi backend waits through a retrying agent_end for agent_settled", async () => {
   const final = assistant("finished");

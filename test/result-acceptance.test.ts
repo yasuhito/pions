@@ -10,7 +10,11 @@ import {
   FakeClock,
   InMemoryEventStore,
 } from "../src/internal/testing.js";
-import { resultDigest } from "./worker-protocol-fixtures.js";
+import {
+  effectiveConfig,
+  requestedConfig,
+  resultDigest,
+} from "./worker-protocol-fixtures.js";
 
 async function runningOperation(
   store: InMemoryEventStore,
@@ -23,6 +27,8 @@ async function runningOperation(
       profile: "coding",
       idempotencyKey: "request-1",
     },
+    requestedConfig,
+    effectiveConfig,
     lineage: { rootOperationId: operationId, depth: 0 },
   }));
   await Effect.runPromise(store.advance(operationId, {

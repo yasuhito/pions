@@ -1,6 +1,8 @@
 import type { Effect } from "effect";
 
 import type {
+  EffectiveWorkerConfig,
+  RequestedWorkerConfig,
   Result,
   ResultConflictError,
   TaskSpec,
@@ -44,6 +46,8 @@ export interface StoreError {
 export interface OperationRequest {
   readonly operationId: string;
   readonly task: Readonly<TaskSpec>;
+  readonly requestedConfig: Readonly<RequestedWorkerConfig>;
+  readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly lineage: Readonly<OperationLineage>;
 }
 

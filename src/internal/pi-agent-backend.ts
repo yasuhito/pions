@@ -1,5 +1,12 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
+import type {
+  EffectiveWorkerConfig,
+  ObservedWorkerConfig,
+  ThinkingLevel,
+} from "../public.js";
+import { WorkerConfigurationError } from "../public.js";
+
 export interface PiUsage {
   readonly input: number;
   readonly output: number;
@@ -35,6 +42,53 @@ export class PiAgentFailedError extends Error {
   ) {
     super(message);
   }
+}
+
+interface PiConfigurationSession {
+  readonly model: { readonly provider: string; readonly id: string } | undefined;
+  readonly thinkingLevel: ThinkingLevel;
+  getActiveToolNames(): string[];
+}
+
+export function observePiAgentConfiguration(
+  session: Readonly<PiConfigurationSession>,
+  effective: Readonly<EffectiveWorkerConfig>,
+  observedCwd: string,
+): ObservedWorkerConfig {
+  if (
+    session.model?.provider !== effective.model.provider ||
+    session.model.id !== effective.model.id
+  ) {
+    throw new WorkerConfigurationError("model_mismatch", "Pi selected a different model");
+  }
+  if (session.thinkingLevel !== effective.thinkingLevel) {
+    throw new WorkerConfigurationError(
+      "unsupported_capability",
+      "Pi changed the requested thinking level",
+    );
+  }
+  if (observedCwd !== effective.cwd) {
+    throw new WorkerConfigurationError(
+      "unsupported_capability",
+      "Pi Worker started in a different working directory",
+    );
+  }
+  const activeTools = session.getActiveToolNames();
+  if (
+    activeTools.length !== effective.tools.length ||
+    activeTools.some((tool) => !effective.tools.includes(tool))
+  ) {
+    throw new WorkerConfigurationError(
+      "tool_policy_violation",
+      "Pi changed the configured tool set",
+    );
+  }
+  return {
+    model: { state: "observed", value: { ...session.model } },
+    thinkingLevel: { state: "unavailable" },
+    tools: { state: "observed", value: activeTools },
+    cwd: { state: "observed", value: observedCwd },
+  };
 }
 
 interface PiSession {

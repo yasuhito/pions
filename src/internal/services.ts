@@ -12,13 +12,16 @@ import type {
 } from "./worker-protocol.js";
 import type { PiUsage, PiToolUse } from "./pi-agent-backend.js";
 import type {
+  ObservedWorkerConfig,
   OperationPersistenceError,
   ResultConflictError,
+  WorkerProfilePolicy,
 } from "../public.js";
 
 export interface WorkerProcessIdentity {
   readonly processInstanceId: string;
   readonly piSessionId: string;
+  readonly observedConfig: Readonly<ObservedWorkerConfig>;
 }
 
 export interface AgentRunEvidence {
@@ -48,6 +51,9 @@ export type WorkerRunOutcome =
     }
   | { readonly state: "worker_start_failed" }
   | { readonly state: "worker_protocol_failed" }
+  | { readonly state: "model_mismatch" }
+  | { readonly state: "unsupported_capability" }
+  | { readonly state: "tool_policy_violation" }
   | {
       readonly state: "agent_failed";
       readonly evidence: Readonly<AgentRunEvidence>;
@@ -128,4 +134,8 @@ export interface RuntimeServices {
   readonly ids: IdGenerator;
   readonly presentation: Presentation;
   readonly store: EventStore;
+  readonly configuration?: Readonly<{
+    readonly cwd: string;
+    readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
+  }>;
 }

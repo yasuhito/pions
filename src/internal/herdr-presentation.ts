@@ -68,6 +68,40 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+const MAX_PRESENTATION_CONFIG_BYTES = 512;
+
+function boundedPresentationText(value: string): string {
+  const normalized = value.replaceAll(/[\r\n\0]/gu, " ");
+  if (Buffer.byteLength(normalized, "utf8") <= MAX_PRESENTATION_CONFIG_BYTES) return normalized;
+  let bounded = "";
+  for (const character of normalized) {
+    if (Buffer.byteLength(bounded + character, "utf8") > MAX_PRESENTATION_CONFIG_BYTES) break;
+    bounded += character;
+  }
+  return bounded;
+}
+
+function configurationProjection(operation: Readonly<Operation>): string {
+  const effective = operation.effectiveConfig;
+  const observed = operation.observedConfig;
+  const observedModel = observed?.model.state === "observed"
+    ? `${observed.model.value.provider}/${observed.model.value.id}`
+    : "unavailable";
+  const observedThinking = observed?.thinkingLevel.state === "observed"
+    ? observed.thinkingLevel.value
+    : "unavailable";
+  const observedTools = observed?.tools.state === "observed"
+    ? observed.tools.value.join(",")
+    : "unavailable";
+  const observedCwd = observed?.cwd.state === "observed"
+    ? observed.cwd.value
+    : "unavailable";
+  return boundedPresentationText(
+    `effective(model=${effective.model.provider}/${effective.model.id};thinking=${effective.thinkingLevel};tools=${effective.tools.join(",")};cwd=${effective.cwd}) ` +
+    `observed(model=${observedModel};thinking=${observedThinking};tools=${observedTools};cwd=${observedCwd})`,
+  );
+}
+
 function commandFailure(output: CommandOutput): Error | undefined {
   if (output.exitCode === 0) return undefined;
   return new Error(output.stderr.trim() || output.stdout.trim() || `Herdr exited with ${output.exitCode}`);
@@ -152,6 +186,8 @@ export class HerdrPresentation implements Presentation {
       operation.presentation.paneId,
       "--state-label",
       `${status}=${operation.state}`,
+      "--display-agent",
+      configurationProjection(operation),
       "--seq",
       String(operation.stateSeq),
     ]));

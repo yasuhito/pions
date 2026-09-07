@@ -19,6 +19,7 @@ import {
 } from "../src/internal/testing.js";
 import { makeRuntime } from "../src/internal/runtime.js";
 import { OperationPersistenceError } from "../src/index.js";
+import { effectiveConfig, requestedConfig } from "./worker-protocol-fixtures.js";
 
 const task = {
   promptRef: "private://prompt/1",
@@ -44,6 +45,8 @@ async function complete(store: EventStore, operationId = "operation-1") {
   await Effect.runPromise(store.create({
     operationId,
     task,
+    requestedConfig,
+    effectiveConfig,
     lineage: { rootOperationId: operationId, depth: 0 },
   }));
   await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
@@ -90,6 +93,8 @@ for (const adapter of eventStoreAdapters) {
     const snapshot = await Effect.runPromise(store.create({
       operationId: "operation-1",
       task,
+      requestedConfig,
+      effectiveConfig,
       lineage: { rootOperationId: "operation-1", depth: 0 },
     }));
 
@@ -120,7 +125,7 @@ test("reloading a Result does not append a delivery event", async (context) => {
   const root = await privateRoot();
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
-  const recordPath = join(root, operationDirectoryKey("operation-1"), "events.v4.json");
+  const recordPath = join(root, operationDirectoryKey("operation-1"), "events.v5.json");
   const before = await readFile(recordPath, "utf8");
   const reopened = new PrivateFileEventStore(root, clock());
   await Effect.runPromise(reopened.read("operation-1"));
@@ -144,7 +149,7 @@ test("private records use private directory and file permissions", async (contex
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
   const operationDirectory = join(root, operationDirectoryKey("operation-1"));
-  const paths = [root, operationDirectory, join(operationDirectory, "events.v4.json"), join(operationDirectory, "result.utf8")];
+  const paths = [root, operationDirectory, join(operationDirectory, "events.v5.json"), join(operationDirectory, "result.utf8")];
   const modes = await Promise.all(paths.map(async (path) => (await lstat(path)).mode & 0o777));
 
   assert.deepEqual(modes, [0o700, 0o700, 0o600, 0o600]);
@@ -169,6 +174,8 @@ test("a symlink Operation directory is rejected", async (context) => {
   assert.equal((await storeFailure(store.create({
     operationId: "operation-1",
     task,
+    requestedConfig,
+    effectiveConfig,
     lineage: { rootOperationId: "operation-1", depth: 0 },
   }))).code, "corrupt_record");
 });
@@ -205,9 +212,9 @@ test("an unsupported record schema is rejected", async (context) => {
   const root = await privateRoot();
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
-  const path = join(root, operationDirectoryKey("operation-1"), "events.v4.json");
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v5.json");
   const record = JSON.parse(await readFile(path, "utf8")) as { schemaVersion: number };
-  record.schemaVersion = 5;
+  record.schemaVersion = 6;
   await writeFile(path, JSON.stringify(record), { mode: 0o600 });
 
   assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "unsupported_schema");
@@ -217,11 +224,11 @@ test("an unsupported event schema is rejected", async (context) => {
   const root = await privateRoot();
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
-  const path = join(root, operationDirectoryKey("operation-1"), "events.v4.json");
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v5.json");
   const record = JSON.parse(await readFile(path, "utf8")) as {
     events: Array<{ schemaVersion: number }>;
   };
-  record.events[0]!.schemaVersion = 5;
+  record.events[0]!.schemaVersion = 6;
   await writeFile(path, JSON.stringify(record), { mode: 0o600 });
 
   assert.equal((await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"))).code, "unsupported_schema");
@@ -231,7 +238,7 @@ test("an event record with a forged envelope is corrupt", async (context) => {
   const root = await privateRoot();
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
-  const path = join(root, operationDirectoryKey("operation-1"), "events.v4.json");
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v5.json");
   const record = JSON.parse(await readFile(path, "utf8")) as { events: Array<OperationEvent> };
   record.events[1] = { ...record.events[1]!, eventId: "forged-event" };
   await writeFile(path, JSON.stringify(record), { mode: 0o600 });
@@ -243,7 +250,7 @@ test("an out-of-order event record is corrupt", async (context) => {
   const root = await privateRoot();
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
-  const path = join(root, operationDirectoryKey("operation-1"), "events.v4.json");
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v5.json");
   const record = JSON.parse(await readFile(path, "utf8")) as { events: Array<OperationEvent> };
   [record.events[1], record.events[2]] = [record.events[2]!, record.events[1]!];
   await writeFile(path, JSON.stringify(record), { mode: 0o600 });
@@ -255,7 +262,7 @@ test("a persisted Result event contains only its durable reference", async (cont
   const root = await privateRoot();
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
-  const path = join(root, operationDirectoryKey("operation-1"), "events.v4.json");
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v5.json");
   const record = JSON.parse(await readFile(path, "utf8")) as { events: Array<OperationEvent> };
   const resultEvent = record.events.find((event) => event.type === "result_persisted");
 
@@ -294,6 +301,8 @@ async function interruptResultPublication(root: string) {
   await Effect.runPromise(store.create({
     operationId: "operation-1",
     task,
+    requestedConfig,
+    effectiveConfig,
     lineage: { rootOperationId: "operation-1", depth: 0 },
   }));
   await Effect.runPromise(store.advance("operation-1", { type: "operation_starting" }));
@@ -355,7 +364,7 @@ test("conflicting persisted Result events make a record corrupt", async (context
   const root = await privateRoot();
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(new PrivateFileEventStore(root, clock()));
-  const path = join(root, operationDirectoryKey("operation-1"), "events.v4.json");
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v5.json");
   const record = JSON.parse(await readFile(path, "utf8")) as { events: Array<OperationEvent> };
   const original = record.events[3]!;
   const duplicate = { ...original, seq: 5, eventId: "operation-1:5" } as OperationEvent;

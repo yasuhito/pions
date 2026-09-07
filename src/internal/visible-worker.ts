@@ -31,7 +31,9 @@ import type {
 import type {
   OperationPersistenceError,
   ResultConflictError,
+  WorkerConfigurationFailureReason,
 } from "../public.js";
+import { configurationMismatch } from "./worker-configuration.js";
 import type { CommandExecutor } from "./herdr-presentation.js";
 
 const DIRECTORY_MODE = 0o700;
@@ -61,6 +63,10 @@ interface WorkerProtocolError {
   readonly _tag: "WorkerProtocolError";
   readonly message: string;
 }
+
+type WorkerStartReception =
+  | { readonly state: "identified"; readonly identity: Readonly<WorkerProcessIdentity> }
+  | { readonly state: "configuration_failed"; readonly reason: WorkerConfigurationFailureReason };
 
 type WorkerCompletionReception =
   | {
@@ -98,8 +104,8 @@ interface Session {
   readonly reception: Promise<WorkerCompletionReception>;
   resolveReception(value: WorkerCompletionReception): void;
   rejectReception(error: WorkerProtocolError): void;
-  readonly startedReception: Promise<Readonly<WorkerProcessIdentity>>;
-  resolveStarted(value: Readonly<WorkerProcessIdentity>): void;
+  readonly startedReception: Promise<WorkerStartReception>;
+  resolveStarted(value: WorkerStartReception): void;
   rejectStarted(error: WorkerProtocolError): void;
   socket?: Socket;
   receptionCompleted: boolean;
@@ -215,7 +221,12 @@ export class VisibleWorker implements WorkerAdapter {
 
       return yield* Effect.gen(this, function* () {
         const started = yield* receiveWorkerProtocol(session!.startedReception);
-        yield* hooks.workerIdentified(started);
+        if (started.state === "configuration_failed") {
+          return { state: started.reason } as WorkerRunOutcome;
+        }
+        const mismatch = configurationMismatch(operation.effectiveConfig, started.identity.observedConfig);
+        if (mismatch !== undefined) return { state: mismatch } as WorkerRunOutcome;
+        yield* hooks.workerIdentified(started.identity);
         const reception = yield* receiveWorkerProtocol(session!.reception);
         if (reception.state === "agent_failed") {
           return { state: "agent_failed", evidence: reception.evidence } as const;
@@ -257,22 +268,18 @@ export class VisibleWorker implements WorkerAdapter {
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
-    const configPath = join(directory, "worker.v1.json");
+    const configPath = join(directory, "worker.v4.json");
     const socketPath = join(directory, "child.sock");
     const prompt = await this.promptReader.read(operation.task.promptRef);
     cancellation.requireLaunchAllowed();
     if (prompt.byteLength > DEFAULT_MAX_PROMPT_BYTES) throw new Error("Prompt exceeds the configured size limit");
     const capability = this.capabilityGenerator.nextCapability();
-    if (operation.task.profile !== "coding") {
-      throw new Error(`Unknown Pi worker profile: ${operation.task.profile}`);
-    }
     const config: WorkerConfig = {
       operationId: operation.operationId,
       capability,
       socketPath,
       promptPath,
-      cwd: this.options.cwd,
-      profile: operation.task.profile,
+      effectiveConfig: operation.effectiveConfig,
     };
     const encodedConfig = encodeWorkerConfig(config);
     await writeFile(promptPath, prompt, { mode: FILE_MODE, flag: "wx" });
@@ -319,9 +326,9 @@ export class VisibleWorker implements WorkerAdapter {
       resolveReception = resolve;
       rejectReception = reject;
     });
-    let resolveStarted!: (value: Readonly<WorkerProcessIdentity>) => void;
+    let resolveStarted!: (value: WorkerStartReception) => void;
     let rejectStarted!: (error: WorkerProtocolError) => void;
-    const startedReception = new Promise<Readonly<WorkerProcessIdentity>>((resolve, reject) => {
+    const startedReception = new Promise<WorkerStartReception>((resolve, reject) => {
       resolveStarted = resolve;
       rejectStarted = reject;
     });
@@ -360,9 +367,16 @@ export class VisibleWorker implements WorkerAdapter {
         for (const event of session.protocol.receive(chunk)) {
           if (event.type === "started") {
             session.resolveStarted({
-              processInstanceId: event.processInstanceId,
-              piSessionId: event.piSessionId,
+              state: "identified",
+              identity: {
+                processInstanceId: event.processInstanceId,
+                piSessionId: event.piSessionId,
+                observedConfig: event.observedConfig,
+              },
             });
+          } else if (event.type === "worker_configuration_failed") {
+            session.receptionCompleted = true;
+            session.resolveStarted({ state: "configuration_failed", reason: event.reason });
           } else {
             session.receptionCompleted = true;
             session.resolveReception(event.type === "worker_failed"

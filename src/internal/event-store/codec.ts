@@ -6,6 +6,11 @@ import {
   RUNTIME_ACTOR_ID,
 } from "./model.js";
 import type { OperationEvent } from "./model.js";
+import {
+  EffectiveWorkerConfigSchema,
+  ObservedWorkerConfigSchema,
+  RequestedWorkerConfigSchema,
+} from "../worker-configuration.js";
 
 export interface StoredOperationRecord {
   readonly schemaVersion: typeof EVENT_SCHEMA_VERSION;
@@ -42,9 +47,10 @@ const EventMetadataFields = {
 };
 
 const Task = Schema.Struct({
-  promptRef: Schema.String,
-  profile: Schema.String,
-  idempotencyKey: Schema.String,
+  promptRef: Schema.NonEmptyString,
+  profile: Schema.NonEmptyString,
+  idempotencyKey: Schema.NonEmptyString,
+  ...RequestedWorkerConfigSchema.fields,
 });
 const Lineage = Schema.Struct({
   rootOperationId: Schema.String,
@@ -93,6 +99,9 @@ const FailureReason = Schema.Literal(
   "worker_start_failed",
   "worker_protocol_failed",
   "agent_failed",
+  "model_mismatch",
+  "unsupported_capability",
+  "tool_policy_violation",
   "descendant_failed",
 );
 const CancellationProof = Schema.Literal("acknowledgement", "worker-stop");
@@ -102,6 +111,8 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("operation_requested"),
     task: Task,
+    requestedConfig: RequestedWorkerConfigSchema,
+    effectiveConfig: EffectiveWorkerConfigSchema,
     lineage: Lineage,
   }),
   Schema.Struct({
@@ -127,6 +138,7 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("worker_identified"),
     workerIdentity: WorkerIdentity,
+    observedConfig: ObservedWorkerConfigSchema,
   }),
   Schema.Struct({
     ...EventMetadataFields,

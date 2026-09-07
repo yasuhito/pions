@@ -7,6 +7,12 @@ import type {
   StoreError,
 } from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
+import {
+  DEFAULT_WORKER_PROFILE_POLICY,
+  RequestedWorkerConfigSchema,
+  requestedWorkerConfig,
+  resolveWorkerConfig,
+} from "./worker-configuration.js";
 import type {
   WorkerCancellationEvidence,
   RuntimeServices,
@@ -41,6 +47,7 @@ const TaskSpecSchema = Schema.Struct({
   promptRef: Schema.NonEmptyString,
   profile: Schema.NonEmptyString,
   idempotencyKey: Schema.NonEmptyString,
+  ...RequestedWorkerConfigSchema.fields,
 });
 
 class RuntimeError extends Error {
@@ -183,6 +190,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         operation.terminalReason === "worker_start_failed" ||
         operation.terminalReason === "worker_protocol_failed" ||
         operation.terminalReason === "agent_failed" ||
+        operation.terminalReason === "model_mismatch" ||
+        operation.terminalReason === "unsupported_capability" ||
+        operation.terminalReason === "tool_policy_violation" ||
         operation.terminalReason === "descendant_failed"
           ? operation.terminalReason
           : "descendant_failed";
@@ -285,6 +295,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               piSessionId: workerIdentity.piSessionId,
               paneId: started.presentation?.paneId ?? "",
             },
+            observedConfig: workerIdentity.observedConfig,
           })),
           Effect.tap((identified) => project(identified)),
           Effect.asVoid,
@@ -386,9 +397,18 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     options: SpawnOptions | undefined,
   ): Promise<OperationRecord> => {
     await runEffect(services.presentation.preflight());
-    const task = await Effect.runPromise(
+    const decodedTask = await Effect.runPromise(
       Schema.decodeUnknown(TaskSpecSchema)(taskInput),
     );
+    const task: TaskSpec = {
+      promptRef: decodedTask.promptRef,
+      profile: decodedTask.profile,
+      idempotencyKey: decodedTask.idempotencyKey,
+      ...(decodedTask.model === undefined ? {} : { model: decodedTask.model }),
+      ...(decodedTask.thinkingLevel === undefined ? {} : { thinkingLevel: decodedTask.thinkingLevel }),
+      ...(decodedTask.tools === undefined ? {} : { tools: decodedTask.tools }),
+      ...(decodedTask.cwd === undefined ? {} : { cwd: decodedTask.cwd }),
+    };
     const parentId = options?.parentOperationId;
     const parent = parentId === undefined ? undefined : records.get(parentId);
 
@@ -434,6 +454,24 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       parent.pendingAdmissions += 1;
     }
 
+    const requestedConfig = requestedWorkerConfig(task);
+    const runtimeConfiguration = services.configuration ?? {
+      cwd: "/test/workspace",
+      profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
+    };
+    let effectiveConfig;
+    try {
+      effectiveConfig = resolveWorkerConfig({
+        requested: requestedConfig,
+        profile: runtimeConfiguration.profiles[task.profile],
+        runtimeCwd: runtimeConfiguration.cwd,
+        ...(parentOperation === undefined ? {} : { parent: parentOperation.effectiveConfig }),
+      });
+    } catch (error) {
+      if (parent !== undefined) parent.pendingAdmissions -= 1;
+      throw error;
+    }
+
     let operationId: string;
     try {
       operationId = await Effect.runPromise(services.ids.nextOperationId());
@@ -472,7 +510,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
     records.set(operationId, record);
     let operation = await runEffect(
-      services.store.create({ operationId, task, lineage }).pipe(
+      services.store.create({
+        operationId,
+        task,
+        requestedConfig,
+        effectiveConfig,
+        lineage,
+      }).pipe(
         Effect.map((snapshot) => snapshot.operation),
         Effect.mapError((error) => persistenceError(operationId, error)),
       ),

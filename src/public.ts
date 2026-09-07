@@ -1,7 +1,77 @@
-export interface TaskSpec {
+export interface ModelReference {
+  readonly provider: string;
+  readonly id: string;
+}
+
+export type ThinkingLevel =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+export interface RequestedWorkerConfig {
+  readonly model?: Readonly<ModelReference>;
+  readonly thinkingLevel?: ThinkingLevel;
+  readonly tools?: ReadonlyArray<string>;
+  readonly cwd?: string;
+}
+
+export interface ModelSelectionPolicy {
+  readonly candidates: ReadonlyArray<Readonly<ModelReference>>;
+  readonly attempted: ReadonlyArray<Readonly<ModelReference>>;
+  readonly maxAttempts: 1;
+  readonly fallback: "forbidden";
+  readonly aliases: ReadonlyArray<string>;
+}
+
+export interface EffectiveWorkerConfig {
+  readonly model: Readonly<ModelReference>;
+  readonly thinkingLevel: ThinkingLevel;
+  readonly tools: ReadonlyArray<string>;
+  readonly cwd: string;
+  readonly modelPolicy: Readonly<ModelSelectionPolicy>;
+}
+
+export type ObservedSetting<Value> =
+  | { readonly state: "observed"; readonly value: Value }
+  | { readonly state: "unavailable" };
+
+export interface ObservedWorkerConfig {
+  readonly model: ObservedSetting<Readonly<ModelReference>>;
+  readonly thinkingLevel: ObservedSetting<ThinkingLevel>;
+  readonly tools: ObservedSetting<ReadonlyArray<string>>;
+  readonly cwd: ObservedSetting<string>;
+}
+
+export interface WorkerProfilePolicy {
+  readonly modelCandidates: ReadonlyArray<Readonly<ModelReference>>;
+  readonly thinkingLevel: ThinkingLevel;
+  readonly tools: ReadonlyArray<string>;
+}
+
+export interface TaskSpec extends RequestedWorkerConfig {
   readonly promptRef: string;
   readonly profile: string;
   readonly idempotencyKey: string;
+}
+
+export type WorkerConfigurationFailureReason =
+  | "model_mismatch"
+  | "unsupported_capability"
+  | "tool_policy_violation";
+
+export class WorkerConfigurationError extends Error {
+  override readonly name = "WorkerConfigurationError";
+
+  constructor(
+    readonly reason: WorkerConfigurationFailureReason,
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 export interface SpawnOptions {
@@ -18,6 +88,9 @@ export type OperationFailureReason =
   | "worker_start_failed"
   | "worker_protocol_failed"
   | "agent_failed"
+  | "model_mismatch"
+  | "unsupported_capability"
+  | "tool_policy_violation"
   | "descendant_failed";
 
 export class HerdrPreconditionError extends Error {

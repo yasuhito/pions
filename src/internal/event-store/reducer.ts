@@ -39,6 +39,27 @@ export class TransitionError extends Error {
 
 function immutable(operation: Operation): Operation {
   Object.freeze(operation.task);
+  Object.freeze(operation.requestedConfig.model);
+  Object.freeze(operation.requestedConfig.tools);
+  Object.freeze(operation.requestedConfig);
+  Object.freeze(operation.effectiveConfig.model);
+  operation.effectiveConfig.modelPolicy.candidates.forEach(Object.freeze);
+  operation.effectiveConfig.modelPolicy.attempted.forEach(Object.freeze);
+  Object.freeze(operation.effectiveConfig.modelPolicy.candidates);
+  Object.freeze(operation.effectiveConfig.modelPolicy.attempted);
+  Object.freeze(operation.effectiveConfig.modelPolicy.aliases);
+  Object.freeze(operation.effectiveConfig.modelPolicy);
+  Object.freeze(operation.effectiveConfig.tools);
+  Object.freeze(operation.effectiveConfig);
+  if (operation.observedConfig !== undefined) {
+    if (operation.observedConfig.model.state === "observed") Object.freeze(operation.observedConfig.model.value);
+    if (operation.observedConfig.tools.state === "observed") Object.freeze(operation.observedConfig.tools.value);
+    Object.freeze(operation.observedConfig.model);
+    Object.freeze(operation.observedConfig.thinkingLevel);
+    Object.freeze(operation.observedConfig.tools);
+    Object.freeze(operation.observedConfig.cwd);
+    Object.freeze(operation.observedConfig);
+  }
   Object.freeze(operation.lineage);
   if (operation.presentation !== undefined) Object.freeze(operation.presentation);
   if (operation.workerIdentity !== undefined) Object.freeze(operation.workerIdentity);
@@ -53,6 +74,42 @@ function immutable(operation: Operation): Operation {
   if (operation.result !== undefined) Object.freeze(operation.result);
   if (operation.resultConflict !== undefined) Object.freeze(operation.resultConflict);
   return Object.freeze(operation);
+}
+
+function sameStringArray(
+  left: ReadonlyArray<string> | undefined,
+  right: ReadonlyArray<string> | undefined,
+): boolean {
+  return left === undefined
+    ? right === undefined
+    : right !== undefined && left.length === right.length &&
+      left.every((value, index) => value === right[index]);
+}
+
+function validInitialConfiguration(
+  event: Extract<OperationEvent, { readonly type: "operation_requested" }>,
+): boolean {
+  const requested = event.requestedConfig;
+  const effective = event.effectiveConfig;
+  const candidate = effective.modelPolicy.candidates[0];
+  const attempted = effective.modelPolicy.attempted[0];
+  return requested.model?.provider === event.task.model?.provider &&
+    requested.model?.id === event.task.model?.id &&
+    requested.thinkingLevel === event.task.thinkingLevel &&
+    requested.cwd === event.task.cwd &&
+    sameStringArray(requested.tools, event.task.tools) &&
+    effective.model.provider.length > 0 &&
+    effective.model.id.length > 0 &&
+    effective.cwd.length > 0 &&
+    effective.modelPolicy.candidates.length === 1 &&
+    effective.modelPolicy.attempted.length === 1 &&
+    effective.modelPolicy.maxAttempts === 1 &&
+    effective.modelPolicy.fallback === "forbidden" &&
+    effective.modelPolicy.aliases.length === 0 &&
+    candidate?.provider === effective.model.provider &&
+    candidate.id === effective.model.id &&
+    attempted?.provider === effective.model.provider &&
+    attempted.id === effective.model.id;
 }
 
 function hasUnsettledChildren(operation: Operation): boolean {
@@ -94,6 +151,9 @@ export function reduceOperation(
       throw new TransitionError("operation_required");
     }
     if (event.seq !== 1) throw new TransitionError("unexpected_sequence");
+    if (!validInitialConfiguration(event)) {
+      throw new TransitionError("illegal_transition");
+    }
 
     return immutable({
       operationId: event.operationId,
@@ -102,6 +162,22 @@ export function reduceOperation(
       stateSeq: event.seq,
       workerLaunched: false,
       task: { ...event.task },
+      requestedConfig: {
+        ...event.requestedConfig,
+        ...(event.requestedConfig.model === undefined ? {} : { model: { ...event.requestedConfig.model } }),
+        ...(event.requestedConfig.tools === undefined ? {} : { tools: [...event.requestedConfig.tools] }),
+      },
+      effectiveConfig: {
+        ...event.effectiveConfig,
+        model: { ...event.effectiveConfig.model },
+        tools: [...event.effectiveConfig.tools],
+        modelPolicy: {
+          ...event.effectiveConfig.modelPolicy,
+          candidates: event.effectiveConfig.modelPolicy.candidates.map((model) => ({ ...model })),
+          attempted: event.effectiveConfig.modelPolicy.attempted.map((model) => ({ ...model })),
+          aliases: [],
+        },
+      },
       childOperationIds: [],
       settledChildOperationIds: [],
       descendantFailure: false,
@@ -215,13 +291,24 @@ export function reduceOperation(
         current.presentation === undefined ||
         event.workerIdentity.processInstanceId.length === 0 ||
         event.workerIdentity.piSessionId.length === 0 ||
-        event.workerIdentity.paneId !== current.presentation.paneId
+        event.workerIdentity.paneId !== current.presentation.paneId ||
+        current.observedConfig !== undefined
       ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({
         ...current,
         workerIdentity: { ...event.workerIdentity },
+        observedConfig: {
+          model: event.observedConfig.model.state === "observed"
+            ? { state: "observed", value: { ...event.observedConfig.model.value } }
+            : { state: "unavailable" },
+          thinkingLevel: { ...event.observedConfig.thinkingLevel },
+          tools: event.observedConfig.tools.state === "observed"
+            ? { state: "observed", value: [...event.observedConfig.tools.value] }
+            : { state: "unavailable" },
+          cwd: { ...event.observedConfig.cwd },
+        },
         stateSeq: event.seq,
       });
 

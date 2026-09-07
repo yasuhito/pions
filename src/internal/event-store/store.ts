@@ -150,6 +150,8 @@ export abstract class ValidatedEventStore implements EventStore {
     return this.appendEvent(request.operationId, {
       type: "operation_requested",
       task: request.task,
+      requestedConfig: request.requestedConfig,
+      effectiveConfig: request.effectiveConfig,
       lineage: request.lineage,
     });
   }

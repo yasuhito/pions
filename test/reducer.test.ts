@@ -16,6 +16,7 @@ import {
   replayOperation,
   TransitionError,
 } from "../src/internal/event-store/reducer.js";
+import { effectiveConfig, requestedConfig } from "./worker-protocol-fixtures.js";
 
 const metadata = {
   operationId: "operation-1",
@@ -26,14 +27,21 @@ const metadata = {
 };
 
 type TestEventInput =
-  | EventInput
-  | Omit<Extract<EventInput, { readonly type: "operation_requested" }>, "lineage">;
+  | Exclude<EventInput, { readonly type: "operation_requested" }>
+  | Omit<
+      Extract<EventInput, { readonly type: "operation_requested" }>,
+      "lineage" | "requestedConfig" | "effectiveConfig"
+    >;
 
 function event(seq: number, value: TestEventInput): OperationEvent {
   return {
     ...metadata,
     ...(value.type === "operation_requested"
-      ? { lineage: { rootOperationId: metadata.operationId, depth: 0 } }
+      ? {
+          lineage: { rootOperationId: metadata.operationId, depth: 0 },
+          requestedConfig,
+          effectiveConfig,
+        }
       : {}),
     ...value,
     eventId: `event-${seq}`,

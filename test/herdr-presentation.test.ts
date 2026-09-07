@@ -17,6 +17,7 @@ import {
   InMemoryEventStore,
 } from "../src/internal/testing.js";
 import { HerdrPreconditionError } from "../src/index.js";
+import { effectiveConfig, requestedConfig } from "./worker-protocol-fixtures.js";
 
 class OwnershipFailingStore extends InMemoryEventStore {
   override advance(operationId: string, input: OperationIntent) {
@@ -70,6 +71,8 @@ function operation(paneId?: string): Operation {
     stateSeq: 3,
     workerLaunched: true,
     task: { promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" },
+    requestedConfig,
+    effectiveConfig,
     childOperationIds: [],
     settledChildOperationIds: [],
     descendantFailure: false,
@@ -156,8 +159,33 @@ test("projection targets the persisted Pions-owned pane", async () => {
 
   assert.deepEqual(executor.invocations[0]?.args, [
     "pane", "report-metadata", "--source", "pions", "opaque:new-pane",
-    "--state-label", "working=running", "--seq", "3",
+    "--state-label", "working=running",
+    "--display-agent", "effective(model=test/test-model;thinking=medium;tools=read,bash,edit,write;cwd=/test/workspace) observed(model=unavailable;thinking=unavailable;tools=unavailable;cwd=unavailable)",
+    "--seq", "3",
   ]);
+});
+
+test("configuration projection excludes the private prompt reference", async () => {
+  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
+  await Effect.runPromise(presentation(executor).project(operation("opaque:new-pane")));
+
+  assert.equal(JSON.stringify(executor.invocations).includes("private://prompt/1"), false);
+});
+
+test("configuration projection is size-limited", async () => {
+  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
+  const current: Operation = {
+    ...operation("opaque:new-pane"),
+    effectiveConfig: {
+      ...effectiveConfig,
+      cwd: `/${"長".repeat(600)}`,
+    },
+  };
+  await Effect.runPromise(presentation(executor).project(current));
+  const displayIndex = executor.invocations[0]?.args.indexOf("--display-agent") ?? -1;
+  const projected = executor.invocations[0]?.args[displayIndex + 1] ?? "";
+
+  assert.equal(Buffer.byteLength(projected, "utf8") <= 512, true);
 });
 
 test("projection without durable ownership does not target a pane", async () => {

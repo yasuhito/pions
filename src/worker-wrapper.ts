@@ -4,16 +4,16 @@ import { connect } from "node:net";
 import { dirname, join } from "node:path";
 
 import {
-  createAgentSession,
-  DefaultResourceLoader,
+  createAgentSessionFromServices,
+  createAgentSessionServices,
   getAgentDir,
   SessionManager,
-  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 import {
   PiAgentFailedError,
+  observePiAgentConfiguration,
   runPiAgentSession,
 } from "./internal/pi-agent-backend.js";
 import {
@@ -21,6 +21,7 @@ import {
   decodeWorkerConfig,
 } from "./internal/worker-protocol.js";
 import type { WorkerProtocolEvent } from "./internal/worker-protocol.js";
+import { WorkerConfigurationError } from "./public.js";
 
 function displayEvent(event: AgentSessionEvent): void {
   if (
@@ -55,24 +56,56 @@ async function main(): Promise<void> {
   };
   send({ type: "hello", processInstanceId });
 
-  const agentDir = getAgentDir();
-  const settingsManager = SettingsManager.create(config.cwd, agentDir);
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: config.cwd,
-    agentDir,
-    settingsManager,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
+  let session;
+  try {
+    const agentDir = getAgentDir();
+    const services = await createAgentSessionServices({
+      cwd: config.effectiveConfig.cwd,
+      agentDir,
+      resourceLoaderOptions: {
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+      },
+    });
+    const model = services.modelRuntime.getModel(
+      config.effectiveConfig.model.provider,
+      config.effectiveConfig.model.id,
+    );
+    if (model === undefined) {
+      throw new WorkerConfigurationError("model_mismatch", "Exact configured model is unavailable");
+    }
+    const created = await createAgentSessionFromServices({
+      services,
+      sessionManager: SessionManager.inMemory(config.effectiveConfig.cwd),
+      model,
+      thinkingLevel: config.effectiveConfig.thinkingLevel,
+      tools: [...config.effectiveConfig.tools],
+    });
+    session = created.session;
+    if (created.modelFallbackMessage !== undefined) {
+      session.dispose();
+      throw new WorkerConfigurationError("model_mismatch", "Pi reported a model fallback");
+    }
+    observePiAgentConfiguration(session, config.effectiveConfig, process.cwd());
+  } catch (error) {
+    session?.dispose();
+    const reason = error instanceof WorkerConfigurationError
+      ? error.reason
+      : "unsupported_capability";
+    send({ type: "configuration_failed", reason });
+    socket.end();
+    return;
+  }
+  send({
+    type: "started",
+    piSessionId: session.sessionId,
+    observedConfig: observePiAgentConfiguration(
+      session,
+      config.effectiveConfig,
+      process.cwd(),
+    ),
   });
-  await resourceLoader.reload();
-  const { session } = await createAgentSession({
-    cwd: config.cwd,
-    resourceLoader,
-    settingsManager,
-    sessionManager: SessionManager.create(config.cwd),
-  });
-  send({ type: "started", piSessionId: session.sessionId });
 
   let result;
   try {

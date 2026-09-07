@@ -8,11 +8,12 @@ import { PrivateFileEventStore } from "./event-store/index.js";
 import { makeRuntime } from "./runtime.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
-import type { Runtime } from "../public.js";
+import type { Runtime, WorkerProfilePolicy } from "../public.js";
 
 export interface VisibleRuntimeOptions {
   readonly cwd: string;
   readonly stateDirectory: string;
+  readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly wrapperEntryPath?: string;
 }
@@ -41,5 +42,6 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
       executor,
     }),
     store: new PrivateFileEventStore(options.stateDirectory, systemClock),
+    configuration: { cwd: options.cwd, profiles: options.profiles },
   });
 }

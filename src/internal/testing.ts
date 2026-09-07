@@ -37,14 +37,20 @@ export interface FakeResultMessage {
 export interface FakeWorkerAdapterOptions {
   readonly messages?: FakeResultMessage | ReadonlyArray<FakeResultMessage>;
   readonly trace?: Array<string>;
-  readonly failure?: "worker_start_failed" | "worker_protocol_failed" | "agent_failed";
+  readonly failure?:
+    | "worker_start_failed"
+    | "worker_protocol_failed"
+    | "agent_failed"
+    | "model_mismatch"
+    | "unsupported_capability"
+    | "tool_policy_violation";
   readonly acknowledgementFails?: boolean;
 }
 
 export class FakeWorkerAdapter implements WorkerAdapter {
   startCount = 0;
   private readonly acknowledgementFails: boolean;
-  private readonly failure: "worker_start_failed" | "worker_protocol_failed" | "agent_failed" | undefined;
+  private readonly failure: FakeWorkerAdapterOptions["failure"];
   private readonly messages: ReadonlyArray<FakeResultMessage>;
   private readonly trace: Array<string>;
 
@@ -80,9 +86,22 @@ export class FakeWorkerAdapter implements WorkerAdapter {
       if (this.failure === "worker_protocol_failed") {
         return { state: "worker_protocol_failed" } as const;
       }
+      if (
+        this.failure === "model_mismatch" ||
+        this.failure === "unsupported_capability" ||
+        this.failure === "tool_policy_violation"
+      ) {
+        return { state: this.failure } as const;
+      }
       yield* hooks.workerIdentified({
         processInstanceId: "fake-process-instance",
         piSessionId: "fake-pi-session",
+        observedConfig: {
+          model: { state: "observed", value: { ...operation.effectiveConfig.model } },
+          thinkingLevel: { state: "unavailable" },
+          tools: { state: "observed", value: [...operation.effectiveConfig.tools] },
+          cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+        },
       });
       if (this.failure === "agent_failed") {
         return {
@@ -195,6 +214,7 @@ export class FakeIdGenerator implements IdGenerator {
 
 export class FakePresentation implements Presentation {
   readonly projections: Array<Operation> = [];
+  readonly createdPaneIds: Array<string> = [];
   readonly rolledBackPaneIds: Array<string> = [];
   stateChangeSucceeded = false;
 
@@ -209,9 +229,10 @@ export class FakePresentation implements Presentation {
   }
 
   create(operation: Operation): Effect.Effect<CreatedPresentation> {
-    return Effect.succeed({
-      kind: "herdr_pane",
-      paneId: `fake-pane:${operation.operationId}`,
+    return Effect.sync(() => {
+      const paneId = `fake-pane:${operation.operationId}`;
+      this.createdPaneIds.push(paneId);
+      return { kind: "herdr_pane", paneId };
     });
   }
 
