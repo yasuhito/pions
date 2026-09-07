@@ -4,10 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+} from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import {
   installPionsExtension,
+  type PionsDelegateDetails,
   type PionsExtensionOptions,
 } from "../src/internal/pi-extension.js";
 import {
@@ -219,6 +224,42 @@ test("successful delegation returns Result diagnostics", async (context) => {
     digest: `sha256:${"ab".repeat(32)}`,
     truncated: false,
   });
+});
+
+test("a truncated tool Result stays within Pi's byte limit", async (context) => {
+  const body = `${"x".repeat(99)}\n`.repeat(1_000);
+  const value = await fixture(new FakeRuntime({
+    body,
+    byteCount: Buffer.byteLength(body),
+    digest: `sha256:${"ab".repeat(32)}`,
+  }));
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.ok(Buffer.byteLength((await value.execute()).content[0]?.text ?? "") <= DEFAULT_MAX_BYTES);
+});
+
+test("a truncated tool Result stays within Pi's line limit", async (context) => {
+  const body = "finding\n".repeat(3_000);
+  const value = await fixture(new FakeRuntime({
+    body,
+    byteCount: Buffer.byteLength(body),
+    digest: `sha256:${"ab".repeat(32)}`,
+  }));
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.ok(((await value.execute()).content[0]?.text.split("\n").length ?? 0) <= DEFAULT_MAX_LINES);
+});
+
+test("a truncated tool Result identifies its complete persisted Operation", async (context) => {
+  const body = "finding\n".repeat(3_000);
+  const value = await fixture(new FakeRuntime({
+    body,
+    byteCount: Buffer.byteLength(body),
+    digest: `sha256:${"ab".repeat(32)}`,
+  }));
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.match((await value.execute()).content[0]?.text ?? "", /truncated.*Operation operation-1/is);
 });
 
 test("delegation inherits the exact Pi model", async (context) => {
@@ -666,6 +707,50 @@ test("session shutdown cancels every active Operation by its identifier", async 
     { operationId: "operation-1", scope: "subtree" },
     { operationId: "operation-2", scope: "subtree" },
   ]);
+});
+
+test("concurrent tool calls return distinct Operation identifiers", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const first = value.execute("first-call");
+  const second = value.execute("second-call");
+  await waitForOperation(runtime, "operation-2");
+  const result = {
+    body: "complete",
+    byteCount: 8,
+    digest: `sha256:${"ab".repeat(32)}` as const,
+  };
+  runtime.results.get("operation-1")?.resolve(result);
+  runtime.results.get("operation-2")?.resolve(result);
+
+  assert.notEqual(
+    ((await first).details as PionsDelegateDetails).operationId,
+    ((await second).details as PionsDelegateDetails).operationId,
+  );
+});
+
+test("one concurrent failure does not discard the other accepted Result", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const accepted = value.execute("accepted-call");
+  const failed = value.execute("failed-call");
+  const outcomes = Promise.allSettled([accepted, failed]);
+  await waitForOperation(runtime, "operation-2");
+  runtime.results.get("operation-1")?.resolve({
+    body: "Standards review",
+    byteCount: 16,
+    digest: `sha256:${"ab".repeat(32)}`,
+  });
+  runtime.results.get("operation-2")?.reject(new OperationFailedError("operation-2", "agent_failed"));
+  const settled = await outcomes;
+  const acceptedOutcome = settled.find((outcome) => outcome.status === "fulfilled");
+
+  assert.equal(
+    acceptedOutcome?.status === "fulfilled" ? acceptedOutcome.value.content[0]?.text : undefined,
+    "Standards review",
+  );
 });
 
 test("interruption and shutdown share one cancellation request", async (context) => {

@@ -55,6 +55,7 @@ export interface PromptReader {
 
 export interface VisibleWorkerOptions {
   readonly rootDirectory: string;
+  readonly socketDirectory: string;
   readonly cwd: string;
   readonly executor: CommandExecutor;
   readonly wrapperEntryPath: string;
@@ -321,7 +322,9 @@ export class VisibleWorker implements WorkerAdapter {
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
     const configPath = join(directory, "worker.v5.json");
-    const socketPath = join(directory, "child.sock");
+    await mkdir(this.options.socketDirectory, { recursive: true, mode: DIRECTORY_MODE });
+    await chmod(this.options.socketDirectory, DIRECTORY_MODE);
+    const socketPath = join(this.options.socketDirectory, `${operationDirectoryKey(operation.operationId)}.sock`);
     const prompt = await this.promptReader.read(operation.task.promptRef);
     cancellation.requireLaunchAllowed();
     if (prompt.byteLength > DEFAULT_MAX_PROMPT_BYTES) throw new Error("Prompt exceeds the configured size limit");

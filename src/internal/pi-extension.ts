@@ -254,6 +254,24 @@ function workerPrompt(task: string): string {
   ].join("\n");
 }
 
+function boundedResultBody(
+  body: string,
+  operationId: string,
+): { readonly text: string; readonly truncated: boolean } {
+  const initial = truncateHead(body, {
+    maxLines: DEFAULT_MAX_LINES,
+    maxBytes: DEFAULT_MAX_BYTES,
+  });
+  if (!initial.truncated) return { text: initial.content, truncated: false };
+
+  const suffix = `\n\n[Result truncated: complete Result persisted for Operation ${operationId}.]`;
+  const bounded = truncateHead(body, {
+    maxLines: DEFAULT_MAX_LINES - 2,
+    maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(suffix, "utf8"),
+  });
+  return { text: `${bounded.content}${suffix}`, truncated: true };
+}
+
 class TrackedOperation {
   private cancellation?: Promise<CancellationResult>;
 
@@ -421,20 +439,14 @@ export function installPionsExtension(
       });
       const operation = operationLifetime.track(handle);
       const result = await awaitOperation(operation, operationLifetime, signal);
-      const truncation = truncateHead(result.body, {
-        maxLines: DEFAULT_MAX_LINES,
-        maxBytes: DEFAULT_MAX_BYTES,
-      });
-      const text = truncation.truncated
-        ? `${truncation.content}\n\n[Result truncated: complete Result persisted for Operation ${handle.operationId}.]`
-        : truncation.content;
+      const bounded = boundedResultBody(result.body, handle.operationId);
       return {
-        content: [{ type: "text", text }],
+        content: [{ type: "text", text: bounded.text }],
         details: {
           operationId: handle.operationId,
           byteCount: result.byteCount,
           digest: result.digest,
-          truncated: truncation.truncated,
+          truncated: bounded.truncated,
         } satisfies PionsDelegateDetails,
       };
     },

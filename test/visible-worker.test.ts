@@ -116,6 +116,7 @@ function workerHooks(
 async function fixture(options: {
   readonly processControl?: WorkerProcessControl;
   readonly backendCancellationGraceMs?: number;
+  readonly socketDirectory?: string;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
   const executor = new FakeExecutor();
@@ -124,6 +125,7 @@ async function fixture(options: {
   let protocolSocket: Socket | undefined;
   const adapter = new VisibleWorker({
     rootDirectory: root,
+    socketDirectory: options.socketDirectory ?? root,
     cwd: "/work/project",
     executor,
     wrapperEntryPath: "/pions/worker-wrapper.js",
@@ -301,6 +303,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   const capability = "ab".repeat(32);
   const worker = new VisibleWorker({
     rootDirectory: root,
+    socketDirectory: root,
     cwd: "/work/project",
     executor,
     wrapperEntryPath: "/pions/worker-wrapper.js",
@@ -390,6 +393,7 @@ test("invalid Worker configuration reports a Worker start failure", async (conte
   context.after(() => rm(root, { recursive: true, force: true }));
   const worker = new VisibleWorker({
     rootDirectory: root,
+    socketDirectory: root,
     cwd: "/work/project",
     executor: new FakeExecutor(),
     wrapperEntryPath: "/pions/worker-wrapper.js",
@@ -409,6 +413,7 @@ test("Worker launch failure releases Worker protocol listeners", async (context)
   let protocolServer!: Server;
   const worker = new VisibleWorker({
     rootDirectory: root,
+    socketDirectory: root,
     cwd: "/work/project",
     executor: {
       execute: () => Effect.succeed({
@@ -437,6 +442,15 @@ test("visible Worker socket uses private permissions", async (context) => {
   assert.equal(await mode(value.config.socketPath), 0o600);
 });
 
+test("visible Worker can place its socket outside a long persistent state path", async (context) => {
+  const socketDirectory = await mkdtemp(join(tmpdir(), "pions-worker-sockets-"));
+  const value = await fixture({ socketDirectory });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => rm(socketDirectory, { recursive: true, force: true }));
+
+  assert.equal(value.config.socketPath.startsWith(`${socketDirectory}/`), true);
+});
+
 test("visible Worker keeps Node alive while awaiting the wrapper connection", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pvk-"));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -444,6 +458,7 @@ test("visible Worker keeps Node alive while awaiting the wrapper connection", as
   let unrefCount = 0;
   const adapter = new VisibleWorker({
     rootDirectory: root,
+    socketDirectory: root,
     cwd: "/work/project",
     executor,
     wrapperEntryPath: "/pions/worker-wrapper.js",
@@ -696,6 +711,7 @@ test("a Worker cancelled before run creates no process resource", async (context
   const executor = new FakeExecutor({ stdout: "", stderr: "launch failed", exitCode: 1 });
   const adapter = new VisibleWorker({
     rootDirectory: root,
+    socketDirectory: root,
     cwd: "/work/project",
     executor,
     wrapperEntryPath: "/pions/worker-wrapper.js",
@@ -716,6 +732,7 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   const capabilities = ["ab".repeat(32), "cd".repeat(32)];
   const adapter = new VisibleWorker({
     rootDirectory: root,
+    socketDirectory: root,
     cwd: "/work/project",
     executor,
     wrapperEntryPath: "/pions/worker-wrapper.js",
