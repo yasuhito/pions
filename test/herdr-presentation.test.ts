@@ -142,6 +142,21 @@ test("pane creation never targets existing or Qoral identifiers", async () => {
   );
 });
 
+test("pane creation splits below when the available area is portrait", async () => {
+  const executor = new FakeCommandExecutor([
+    { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
+  ]);
+  const adapter = new HerdrPresentation({
+    cwd: "/work/project",
+    environment: herdrEnvironment,
+    executor,
+    terminalSize: { columns: 80, rows: 120 },
+  });
+  await Effect.runPromise(adapter.create(operation()));
+
+  assert.equal(executor.invocations[0]?.args[4], "down");
+});
+
 test("pane creation returns only the opaque identifier from Herdr", async () => {
   const executor = new FakeCommandExecutor([
     { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane", focused: false } } }) },

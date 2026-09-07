@@ -58,14 +58,15 @@ export interface VisibleWorkerOptions {
   readonly socketDirectory: string;
   readonly cwd: string;
   readonly executor: CommandExecutor;
-  readonly wrapperEntryPath: string;
-  readonly nodeExecutable?: string;
+  readonly extensionEntryPath: string;
   readonly capabilityGenerator?: WorkerCapabilityGenerator;
   readonly promptReader?: PromptReader;
   readonly serverFactory?: () => Server;
   readonly processControl?: WorkerProcessControl;
   readonly backendCancellationGraceMs?: number;
   readonly exitObservationGraceMs?: number;
+  readonly successfulExitGraceMs?: number;
+  readonly agentStartTimeoutMs?: number;
 }
 
 interface WorkerProtocolError {
@@ -157,10 +158,6 @@ function writeSocket(socket: Socket, bytes: Buffer): Promise<void> {
   });
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
 function parsePromptPath(promptRef: string): string {
   if (promptRef.startsWith("file://")) return new URL(promptRef).pathname;
   if (isAbsolute(promptRef)) return promptRef;
@@ -183,6 +180,8 @@ export class VisibleWorker implements WorkerAdapter {
   private readonly processControl: WorkerProcessControl;
   private readonly backendCancellationGraceMs: number;
   private readonly exitObservationGraceMs: number;
+  private readonly successfulExitGraceMs: number;
+  private readonly agentStartTimeoutMs: number;
 
   constructor(private readonly options: VisibleWorkerOptions) {
     this.capabilityGenerator = options.capabilityGenerator ?? defaultCapabilityGenerator;
@@ -191,6 +190,8 @@ export class VisibleWorker implements WorkerAdapter {
     this.processControl = options.processControl ?? new NodeWorkerProcessControl();
     this.backendCancellationGraceMs = options.backendCancellationGraceMs ?? 500;
     this.exitObservationGraceMs = options.exitObservationGraceMs ?? 250;
+    this.successfulExitGraceMs = options.successfulExitGraceMs ?? 10_000;
+    this.agentStartTimeoutMs = options.agentStartTimeoutMs ?? 30_000;
   }
 
   open(operation: Operation): Worker {
@@ -289,7 +290,7 @@ export class VisibleWorker implements WorkerAdapter {
           } as WorkerRunOutcome;
         }
         const acceptance = yield* hooks.acceptResults(reception.deliveries);
-        return yield* acknowledgeResultAcceptance(
+        const acknowledged = yield* acknowledgeResultAcceptance(
           acceptance,
           reception.evidence,
           (proof) => Effect.tryPromise({
@@ -297,6 +298,11 @@ export class VisibleWorker implements WorkerAdapter {
             catch: (error) => error instanceof Error ? error : new Error(String(error)),
           }),
         );
+        if (acknowledged.state !== "result_acknowledged") return acknowledged;
+        const stopped = yield* Effect.promise(() => this.confirmSuccessfulExit(session!));
+        return stopped
+          ? acknowledged
+          : { state: "liveness-unproven" } as const;
       }).pipe(
         Effect.catchTag(
           "WorkerProtocolError",
@@ -358,14 +364,29 @@ export class VisibleWorker implements WorkerAdapter {
       await chmod(socketPath, FILE_MODE);
 
       cancellation.requireLaunchAllowed();
-      const command = [
-        this.options.nodeExecutable ?? process.execPath,
-        this.options.wrapperEntryPath,
-        configPath,
-      ].map(shellQuote).join(" ");
+      const effective = operation.effectiveConfig;
       const output = await Effect.runPromise(this.options.executor.execute({
         executable: "herdr",
-        args: ["pane", "run", operation.presentation.paneId, command],
+        args: [
+          "agent", "start", `pions-${operationDirectoryKey(operation.operationId).slice(0, 26)}`,
+          "--kind", "pi",
+          "--pane", operation.presentation.paneId,
+          "--timeout", String(this.agentStartTimeoutMs),
+          "--",
+          "--provider", effective.model.provider,
+          "--model", effective.model.id,
+          "--thinking", effective.thinkingLevel,
+          "--tools", effective.tools.join(","),
+          "--no-session",
+          "--tui-mode", "regular",
+          "--no-extensions",
+          "--extension", this.options.extensionEntryPath,
+          "--no-skills",
+          "--no-prompt-templates",
+          "--no-themes",
+          "--approve",
+          "--pions-worker-config", configPath,
+        ],
         cwd: this.options.cwd,
         shell: false,
       }));
@@ -517,11 +538,19 @@ export class VisibleWorker implements WorkerAdapter {
     try {
       const acknowledgement = session.protocol.acknowledgeResult(acceptance);
       await writeSocket(session.socket, acknowledgement.bytes);
-      if (acknowledgement.complete) this.closeSession(session, true);
     } catch (error) {
       this.closeSession(session);
       throw error;
     }
+  }
+
+  private async confirmSuccessfulExit(session: Session): Promise<boolean> {
+    if (session.identity === undefined) return false;
+    const processState = await Effect.runPromise(
+      this.processControl.waitForStop(session.identity, this.successfulExitGraceMs),
+    );
+    this.closeSession(session, processState === "stopped");
+    return processState === "stopped";
   }
 
   private closeSession(session: Session, graceful = false): void {

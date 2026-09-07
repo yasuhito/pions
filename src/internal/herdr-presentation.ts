@@ -55,6 +55,7 @@ interface HerdrPresentationOptions {
   readonly environment: Readonly<Record<string, string | undefined>>;
   readonly executor: CommandExecutor;
   readonly retainOnWorkerStartFailure?: boolean;
+  readonly terminalSize?: Readonly<{ readonly columns: number; readonly rows: number }>;
 }
 
 interface HerdrEnvelope {
@@ -133,12 +134,17 @@ export class HerdrPresentation implements Presentation {
   }
 
   create(_operation: Operation): Effect.Effect<CreatedPresentation, Error> {
+    const columns = this.options.terminalSize?.columns ?? process.stdout.columns;
+    const rows = this.options.terminalSize?.rows ?? process.stdout.rows;
+    const direction = columns !== undefined && rows !== undefined && rows > columns
+      ? "down"
+      : "right";
     return this.executeJson([
       "pane",
       "split",
       "--current",
       "--direction",
-      "right",
+      direction,
       "--cwd",
       this.options.cwd,
       "--no-focus",

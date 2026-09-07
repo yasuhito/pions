@@ -17,7 +17,7 @@ export interface VisibleRuntimeOptions {
   readonly stateDirectory: string;
   readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
   readonly environment?: Readonly<Record<string, string | undefined>>;
-  readonly wrapperEntryPath?: string;
+  readonly extensionEntryPath?: string;
 }
 
 const systemClock: RuntimeClock = {
@@ -42,7 +42,7 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     socketDirectory,
     cwd: options.cwd,
     executor,
-    wrapperEntryPath: options.wrapperEntryPath ?? fileURLToPath(new URL("../worker-wrapper.js", import.meta.url)),
+    extensionEntryPath: options.extensionEntryPath ?? fileURLToPath(new URL("../worker-extension.js", import.meta.url)),
   });
   return makeRuntime({
     worker,

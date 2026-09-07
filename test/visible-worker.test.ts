@@ -46,6 +46,7 @@ import { HerdrPreconditionError, makeVisibleRuntime } from "../src/index.js";
 
 class FakeProcessControl implements WorkerProcessControl {
   readonly terminations: Array<Readonly<WorkerProcessIdentity>> = [];
+  readonly stopObservations: Array<Readonly<WorkerProcessIdentity>> = [];
 
   constructor(
     private readonly state: WorkerProcessState,
@@ -56,8 +57,11 @@ class FakeProcessControl implements WorkerProcessControl {
     return Effect.succeed(this.state);
   }
 
-  waitForStop(_identity: Readonly<WorkerProcessIdentity>, _timeoutMilliseconds: number) {
-    return Effect.succeed(this.state);
+  waitForStop(identity: Readonly<WorkerProcessIdentity>, _timeoutMilliseconds: number) {
+    return Effect.sync(() => {
+      this.stopObservations.push(identity);
+      return this.state;
+    });
   }
 
   terminate(identity: Readonly<WorkerProcessIdentity>) {
@@ -160,11 +164,10 @@ async function fixture(options: {
     socketDirectory: options.socketDirectory ?? root,
     cwd: "/work/project",
     executor,
-    wrapperEntryPath: "/pions/worker-wrapper.js",
-    nodeExecutable: "/node/bin/node",
+    extensionEntryPath: "/pions/worker-extension.js",
     capabilityGenerator: { nextCapability: () => capability },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
-    ...(options.processControl === undefined ? {} : { processControl: options.processControl }),
+    processControl: options.processControl ?? new FakeProcessControl("stopped"),
     ...(options.backendCancellationGraceMs === undefined
       ? {}
       : { backendCancellationGraceMs: options.backendCancellationGraceMs }),
@@ -345,7 +348,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
     socketDirectory: root,
     cwd: "/work/project",
     executor,
-    wrapperEntryPath: "/pions/worker-wrapper.js",
+    extensionEntryPath: "/pions/worker-extension.js",
     capabilityGenerator: { nextCapability: () => capability },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
   });
@@ -390,16 +393,48 @@ test("visible Worker launch keeps Operation authority out of process arguments",
   assert.equal(JSON.stringify(value.executor.invocations[0]).includes(value.capability), false);
 });
 
-test("visible Worker launch targets only the persisted owned pane", async (context) => {
+test("visible Worker starts a Herdr Pi agent in the persisted owned pane", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.deepEqual(value.executor.invocations[0]?.args.slice(0, 4), [
-    "pane",
-    "run",
+  assert.deepEqual(value.executor.invocations[0]?.args.slice(0, 8), [
+    "agent",
+    "start",
+    `pions-${operationDirectoryKey(value.current.operationId).slice(0, 26)}`,
+    "--kind",
+    "pi",
+    "--pane",
     "opaque:pane",
-    `'/node/bin/node' '/pions/worker-wrapper.js' '${join(value.directory, "worker.v6.json")}'`,
+    "--timeout",
   ]);
+});
+
+test("visible Worker gives Pi the effective policy as structured arguments", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(value.executor.invocations[0]?.args.slice(10), [
+    "--provider", "test",
+    "--model", "test-model",
+    "--thinking", "medium",
+    "--tools", "read,bash,edit,write",
+    "--no-session",
+    "--tui-mode", "regular",
+    "--no-extensions",
+    "--extension", "/pions/worker-extension.js",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--approve",
+    "--pions-worker-config", join(value.directory, "worker.v6.json"),
+  ]);
+});
+
+test("visible Worker agent name contains no task text", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(value.executor.invocations[0]?.args[2]?.includes("private prompt"), false);
 });
 
 async function mode(path: string): Promise<number> {
@@ -435,7 +470,7 @@ test("invalid Worker configuration reports a Worker start failure", async (conte
     socketDirectory: root,
     cwd: "/work/project",
     executor: new FakeExecutor(),
-    wrapperEntryPath: "/pions/worker-wrapper.js",
+    extensionEntryPath: "/pions/worker-extension.js",
     capabilityGenerator: { nextCapability: () => "invalid" },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
   });
@@ -461,7 +496,7 @@ test("Worker launch failure releases Worker protocol listeners", async (context)
         exitCode: 1,
       }),
     },
-    wrapperEntryPath: "/pions/worker-wrapper.js",
+    extensionEntryPath: "/pions/worker-extension.js",
     capabilityGenerator: { nextCapability: () => "ab".repeat(32) },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
     serverFactory: () => {
@@ -490,7 +525,7 @@ test("visible Worker can place its socket outside a long persistent state path",
   assert.equal(value.config.socketPath.startsWith(`${socketDirectory}/`), true);
 });
 
-test("visible Worker keeps Node alive while awaiting the wrapper connection", async (context) => {
+test("visible Worker keeps Node alive while awaiting the Pi extension connection", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pvk-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const executor = new FakeExecutor();
@@ -500,7 +535,7 @@ test("visible Worker keeps Node alive while awaiting the wrapper connection", as
     socketDirectory: root,
     cwd: "/work/project",
     executor,
-    wrapperEntryPath: "/pions/worker-wrapper.js",
+    extensionEntryPath: "/pions/worker-extension.js",
     capabilityGenerator: { nextCapability: () => "ab".repeat(32) },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
     serverFactory: () => {
@@ -665,6 +700,23 @@ test("visible Worker sends ACK after Result acceptance", async (context) => {
   const { acknowledgement } = await deliver(value);
 
   assert.equal(JSON.parse(await acknowledgement).type, "ack");
+});
+
+test("visible Worker confirms the exact Pi process stopped after ACK", async (context) => {
+  const processControl = new FakeProcessControl("stopped");
+  const value = await fixture({ processControl });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await deliver(value);
+
+  assert.equal(processControl.stopObservations[0]?.processStartToken, processStartToken);
+});
+
+test("unconfirmed Pi exit after ACK has unknown liveness", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("unverifiable") });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const delivered = await deliver(value);
+
+  assert.equal(delivered.outcome.state, "liveness-unproven");
 });
 
 test("normal completion releases Worker protocol listeners", async (context) => {
@@ -868,7 +920,7 @@ test("a Worker cancelled before run creates no process resource", async (context
     socketDirectory: root,
     cwd: "/work/project",
     executor,
-    wrapperEntryPath: "/pions/worker-wrapper.js",
+    extensionEntryPath: "/pions/worker-extension.js",
     capabilityGenerator: { nextCapability: () => "ab".repeat(32) },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
   });
@@ -889,7 +941,7 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
     socketDirectory: root,
     cwd: "/work/project",
     executor,
-    wrapperEntryPath: "/pions/worker-wrapper.js",
+    extensionEntryPath: "/pions/worker-extension.js",
     capabilityGenerator: { nextCapability: () => capabilities.shift() ?? "ef".repeat(32) },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
   });

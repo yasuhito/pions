@@ -10,7 +10,6 @@ import type {
   ResultAcceptanceProof,
   ResultDelivery,
 } from "./worker-protocol.js";
-import type { PiUsage, PiToolUse } from "./pi-agent-backend.js";
 import type {
   ObservedWorkerConfig,
   OperationPersistenceError,
@@ -24,6 +23,21 @@ export interface WorkerProcessIdentity {
   readonly processStartToken: string;
   readonly piSessionId: string;
   readonly observedConfig: Readonly<ObservedWorkerConfig>;
+}
+
+export interface PiUsage {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly totalTokens: number;
+  readonly cost: number;
+}
+
+export interface PiToolUse {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly isError: boolean;
 }
 
 export interface AgentRunEvidence {

@@ -69,7 +69,7 @@ export interface PionsExtensionOptions {
   readonly stateBaseDirectory?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly homeDirectory?: string;
-  readonly wrapperEntryPath?: string;
+  readonly extensionEntryPath?: string;
 }
 
 function opaqueDigest(value: string): string {
@@ -423,7 +423,7 @@ export function installPionsExtension(
           stateDirectory: join(repositoryState, "runtime"),
           profiles: { [REVIEW_PROFILE]: profile },
           environment: options.environment ?? process.env,
-          wrapperEntryPath: options.wrapperEntryPath ?? join(normalizedRoot, "dist", "src", "worker-wrapper.js"),
+          extensionEntryPath: options.extensionEntryPath ?? join(normalizedRoot, "dist", "src", "worker-extension.js"),
         });
         runtimesByConfig.set(configKey, runtime);
       }
