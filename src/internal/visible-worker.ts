@@ -487,7 +487,9 @@ export class VisibleWorker implements WorkerAdapter {
     socket.on("end", () => {
       void this.classifyDisconnect(session);
     });
-    socket.on("error", (error) => this.reject(session, error.message));
+    socket.on("error", () => {
+      void this.classifyDisconnect(session);
+    });
   }
 
   private async classifyDisconnect(session: Session): Promise<void> {
@@ -508,9 +510,7 @@ export class VisibleWorker implements WorkerAdapter {
     session.resolveReception(
       state === "stopped"
         ? { state: "process-exited-without-result" }
-        : state === "unverifiable"
-          ? { state: "liveness-unproven" }
-          : { state: "worker_protocol_failed" },
+        : { state: "liveness-unproven" },
     );
     this.closeSession(session);
   }

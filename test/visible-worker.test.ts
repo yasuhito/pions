@@ -1008,6 +1008,28 @@ test("unverifiable process liveness is classified as unknown evidence", async (c
   assert.equal((await value.outcome).state, "liveness-unproven");
 });
 
+test("communication loss while Pi remains running has unknown liveness", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("running") });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  client.end();
+
+  assert.equal((await value.outcome).state, "liveness-unproven");
+});
+
+test("connection error while Pi remains running has unknown liveness", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("running") });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  value.protocolSession.socket?.destroy(new Error("connection reset"));
+
+  assert.equal((await value.outcome).state, "liveness-unproven");
+});
+
 test("one Worker cannot run twice", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
