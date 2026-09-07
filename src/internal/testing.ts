@@ -49,6 +49,7 @@ export interface FakeWorkerAdapterOptions {
     | "unsupported_capability"
     | "tool_policy_violation";
   readonly acknowledgementFails?: boolean;
+  readonly successfulExitConfirmed?: boolean;
 }
 
 export class FakeWorkerAdapter implements WorkerAdapter {
@@ -57,6 +58,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
   private readonly failure: FakeWorkerAdapterOptions["failure"];
   private readonly messages: ReadonlyArray<FakeResultMessage>;
   private readonly trace: Array<string>;
+  private readonly successfulExitConfirmed: boolean;
 
   constructor(options: FakeWorkerAdapterOptions = {}) {
     const messages = options.messages ?? { body: "finished" };
@@ -64,6 +66,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
     this.trace = options.trace ?? [];
     this.failure = options.failure;
     this.acknowledgementFails = options.acknowledgementFails ?? false;
+    this.successfulExitConfirmed = options.successfulExitConfirmed ?? false;
   }
 
   open(operation: Operation): Worker {
@@ -140,7 +143,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
         digest: message.digest ?? resultDigest(Buffer.from(message.body, "utf8")),
         sequenceNumber: message.sequenceNumber ?? 1,
       })));
-      return yield* acknowledgeResultAcceptance(
+      const acknowledged = yield* acknowledgeResultAcceptance(
         acceptance,
         {
           usage: {
@@ -157,6 +160,9 @@ export class FakeWorkerAdapter implements WorkerAdapter {
           ? Effect.fail(new Error("Fake Worker acknowledgement failed"))
           : Effect.sync(() => this.acknowledge(proof)),
       );
+      return acknowledged.state === "result_acknowledged" && this.successfulExitConfirmed
+        ? { ...acknowledged, successfulExitConfirmed: true }
+        : acknowledged;
     });
   }
 
@@ -226,17 +232,30 @@ export class FakeIdGenerator implements IdGenerator {
   }
 }
 
+export interface FakePresentationOptions {
+  readonly trace?: Array<string>;
+  readonly attemptedState?: OperationState;
+  readonly projectionFails?: boolean;
+  readonly paneClosureFails?: boolean;
+}
+
 export class FakePresentation implements Presentation {
   readonly projections: Array<Operation> = [];
   readonly createdPaneIds: Array<string> = [];
   readonly rolledBackPaneIds: Array<string> = [];
+  readonly closedPaneIds: Array<string> = [];
   stateChangeSucceeded = false;
+  private readonly trace: Array<string>;
+  private readonly attemptedState: OperationState | undefined;
+  private readonly projectionFails: boolean;
+  private readonly paneClosureFails: boolean;
 
-  constructor(
-    private readonly trace: Array<string> = [],
-    private readonly attemptedState?: OperationState,
-    private readonly fails = false,
-  ) {}
+  constructor(options: FakePresentationOptions = {}) {
+    this.trace = options.trace ?? [];
+    this.attemptedState = options.attemptedState;
+    this.projectionFails = options.projectionFails ?? false;
+    this.paneClosureFails = options.paneClosureFails ?? false;
+  }
 
   preflight(): Effect.Effect<void> {
     return Effect.void;
@@ -260,9 +279,17 @@ export class FakePresentation implements Presentation {
     return Effect.void;
   }
 
+  closeOwnedPane(operation: Operation): Effect.Effect<void> {
+    return Effect.sync(() => {
+      if (operation.presentation === undefined) return;
+      this.closedPaneIds.push(operation.presentation.paneId);
+      if (this.paneClosureFails) throw new Error("Pane closure failed");
+    });
+  }
+
   project(operation: Operation): Effect.Effect<void> {
     return Effect.sync(() => {
-      if (this.fails) throw new Error("Presentation failed");
+      if (this.projectionFails) throw new Error("Presentation failed");
       this.projections.push(operation);
       this.trace.push(`presentation:${operation.state}`);
       if (this.attemptedState !== undefined) {

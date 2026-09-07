@@ -127,6 +127,7 @@ interface Session {
   socket?: Socket;
   identity?: Readonly<WorkerProcessIdentity>;
   receptionCompleted: boolean;
+  successfulExitObservation?: Promise<boolean>;
   readonly protocol: HostProtocolPeer;
 }
 
@@ -207,8 +208,16 @@ export class VisibleWorker implements WorkerAdapter {
         }
         const request = session.protocol.requestCancellation();
         if (request === undefined) {
-          this.reject(session, "Visible Worker cancellation has no active backend");
-          return Effect.succeed(undefined);
+          const exitObservation = session.successfulExitObservation;
+          if (exitObservation === undefined) {
+            this.reject(session, "Visible Worker cancellation has no active backend");
+            return Effect.succeed(undefined);
+          }
+          return Effect.promise(() => exitObservation).pipe(
+            Effect.map((stopped) => stopped
+              ? { proof: "worker-stop" } as const
+              : undefined),
+          );
         }
         session.socket.write(request);
         const backendResponse = Effect.promise(() => session.cancellationReception);
@@ -300,9 +309,10 @@ export class VisibleWorker implements WorkerAdapter {
         );
         if (acknowledged.state !== "result_acknowledged") return acknowledged;
         const stopped = yield* Effect.promise(() => this.confirmSuccessfulExit(session!));
-        return stopped
+        if (!stopped) return { state: "liveness-unproven" } as const;
+        return cancellation.requested
           ? acknowledged
-          : { state: "liveness-unproven" } as const;
+          : { ...acknowledged, successfulExitConfirmed: true } as const;
       }).pipe(
         Effect.catchTag(
           "WorkerProtocolError",
@@ -544,13 +554,15 @@ export class VisibleWorker implements WorkerAdapter {
     }
   }
 
-  private async confirmSuccessfulExit(session: Session): Promise<boolean> {
-    if (session.identity === undefined) return false;
-    const processState = await Effect.runPromise(
+  private confirmSuccessfulExit(session: Session): Promise<boolean> {
+    if (session.identity === undefined) return Promise.resolve(false);
+    session.successfulExitObservation ??= Effect.runPromise(
       this.processControl.waitForStop(session.identity, this.successfulExitGraceMs),
-    );
-    this.closeSession(session, processState === "stopped");
-    return processState === "stopped";
+    ).then((processState) => {
+      this.closeSession(session, processState === "stopped");
+      return processState === "stopped";
+    });
+    return session.successfulExitObservation;
   }
 
   private closeSession(session: Session, graceful = false): void {

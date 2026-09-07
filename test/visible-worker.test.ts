@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
@@ -69,6 +69,34 @@ class FakeProcessControl implements WorkerProcessControl {
       this.terminations.push(identity);
       return this.terminationEvidence;
     });
+  }
+}
+
+class DeferredStopProcessControl implements WorkerProcessControl {
+  private resolveStop!: (state: WorkerProcessState) => void;
+  private readonly stop = new Promise<WorkerProcessState>((resolve) => {
+    this.resolveStop = resolve;
+  });
+  private resolveWaitStarted!: () => void;
+  readonly waitStarted = new Promise<void>((resolve) => {
+    this.resolveWaitStarted = resolve;
+  });
+
+  observe(_identity: Readonly<WorkerProcessIdentity>) {
+    return Effect.succeed("running" as const);
+  }
+
+  waitForStop(_identity: Readonly<WorkerProcessIdentity>, _timeoutMilliseconds: number) {
+    this.resolveWaitStarted();
+    return Effect.promise(() => this.stop);
+  }
+
+  terminate(_identity: Readonly<WorkerProcessIdentity>) {
+    return Effect.succeed(undefined);
+  }
+
+  complete(state: WorkerProcessState): void {
+    this.resolveStop(state);
   }
 }
 
@@ -709,6 +737,51 @@ test("visible Worker confirms the exact Pi process stopped after ACK", async (co
   await deliver(value);
 
   assert.equal(processControl.stopObservations[0]?.processStartToken, processStartToken);
+});
+
+test("successful Worker reports confirmed exit after process stop", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const delivered = await deliver(value);
+
+  assert.equal(
+    delivered.outcome.state === "result_acknowledged"
+      ? delivered.outcome.successfulExitConfirmed
+      : undefined,
+    true,
+  );
+});
+
+async function cancelDuringExitConfirmation(context: TestContext) {
+  const processControl = new DeferredStopProcessControl();
+  const value = await fixture({ processControl });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const delivery = await sendResultDelivery(client, {
+    capability: value.capability,
+    operationId: value.current.operationId,
+    body: "finished",
+  });
+  await delivery.acknowledgement;
+  await processControl.waitStarted;
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  processControl.complete("stopped");
+  return {
+    cancellation: await cancellation,
+    outcome: await value.outcome,
+  };
+}
+
+test("cancellation during successful-exit confirmation withholds cleanup eligibility", async (context) => {
+  const { outcome } = await cancelDuringExitConfirmation(context);
+
+  assert.equal("successfulExitConfirmed" in outcome, false);
+});
+
+test("confirmed stop during successful-exit cancellation is cancellation evidence", async (context) => {
+  const { cancellation } = await cancelDuringExitConfirmation(context);
+
+  assert.deepEqual(cancellation, { proof: "worker-stop" });
 });
 
 test("unconfirmed Pi exit after ACK has unknown liveness", async (context) => {

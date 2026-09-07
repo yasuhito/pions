@@ -37,6 +37,11 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
   const socketDirectory = runtimeDirectory !== undefined && isAbsolute(runtimeDirectory)
     ? join(runtimeDirectory, "pions")
     : join(tmpdir(), `pions-${userId}`);
+  const presentation = new HerdrPresentation({
+    cwd: options.cwd,
+    environment,
+    executor,
+  });
   const worker = new VisibleWorker({
     rootDirectory: options.stateDirectory,
     socketDirectory,
@@ -48,11 +53,7 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     worker,
     clock: systemClock,
     ids: { nextOperationId: () => Effect.sync(() => randomUUID()) },
-    presentation: new HerdrPresentation({
-      cwd: options.cwd,
-      environment,
-      executor,
-    }),
+    presentation,
     store: new PrivateFileEventStore(options.stateDirectory, systemClock),
     configuration: { cwd: options.cwd, profiles: options.profiles },
   });

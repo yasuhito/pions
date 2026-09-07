@@ -44,6 +44,7 @@ export interface Operation {
   readonly presentation?: Readonly<PresentationOwnership>;
   readonly workerIdentity?: Readonly<WorkerIdentity>;
   readonly agentRunEvidence?: Readonly<AgentRunEvidence>;
+  readonly presentationCleanupFailure?: "pane_close_failed";
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
@@ -76,7 +77,7 @@ export interface ResultConflictEvidence {
   readonly deliverySequenceNumber: number;
 }
 
-export const EVENT_SCHEMA_VERSION = 6 as const;
+export const EVENT_SCHEMA_VERSION = 7 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 

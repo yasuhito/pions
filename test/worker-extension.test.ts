@@ -16,7 +16,11 @@ import {
   encodeWorkerConfig,
 } from "../src/internal/worker-protocol.js";
 import type { WorkerConfig } from "../src/internal/worker-protocol.js";
-import { effectiveConfig, resultDigest } from "./worker-protocol-fixtures.js";
+import {
+  effectiveConfig,
+  resultAcceptanceProof,
+  resultDigest,
+} from "./worker-protocol-fixtures.js";
 
 interface RegisteredHandlers {
   readonly session_start: Array<(event: unknown, context: ExtensionContext) => Promise<void>>;
@@ -41,7 +45,7 @@ const assistant = {
   timestamp: 1,
 };
 
-async function extensionResult(): Promise<unknown> {
+async function extensionResult() {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-extension-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
@@ -66,6 +70,8 @@ async function extensionResult(): Promise<unknown> {
     session_shutdown: [],
   };
   const prompts: Array<string> = [];
+  let shutdownCount = 0;
+  let shutdownCountBeforeAcknowledgement = -1;
   let editorFactory: ((...arguments_: Array<never>) => { handleInput?(data: string): void }) | undefined;
   const api = {
     registerFlag: () => undefined,
@@ -90,7 +96,7 @@ async function extensionResult(): Promise<unknown> {
       setEditorComponent: (factory: typeof editorFactory) => { editorFactory = factory; },
     },
     abort: () => undefined,
-    shutdown: () => undefined,
+    shutdown: () => { shutdownCount += 1; },
   } as unknown as ExtensionContext;
 
   const peer = new HostProtocolPeer({ operationId: config.operationId, capability });
@@ -104,7 +110,17 @@ async function extensionResult(): Promise<unknown> {
     socket.on("data", (chunk: Buffer) => {
       for (const event of peer.receive(chunk)) {
         if (event.type === "started") resolveStarted();
-        if (event.type === "results_received") resolveResult(event.reception.deliveries[0]);
+        if (event.type === "results_received") {
+          const delivery = event.reception.deliveries[0];
+          if (delivery === undefined) continue;
+          shutdownCountBeforeAcknowledgement = shutdownCount;
+          resolveResult(delivery);
+          accepted.write(peer.acknowledgeResult(resultAcceptanceProof(
+            config.operationId,
+            delivery.body,
+            delivery.sequenceNumber,
+          )).bytes);
+        }
       }
     });
   });
@@ -120,7 +136,9 @@ async function extensionResult(): Promise<unknown> {
     while (prompts.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
     handlers.message_end[0]?.({ message: assistant });
     handlers.agent_settled[0]?.({}, context);
-    return await result;
+    const delivery = await result;
+    while (shutdownCount === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    return { delivery, shutdownCountBeforeAcknowledgement, shutdownCount };
   } finally {
     accepted?.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -130,10 +148,18 @@ async function extensionResult(): Promise<unknown> {
 }
 
 test("Pi Worker extension returns the final settled assistant message", async () => {
-  assert.deepEqual(await extensionResult(), {
+  assert.deepEqual((await extensionResult()).delivery, {
     operationId: "operation-1",
     body: "review finished",
     digest: resultDigest("review finished"),
     sequenceNumber: 1,
   });
+});
+
+test("Pi Worker extension does not request shutdown before Result acknowledgement", async () => {
+  assert.equal((await extensionResult()).shutdownCountBeforeAcknowledgement, 0);
+});
+
+test("Pi Worker extension requests normal shutdown after Result acknowledgement", async () => {
+  assert.equal((await extensionResult()).shutdownCount, 1);
 });

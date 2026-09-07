@@ -237,6 +237,20 @@ test("rollback targets exactly the newly-created pane", async () => {
   assert.deepEqual(executor.invocations[0]?.args, ["pane", "close", "opaque:new-pane"]);
 });
 
+test("successful cleanup targets exactly the persistently owned pane", async () => {
+  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
+  await Effect.runPromise(presentation(executor).closeOwnedPane(operation("opaque:owned-pane")));
+
+  assert.deepEqual(executor.invocations[0]?.args, ["pane", "close", "opaque:owned-pane"]);
+});
+
+test("successful cleanup without durable ownership does not target a pane", async () => {
+  const executor = new FakeCommandExecutor([]);
+  await Effect.runPromise(presentation(executor).closeOwnedPane(operation()));
+
+  assert.equal(executor.invocations.length, 0);
+});
+
 test("Runtime exposes a typed Herdr precondition violation", async () => {
   const runtime = makeRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),

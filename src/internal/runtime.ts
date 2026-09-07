@@ -66,6 +66,7 @@ interface OperationRecord {
   pendingAdmissions: number;
   finalizing?: Promise<void>;
   resultDeliveryError?: ResultConflictError;
+  successfulExitConfirmed?: true;
   worker?: Worker;
 }
 
@@ -173,6 +174,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     await runEffect(project(operation));
 
     if (operation.state === "completed") {
+      if (record.successfulExitConfirmed === true) {
+        const cleanupFailed = await runEffect(
+          services.presentation.closeOwnedPane(operation).pipe(
+            Effect.as(false),
+            Effect.catchAllCause(() => Effect.succeed(true)),
+          ),
+        );
+        if (cleanupFailed) {
+          await runEffect(
+            advanceOperation(record.operationId, {
+              type: "presentation_cleanup_failed",
+              reason: "pane_close_failed",
+            }).pipe(Effect.catchAllCause(() => Effect.void)),
+          );
+        }
+      }
       const result = await runEffect(readResult(record.operationId));
       if (record.resultDeliveryError === undefined) {
         record.resolveTerminal(result);
@@ -360,6 +377,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         delete record.resultDeliveryError;
       } else {
         record.resultDeliveryError = workerOutcome.resultDeliveryError;
+      }
+      if (workerOutcome.successfulExitConfirmed === true) {
+        record.successfulExitConfirmed = true;
       }
 
       operation = await runEffect(

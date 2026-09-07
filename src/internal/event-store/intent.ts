@@ -45,6 +45,10 @@ export type OperationIntent =
       readonly type: "agent_settled";
       readonly evidence: Readonly<AgentRunEvidence>;
     }
+  | {
+      readonly type: "presentation_cleanup_failed";
+      readonly reason: "pane_close_failed";
+    }
   | { readonly type: "operation_blocked" }
   | { readonly type: "operation_unblocked" }
   | { readonly type: "accept_result"; readonly delivery: ResultDelivery }

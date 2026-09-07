@@ -175,6 +175,11 @@ export class HerdrPresentation implements Presentation {
     return this.rollbackCreated(operation.presentation);
   }
 
+  closeOwnedPane(operation: Operation): Effect.Effect<void, unknown> {
+    if (operation.presentation === undefined) return Effect.void;
+    return this.rollbackCreated(operation.presentation);
+  }
+
   project(operation: Operation): Effect.Effect<void, unknown> {
     if (operation.presentation === undefined) return Effect.void;
     const status = operation.state === "blocked"

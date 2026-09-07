@@ -197,6 +197,7 @@ export function reduceOperation(
   }
   if (
     event.type !== "result_conflict_recorded" &&
+    event.type !== "presentation_cleanup_failed" &&
     (current.state === "completed" ||
       current.state === "failed" ||
       current.state === "cancelled" ||
@@ -328,6 +329,20 @@ export function reduceOperation(
           usage: { ...event.evidence.usage },
           toolUses: event.evidence.toolUses.map((toolUse) => ({ ...toolUse })),
         },
+        stateSeq: event.seq,
+      });
+
+    case "presentation_cleanup_failed":
+      if (
+        current.state !== "completed" ||
+        current.presentation === undefined ||
+        current.presentationCleanupFailure !== undefined
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        presentationCleanupFailure: event.reason,
         stateSeq: event.seq,
       });
 

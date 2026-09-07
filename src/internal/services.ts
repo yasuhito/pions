@@ -64,6 +64,7 @@ export type WorkerRunOutcome =
       readonly state: "result_acknowledged";
       readonly evidence: Readonly<AgentRunEvidence>;
       readonly resultDeliveryError?: ResultConflictError;
+      readonly successfulExitConfirmed?: true;
     }
   | { readonly state: "worker_start_failed" }
   | { readonly state: "worker_protocol_failed" }
@@ -146,6 +147,7 @@ export interface Presentation {
   create(operation: Operation): Effect.Effect<CreatedPresentation, unknown>;
   rollbackCreated(presentation: CreatedPresentation): Effect.Effect<void, unknown>;
   onWorkerStartFailure(operation: Operation): Effect.Effect<void, unknown>;
+  closeOwnedPane(operation: Operation): Effect.Effect<void, unknown>;
   project(operation: Operation): Effect.Effect<void, unknown>;
 }
 

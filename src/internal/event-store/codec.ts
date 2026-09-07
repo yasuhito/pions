@@ -150,6 +150,11 @@ const OperationEventSchema = Schema.Union(
     type: Schema.Literal("agent_settled"),
     evidence: AgentRunEvidence,
   }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("presentation_cleanup_failed"),
+    reason: Schema.Literal("pane_close_failed"),
+  }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_blocked") }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_unblocked") }),
   Schema.Struct({

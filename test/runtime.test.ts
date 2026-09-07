@@ -206,11 +206,11 @@ async function completeOperation(
     "2026-09-06T10:00:10.000Z",
   ]);
   const store = new InMemoryEventStore(trace, clock);
-  const presentation = new FakePresentation(
+  const presentation = new FakePresentation({
     trace,
-    "completed",
-    presentationFails,
-  );
+    attemptedState: "completed",
+    projectionFails: presentationFails,
+  });
   const runtime = makeRuntime({
     worker,
     clock,
@@ -939,6 +939,52 @@ test("Presentation failure cannot prevent terminal completion", async () => {
   assert.equal((await storedOperation(store, "operation-1")).state, "completed");
 });
 
+test("completion without confirmed Worker stop retains its pane", async () => {
+  const { presentation } = await completeOperation();
+
+  assert.deepEqual(presentation.closedPaneIds, []);
+});
+
+async function completeWithPaneClosureFailure() {
+  const store = new InMemoryEventStore();
+  const presentation = new FakePresentation({ paneClosureFails: true });
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
+    clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation,
+    store,
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  return {
+    operation: await storedOperation(store, handle.operationId),
+    presentation,
+  };
+}
+
+test("Runtime records failed successful-pane cleanup", async () => {
+  const { operation } = await completeWithPaneClosureFailure();
+
+  assert.equal(operation.presentationCleanupFailure, "pane_close_failed");
+});
+
+test("failed successful-pane cleanup cannot prevent terminal completion", async () => {
+  const { operation } = await completeWithPaneClosureFailure();
+
+  assert.equal(operation.state, "completed");
+});
+
+test("successful-worker cleanup targets only the Operation's persisted pane", async () => {
+  const { presentation } = await completeWithPaneClosureFailure();
+
+  assert.deepEqual(presentation.closedPaneIds, ["fake-pane:operation-1"]);
+});
+
 async function retryOperation(options?: { readonly parentOperationId?: string }) {
   const worker = new FakeWorkerAdapter({ messages: { body: "finished" } });
   const runtime = makeRuntime({
@@ -1058,6 +1104,7 @@ test("OperationHandle returns the same Result without republishing it", async ()
 async function failOperation() {
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(trace);
+  const presentation = new FakePresentation();
   const runtime = makeRuntime({
     worker: new FakeWorkerAdapter({
       messages: { body: "must not be returned" },
@@ -1072,7 +1119,7 @@ async function failOperation() {
       "2026-09-06T10:00:04.000Z",
     ]),
     ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
+    presentation,
     store,
   });
   const handle = await runtime.spawn({
@@ -1082,8 +1129,14 @@ async function failOperation() {
   });
   await handle.result().catch(() => undefined);
 
-  return { handle, store, trace };
+  return { handle, presentation, store, trace };
 }
+
+test("failed Worker retains its pane", async () => {
+  const { presentation } = await failOperation();
+
+  assert.deepEqual(presentation.closedPaneIds, []);
+});
 
 async function settledAgentFailure() {
   const store = new InMemoryEventStore();
