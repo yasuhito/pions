@@ -75,7 +75,7 @@ async function main(): Promise<void> {
       config.effectiveConfig.model.id,
     );
     if (model === undefined) {
-      throw new WorkerConfigurationError("model_mismatch", "Exact configured model is unavailable");
+      throw new WorkerConfigurationError("model_not_found", "Exact configured model is unavailable");
     }
     const created = await createAgentSessionFromServices({
       services,

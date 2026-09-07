@@ -60,6 +60,8 @@ export interface TaskSpec extends RequestedWorkerConfig {
 
 export type WorkerConfigurationFailureReason =
   | "model_mismatch"
+  | "model_not_found"
+  | "model_auth_unavailable"
   | "unsupported_capability"
   | "tool_policy_violation";
 
@@ -68,6 +70,25 @@ export class WorkerConfigurationError extends Error {
 
   constructor(
     readonly reason: WorkerConfigurationFailureReason,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export type ProjectConfigurationFailureReason =
+  | "invalid_json"
+  | "unknown_key"
+  | "invalid_shape"
+  | "invalid_provider"
+  | "invalid_model_id"
+  | "invalid_thinking_level";
+
+export class ProjectConfigurationError extends Error {
+  override readonly name = "ProjectConfigurationError";
+
+  constructor(
+    readonly reason: ProjectConfigurationFailureReason,
     message: string,
   ) {
     super(message);
@@ -90,6 +111,8 @@ export type OperationFailureReason =
   | "process-exited-without-result"
   | "agent_failed"
   | "model_mismatch"
+  | "model_not_found"
+  | "model_auth_unavailable"
   | "unsupported_capability"
   | "tool_policy_violation"
   | "descendant_failed";

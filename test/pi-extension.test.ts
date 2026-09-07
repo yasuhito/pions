@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,7 +10,12 @@ import {
   installPionsExtension,
   type PionsExtensionOptions,
 } from "../src/internal/pi-extension.js";
-import { HerdrPreconditionError, OperationFailedError } from "../src/index.js";
+import {
+  HerdrPreconditionError,
+  OperationFailedError,
+  ProjectConfigurationError,
+  WorkerConfigurationError,
+} from "../src/index.js";
 import type { OperationHandle, Result, Runtime, TaskSpec } from "../src/index.js";
 
 class FakeRuntime implements Runtime {
@@ -79,6 +84,10 @@ async function fixture(
     cwd: root,
     model: { provider: "anthropic", id: "claude-opus-5" },
     thinkingLevel: "high",
+    modelRegistry: {
+      find: (provider: string, id: string) => ({ provider, id }),
+      hasConfiguredAuth: () => true,
+    },
     sessionManager: { getSessionId: () => "pi-session-1" },
     isProjectTrusted: () => true,
   } as unknown as ExtensionContext;
@@ -161,6 +170,182 @@ test("delegation inherits the exact Pi thinking level", async (context) => {
   await value.execute();
 
   assert.equal(value.runtime.tasks[0]?.thinkingLevel, "high");
+});
+
+test("project configuration overrides the review model", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "openai", id: "gpt-5.6-codex" } },
+  }));
+  await value.execute();
+
+  assert.deepEqual(value.runtime.tasks[0]?.model, { provider: "openai", id: "gpt-5.6-codex" });
+});
+
+test("model-only project configuration inherits the Pi thinking level", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "openai", id: "gpt-5.6-codex" } },
+  }));
+  await value.execute();
+
+  assert.equal(value.runtime.tasks[0]?.thinkingLevel, "high");
+});
+
+test("thinking-only project configuration inherits the Pi model", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({ review: { thinkingLevel: "low" } }));
+  await value.execute();
+
+  assert.deepEqual(value.runtime.tasks[0]?.model, { provider: "anthropic", id: "claude-opus-5" });
+});
+
+test("project configuration overrides the review thinking level", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({ review: { thinkingLevel: "low" } }));
+  await value.execute();
+
+  assert.equal(value.runtime.tasks[0]?.thinkingLevel, "low");
+});
+
+test("project configuration applies model and thinking level together", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: {
+      model: { provider: "anthropic", id: "claude-opus-5" },
+      thinkingLevel: "xhigh",
+    },
+  }));
+  await value.execute();
+
+  assert.deepEqual(
+    { model: value.runtime.tasks[0]?.model, thinkingLevel: value.runtime.tasks[0]?.thinkingLevel },
+    { model: { provider: "anthropic", id: "claude-opus-5" }, thinkingLevel: "xhigh" },
+  );
+});
+
+test("malformed project configuration is rejected", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), "{");
+
+  await assert.rejects(
+    value.execute(),
+    (error) => error instanceof ProjectConfigurationError && error.reason === "invalid_json",
+  );
+});
+
+test("unknown project configuration keys are rejected", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({ review: { apiKey: "secret" } }));
+
+  await assert.rejects(
+    value.execute(),
+    (error) => error instanceof ProjectConfigurationError && error.reason === "unknown_key",
+  );
+});
+
+test("invalid review model providers are rejected", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "not a provider", id: "model" } },
+  }));
+
+  await assert.rejects(
+    value.execute(),
+    (error) => error instanceof ProjectConfigurationError && error.reason === "invalid_provider",
+  );
+});
+
+test("invalid review model identifiers are rejected", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "anthropic", id: "" } },
+  }));
+
+  await assert.rejects(
+    value.execute(),
+    (error) => error instanceof ProjectConfigurationError && error.reason === "invalid_model_id",
+  );
+});
+
+test("invalid review thinking levels are rejected", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({ review: { thinkingLevel: "ultra" } }));
+
+  await assert.rejects(
+    value.execute(),
+    (error) => error instanceof ProjectConfigurationError && error.reason === "invalid_thinking_level",
+  );
+});
+
+test("invalid existing project configuration does not spawn a Worker", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), "{");
+  await value.execute().catch(() => undefined);
+
+  assert.equal(value.runtime.spawnCount, 0);
+});
+
+test("an unavailable configured model returns a typed failure", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "anthropic", id: "missing" } },
+  }));
+  (value.context.modelRegistry as unknown as { find: () => undefined }).find = () => undefined;
+
+  await assert.rejects(
+    value.execute(),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "model_not_found",
+  );
+});
+
+test("an unauthenticated configured model returns a typed failure", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "anthropic", id: "claude-opus-5" } },
+  }));
+  (value.context.modelRegistry as unknown as { hasConfiguredAuth: () => boolean }).hasConfiguredAuth = () => false;
+
+  await assert.rejects(
+    value.execute(),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "model_auth_unavailable",
+  );
+});
+
+test("a configured model mismatch reaches the parent unchanged", async (context) => {
+  const failure = new OperationFailedError("operation-7", "model_mismatch");
+  const value = await fixture(new FakeRuntime(failure));
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "anthropic", id: "claude-opus-5" } },
+  }));
+
+  await assert.rejects(value.execute(), (error) => error === failure);
+});
+
+test("configured model failure does not fall back to the delegating model", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "anthropic", id: "missing" } },
+  }));
+  (value.context.modelRegistry as unknown as { find: () => undefined }).find = () => undefined;
+  await value.execute().catch(() => undefined);
+
+  assert.equal(value.runtime.spawnCount, 0);
 });
 
 test("delegation limits Worker tools to the review profile", async (context) => {

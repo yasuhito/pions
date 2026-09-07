@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse } from "node:path";
 
@@ -16,7 +16,10 @@ import type {
 import { Type } from "typebox";
 
 import { makeVisibleRuntime } from "./visible-runtime.js";
-import { WorkerConfigurationError } from "../public.js";
+import {
+  ProjectConfigurationError,
+  WorkerConfigurationError,
+} from "../public.js";
 import type {
   ModelReference,
   Runtime,
@@ -31,6 +34,14 @@ const REVIEW_TOOLS = Object.freeze(["read", "grep", "find", "ls", "bash"]);
 const THINKING_LEVELS: ReadonlyArray<ThinkingLevel> = [
   "off", "minimal", "low", "medium", "high", "xhigh", "max",
 ];
+const PROJECT_CONFIG_FILE = ".pions.json";
+const PROVIDER_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u;
+const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u;
+
+interface ReviewProjectConfig {
+  readonly model?: Readonly<ModelReference>;
+  readonly thinkingLevel?: ThinkingLevel;
+}
 
 const DelegateParameters = Type.Object({
   task: Type.String({
@@ -120,6 +131,100 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return THINKING_LEVELS.some((level) => level === value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireKnownKeys(
+  value: Readonly<Record<string, unknown>>,
+  keys: ReadonlyArray<string>,
+  location: string,
+): void {
+  const unknown = Object.keys(value).find((key) => !keys.includes(key));
+  if (unknown !== undefined) {
+    throw new ProjectConfigurationError(
+      "unknown_key",
+      `Unknown key ${JSON.stringify(unknown)} in ${location}`,
+    );
+  }
+}
+
+function decodeProjectConfig(source: string): ReviewProjectConfig {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(source) as unknown;
+  } catch {
+    throw new ProjectConfigurationError("invalid_json", `${PROJECT_CONFIG_FILE} is not valid JSON`);
+  }
+  if (!isRecord(decoded)) {
+    throw new ProjectConfigurationError("invalid_shape", `${PROJECT_CONFIG_FILE} must contain an object`);
+  }
+  requireKnownKeys(decoded, ["review"], PROJECT_CONFIG_FILE);
+  const review = decoded.review;
+  if (!isRecord(review)) {
+    throw new ProjectConfigurationError("invalid_shape", "review must contain an object");
+  }
+  requireKnownKeys(review, ["model", "thinkingLevel"], "review");
+
+  let model: ModelReference | undefined;
+  if (review.model !== undefined) {
+    if (!isRecord(review.model)) {
+      throw new ProjectConfigurationError("invalid_shape", "review.model must contain an object");
+    }
+    requireKnownKeys(review.model, ["provider", "id"], "review.model");
+    if (typeof review.model.provider !== "string" || !PROVIDER_PATTERN.test(review.model.provider)) {
+      throw new ProjectConfigurationError("invalid_provider", "review.model.provider is invalid");
+    }
+    if (typeof review.model.id !== "string" || !MODEL_ID_PATTERN.test(review.model.id)) {
+      throw new ProjectConfigurationError("invalid_model_id", "review.model.id is invalid");
+    }
+    model = { provider: review.model.provider, id: review.model.id };
+  }
+
+  if (review.thinkingLevel !== undefined && !isThinkingLevel(review.thinkingLevel)) {
+    throw new ProjectConfigurationError(
+      "invalid_thinking_level",
+      "review.thinkingLevel is invalid",
+    );
+  }
+  return {
+    ...(model === undefined ? {} : { model }),
+    ...(review.thinkingLevel === undefined ? {} : { thinkingLevel: review.thinkingLevel }),
+  };
+}
+
+async function projectConfig(root: string): Promise<ReviewProjectConfig | undefined> {
+  try {
+    return decodeProjectConfig(await readFile(join(root, PROJECT_CONFIG_FILE), "utf8"));
+  } catch (error) {
+    if (
+      typeof error === "object" && error !== null && "code" in error &&
+      error.code === "ENOENT"
+    ) return undefined;
+    throw error;
+  }
+}
+
+function configuredModel(
+  context: ExtensionContext,
+  model: Readonly<ModelReference>,
+): ModelReference {
+  const registered = context.modelRegistry.find(model.provider, model.id);
+  if (registered === undefined) {
+    throw new WorkerConfigurationError(
+      "model_not_found",
+      `Configured review model ${model.provider}/${model.id} was not found`,
+    );
+  }
+  if (!context.modelRegistry.hasConfiguredAuth(registered)) {
+    throw new WorkerConfigurationError(
+      "model_auth_unavailable",
+      `Configured review model provider ${model.provider} is not authenticated`,
+    );
+  }
+  return { provider: registered.provider, id: registered.id };
+}
+
 function selectedThinkingLevel(context: ExtensionContext): ThinkingLevel {
   if (!isThinkingLevel(context.thinkingLevel)) {
     throw new WorkerConfigurationError(
@@ -169,10 +274,15 @@ export function installPionsExtension(
       if (!context.isProjectTrusted()) {
         throw new Error("pions_delegate requires a trusted project");
       }
-      const model = selectedModel(context);
-      const thinkingLevel = selectedThinkingLevel(context);
+      const inheritedModel = selectedModel(context);
+      const inheritedThinkingLevel = selectedThinkingLevel(context);
       const root = options.repositoryRoot ?? await repositoryRoot(context.cwd);
       const normalizedRoot = await realpath(root);
+      const configured = await projectConfig(normalizedRoot);
+      const model = configured?.model === undefined
+        ? inheritedModel
+        : configuredModel(context, configured.model);
+      const thinkingLevel = configured?.thinkingLevel ?? inheritedThinkingLevel;
       const stateBase = options.stateBaseDirectory ?? userStateDirectory(
         options.environment ?? process.env,
         options.homeDirectory ?? homedir(),

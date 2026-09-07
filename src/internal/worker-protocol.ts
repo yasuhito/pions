@@ -90,7 +90,13 @@ const StartedSchema = Schema.Struct({
 const ConfigurationFailedSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("configuration_failed"),
-  reason: Schema.Literal("model_mismatch", "unsupported_capability", "tool_policy_violation"),
+  reason: Schema.Literal(
+    "model_mismatch",
+    "model_not_found",
+    "model_auth_unavailable",
+    "unsupported_capability",
+    "tool_policy_violation",
+  ),
 });
 const ResultSchema = Schema.Struct({
   ...CommonWorkerFrameFields,

@@ -103,6 +103,8 @@ const FailureReason = Schema.Literal(
   "process-exited-without-result",
   "agent_failed",
   "model_mismatch",
+  "model_not_found",
+  "model_auth_unavailable",
   "unsupported_capability",
   "tool_policy_violation",
   "descendant_failed",
