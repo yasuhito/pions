@@ -12,11 +12,19 @@ import {
 } from "../src/internal/pi-extension.js";
 import {
   HerdrPreconditionError,
+  OperationCancelledError,
   OperationFailedError,
+  OperationUnknownError,
   ProjectConfigurationError,
   WorkerConfigurationError,
 } from "../src/index.js";
-import type { OperationHandle, Result, Runtime, TaskSpec } from "../src/index.js";
+import type {
+  CancellationResult,
+  OperationHandle,
+  Result,
+  Runtime,
+  TaskSpec,
+} from "../src/index.js";
 
 class FakeRuntime implements Runtime {
   readonly tasks: Array<TaskSpec> = [];
@@ -42,6 +50,52 @@ class FakeRuntime implements Runtime {
   }
 }
 
+function deferred<Value>() {
+  let resolve!: (value: Value) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Value>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  void promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
+async function waitForOperation(runtime: PendingRuntime, operationId = "operation-1"): Promise<void> {
+  while (!runtime.results.has(operationId)) await new Promise(setImmediate);
+}
+
+class PendingRuntime implements Runtime {
+  readonly cancellations: Array<{ readonly operationId: string; readonly scope: "subtree" }> = [];
+  readonly results = new Map<string, ReturnType<typeof deferred<Result>>>();
+  cancellationResponse: Promise<CancellationResult> = Promise.resolve({
+    cancellationEpoch: 1,
+    state: "cancelled",
+  });
+  private nextId = 1;
+
+  async spawn(): Promise<OperationHandle> {
+    const operationId = `operation-${this.nextId}`;
+    this.nextId += 1;
+    const result = deferred<Result>();
+    this.results.set(operationId, result);
+    return {
+      operationId,
+      result: () => result.promise,
+      cancel: async ({ scope }) => {
+        this.cancellations.push({ operationId, scope });
+        const response = await this.cancellationResponse;
+        result.reject(
+          response.state === "unknown"
+            ? new OperationUnknownError(operationId, "cancel-unproven")
+            : new OperationCancelledError(operationId),
+        );
+        return response;
+      },
+    };
+  }
+}
+
 interface RegisteredTool {
   readonly name: string;
   readonly description: string;
@@ -57,8 +111,8 @@ interface RegisteredTool {
   ): Promise<{ readonly content: ReadonlyArray<{ readonly type: string; readonly text: string }>; readonly details?: unknown }>;
 }
 
-async function fixture(
-  runtime = new FakeRuntime(),
+async function fixture<TRuntime extends Runtime = FakeRuntime>(
+  runtime: TRuntime = new FakeRuntime() as unknown as TRuntime,
   options: Omit<PionsExtensionOptions, "runtime" | "stateBaseDirectory"> & {
     readonly stateBaseDirectory?: string;
   } = {},
@@ -66,11 +120,14 @@ async function fixture(
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-extension-"));
   let registered: RegisteredTool | undefined;
+  const handlers = new Map<string, (event: unknown, context: ExtensionContext) => Promise<unknown> | unknown>();
   const pi = {
     registerTool(tool: ToolDefinition) {
       registered = tool as unknown as RegisteredTool;
     },
-    on() {},
+    on(event: string, handler: (event: unknown, context: ExtensionContext) => Promise<unknown> | unknown) {
+      handlers.set(event, handler);
+    },
   } as unknown as ExtensionAPI;
   installPionsExtension(pi, {
     ...(options.runtimeFactory === undefined ? { runtime } : {}),
@@ -91,9 +148,17 @@ async function fixture(
     sessionManager: { getSessionId: () => "pi-session-1" },
     isProjectTrusted: () => true,
   } as unknown as ExtensionContext;
-  const execute = (toolCallId = "tool-call-1", task = "Review the change") =>
-    tool.execute(toolCallId, { task }, undefined, undefined, context);
-  return { context, execute, registered: tool, root, runtime };
+  const execute = (
+    toolCallId = "tool-call-1",
+    task = "Review the change",
+    signal?: AbortSignal,
+  ) => tool.execute(toolCallId, { task }, signal, undefined, context);
+  const shutdown = (reason: "quit" | "reload" | "new" | "resume" | "fork") => {
+    const handler = handlers.get("session_shutdown");
+    if (handler === undefined) throw new Error("session_shutdown was not registered");
+    return Promise.resolve(handler({ type: "session_shutdown", reason }, context));
+  };
+  return { context, execute, registered: tool, root, runtime, shutdown };
 }
 
 test("project extension registers pions_delegate", async (context) => {
@@ -484,4 +549,151 @@ test("Herdr precondition failure occurs at execution rather than registration", 
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   await assert.rejects(value.execute(), (error) => error === failure);
+});
+
+test("Pi interruption requests subtree cancellation once", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const controller = new AbortController();
+  const execution = value.execute("interrupted-call", "Review", controller.signal);
+  void execution.catch(() => undefined);
+  await waitForOperation(runtime);
+  controller.abort();
+  await execution.catch(() => undefined);
+
+  assert.deepEqual(runtime.cancellations, [
+    { operationId: "operation-1", scope: "subtree" },
+  ]);
+});
+
+test("an Operation completed before interruption is not cancelled", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const controller = new AbortController();
+  const execution = value.execute("completed-call", "Review", controller.signal);
+  await waitForOperation(runtime);
+  runtime.results.get("operation-1")?.resolve({
+    body: "done",
+    byteCount: 4,
+    digest: `sha256:${"ab".repeat(32)}`,
+  });
+  await execution;
+  controller.abort();
+
+  assert.equal(runtime.cancellations.length, 0);
+});
+
+test("unproven interrupted cancellation reaches the parent as unknown", async (context) => {
+  const runtime = new PendingRuntime();
+  runtime.cancellationResponse = Promise.resolve({
+    cancellationEpoch: 1,
+    state: "unknown",
+    reason: "cancel-unproven",
+  });
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const controller = new AbortController();
+  const execution = value.execute("unknown-call", "Review", controller.signal);
+  await waitForOperation(runtime);
+  controller.abort();
+
+  await assert.rejects(
+    execution,
+    (error) => error instanceof OperationUnknownError && error.operationId === "operation-1",
+  );
+});
+
+test("failed interrupted cancellation is not reported as cancellation success", async (context) => {
+  const runtime = new PendingRuntime();
+  const failure = new Error("cancellation dispatch failed");
+  const cancellation = deferred<CancellationResult>();
+  runtime.cancellationResponse = cancellation.promise;
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const controller = new AbortController();
+  const execution = value.execute("failed-cancel-call", "Review", controller.signal);
+  await waitForOperation(runtime);
+  controller.abort();
+  cancellation.reject(failure);
+
+  await assert.rejects(execution, (error) => error === failure);
+});
+
+for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
+  test(`session shutdown caused by ${reason} cancels the active Operation`, async (context) => {
+    const runtime = new PendingRuntime();
+    const value = await fixture(runtime);
+    context.after(() => rm(value.root, { recursive: true, force: true }));
+    void value.execute(`${reason}-call`).catch(() => undefined);
+    await waitForOperation(runtime);
+    await value.shutdown(reason);
+
+    assert.deepEqual(runtime.cancellations, [
+      { operationId: "operation-1", scope: "subtree" },
+    ]);
+  });
+}
+
+test("session shutdown waits for cancellation classification", async (context) => {
+  const runtime = new PendingRuntime();
+  const classification = deferred<CancellationResult>();
+  runtime.cancellationResponse = classification.promise;
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  void value.execute("waiting-call").catch(() => undefined);
+  await waitForOperation(runtime);
+  let settled = false;
+  const shutdown = value.shutdown("quit").then(() => { settled = true; });
+  await new Promise(setImmediate);
+
+  assert.equal(settled, false);
+  classification.resolve({ cancellationEpoch: 1, state: "cancelled" });
+  await shutdown;
+});
+
+test("session shutdown cancels every active Operation by its identifier", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  void value.execute("first-call").catch(() => undefined);
+  void value.execute("second-call").catch(() => undefined);
+  await waitForOperation(runtime, "operation-2");
+  await value.shutdown("quit");
+
+  assert.deepEqual(runtime.cancellations, [
+    { operationId: "operation-1", scope: "subtree" },
+    { operationId: "operation-2", scope: "subtree" },
+  ]);
+});
+
+test("interruption and shutdown share one cancellation request", async (context) => {
+  const runtime = new PendingRuntime();
+  const classification = deferred<CancellationResult>();
+  runtime.cancellationResponse = classification.promise;
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const controller = new AbortController();
+  void value.execute("shared-call", "Review", controller.signal).catch(() => undefined);
+  await waitForOperation(runtime);
+  controller.abort();
+  const shutdown = value.shutdown("quit");
+  classification.resolve({ cancellationEpoch: 1, state: "cancelled" });
+  await shutdown;
+
+  assert.equal(runtime.cancellations.length, 1);
+});
+
+test("a failed terminal Operation is no longer tracked at shutdown", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const execution = value.execute("failed-call");
+  await waitForOperation(runtime);
+  runtime.results.get("operation-1")?.reject(new OperationFailedError("operation-1", "agent_failed"));
+  await execution.catch(() => undefined);
+  await value.shutdown("quit");
+
+  assert.equal(runtime.cancellations.length, 0);
 });

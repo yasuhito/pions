@@ -17,11 +17,16 @@ import { Type } from "typebox";
 
 import { makeVisibleRuntime } from "./visible-runtime.js";
 import {
+  OperationCancelledError,
+  OperationUnknownError,
   ProjectConfigurationError,
   WorkerConfigurationError,
 } from "../public.js";
 import type {
+  CancellationResult,
   ModelReference,
+  OperationHandle,
+  Result,
   Runtime,
   ThinkingLevel,
   WorkerProfilePolicy,
@@ -249,6 +254,94 @@ function workerPrompt(task: string): string {
   ].join("\n");
 }
 
+class TrackedOperation {
+  private cancellation?: Promise<CancellationResult>;
+
+  constructor(readonly handle: OperationHandle) {}
+
+  cancel(): Promise<CancellationResult> {
+    if (this.cancellation !== undefined) return this.cancellation;
+    this.cancellation = this.handle.cancel({ scope: "subtree" });
+    void this.cancellation.catch(() => undefined);
+    return this.cancellation;
+  }
+}
+
+class OperationLifetime {
+  private readonly active = new Map<string, TrackedOperation>();
+
+  track(handle: OperationHandle): TrackedOperation {
+    const existing = this.active.get(handle.operationId);
+    if (existing !== undefined) return existing;
+    const operation = new TrackedOperation(handle);
+    this.active.set(handle.operationId, operation);
+    return operation;
+  }
+
+  complete(operation: TrackedOperation): void {
+    if (this.active.get(operation.handle.operationId) === operation) {
+      this.active.delete(operation.handle.operationId);
+    }
+  }
+
+  async cancelAll(): Promise<void> {
+    const outcomes = await Promise.allSettled(
+      Array.from(this.active.values(), (operation) => operation.cancel()),
+    );
+    const failures = outcomes.flatMap((outcome) =>
+      outcome.status === "rejected" ? [outcome.reason] : []
+    );
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Failed to classify all active Operation cancellations");
+    }
+  }
+}
+
+type ResultOutcome =
+  | { readonly type: "result"; readonly result: Result }
+  | { readonly type: "failure"; readonly error: unknown }
+  | { readonly type: "interrupted" };
+
+async function awaitOperation(
+  operation: TrackedOperation,
+  lifetime: OperationLifetime,
+  signal: AbortSignal | undefined,
+): Promise<Result> {
+  let notifyInterrupted!: () => void;
+  const interrupted = new Promise<ResultOutcome>((resolve) => {
+    notifyInterrupted = () => resolve({ type: "interrupted" });
+  });
+  const onAbort = () => notifyInterrupted();
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  const settled: Promise<ResultOutcome> = operation.handle.result().then(
+    (result) => ({ type: "result", result }),
+    (error: unknown) => ({ type: "failure", error }),
+  );
+  if (signal?.aborted) notifyInterrupted();
+
+  try {
+    const outcome = await Promise.race([settled, interrupted]);
+    if (outcome.type === "result") {
+      lifetime.complete(operation);
+      return outcome.result;
+    }
+    if (outcome.type === "failure") {
+      lifetime.complete(operation);
+      throw outcome.error;
+    }
+
+    const cancellation = await operation.cancel();
+    lifetime.complete(operation);
+    if (cancellation.state === "unknown") {
+      throw new OperationUnknownError(operation.handle.operationId, "cancel-unproven");
+    }
+    throw new OperationCancelledError(operation.handle.operationId);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 /** Install the project-local Pi delegation tool. */
 export function installPionsExtension(
   pi: ExtensionAPI,
@@ -256,6 +349,11 @@ export function installPionsExtension(
 ): void {
   const runtimesByConfig = new Map<string, Runtime>();
   const runtimesByCall = new Map<string, Runtime>();
+  const operationLifetime = new OperationLifetime();
+
+  pi.on("session_shutdown", async () => {
+    await operationLifetime.cancelAll();
+  });
 
   pi.registerTool({
     name: "pions_delegate",
@@ -270,7 +368,7 @@ export function installPionsExtension(
       "Compose independent pions_delegate calls in parallel rather than combining multiple tasks in one call.",
     ],
     parameters: DelegateParameters,
-    async execute(toolCallId, parameters, _signal, _onUpdate, context) {
+    async execute(toolCallId, parameters, signal, _onUpdate, context) {
       if (!context.isProjectTrusted()) {
         throw new Error("pions_delegate requires a trusted project");
       }
@@ -321,7 +419,8 @@ export function installPionsExtension(
         tools: REVIEW_TOOLS,
         cwd: normalizedRoot,
       });
-      const result = await handle.result();
+      const operation = operationLifetime.track(handle);
+      const result = await awaitOperation(operation, operationLifetime, signal);
       const truncation = truncateHead(result.body, {
         maxLines: DEFAULT_MAX_LINES,
         maxBytes: DEFAULT_MAX_BYTES,
