@@ -192,19 +192,9 @@ async function completeOperation(
 ) {
   const trace: Array<string> = [];
   const worker = new FakeWorkerAdapter({ messages, trace });
-  const clock = new FakeClock([
-    "2026-09-06T10:00:00.000Z",
-    "2026-09-06T10:00:01.000Z",
-    "2026-09-06T10:00:02.000Z",
-    "2026-09-06T10:00:03.000Z",
-    "2026-09-06T10:00:04.000Z",
-    "2026-09-06T10:00:05.000Z",
-    "2026-09-06T10:00:06.000Z",
-    "2026-09-06T10:00:07.000Z",
-    "2026-09-06T10:00:08.000Z",
-    "2026-09-06T10:00:09.000Z",
-    "2026-09-06T10:00:10.000Z",
-  ]);
+  const clock = new FakeClock(Array.from({ length: 20 }, (_, index) =>
+    `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
+  ));
   const store = new InMemoryEventStore(trace, clock);
   const presentation = new FakePresentation({
     trace,
@@ -551,7 +541,7 @@ test("the default descendant failure policy fails a successful parent", async ()
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
     worker,
-    clock: new FakeClock(Array.from({ length: 30 }, (_, index) => `time-${index}`)),
+    clock: new FakeClock(Array.from({ length: 30 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["root", "child"]),
     presentation: new FakePresentation(),
     store,
@@ -932,7 +922,7 @@ test("Runtime records the successful Operation event sequence", async () => {
       "presentation_owned",
       "operation_starting",
       "worker_launched",
-      "operation_started",
+      "automatic_operation_started",
       "worker_identified",
       "result_persisted",
       "agent_settled",
@@ -991,7 +981,7 @@ async function completeWithPaneClosureFailure() {
   const presentation = new FakePresentation({ paneClosureFails: true });
   const runtime = makeRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `time-${index}`)),
+    clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation,
     store,

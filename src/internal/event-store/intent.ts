@@ -1,6 +1,9 @@
 import type {
   ObservedWorkerConfig,
   OperationFailureReason,
+  StartAuthorizationDecisionRecord,
+  StartInstructionReference,
+  StartupReceipt,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
 import type { ResultDelivery } from "../worker-protocol.js";
@@ -35,7 +38,32 @@ export type OperationIntent =
     }
   | { readonly type: "operation_starting" }
   | { readonly type: "worker_launched" }
-  | { readonly type: "operation_started" }
+  | {
+      readonly type: "startup_receipt_recorded";
+      readonly receipt: Readonly<Omit<StartupReceipt, "digest" | "recordedAt">>;
+      readonly gate: "not_required" | "waiting";
+    }
+  | {
+      readonly type: "start_authorization_decided";
+      readonly gate: "authorized" | "rejected";
+      readonly decision: Readonly<Omit<StartAuthorizationDecisionRecord, "decidedAt">>;
+    }
+  | {
+      readonly type: "start_gate_closed";
+      readonly gate: "expired" | "invalidated";
+    }
+  | {
+      readonly type: "start_instruction_dispatched";
+      readonly instruction: Readonly<StartInstructionReference>;
+    }
+  | {
+      readonly type: "start_instruction_accepted";
+      readonly instruction: Readonly<StartInstructionReference>;
+      readonly proof: "authenticated-worker-acknowledgement";
+    }
+  | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
+  // Existing trusted profiles have no external gate or Startup receipt.
+  | { readonly type: "automatic_operation_started" }
   | {
       readonly type: "worker_identified";
       readonly workerIdentity: Readonly<WorkerIdentity>;
@@ -90,7 +118,20 @@ export type OperationIntent =
       readonly reason: OperationFailureReason;
     };
 
-export type PersistableOperationIntent = Exclude<
-  OperationIntent,
-  { readonly type: "accept_result" }
->;
+export type PersistableOperationIntent =
+  | Exclude<
+      OperationIntent,
+      | { readonly type: "accept_result" }
+      | { readonly type: "startup_receipt_recorded" }
+      | { readonly type: "start_authorization_decided" }
+    >
+  | {
+      readonly type: "startup_receipt_recorded";
+      readonly receipt: Readonly<StartupReceipt>;
+      readonly gate: "not_required" | "waiting";
+    }
+  | {
+      readonly type: "start_authorization_decided";
+      readonly gate: "authorized" | "rejected";
+      readonly decision: Readonly<StartAuthorizationDecisionRecord>;
+    };

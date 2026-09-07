@@ -13,6 +13,7 @@ import type {
 import type {
   ObservedWorkerConfig,
   OperationPersistenceError,
+  StartAuthorizationAuthenticator,
   ResultConflictError,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -158,6 +159,7 @@ export interface RuntimeServices {
   readonly ids: IdGenerator;
   readonly presentation: Presentation;
   readonly store: EventStore;
+  readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
   readonly configuration?: Readonly<{
     readonly cwd: string;
     readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;

@@ -5,6 +5,7 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   rename,
   unlink,
 } from "node:fs/promises";
@@ -16,7 +17,7 @@ import type { RuntimeClock } from "../services.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
-const RECORD_FILE = "events.v8.json";
+const RECORD_FILE = "events.v9.json";
 const RESULT_FILE = "result.utf8";
 
 function hasCode(error: unknown, code: string): boolean {
@@ -165,6 +166,25 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     const directory = await this.operationDirectory(operationId, false);
     if (directory === undefined) return undefined;
     return this.readPrivateFile(join(directory, RESULT_FILE));
+  }
+
+  protected async listOperationIds(): Promise<ReadonlyArray<string>> {
+    if (!(await validateDirectory(this.rootDirectory))) return [];
+    const operationIds: Array<string> = [];
+    for (const entry of await readdir(this.rootDirectory, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const bytes = await this.readPrivateFile(join(this.rootDirectory, entry.name, RECORD_FILE));
+      if (bytes === undefined) continue;
+      const value = JSON.parse(bytes.toString("utf8")) as { readonly operationId?: unknown };
+      if (
+        typeof value.operationId !== "string" ||
+        operationDirectoryKey(value.operationId) !== entry.name
+      ) {
+        throw new Error("Operation index contains a mismatched record");
+      }
+      operationIds.push(value.operationId);
+    }
+    return operationIds.sort();
   }
 
   protected async writeResultBytes(operationId: string, bytes: Buffer): Promise<void> {

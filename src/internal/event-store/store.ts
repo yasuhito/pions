@@ -24,12 +24,13 @@ import type {
   StoreErrorCode,
 } from "./index.js";
 import { ResultConflictError } from "../../public.js";
-import type { Result } from "../../public.js";
+import type { Result, StartupReceipt } from "../../public.js";
 import type {
   ResultAcceptanceProof,
   ResultDelivery,
 } from "../worker-protocol.js";
 import { resultDigest } from "../result-digest.js";
+import { startupReceiptDigest } from "../startup-receipt.js";
 
 export type { StoredOperationRecord } from "./codec.js";
 
@@ -87,6 +88,7 @@ export abstract class ValidatedEventStore implements EventStore {
   ): Promise<void>;
   protected abstract readResultBytes(operationId: string): Promise<Buffer | undefined>;
   protected abstract writeResultBytes(operationId: string, bytes: Buffer): Promise<void>;
+  protected abstract listOperationIds(): Promise<ReadonlyArray<string>>;
   protected didPersistResultBytes(_operationId: string): void {}
   protected didAppend(_event: OperationEvent): void {}
 
@@ -147,12 +149,36 @@ export abstract class ValidatedEventStore implements EventStore {
   }
 
   create(request: OperationRequest): Effect.Effect<OperationSnapshot, StoreError> {
-    return this.appendEvent(request.operationId, {
-      type: "operation_requested",
-      task: request.task,
-      requestedConfig: request.requestedConfig,
-      effectiveConfig: request.effectiveConfig,
-      lineage: request.lineage,
+    return Effect.flatMap(this.clock.now(), (createdAt) => {
+      const authorizationWindowMs = request.authorizationWindowMs ?? 0;
+      if (!Number.isSafeInteger(authorizationWindowMs) || authorizationWindowMs < 0) {
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "corrupt_record" as const,
+          message: "Authorization window must be a non-negative safe integer",
+        });
+      }
+      const parsed = Date.parse(createdAt);
+      if (!Number.isFinite(parsed)) {
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "corrupt_record" as const,
+          message: "Creation timestamp must be an absolute timestamp",
+        });
+      }
+      const deadline = new Date(parsed + authorizationWindowMs).toISOString();
+      return this.appendEvent(request.operationId, {
+        type: "operation_requested",
+        task: request.task,
+        requestedConfig: request.requestedConfig,
+        effectiveConfig: request.effectiveConfig,
+        lineage: request.lineage,
+        startAuthorizationTiming: {
+          createdAt,
+          windowMs: authorizationWindowMs,
+          deadline,
+        },
+      }, createdAt);
     });
   }
 
@@ -162,31 +188,122 @@ export abstract class ValidatedEventStore implements EventStore {
   ): Effect.Effect<OperationSnapshot, StoreError | ResultConflictError> {
     if (intent.type === "accept_result") {
       return this.acceptResult(operationId, intent.delivery).pipe(
-        Effect.map(({ operation, result, resultAcceptanceProof }) => ({
+        Effect.map(({ version, operation, result, resultAcceptanceProof }) => ({
+          version,
           operation,
           result,
           resultAcceptanceProof,
         })),
       );
     }
+    if (intent.type === "startup_receipt_recorded") {
+      return Effect.flatMap(this.read(operationId), (snapshot) => {
+        const observedConfig = snapshot.operation.observedConfig;
+        if (observedConfig === undefined) {
+          return Effect.fail({
+            _tag: "StoreError" as const,
+            code: "corrupt_record" as const,
+            message: "Startup receipt requires observed Worker configuration",
+          });
+        }
+        return Effect.flatMap(this.clock.now(), (recordedAt) => {
+          const receipt = intent.receipt;
+          const owner = receipt.workspace.owner.state === "known"
+            ? { state: "known" as const, ownerId: receipt.workspace.owner.ownerId }
+            : { state: "unknown" as const };
+          const receiptWithoutDigest: Omit<StartupReceipt, "digest"> = {
+            operationId: receipt.operationId,
+            recordedAt,
+            workerIdentity: {
+              processId: receipt.workerIdentity.processId,
+              processInstanceId: receipt.workerIdentity.processInstanceId,
+              processStartToken: receipt.workerIdentity.processStartToken,
+              piSessionId: receipt.workerIdentity.piSessionId,
+              paneId: receipt.workerIdentity.paneId,
+            },
+            requestedConfig: structuredClone(snapshot.operation.requestedConfig),
+            effectiveConfig: structuredClone(snapshot.operation.effectiveConfig),
+            observedConfig: structuredClone(observedConfig),
+            workspace: {
+              workspaceId: receipt.workspace.workspaceId,
+              normalizedPath: receipt.workspace.normalizedPath,
+              baseRevision: receipt.workspace.baseRevision,
+              owner,
+              pionsMayDelete: false,
+            },
+            permissionManifest: {
+              manifestId: receipt.permissionManifest.manifestId,
+              digest: receipt.permissionManifest.digest,
+            },
+            reviewSubject: {
+              artifactId: receipt.reviewSubject.artifactId,
+              byteCount: receipt.reviewSubject.byteCount,
+              digest: receipt.reviewSubject.digest,
+              format: receipt.reviewSubject.format,
+              normalization: receipt.reviewSubject.normalization,
+            },
+            configuredAuthorizationPolicy: receipt.configuredAuthorizationPolicy,
+            authorizationPolicy: receipt.authorizationPolicy,
+            authorizationDeadline: receipt.authorizationDeadline,
+          };
+          return this.appendEvent(operationId, {
+            ...intent,
+            receipt: {
+              ...receiptWithoutDigest,
+              digest: startupReceiptDigest(receiptWithoutDigest),
+            },
+          }, recordedAt);
+        });
+      });
+    }
+    if (intent.type === "start_authorization_decided") {
+      return Effect.flatMap(this.clock.now(), (decidedAt) => this.appendEvent(
+        operationId,
+        { ...intent, decision: { ...intent.decision, decidedAt } },
+        decidedAt,
+      ));
+    }
     return this.appendEvent(operationId, intent);
   }
 
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError> {
     return Effect.tryPromise({
-      try: async () => {
+      try: () => this.serialize(operationId, async () => {
         const loaded = await this.load(operationId, true);
         if (loaded === undefined) throw failure("not_found", `Operation not found: ${operationId}`);
+        const lastEvent = loaded.record.events.at(-1);
+        if (lastEvent === undefined) throw failure("corrupt_record", "Operation record has no events");
         return {
+          version: { sequenceNumber: lastEvent.seq, recordedAt: lastEvent.timestamp },
           operation: loaded.operation,
           ...(loaded.result === undefined ? {} : { result: loaded.result }),
         };
+      }),
+      catch: (error) => asStoreError(error, "corrupt_record"),
+    });
+  }
+
+  listWaitingStartAuthorizations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError> {
+    return Effect.tryPromise({
+      try: async () => {
+        const operationIds = await this.listOperationIds();
+        const snapshots = await Promise.all(operationIds.map((operationId) =>
+          Effect.runPromise(this.read(operationId)),
+        ));
+        return snapshots.filter((snapshot) =>
+          snapshot.operation.startGate === "waiting" &&
+          snapshot.operation.startupReceipt !== undefined,
+        );
       },
       catch: (error) => asStoreError(error, "corrupt_record"),
     });
   }
 
-  private appendEvent(operationId: string, input: EventInput): Effect.Effect<OperationSnapshot, StoreError> {
+  private appendEvent(
+    operationId: string,
+    input: EventInput,
+    fixedTimestamp?: string,
+  ): Effect.Effect<OperationSnapshot, StoreError> {
     return Effect.tryPromise({
       try: () => this.serialize(operationId, async () => {
         const loaded = await this.load(operationId, input.type !== "operation_requested");
@@ -199,21 +316,32 @@ export abstract class ValidatedEventStore implements EventStore {
           operationId,
           schemaVersion: EVENT_SCHEMA_VERSION,
           seq,
-          timestamp: await Effect.runPromise(this.clock.now()),
+          timestamp: fixedTimestamp ?? await Effect.runPromise(this.clock.now()),
         } as OperationEvent;
-        const operation = reduceOperation(loaded?.operation, event);
-        const record: StoredOperationRecord = {
+        if (!Number.isFinite(Date.parse(event.timestamp))) {
+          throw failure("corrupt_record", "Operation event timestamp is not absolute");
+        }
+        const record = decodeRecord({
           schemaVersion: EVENT_SCHEMA_VERSION,
           operationId,
           events: [...(loaded?.record.events ?? []), event],
-        };
+        }, operationId);
+        const persistedEvent = record.events.at(-1);
+        if (persistedEvent === undefined) {
+          throw failure("corrupt_record", "Operation record has no events");
+        }
+        const operation = reduceOperation(loaded?.operation, persistedEvent);
         try {
           await this.writeRecord(operationId, record);
         } catch (error) {
           throw failure("write_failed", error instanceof Error ? error.message : String(error));
         }
-        this.didAppend(event);
+        this.didAppend(persistedEvent);
         return {
+          version: {
+            sequenceNumber: persistedEvent.seq,
+            recordedAt: persistedEvent.timestamp,
+          },
           operation,
           ...(loaded?.result === undefined ? {} : { result: loaded.result }),
         };
@@ -224,6 +352,7 @@ export abstract class ValidatedEventStore implements EventStore {
 
   private acceptResult(operationId: string, delivery: ResultDelivery): Effect.Effect<
     {
+      readonly version: Readonly<{ readonly sequenceNumber: number; readonly recordedAt: string }>;
       readonly operation: Operation;
       readonly result: Result;
       readonly resultAcceptanceProof: ResultAcceptanceProof;
@@ -241,7 +370,10 @@ export abstract class ValidatedEventStore implements EventStore {
         }
         if (loaded.result !== undefined && loaded.resultReference !== undefined) {
           if (loaded.result.digest === delivery.digest) {
+            const lastEvent = loaded.record.events.at(-1);
+            if (lastEvent === undefined) throw failure("corrupt_record", "Operation record has no events");
             return {
+              version: { sequenceNumber: lastEvent.seq, recordedAt: lastEvent.timestamp },
               operation: loaded.operation,
               result: loaded.result,
               resultAcceptanceProof: acceptedDeliveryProof(operationId, delivery),
@@ -273,7 +405,7 @@ export abstract class ValidatedEventStore implements EventStore {
           try {
             reduceOperation(loaded.operation, {
               ...eventWithoutTimestamp,
-              timestamp: "result-conflict-preflight",
+              timestamp: loaded.record.events.at(-1)!.timestamp,
             });
           } catch (error) {
             throw failure(
@@ -282,9 +414,13 @@ export abstract class ValidatedEventStore implements EventStore {
             );
           }
           try {
+            const timestamp = await Effect.runPromise(this.clock.now());
+            if (!Number.isFinite(Date.parse(timestamp))) {
+              throw failure("corrupt_record", "Operation event timestamp is not absolute");
+            }
             const event = {
               ...eventWithoutTimestamp,
-              timestamp: await Effect.runPromise(this.clock.now()),
+              timestamp,
             } satisfies OperationEvent;
             await this.writeRecord(operationId, {
               ...loaded.record,
@@ -325,7 +461,7 @@ export abstract class ValidatedEventStore implements EventStore {
         try {
           operation = reduceOperation(loaded.operation, {
             ...eventWithoutTimestamp,
-            timestamp: "result-acceptance-preflight",
+            timestamp: loaded.record.events.at(-1)!.timestamp,
           });
         } catch (error) {
           throw failure(
@@ -336,16 +472,22 @@ export abstract class ValidatedEventStore implements EventStore {
         try {
           await this.writeResultBytes(operationId, bytes);
           this.didPersistResultBytes(operationId);
+          const timestamp = await Effect.runPromise(this.clock.now());
+          if (!Number.isFinite(Date.parse(timestamp))) {
+            throw failure("corrupt_record", "Operation event timestamp is not absolute");
+          }
           const event = {
             ...eventWithoutTimestamp,
-            timestamp: await Effect.runPromise(this.clock.now()),
+            timestamp,
           } satisfies OperationEvent;
+          operation = reduceOperation(loaded.operation, event);
           await this.writeRecord(operationId, {
             ...loaded.record,
             events: [...loaded.record.events, event],
           });
           this.didAppend(event);
           return {
+            version: { sequenceNumber: event.seq, recordedAt: event.timestamp },
             operation,
             result,
             resultAcceptanceProof: acceptedDeliveryProof(operationId, delivery),

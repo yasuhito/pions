@@ -73,6 +73,12 @@ function operation(paneId?: string): Operation {
     task: { promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" },
     requestedConfig,
     effectiveConfig,
+    startAuthorizationTiming: {
+      createdAt: "2026-09-06T10:00:00.000Z",
+      windowMs: 0,
+      deadline: "2026-09-06T10:00:00.000Z",
+    },
+    startGate: "not_required",
     childOperationIds: [],
     settledChildOperationIds: [],
     descendantFailure: false,
@@ -292,7 +298,7 @@ test("failed ownership persistence rolls back exactly the created pane", async (
   ]);
   const runtime = makeRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
-    clock: new FakeClock(["time-0"]),
+    clock: new FakeClock(["2026-09-06T10:00:00.000Z"]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(executor),
     store: new OwnershipFailingStore(),
@@ -333,7 +339,7 @@ test("a Herdr projection failure cannot create Operation completion", async () =
       messages: { body: "unused" },
       failure: "worker_start_failed",
     }),
-    clock: new FakeClock(Array.from({ length: 5 }, (_, index) => `time-${index}`)),
+    clock: new FakeClock(Array.from({ length: 5 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(executor),
     store,
@@ -358,7 +364,7 @@ test("Runtime persists ownership returned by Herdr", async () => {
   const store = new InMemoryEventStore();
   const runtime = makeRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
-    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `time-${index}`)),
+    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(executor),
     store,

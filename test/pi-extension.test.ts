@@ -50,9 +50,19 @@ class FakeRuntime implements Runtime {
     const outcome = this.outcome;
     return {
       operationId: "operation-1",
+      read: () => Promise.reject(new Error("unused")),
+      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
       result: () => outcome instanceof Error ? Promise.reject(outcome) : Promise.resolve(outcome),
       cancel: () => Promise.resolve({ cancellationEpoch: 1, state: "cancelled" }),
     };
+  }
+
+  operation(): Promise<never> {
+    return Promise.reject(new Error("unused"));
+  }
+
+  startAuthorizationInbox(): Promise<never> {
+    return Promise.reject(new Error("unused"));
   }
 }
 
@@ -87,6 +97,8 @@ class PendingRuntime implements Runtime {
     this.results.set(operationId, result);
     return {
       operationId,
+      read: () => Promise.reject(new Error("unused")),
+      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
       result: () => result.promise,
       cancel: async ({ scope }) => {
         this.cancellations.push({ operationId, scope });
@@ -99,6 +111,14 @@ class PendingRuntime implements Runtime {
         return response;
       },
     };
+  }
+
+  operation(): Promise<never> {
+    return Promise.reject(new Error("unused"));
+  }
+
+  startAuthorizationInbox(): Promise<never> {
+    return Promise.reject(new Error("unused"));
   }
 }
 

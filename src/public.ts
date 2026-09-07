@@ -106,6 +106,166 @@ export interface Result {
   readonly digest: `sha256:${string}`;
 }
 
+export type OperationState =
+  | "queued"
+  | "starting"
+  | "running"
+  | "blocked"
+  | "self_settled"
+  | "draining_descendants"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+export interface OperationVersion {
+  readonly sequenceNumber: number;
+  readonly recordedAt: string;
+}
+
+export interface StartAuthorizationTiming {
+  readonly createdAt: string;
+  readonly windowMs: number;
+  readonly deadline: string;
+}
+
+export type StartGateState =
+  | "not_required"
+  | "waiting"
+  | "authorized"
+  | "rejected"
+  | "expired"
+  | "invalidated";
+
+export interface StartupReceipt {
+  readonly operationId: string;
+  readonly digest: `sha256:${string}`;
+  readonly recordedAt: string;
+  readonly workerIdentity: Readonly<{
+    readonly processId: number;
+    readonly processInstanceId: string;
+    readonly processStartToken: string;
+    readonly piSessionId: string;
+    readonly paneId: string;
+  }>;
+  readonly requestedConfig: Readonly<RequestedWorkerConfig>;
+  readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
+  readonly observedConfig: Readonly<ObservedWorkerConfig>;
+  readonly workspace: Readonly<{
+    readonly workspaceId: string;
+    readonly normalizedPath: string;
+    readonly baseRevision: string;
+    readonly owner: { readonly state: "known"; readonly ownerId: string } | { readonly state: "unknown" };
+    readonly pionsMayDelete: false;
+  }>;
+  readonly permissionManifest: Readonly<{
+    readonly manifestId: string;
+    readonly digest: `sha256:${string}`;
+  }>;
+  readonly reviewSubject: Readonly<{
+    readonly artifactId: string;
+    readonly byteCount: number;
+    readonly digest: `sha256:${string}`;
+    readonly format: string;
+    readonly normalization: string;
+  }>;
+  readonly configuredAuthorizationPolicy: "disabled" | "optional" | "required";
+  readonly authorizationPolicy: "disabled" | "required";
+  readonly authorizationDeadline: string;
+}
+
+export interface StartAuthorizationDecisionRecord {
+  readonly decisionId: string;
+  readonly kind: "authorize" | "reject";
+  readonly actorId: string;
+  readonly receiptDigest: StartupReceipt["digest"];
+  readonly decidedAt: string;
+}
+
+export interface StartAuthorizationSnapshot {
+  readonly timing: Readonly<StartAuthorizationTiming>;
+  readonly gate: StartGateState;
+  readonly receipt?: Readonly<StartupReceipt>;
+  readonly decision?: Readonly<StartAuthorizationDecisionRecord>;
+}
+
+export interface StartInstructionReference {
+  readonly workerProcessInstanceId: string;
+  readonly receiptDigest: StartupReceipt["digest"];
+  readonly authorizationDecisionId?: string;
+  readonly deliveryGeneration: number;
+}
+
+export interface StartInstructionDeliveryEvidence extends StartInstructionReference {
+  readonly dispatchedAt: string;
+}
+
+export interface StartInstructionAcceptanceEvidence extends StartInstructionReference {
+  readonly acceptedAt: string;
+  readonly proof: "authenticated-worker-acknowledgement";
+}
+
+export interface ResultAcceptanceEvidence {
+  readonly acceptedAt: string;
+  readonly deliverySequenceNumber: number;
+  readonly byteCount: number;
+  readonly digest: Result["digest"];
+}
+
+export interface StopConfirmationEvidence {
+  readonly confirmedAt: string;
+  readonly proof: "worker-stop";
+}
+
+export interface CleanupDiagnostic {
+  readonly code: "pane_close_failed";
+}
+
+export interface OperationSnapshot {
+  readonly operationId: string;
+  readonly version: Readonly<OperationVersion>;
+  readonly state: OperationState;
+  readonly failureReason?: OperationFailureReason;
+  readonly startAuthorization: Readonly<StartAuthorizationSnapshot>;
+  readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
+  readonly startInstructionAcceptance?: Readonly<StartInstructionAcceptanceEvidence>;
+  readonly resultAcceptance?: Readonly<ResultAcceptanceEvidence>;
+  readonly stopConfirmation?: Readonly<StopConfirmationEvidence>;
+  readonly cleanupDiagnostics: ReadonlyArray<Readonly<CleanupDiagnostic>>;
+}
+
+export interface OperationReader {
+  readonly operationId: string;
+  read(): Promise<Readonly<OperationSnapshot>>;
+  /** Returns undefined after a profile without an external Start gate terminates. */
+  waitForStartupReceipt(): Promise<Readonly<StartupReceipt> | undefined>;
+}
+
+export interface WaitingStartAuthorization {
+  readonly operationId: string;
+  readonly version: Readonly<OperationVersion>;
+  readonly deadline: string;
+  readonly receipt: Readonly<StartupReceipt>;
+}
+
+export interface StartAuthorizationInbox {
+  listWaiting(): Promise<ReadonlyArray<Readonly<WaitingStartAuthorization>>>;
+}
+
+export interface AuthenticatedStartAuthorizer {
+  readonly subjectId: string;
+  canAuthorize(operationId: string): Promise<boolean>;
+}
+
+export interface StartAuthorizationAuthenticator {
+  authenticate(credential: string): Promise<Readonly<AuthenticatedStartAuthorizer>>;
+}
+
+export class StartAuthorizationAuthenticationError extends Error {
+  override readonly name = "StartAuthorizationAuthenticationError";
+}
+
 export type OperationFailureReason =
   | "worker_start_failed"
   | "worker_protocol_failed"
@@ -230,12 +390,13 @@ export interface CancellationResult {
   readonly reason?: "cancel-unproven";
 }
 
-export interface OperationHandle {
-  readonly operationId: string;
+export interface OperationHandle extends OperationReader {
   result(): Promise<Result>;
   cancel(options: CancelOptions): Promise<CancellationResult>;
 }
 
 export interface Runtime {
   spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle>;
+  operation(operationId: string): Promise<OperationReader>;
+  startAuthorizationInbox(credential: string): Promise<StartAuthorizationInbox>;
 }

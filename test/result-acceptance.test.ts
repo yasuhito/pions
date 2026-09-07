@@ -41,7 +41,7 @@ async function runningOperation(
   }));
   await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
   await Effect.runPromise(store.advance(operationId, { type: "worker_launched" }));
-  return Effect.runPromise(store.advance(operationId, { type: "operation_started" })).then(
+  return Effect.runPromise(store.advance(operationId, { type: "automatic_operation_started" })).then(
     (snapshot) => snapshot.operation,
   );
 }
@@ -57,7 +57,7 @@ function delivery(
 test("an empty Result delivery is a protocol failure", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({ store });
@@ -70,7 +70,7 @@ test("an empty Result delivery is a protocol failure", async () => {
 test("a Result delivery for another Operation is a protocol failure", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({ store });
@@ -85,8 +85,8 @@ test("a Result delivery for another Operation is a protocol failure", async () =
 
 test("a zero Result delivery sequence is a protocol failure", async () => {
   const store = new InMemoryEventStore([], new FakeClock([
-    "time-1", "time-2", "time-3", "time-4", "time-5",
-    "time-6",
+    "2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z",
+    "2026-09-06T10:00:06.000Z",
   ]));
   await runningOperation(store);
   const outcome = await Effect.runPromise(
@@ -98,8 +98,8 @@ test("a zero Result delivery sequence is a protocol failure", async () => {
 
 test("a fractional Result delivery sequence is a protocol failure", async () => {
   const store = new InMemoryEventStore([], new FakeClock([
-    "time-1", "time-2", "time-3", "time-4", "time-5",
-    "time-6",
+    "2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z",
+    "2026-09-06T10:00:06.000Z",
   ]));
   await runningOperation(store);
   const outcome = await Effect.runPromise(
@@ -111,8 +111,8 @@ test("a fractional Result delivery sequence is a protocol failure", async () => 
 
 test("an unsafe Result delivery sequence is a protocol failure", async () => {
   const store = new InMemoryEventStore([], new FakeClock([
-    "time-1", "time-2", "time-3", "time-4", "time-5",
-    "time-6",
+    "2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z",
+    "2026-09-06T10:00:06.000Z",
   ]));
   await runningOperation(store);
   const outcome = await Effect.runPromise(
@@ -127,7 +127,7 @@ test("an unsafe Result delivery sequence is a protocol failure", async () => {
 
 test("a Result delivery with a mismatched digest is a protocol failure", async () => {
   const store = new InMemoryEventStore([], new FakeClock([
-    "time-1", "time-2", "time-3", "time-4", "time-5", "time-6",
+    "2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z",
   ]));
   await runningOperation(store);
   const outcome = await Effect.runPromise(
@@ -143,7 +143,7 @@ test("Result acceptance persists bytes before returning a proof", async () => {
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(
     trace,
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
   );
   await runningOperation(store);
   trace.length = 0;
@@ -153,14 +153,14 @@ test("Result acceptance persists bytes before returning a proof", async () => {
 
   assert.deepEqual(trace, [
     "result:bytes-persisted",
-    'event:{"operationId":"operation-1","type":"result_persisted","seq":6,"timestamp":"time-6"}',
+    'event:{"operationId":"operation-1","type":"result_persisted","seq":6,"timestamp":"2026-09-06T10:00:06.000Z"}',
   ]);
 });
 
 test("Result acceptance returns one proof for each same-Result retry", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({ store });
@@ -180,7 +180,7 @@ test("a same-Result retry adds one acceptance event", async () => {
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(
     trace,
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
   );
   await runningOperation(store);
   trace.length = 0;
@@ -200,7 +200,7 @@ test("a same-Result retry adds one acceptance event", async () => {
 test("a conflicting Result receives no acceptance proof", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6", "time-7"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({ store });
@@ -219,7 +219,7 @@ test("a conflicting Result receives no acceptance proof", async () => {
 test("Result acceptance preserves the first conflict", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6", "time-7"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({ store });
@@ -241,7 +241,7 @@ test("Result acceptance preserves the first conflict", async () => {
 test("a same-Result retry after a conflict receives an acceptance proof", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6", "time-7"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({ store });
@@ -261,7 +261,7 @@ test("a same-Result retry after a conflict receives an acceptance proof", async 
 test("Result acceptance returns persisted conflict evidence after restart", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6", "time-7"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
   );
   await runningOperation(store);
   const firstAcceptance = makeResultAcceptance({ store });
@@ -287,7 +287,7 @@ test("Result acceptance returns persisted conflict evidence after restart", asyn
 test("a conflicting Result does not replace the accepted Result", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6", "time-7"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({ store });
@@ -303,7 +303,7 @@ test("a conflicting Result does not replace the accepted Result", async () => {
 test("a persistence failure returns no acceptance proof", async () => {
   const store = new InMemoryEventStore(
     [],
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z"]),
   );
   await runningOperation(store);
   const acceptance = makeResultAcceptance({ store });
@@ -319,7 +319,7 @@ test("cancellation before Result acceptance leaves no Result bytes", async () =>
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(
     trace,
-    new FakeClock(["time-1", "time-2", "time-3", "time-4", "time-5", "time-6"]),
+    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
   );
   await runningOperation(store);
   await Effect.runPromise(store.advance("operation-1", {

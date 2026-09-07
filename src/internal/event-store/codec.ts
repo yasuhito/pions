@@ -30,6 +30,9 @@ export class RecordDecodingError extends Error {
 const SafeInteger = Schema.Number.pipe(
   Schema.filter(Number.isSafeInteger, { message: () => "Expected a safe integer" }),
 );
+const NonNegativeSafeInteger = SafeInteger.pipe(
+  Schema.filter((value) => value >= 0, { message: () => "Expected a non-negative safe integer" }),
+);
 const Digest = Schema.String.pipe(
   Schema.filter((value) => value.startsWith("sha256:"), {
     message: () => "Expected a sha256 digest",
@@ -92,6 +95,60 @@ const ResultReference = Schema.Struct({
   digest: Digest,
   deliverySequenceNumber: SafeInteger,
 });
+const StartAuthorizationTiming = Schema.Struct({
+  createdAt: Schema.String,
+  windowMs: NonNegativeSafeInteger,
+  deadline: Schema.String,
+});
+const WorkspaceReceipt = Schema.Struct({
+  workspaceId: Schema.String,
+  normalizedPath: Schema.String,
+  baseRevision: Schema.String,
+  owner: Schema.Union(
+    Schema.Struct({ state: Schema.Literal("known"), ownerId: Schema.String }),
+    Schema.Struct({ state: Schema.Literal("unknown") }),
+  ),
+  pionsMayDelete: Schema.Literal(false),
+});
+const PermissionManifestReceipt = Schema.Struct({
+  manifestId: Schema.String,
+  digest: Digest,
+});
+const ReviewSubjectReceipt = Schema.Struct({
+  artifactId: Schema.String,
+  byteCount: NonNegativeSafeInteger,
+  digest: Digest,
+  format: Schema.String,
+  normalization: Schema.String,
+});
+const StartupReceipt = Schema.Struct({
+  operationId: Schema.String,
+  digest: Digest,
+  recordedAt: Schema.String,
+  workerIdentity: WorkerIdentity,
+  requestedConfig: RequestedWorkerConfigSchema,
+  effectiveConfig: EffectiveWorkerConfigSchema,
+  observedConfig: ObservedWorkerConfigSchema,
+  workspace: WorkspaceReceipt,
+  permissionManifest: PermissionManifestReceipt,
+  reviewSubject: ReviewSubjectReceipt,
+  configuredAuthorizationPolicy: Schema.Literal("disabled", "optional", "required"),
+  authorizationPolicy: Schema.Literal("disabled", "required"),
+  authorizationDeadline: Schema.String,
+});
+const StartInstructionReference = Schema.Struct({
+  workerProcessInstanceId: Schema.String,
+  receiptDigest: Digest,
+  authorizationDecisionId: Schema.optional(Schema.String),
+  deliveryGeneration: NonNegativeSafeInteger,
+});
+const StartAuthorizationDecision = Schema.Struct({
+  decisionId: Schema.String,
+  kind: Schema.Literal("authorize", "reject"),
+  actorId: Schema.String,
+  receiptDigest: Digest,
+  decidedAt: Schema.String,
+});
 const ResultConflict = Schema.Struct({
   acceptedDigest: Digest,
   conflictingDigest: Digest,
@@ -120,6 +177,40 @@ const OperationEventSchema = Schema.Union(
     requestedConfig: RequestedWorkerConfigSchema,
     effectiveConfig: EffectiveWorkerConfigSchema,
     lineage: Lineage,
+    startAuthorizationTiming: StartAuthorizationTiming,
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("startup_receipt_recorded"),
+    receipt: StartupReceipt,
+    gate: Schema.Literal("not_required", "waiting"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_authorization_decided"),
+    gate: Schema.Literal("authorized", "rejected"),
+    decision: StartAuthorizationDecision,
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_gate_closed"),
+    gate: Schema.Literal("expired", "invalidated"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_instruction_dispatched"),
+    instruction: StartInstructionReference,
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_instruction_accepted"),
+    instruction: StartInstructionReference,
+    proof: Schema.Literal("authenticated-worker-acknowledgement"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("worker_stop_confirmed"),
+    proof: Schema.Literal("worker-stop"),
   }),
   Schema.Struct({
     ...EventMetadataFields,
@@ -139,7 +230,7 @@ const OperationEventSchema = Schema.Union(
   }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_starting") }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("worker_launched") }),
-  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_started") }),
+  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("automatic_operation_started") }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("worker_identified"),

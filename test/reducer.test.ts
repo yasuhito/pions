@@ -30,7 +30,7 @@ type TestEventInput =
   | Exclude<EventInput, { readonly type: "operation_requested" }>
   | Omit<
       Extract<EventInput, { readonly type: "operation_requested" }>,
-      "lineage" | "requestedConfig" | "effectiveConfig"
+      "lineage" | "requestedConfig" | "effectiveConfig" | "startAuthorizationTiming"
     >;
 
 function event(seq: number, value: TestEventInput): OperationEvent {
@@ -41,6 +41,11 @@ function event(seq: number, value: TestEventInput): OperationEvent {
           lineage: { rootOperationId: metadata.operationId, depth: 0 },
           requestedConfig,
           effectiveConfig,
+          startAuthorizationTiming: {
+            createdAt: metadata.timestamp,
+            windowMs: 0,
+            deadline: metadata.timestamp,
+          },
         }
       : {}),
     ...value,
@@ -69,8 +74,26 @@ function runningOperation(): Operation {
     starting,
     event(3, { type: "worker_launched" }),
   );
-  return reduceOperation(launched, event(4, { type: "operation_started" }));
+  return reduceOperation(launched, event(4, { type: "automatic_operation_started" }));
 }
+
+test("reducer rejects an inconsistent fixed authorization deadline", () => {
+  const requested = event(1, {
+    type: "operation_requested",
+    task: { promptRef: "prompt", profile: "coding", idempotencyKey: "task" },
+  }) as Extract<OperationEvent, { readonly type: "operation_requested" }>;
+
+  assert.throws(
+    () => reduceOperation(undefined, {
+      ...requested,
+      startAuthorizationTiming: {
+        ...requested.startAuthorizationTiming,
+        deadline: "2026-09-06T10:01:00.000Z",
+      },
+    }),
+    (error) => error instanceof TransitionError && error.code === "illegal_transition",
+  );
+});
 
 test("reducer refuses Operation start without Worker launch evidence", () => {
   const requested = reduceOperation(undefined, event(1, {
@@ -80,7 +103,22 @@ test("reducer refuses Operation start without Worker launch evidence", () => {
   const starting = reduceOperation(requested, event(2, { type: "operation_starting" }));
 
   assert.throws(
-    () => reduceOperation(starting, event(3, { type: "operation_started" })),
+    () => reduceOperation(starting, event(3, { type: "automatic_operation_started" })),
+    (error) => error instanceof TransitionError && error.code === "illegal_transition",
+  );
+});
+
+test("reducer refuses stop confirmation before Worker launch", () => {
+  const requested = reduceOperation(undefined, event(1, {
+    type: "operation_requested",
+    task: { promptRef: "prompt", profile: "coding", idempotencyKey: "task" },
+  }));
+
+  assert.throws(
+    () => reduceOperation(requested, event(2, {
+      type: "worker_stop_confirmed",
+      proof: "worker-stop",
+    })),
     (error) => error instanceof TransitionError && error.code === "illegal_transition",
   );
 });
@@ -193,7 +231,7 @@ test("replay reconstructs a terminal failure reason", () => {
     }),
     event(2, { type: "operation_starting" }),
     event(3, { type: "worker_launched" }),
-    event(4, { type: "operation_started" }),
+    event(4, { type: "automatic_operation_started" }),
     event(5, {
       type: "self_settled",
       outcome: "failed",
@@ -237,7 +275,7 @@ test("replay reconstructs the same snapshot", () => {
     }),
     event(2, { type: "operation_starting" }),
     event(3, { type: "worker_launched" }),
-    event(4, { type: "operation_started" }),
+    event(4, { type: "automatic_operation_started" }),
     event(5, { type: "operation_blocked" }),
     event(6, { type: "operation_unblocked" }),
   ];

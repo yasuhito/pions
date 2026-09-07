@@ -4,6 +4,7 @@ import type {
   Operation,
   OperationIntent,
   OperationLineage,
+  OperationSnapshot as StoredOperationSnapshot,
   StoreError,
 } from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
@@ -24,6 +25,7 @@ import {
   OperationFailedError,
   OperationPersistenceError,
   OperationUnknownError,
+  StartAuthorizationAuthenticationError,
   ResultConflictError,
   SpawnRejectedError,
 } from "../public.js";
@@ -32,6 +34,8 @@ import type {
   CancelOptions,
   OperationFailureReason,
   OperationHandle,
+  OperationReader,
+  OperationSnapshot as PublicOperationSnapshot,
   Result,
   Runtime,
   SpawnOptions,
@@ -139,6 +143,58 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           : persistenceError(operationId, error),
       ),
     );
+
+  const publicSnapshot = (
+    stored: Readonly<StoredOperationSnapshot>,
+  ): Readonly<PublicOperationSnapshot> => {
+    const operation = stored.operation;
+    const resultAcceptance = operation.result === undefined ||
+        operation.resultAcceptedAt === undefined ||
+        stored.result === undefined
+      ? undefined
+      : {
+          acceptedAt: operation.resultAcceptedAt,
+          deliverySequenceNumber: operation.result.deliverySequenceNumber,
+          byteCount: stored.result.byteCount,
+          digest: stored.result.digest,
+        };
+    return Object.freeze({
+      operationId: operation.operationId,
+      version: Object.freeze({ ...stored.version }),
+      state: operation.state,
+      ...(operation.failureReason === undefined
+        ? {}
+        : { failureReason: operation.failureReason }),
+      startAuthorization: Object.freeze({
+        timing: Object.freeze({ ...operation.startAuthorizationTiming }),
+        gate: operation.startGate,
+        ...(operation.startupReceipt === undefined ? {} : { receipt: operation.startupReceipt }),
+        ...(operation.startAuthorizationDecision === undefined
+          ? {}
+          : { decision: operation.startAuthorizationDecision }),
+      }),
+      ...(operation.startInstructionDelivery === undefined
+        ? {}
+        : { startInstructionDelivery: operation.startInstructionDelivery }),
+      ...(operation.startInstructionAcceptance === undefined
+        ? {}
+        : { startInstructionAcceptance: operation.startInstructionAcceptance }),
+      ...(resultAcceptance === undefined
+        ? {}
+        : { resultAcceptance: Object.freeze(resultAcceptance) }),
+      ...(operation.workerStopConfirmedAt === undefined
+        ? {}
+        : { stopConfirmation: Object.freeze({ confirmedAt: operation.workerStopConfirmedAt, proof: "worker-stop" as const }) }),
+      cleanupDiagnostics: Object.freeze(operation.presentationCleanupFailure === undefined
+        ? []
+        : [Object.freeze({ code: operation.presentationCleanupFailure })]),
+    });
+  };
+
+  const readStoredSnapshot = (operationId: string) =>
+    runEffect(services.store.read(operationId).pipe(
+      Effect.mapError((error) => persistenceError(operationId, error)),
+    ));
 
   const getOperation = (operationId: string) =>
     services.store.read(operationId).pipe(
@@ -311,7 +367,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         ),
         workerIdentified: (workerIdentity) => advanceOperation(
           record.operationId,
-          { type: "operation_started" },
+          { type: "automatic_operation_started" },
         ).pipe(
           Effect.tap((started) => project(started)),
           Effect.flatMap((started) => advanceOperation(record.operationId, {
@@ -381,6 +437,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       }
       if (workerOutcome.successfulExitConfirmed === true) {
         record.successfulExitConfirmed = true;
+        operation = await runEffect(
+          advanceOperation(record.operationId, {
+            type: "worker_stop_confirmed",
+            proof: "worker-stop",
+          }),
+        );
+        await runEffect(project(operation));
       }
 
       operation = await runEffect(
@@ -783,6 +846,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     return beginCancellation(record, options);
   };
 
+  const createReader = (operationId: string): OperationReader => ({
+    operationId,
+    read: async () => publicSnapshot(await readStoredSnapshot(operationId)),
+    waitForStartupReceipt: async () => {
+      while (true) {
+        const snapshot = publicSnapshot(await readStoredSnapshot(operationId));
+        const receipt = snapshot.startAuthorization.receipt;
+        if (receipt !== undefined) return receipt;
+        if (snapshot.state === "completed" || snapshot.state === "failed" ||
+            snapshot.state === "cancelled" || snapshot.state === "unknown") {
+          return undefined;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    },
+  });
+
   const createHandle = async (
     task: TaskSpec,
     options: SpawnOptions | undefined,
@@ -790,7 +870,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     const record = await createOperation(task, options);
     void execute(record);
     return {
-      operationId: record.operationId,
+      ...createReader(record.operationId),
       result: () => record.terminalPromise,
       cancel: (cancelOptions) =>
         cancelSubtree(record.operationId, cancelOptions),
@@ -812,6 +892,39 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const spawn = createHandle(task, options);
       spawnsByKey.set(task.idempotencyKey, spawn);
       return spawn;
+    },
+
+    async operation(operationId: string): Promise<OperationReader> {
+      await readStoredSnapshot(operationId);
+      return createReader(operationId);
+    },
+
+    async startAuthorizationInbox(credential: string) {
+      const authenticator = services.startAuthorizationAuthenticator;
+      if (authenticator === undefined) {
+        throw new StartAuthorizationAuthenticationError("Start authorization authentication is unavailable");
+      }
+      const principal = await authenticator.authenticate(credential);
+      return {
+        listWaiting: async () => {
+          const stored = await runEffect(services.store.listWaitingStartAuthorizations().pipe(
+            Effect.mapError((error) => persistenceError("start-authorization-inbox", error)),
+          ));
+          const allowed = [];
+          for (const snapshot of stored) {
+            if (!(await principal.canAuthorize(snapshot.operation.operationId))) continue;
+            const receipt = snapshot.operation.startupReceipt;
+            if (receipt === undefined) continue;
+            allowed.push(Object.freeze({
+              operationId: snapshot.operation.operationId,
+              version: Object.freeze({ ...snapshot.version }),
+              deadline: snapshot.operation.startAuthorizationTiming.deadline,
+              receipt,
+            }));
+          }
+          return Object.freeze(allowed);
+        },
+      };
     },
   };
 }

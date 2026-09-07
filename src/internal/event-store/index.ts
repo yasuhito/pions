@@ -2,6 +2,7 @@ import type { Effect } from "effect";
 
 import type {
   EffectiveWorkerConfig,
+  OperationState,
   RequestedWorkerConfig,
   Result,
   ResultConflictError,
@@ -25,7 +26,6 @@ export type {
 export type {
   Operation,
   OperationLineage,
-  OperationState,
   ResultConflictEvidence,
   ResultReference,
 } from "./model.js";
@@ -49,9 +49,11 @@ export interface OperationRequest {
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly lineage: Readonly<OperationLineage>;
+  readonly authorizationWindowMs?: number;
 }
 
 export interface OperationSnapshot {
+  readonly version: Readonly<{ readonly sequenceNumber: number; readonly recordedAt: string }>;
   readonly operation: Operation;
   readonly result?: Result;
   readonly resultAcceptanceProof?: ResultAcceptanceProof;
@@ -64,7 +66,10 @@ export interface EventStore {
     intent: OperationIntent,
   ): Effect.Effect<OperationSnapshot, StoreError | ResultConflictError>;
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError>;
+  listWaitingStartAuthorizations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
 }
+
+export type { OperationState };
 
 export {
   operationDirectoryKey,

@@ -10,7 +10,11 @@ import { makeRuntime } from "./runtime.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
-import type { Runtime, WorkerProfilePolicy } from "../public.js";
+import type {
+  Runtime,
+  StartAuthorizationAuthenticator,
+  WorkerProfilePolicy,
+} from "../public.js";
 
 export interface VisibleRuntimeOptions {
   readonly cwd: string;
@@ -18,6 +22,7 @@ export interface VisibleRuntimeOptions {
   readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly extensionEntryPath?: string;
+  readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
 }
 
 const systemClock: RuntimeClock = {
@@ -58,6 +63,9 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     ids: { nextOperationId: () => Effect.sync(() => randomUUID()) },
     presentation,
     store: new PrivateFileEventStore(options.stateDirectory, systemClock),
+    ...(options.startAuthorizationAuthenticator === undefined
+      ? {}
+      : { startAuthorizationAuthenticator: options.startAuthorizationAuthenticator }),
     configuration: { cwd: options.cwd, profiles: options.profiles },
   });
 }

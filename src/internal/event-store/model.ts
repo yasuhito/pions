@@ -2,8 +2,16 @@ import type {
   EffectiveWorkerConfig,
   ObservedWorkerConfig,
   OperationFailureReason,
+  OperationState,
   RequestedWorkerConfig,
   Result,
+  StartAuthorizationDecisionRecord,
+  StartAuthorizationTiming,
+  StartGateState,
+  StartInstructionAcceptanceEvidence,
+  StartInstructionDeliveryEvidence,
+  StartInstructionReference,
+  StartupReceipt,
   TaskSpec,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
@@ -18,19 +26,6 @@ export type {
   PresentationOwnership,
   WorkerIdentity,
 } from "./intent.js";
-
-export type OperationState =
-  | "queued"
-  | "starting"
-  | "running"
-  | "blocked"
-  | "self_settled"
-  | "draining_descendants"
-  | "cancelling"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "unknown";
 
 export interface OperationLineage {
   readonly rootOperationId: string;
@@ -47,6 +42,14 @@ export interface Operation {
   readonly presentationCleanupFailure?: "pane_close_failed";
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
+  readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
+  readonly startGate: StartGateState;
+  readonly startupReceipt?: Readonly<StartupReceipt>;
+  readonly startAuthorizationDecision?: Readonly<StartAuthorizationDecisionRecord>;
+  readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
+  readonly startInstructionAcceptance?: Readonly<StartInstructionAcceptanceEvidence>;
+  readonly resultAcceptedAt?: string;
+  readonly workerStopConfirmedAt?: string;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
   readonly state: OperationState;
   readonly stateSeq: number;
@@ -77,7 +80,7 @@ export interface ResultConflictEvidence {
   readonly deliverySequenceNumber: number;
 }
 
-export const EVENT_SCHEMA_VERSION = 8 as const;
+export const EVENT_SCHEMA_VERSION = 9 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -99,7 +102,32 @@ export type OperationEvent = EventMetadata &
         readonly requestedConfig: Readonly<RequestedWorkerConfig>;
         readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
         readonly lineage: Readonly<OperationLineage>;
+        readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
       }
+    | {
+        readonly type: "startup_receipt_recorded";
+        readonly receipt: Readonly<StartupReceipt>;
+        readonly gate: "not_required" | "waiting";
+      }
+    | {
+        readonly type: "start_authorization_decided";
+        readonly gate: "authorized" | "rejected";
+        readonly decision: Readonly<StartAuthorizationDecisionRecord>;
+      }
+    | {
+        readonly type: "start_gate_closed";
+        readonly gate: "expired" | "invalidated";
+      }
+    | {
+        readonly type: "start_instruction_dispatched";
+        readonly instruction: Readonly<StartInstructionReference>;
+      }
+    | {
+        readonly type: "start_instruction_accepted";
+        readonly instruction: Readonly<StartInstructionReference>;
+        readonly proof: "authenticated-worker-acknowledgement";
+      }
+    | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
     | PersistableOperationIntent
     | {
         readonly type: "result_persisted";

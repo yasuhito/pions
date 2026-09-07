@@ -1,9 +1,13 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   EVENT_SCHEMA_VERSION,
   OPERATION_AUTHORITY,
   RUNTIME_ACTOR_ID,
 } from "./model.js";
+import type { StartInstructionReference, StartupReceipt } from "../../public.js";
 import type { Operation, OperationEvent } from "./model.js";
+import { startupReceiptDigest } from "../startup-receipt.js";
 
 export type TransitionErrorCode =
   | "operation_required"
@@ -37,6 +41,14 @@ export class TransitionError extends Error {
   }
 }
 
+function deepFreeze<Value>(value: Value): Value {
+  if (value !== null && typeof value === "object") {
+    for (const nested of Object.values(value)) deepFreeze(nested);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 function immutable(operation: Operation): Operation {
   Object.freeze(operation.task);
   Object.freeze(operation.requestedConfig.model);
@@ -63,6 +75,17 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.lineage);
   if (operation.presentation !== undefined) Object.freeze(operation.presentation);
   if (operation.workerIdentity !== undefined) Object.freeze(operation.workerIdentity);
+  Object.freeze(operation.startAuthorizationTiming);
+  if (operation.startupReceipt !== undefined) deepFreeze(operation.startupReceipt);
+  if (operation.startAuthorizationDecision !== undefined) {
+    Object.freeze(operation.startAuthorizationDecision);
+  }
+  if (operation.startInstructionDelivery !== undefined) {
+    Object.freeze(operation.startInstructionDelivery);
+  }
+  if (operation.startInstructionAcceptance !== undefined) {
+    Object.freeze(operation.startInstructionAcceptance);
+  }
   if (operation.agentRunEvidence !== undefined) {
     Object.freeze(operation.agentRunEvidence.usage);
     operation.agentRunEvidence.toolUses.forEach(Object.freeze);
@@ -112,11 +135,79 @@ function validInitialConfiguration(
     attempted.id === effective.model.id;
 }
 
+function sanitizedStartupReceipt(
+  operation: Operation,
+  receipt: Readonly<StartupReceipt>,
+): StartupReceipt {
+  const owner = receipt.workspace.owner.state === "known"
+    ? { state: "known" as const, ownerId: receipt.workspace.owner.ownerId }
+    : { state: "unknown" as const };
+  return {
+    operationId: receipt.operationId,
+    digest: receipt.digest,
+    recordedAt: receipt.recordedAt,
+    workerIdentity: { ...operation.workerIdentity! },
+    requestedConfig: structuredClone(operation.requestedConfig),
+    effectiveConfig: structuredClone(operation.effectiveConfig),
+    observedConfig: structuredClone(operation.observedConfig!),
+    workspace: {
+      workspaceId: receipt.workspace.workspaceId,
+      normalizedPath: receipt.workspace.normalizedPath,
+      baseRevision: receipt.workspace.baseRevision,
+      owner,
+      pionsMayDelete: false,
+    },
+    permissionManifest: {
+      manifestId: receipt.permissionManifest.manifestId,
+      digest: receipt.permissionManifest.digest,
+    },
+    reviewSubject: {
+      artifactId: receipt.reviewSubject.artifactId,
+      byteCount: receipt.reviewSubject.byteCount,
+      digest: receipt.reviewSubject.digest,
+      format: receipt.reviewSubject.format,
+      normalization: receipt.reviewSubject.normalization,
+    },
+    configuredAuthorizationPolicy: receipt.configuredAuthorizationPolicy,
+    authorizationPolicy: receipt.authorizationPolicy,
+    authorizationDeadline: receipt.authorizationDeadline,
+  };
+}
+
+function validStartInstructionReference(
+  operation: Operation,
+  instruction: Readonly<StartInstructionReference>,
+): boolean {
+  if (
+    operation.workerIdentity === undefined ||
+    operation.startupReceipt === undefined ||
+    instruction.deliveryGeneration < 1 ||
+    instruction.workerProcessInstanceId !== operation.workerIdentity.processInstanceId ||
+    instruction.receiptDigest !== operation.startupReceipt.digest
+  ) return false;
+  return operation.startGate === "not_required"
+    ? instruction.authorizationDecisionId === undefined
+    : operation.startGate === "authorized" &&
+      instruction.authorizationDecisionId === operation.startAuthorizationDecision?.decisionId;
+}
+
 function hasUnsettledChildren(operation: Operation): boolean {
   return (
     operation.childOperationIds.length !==
     operation.settledChildOperationIds.length
   );
+}
+
+function validStartAuthorizationTiming(
+  event: Extract<OperationEvent, { readonly type: "operation_requested" }>,
+): boolean {
+  const timing = event.startAuthorizationTiming;
+  const created = Date.parse(timing.createdAt);
+  return timing.createdAt === event.timestamp &&
+    Number.isSafeInteger(timing.windowMs) &&
+    timing.windowMs >= 0 &&
+    Number.isFinite(created) &&
+    timing.deadline === new Date(created + timing.windowMs).toISOString();
 }
 
 function validateEnvelope(event: OperationEvent): void {
@@ -151,7 +242,7 @@ export function reduceOperation(
       throw new TransitionError("operation_required");
     }
     if (event.seq !== 1) throw new TransitionError("unexpected_sequence");
-    if (!validInitialConfiguration(event)) {
+    if (!validInitialConfiguration(event) || !validStartAuthorizationTiming(event)) {
       throw new TransitionError("illegal_transition");
     }
 
@@ -178,6 +269,8 @@ export function reduceOperation(
           aliases: [],
         },
       },
+      startAuthorizationTiming: { ...event.startAuthorizationTiming },
+      startGate: "not_required",
       childOperationIds: [],
       settledChildOperationIds: [],
       descendantFailure: false,
@@ -267,6 +360,137 @@ export function reduceOperation(
       });
     }
 
+    case "startup_receipt_recorded": {
+      if (
+        current.state !== "starting" ||
+        current.workerIdentity === undefined ||
+        current.observedConfig === undefined ||
+        current.startupReceipt !== undefined
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      const sanitizedReceipt = sanitizedStartupReceipt(current, event.receipt);
+      if (
+        event.receipt.operationId !== current.operationId ||
+        event.receipt.authorizationDeadline !== current.startAuthorizationTiming.deadline ||
+        event.receipt.recordedAt !== event.timestamp ||
+        !Number.isFinite(Date.parse(event.receipt.recordedAt)) ||
+        event.receipt.workspace.workspaceId.length === 0 ||
+        event.receipt.workspace.normalizedPath.length === 0 ||
+        event.receipt.workspace.baseRevision.length === 0 ||
+        event.receipt.permissionManifest.manifestId.length === 0 ||
+        event.receipt.reviewSubject.artifactId.length === 0 ||
+        event.receipt.workerIdentity.processInstanceId !== current.workerIdentity.processInstanceId ||
+        !isDeepStrictEqual(event.receipt.workerIdentity, current.workerIdentity) ||
+        !isDeepStrictEqual(event.receipt.requestedConfig, current.requestedConfig) ||
+        !isDeepStrictEqual(event.receipt.effectiveConfig, current.effectiveConfig) ||
+        !isDeepStrictEqual(event.receipt.observedConfig, current.observedConfig) ||
+        (event.gate === "waiting") !== (event.receipt.authorizationPolicy === "required") ||
+        (event.receipt.configuredAuthorizationPolicy !== "optional" &&
+          event.receipt.configuredAuthorizationPolicy !== event.receipt.authorizationPolicy) ||
+        startupReceiptDigest((({ digest: _digest, ...receipt }) => receipt)(sanitizedReceipt)) !== event.receipt.digest
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        startupReceipt: sanitizedReceipt,
+        startGate: event.gate,
+        stateSeq: event.seq,
+      });
+    }
+
+    case "start_authorization_decided":
+      if (
+        current.state !== "starting" ||
+        current.startGate !== "waiting" ||
+        current.startupReceipt === undefined ||
+        current.startAuthorizationDecision !== undefined ||
+        event.decision.decisionId.length === 0 ||
+        event.decision.actorId.length === 0 ||
+        event.decision.decidedAt !== event.timestamp ||
+        event.decision.receiptDigest !== current.startupReceipt.digest ||
+        (event.gate === "authorized") !== (event.decision.kind === "authorize")
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        startGate: event.gate,
+        startAuthorizationDecision: { ...event.decision },
+        stateSeq: event.seq,
+      });
+
+    case "start_gate_closed":
+      if (
+        current.state !== "starting" ||
+        (event.gate === "expired" && current.startGate !== "waiting") ||
+        (event.gate === "invalidated" && current.startGate !== "authorized")
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({ ...current, startGate: event.gate, stateSeq: event.seq });
+
+    case "start_instruction_dispatched":
+      if (
+        current.state !== "starting" ||
+        current.startupReceipt === undefined ||
+        current.startGate !== "not_required" && current.startGate !== "authorized" ||
+        current.startInstructionDelivery !== undefined ||
+        !validStartInstructionReference(current, event.instruction)
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        startInstructionDelivery: {
+          ...event.instruction,
+          dispatchedAt: event.timestamp,
+        },
+        stateSeq: event.seq,
+      });
+
+    case "start_instruction_accepted":
+      if (
+        current.state !== "starting" ||
+        current.startInstructionDelivery === undefined ||
+        current.startInstructionAcceptance !== undefined ||
+        event.proof !== "authenticated-worker-acknowledgement" ||
+        !validStartInstructionReference(current, event.instruction) ||
+        !isDeepStrictEqual(
+          event.instruction,
+          (({ dispatchedAt: _dispatchedAt, ...instruction }) => instruction)(current.startInstructionDelivery),
+        )
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        startInstructionAcceptance: {
+          ...event.instruction,
+          acceptedAt: event.timestamp,
+          proof: event.proof,
+        },
+        state: "running",
+        stateSeq: event.seq,
+      });
+
+    case "worker_stop_confirmed":
+      if (
+        !current.workerLaunched ||
+        current.result === undefined ||
+        current.state !== "running" && current.state !== "blocked" ||
+        current.workerStopConfirmedAt !== undefined ||
+        event.proof !== "worker-stop"
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        workerStopConfirmedAt: event.timestamp,
+        stateSeq: event.seq,
+      });
+
     case "operation_starting":
       if (current.state !== "queued") {
         throw new TransitionError("illegal_transition");
@@ -279,7 +503,7 @@ export function reduceOperation(
       }
       return immutable({ ...current, workerLaunched: true, stateSeq: event.seq });
 
-    case "operation_started":
+    case "automatic_operation_started":
       if (current.state !== "starting" || !current.workerLaunched) {
         throw new TransitionError("illegal_transition");
       }
@@ -287,7 +511,7 @@ export function reduceOperation(
 
     case "worker_identified":
       if (
-        current.state !== "running" ||
+        current.state !== "starting" && current.state !== "running" ||
         current.workerIdentity !== undefined ||
         current.presentation === undefined ||
         !Number.isSafeInteger(event.workerIdentity.processId) ||
@@ -362,7 +586,12 @@ export function reduceOperation(
       if (current.state !== "running" && current.state !== "blocked") {
         throw new TransitionError("illegal_transition");
       }
-      return immutable({ ...current, result: { ...event.result }, stateSeq: event.seq });
+      return immutable({
+        ...current,
+        result: { ...event.result },
+        resultAcceptedAt: event.timestamp,
+        stateSeq: event.seq,
+      });
 
     case "result_conflict_recorded":
       if (
@@ -441,7 +670,11 @@ export function reduceOperation(
       ) {
         throw new TransitionError("cancellation_epoch_mismatch");
       }
-      return immutable({ ...current, stateSeq: event.seq });
+      return immutable({
+        ...current,
+        workerStopConfirmedAt: event.timestamp,
+        stateSeq: event.seq,
+      });
 
     case "operation_cancelled":
       if (
@@ -528,6 +761,9 @@ export function replayOperation(
   const eventIds = new Set<string>();
   let operation: Operation | undefined;
   for (const event of events) {
+    if (!Number.isFinite(Date.parse(event.timestamp))) {
+      throw new TransitionError("illegal_transition");
+    }
     if (eventIds.has(event.eventId)) {
       throw new TransitionError("duplicate_event");
     }

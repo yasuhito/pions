@@ -160,6 +160,12 @@ function operation(
     task: { promptRef: "secret prompt reference", profile: "coding", idempotencyKey: operationId },
     requestedConfig,
     effectiveConfig,
+    startAuthorizationTiming: {
+      createdAt: "2026-09-06T10:00:00.000Z",
+      windowMs: 0,
+      deadline: "2026-09-06T10:00:00.000Z",
+    },
+    startGate: "not_required",
     childOperationIds: [],
     settledChildOperationIds: [],
     descendantFailure: false,
@@ -386,7 +392,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   });
   const runtime = makeRuntime({
     worker,
-    clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `time-${index}`)),
+    clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store: new InMemoryEventStore(),
