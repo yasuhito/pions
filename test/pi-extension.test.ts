@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_MAX_BYTES,
@@ -452,6 +453,93 @@ test("configured model failure does not fall back to the delegating model", asyn
   await value.execute().catch(() => undefined);
 
   assert.equal(value.runtime.spawnCount, 0);
+});
+
+test("delegation resolves the default Worker extension from the Pions distribution", async (context) => {
+  let extensionEntryPath: string | undefined;
+  const runtime = new FakeRuntime();
+  const harness = await fixture(runtime, {
+    runtimeFactory: (options) => {
+      extensionEntryPath = options.extensionEntryPath;
+      return runtime;
+    },
+  });
+  context.after(() => rm(harness.root, { recursive: true, force: true }));
+  await harness.execute();
+
+  assert.equal(extensionEntryPath, fileURLToPath(new URL("../src/worker-extension.js", import.meta.url)));
+});
+
+test("delegation reports the absolute path of a missing Worker extension before runtime creation", async (context) => {
+  const repository = await mkdtemp(join(tmpdir(), "pions-external-repository-"));
+  const harness = await fixture(new FakeRuntime(), {
+    repositoryRoot: repository,
+    extensionEntryPath: "missing-worker-extension.js",
+    runtimeFactory: () => {
+      throw new Error("runtime was created");
+    },
+  });
+  context.after(() => rm(harness.root, { recursive: true, force: true }));
+  context.after(() => rm(repository, { recursive: true, force: true }));
+
+  await assert.rejects(harness.execute(), new RegExp(join(repository, "missing-worker-extension\\.js")));
+});
+
+test("delegation preserves an explicit Worker extension entry", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "pions-worker-entry-"));
+  const explicitEntryPath = join(directory, "worker-extension.js");
+  await writeFile(explicitEntryPath, "");
+  let extensionEntryPath: string | undefined;
+  const runtime = new FakeRuntime();
+  const harness = await fixture(runtime, {
+    extensionEntryPath: explicitEntryPath,
+    runtimeFactory: (options) => {
+      extensionEntryPath = options.extensionEntryPath;
+      return runtime;
+    },
+  });
+  context.after(() => rm(harness.root, { recursive: true, force: true }));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  await harness.execute();
+
+  assert.equal(extensionEntryPath, explicitEntryPath);
+});
+
+test("delegation validates a relative Worker extension from the Worker cwd", async (context) => {
+  const repository = await mkdtemp(join(tmpdir(), "pions-external-repository-"));
+  await writeFile(join(repository, "worker-extension.js"), "");
+  let extensionEntryPath: string | undefined;
+  const runtime = new FakeRuntime();
+  const harness = await fixture(runtime, {
+    repositoryRoot: repository,
+    extensionEntryPath: "worker-extension.js",
+    runtimeFactory: (options) => {
+      extensionEntryPath = options.extensionEntryPath;
+      return runtime;
+    },
+  });
+  context.after(() => rm(harness.root, { recursive: true, force: true }));
+  context.after(() => rm(repository, { recursive: true, force: true }));
+  await harness.execute();
+
+  assert.equal(extensionEntryPath, "worker-extension.js");
+});
+
+test("delegation revalidates the Worker extension before reusing a runtime", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "pions-worker-entry-"));
+  const explicitEntryPath = join(directory, "worker-extension.js");
+  await writeFile(explicitEntryPath, "");
+  const runtime = new FakeRuntime();
+  const harness = await fixture(runtime, {
+    extensionEntryPath: explicitEntryPath,
+    runtimeFactory: () => runtime,
+  });
+  context.after(() => rm(harness.root, { recursive: true, force: true }));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  await harness.execute("first-call");
+  await unlink(explicitEntryPath);
+
+  await assert.rejects(harness.execute("second-call"), /Pions Worker extension entry is unavailable/);
 });
 
 test("delegation limits Worker tools to the review profile", async (context) => {

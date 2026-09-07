@@ -16,6 +16,7 @@ import type {
 import { Type } from "typebox";
 
 import { makeVisibleRuntime } from "./visible-runtime.js";
+import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
 import {
   OperationCancelledError,
   OperationUnknownError,
@@ -416,16 +417,23 @@ export function installPionsExtension(
         tools: REVIEW_TOOLS,
       };
       const configKey = `${normalizedRoot}\0${model.provider}\0${model.id}\0${thinkingLevel}`;
-      let runtime = options.runtime ?? runtimesByCall.get(idempotencyKey) ?? runtimesByConfig.get(configKey);
+      let runtime = options.runtime;
       if (runtime === undefined) {
-        runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
+        const extensionEntryPath = resolveWorkerExtensionEntryPath({
+          ...(options.extensionEntryPath === undefined ? {} : { explicitPath: options.extensionEntryPath }),
           cwd: normalizedRoot,
-          stateDirectory: join(repositoryState, "runtime"),
-          profiles: { [REVIEW_PROFILE]: profile },
-          environment: options.environment ?? process.env,
-          extensionEntryPath: options.extensionEntryPath ?? join(normalizedRoot, "dist", "src", "worker-extension.js"),
         });
-        runtimesByConfig.set(configKey, runtime);
+        runtime = runtimesByCall.get(idempotencyKey) ?? runtimesByConfig.get(configKey);
+        if (runtime === undefined) {
+          runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
+            cwd: normalizedRoot,
+            stateDirectory: join(repositoryState, "runtime"),
+            profiles: { [REVIEW_PROFILE]: profile },
+            environment: options.environment ?? process.env,
+            extensionEntryPath,
+          });
+          runtimesByConfig.set(configKey, runtime);
+        }
       }
       runtimesByCall.set(idempotencyKey, runtime);
       const handle = await runtime.spawn({

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { Effect } from "effect";
 
@@ -10,6 +9,7 @@ import { PrivateFileEventStore } from "./event-store/index.js";
 import { makeRuntime } from "./runtime.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
+import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
 import type { Runtime, WorkerProfilePolicy } from "../public.js";
 
 export interface VisibleRuntimeOptions {
@@ -47,7 +47,10 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     socketDirectory,
     cwd: options.cwd,
     executor,
-    extensionEntryPath: options.extensionEntryPath ?? fileURLToPath(new URL("../worker-extension.js", import.meta.url)),
+    extensionEntryPath: resolveWorkerExtensionEntryPath({
+      ...(options.extensionEntryPath === undefined ? {} : { explicitPath: options.extensionEntryPath }),
+      cwd: options.cwd,
+    }),
   });
   return makeRuntime({
     worker,
