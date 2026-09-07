@@ -40,6 +40,8 @@ export interface FakeWorkerAdapterOptions {
   readonly failure?:
     | "worker_start_failed"
     | "worker_protocol_failed"
+    | "process-exited-without-result"
+    | "liveness-unproven"
     | "agent_failed"
     | "model_mismatch"
     | "unsupported_capability"
@@ -94,7 +96,9 @@ export class FakeWorkerAdapter implements WorkerAdapter {
         return { state: this.failure } as const;
       }
       yield* hooks.workerIdentified({
+        processId: 1234,
         processInstanceId: "fake-process-instance",
+        processStartToken: "fake-process-start",
         piSessionId: "fake-pi-session",
         observedConfig: {
           model: { state: "observed", value: { ...operation.effectiveConfig.model } },
@@ -103,6 +107,12 @@ export class FakeWorkerAdapter implements WorkerAdapter {
           cwd: { state: "observed", value: operation.effectiveConfig.cwd },
         },
       });
+      if (
+        this.failure === "process-exited-without-result" ||
+        this.failure === "liveness-unproven"
+      ) {
+        return { state: this.failure } as const;
+      }
       if (this.failure === "agent_failed") {
         return {
           state: "agent_failed",

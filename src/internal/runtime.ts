@@ -183,12 +183,18 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       record.rejectTerminal(new OperationCancelledError(record.operationId));
     } else if (operation.state === "unknown") {
       record.rejectTerminal(
-        new OperationUnknownError(record.operationId, "cancel-unproven"),
+        new OperationUnknownError(
+          record.operationId,
+          operation.terminalReason === "liveness-unproven"
+            ? "liveness-unproven"
+            : "cancel-unproven",
+        ),
       );
     } else {
       const reason =
         operation.terminalReason === "worker_start_failed" ||
         operation.terminalReason === "worker_protocol_failed" ||
+        operation.terminalReason === "process-exited-without-result" ||
         operation.terminalReason === "agent_failed" ||
         operation.terminalReason === "model_mismatch" ||
         operation.terminalReason === "unsupported_capability" ||
@@ -291,7 +297,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           Effect.flatMap((started) => advanceOperation(record.operationId, {
             type: "worker_identified",
             workerIdentity: {
+              processId: workerIdentity.processId,
               processInstanceId: workerIdentity.processInstanceId,
+              processStartToken: workerIdentity.processStartToken,
               piSessionId: workerIdentity.piSessionId,
               paneId: started.presentation?.paneId ?? "",
             },
@@ -308,6 +316,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (workerOutcome.state !== "result_acknowledged") {
         const current = await runEffect(getOperation(record.operationId));
         if (isTerminal(current) || current.state === "cancelling") return;
+        if (workerOutcome.state === "liveness-unproven") {
+          operation = await runEffect(
+            advanceOperation(record.operationId, {
+              type: "operation_unknown",
+              reason: "liveness-unproven",
+            }),
+          );
+          await settleTerminal(record, operation);
+          return;
+        }
         if (workerOutcome.state === "worker_start_failed") {
           await runEffect(
             Effect.catchAllCause(
@@ -635,6 +653,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const responses: Array<
         Promise<WorkerCancellationEvidence | undefined>
       > = [];
+      const timeoutMs = options.timeoutMs ?? 1_000;
       for (const { record } of postOrder) {
         const operation = await runEffect(
           advanceOperation(record.operationId, {
@@ -646,8 +665,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         const response = Promise.race([
           record.worker === undefined
             ? Promise.resolve(undefined)
-            : runEffect(record.worker.cancel(epoch)),
-          runEffect(services.clock.sleep(options.timeoutMs ?? 1_000)).then(
+            : runEffect(record.worker.cancel(epoch, timeoutMs)),
+          runEffect(services.clock.sleep(timeoutMs)).then(
             () => undefined,
           ),
         ]).catch(() => undefined);

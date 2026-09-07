@@ -9,7 +9,15 @@ import { Effect } from "effect";
 
 import type { Operation } from "../src/internal/event-store/index.js";
 import type { CommandInvocation } from "../src/internal/herdr-presentation.js";
-import type { WorkerRunHooks } from "../src/internal/services.js";
+import type {
+  WorkerCancellationEvidence,
+  WorkerProcessIdentity,
+  WorkerRunHooks,
+} from "../src/internal/services.js";
+import type {
+  WorkerProcessControl,
+  WorkerProcessState,
+} from "../src/internal/worker-process-control.js";
 import { operationDirectoryKey } from "../src/internal/event-store/index.js";
 import { VisibleWorker } from "../src/internal/visible-worker.js";
 import { makeRuntime } from "../src/internal/runtime.js";
@@ -32,6 +40,30 @@ import {
   resultDigest,
 } from "./worker-protocol-fixtures.js";
 import { HerdrPreconditionError, makeVisibleRuntime } from "../src/index.js";
+
+class FakeProcessControl implements WorkerProcessControl {
+  readonly terminations: Array<Readonly<WorkerProcessIdentity>> = [];
+
+  constructor(
+    private readonly state: WorkerProcessState,
+    private readonly terminationEvidence?: WorkerCancellationEvidence,
+  ) {}
+
+  observe(_identity: Readonly<WorkerProcessIdentity>) {
+    return Effect.succeed(this.state);
+  }
+
+  waitForStop(_identity: Readonly<WorkerProcessIdentity>, _timeoutMilliseconds: number) {
+    return Effect.succeed(this.state);
+  }
+
+  terminate(identity: Readonly<WorkerProcessIdentity>) {
+    return Effect.sync(() => {
+      this.terminations.push(identity);
+      return this.terminationEvidence;
+    });
+  }
+}
 
 class FakeExecutor {
   readonly invocations: Array<CommandInvocation> = [];
@@ -81,7 +113,10 @@ function workerHooks(
   };
 }
 
-async function fixture() {
+async function fixture(options: {
+  readonly processControl?: WorkerProcessControl;
+  readonly backendCancellationGraceMs?: number;
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
   const executor = new FakeExecutor();
   const capability = "ab".repeat(32);
@@ -95,6 +130,10 @@ async function fixture() {
     nodeExecutable: "/node/bin/node",
     capabilityGenerator: { nextCapability: () => capability },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
+    ...(options.processControl === undefined ? {} : { processControl: options.processControl }),
+    ...(options.backendCancellationGraceMs === undefined
+      ? {}
+      : { backendCancellationGraceMs: options.backendCancellationGraceMs }),
     serverFactory: () => {
       protocolServer = createServer();
       protocolServer.unref();
@@ -134,7 +173,7 @@ async function fixture() {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const directory = join(root, operationDirectoryKey(current.operationId));
-  const config = JSON.parse(await readFile(join(directory, "worker.v4.json"), "utf8")) as {
+  const config = JSON.parse(await readFile(join(directory, "worker.v5.json"), "utf8")) as {
     readonly socketPath: string;
   };
   const protocolSession = {
@@ -185,7 +224,9 @@ function protocolListenerCount(protocolSession: {
     (protocolSession.socket?.listenerCount("error") ?? 0);
 }
 
+const processId = 1234;
 const processInstanceId = "12".repeat(32);
+const processStartToken = "987654";
 
 function frame(
   capability: string,
@@ -199,6 +240,7 @@ function frame(
     capability,
     sequenceNumber,
     type,
+    ...(type === "hello" ? { processId, processStartToken } : {}),
     ...fields,
   };
 }
@@ -280,7 +322,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   while (executor.invocations.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v4.json");
+  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v5.json");
   const config = JSON.parse(await readFile(configPath, "utf8")) as { readonly socketPath: string };
   const client = await socket(config.socketPath);
   sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
@@ -314,7 +356,7 @@ test("visible Worker launch targets only the persisted owned pane", async (conte
     "pane",
     "run",
     "opaque:pane",
-    `'/node/bin/node' '/pions/worker-wrapper.js' '${join(value.directory, "worker.v4.json")}'`,
+    `'/node/bin/node' '/pions/worker-wrapper.js' '${join(value.directory, "worker.v5.json")}'`,
   ]);
 });
 
@@ -340,7 +382,7 @@ test("visible Worker configuration uses private permissions", async (context) =>
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal(await mode(join(value.directory, "worker.v4.json")), 0o600);
+  assert.equal(await mode(join(value.directory, "worker.v5.json")), 0o600);
 });
 
 test("invalid Worker configuration reports a Worker start failure", async (context) => {
@@ -422,7 +464,7 @@ test("visible Worker keeps Node alive while awaiting the wrapper connection", as
   while (executor.invocations.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await Effect.runPromise(worker.cancel(1));
+  await Effect.runPromise(worker.cancel(1, 1_000));
   await outcome;
 
   assert.equal(unrefCount, 0);
@@ -549,14 +591,14 @@ test("protocol failure releases Worker protocol listeners", async (context) => {
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
 });
 
-test("disconnect before Result becomes a Worker protocol failure", async (context) => {
+test("disconnect before session identification has unknown liveness", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   client.end();
 
-  assert.equal((await value.outcome).state, "worker_protocol_failed");
+  assert.equal((await value.outcome).state, "liveness-unproven");
 });
 
 test("disconnect releases Worker protocol listeners", async (context) => {
@@ -568,6 +610,28 @@ test("disconnect releases Worker protocol listeners", async (context) => {
   await workerFixture.outcome;
 
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
+});
+
+test("confirmed process exit without a Result is classified separately", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("stopped") });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  client.end();
+
+  assert.equal((await value.outcome).state, "process-exited-without-result");
+});
+
+test("unverifiable process liveness is classified as unknown evidence", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("unverifiable") });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  client.end();
+
+  assert.equal((await value.outcome).state, "liveness-unproven");
 });
 
 test("one Worker cannot run twice", async (context) => {
@@ -584,13 +648,44 @@ test("visible Worker cancellation returns no stop evidence", async (context) => 
   const workerFixture = await fixture();
   context.after(() => rm(workerFixture.root, { recursive: true, force: true }));
 
-  assert.equal(await Effect.runPromise(workerFixture.worker.cancel(1)), undefined);
+  assert.equal(await Effect.runPromise(workerFixture.worker.cancel(1, 1_000)), undefined);
+});
+
+test("backend cancellation acknowledgement is stop evidence", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "cancelled"));
+
+  assert.deepEqual(await cancellation, { proof: "acknowledgement" });
+});
+
+test("forced termination begins only after the backend grace period", async (context) => {
+  const processControl = new FakeProcessControl("running", { proof: "worker-stop" });
+  const value = await fixture({ processControl, backendCancellationGraceMs: 0 });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await Effect.runPromise(value.worker.cancel(1, 1_000));
+
+  assert.equal(processControl.terminations.length, 1);
 });
 
 test("cancellation releases Worker protocol listeners", async (context) => {
   const workerFixture = await fixture();
   context.after(() => rm(workerFixture.root, { recursive: true, force: true }));
-  await Effect.runPromise(workerFixture.worker.cancel(1));
+  await Effect.runPromise(workerFixture.worker.cancel(1, 1_000));
 
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
 });
@@ -608,7 +703,7 @@ test("a Worker cancelled before run creates no process resource", async (context
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
   });
   const worker = adapter.open(operation());
-  await Effect.runPromise(worker.cancel(1));
+  await Effect.runPromise(worker.cancel(1, 1_000));
   await Effect.runPromise(worker.run(workerHooks()));
 
   assert.equal(executor.invocations.length, 0);
@@ -649,8 +744,8 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   }
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
-  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v4.json"), "utf8")) as { readonly socketPath: string };
-  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v4.json"), "utf8")) as { readonly socketPath: string };
+  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v5.json"), "utf8")) as { readonly socketPath: string };
+  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v5.json"), "utf8")) as { readonly socketPath: string };
   const secondClient = await socket(secondConfig.socketPath);
   sendResultDelivery(secondClient, {
     capability: "cd".repeat(32),
@@ -665,7 +760,7 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
     body: "first",
   });
   const outcome = await firstOutcome;
-  await Effect.runPromise(secondWorker.cancel(1));
+  await Effect.runPromise(secondWorker.cancel(1, 1_000));
   firstClient.destroy();
   secondClient.destroy();
 

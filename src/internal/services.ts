@@ -19,7 +19,9 @@ import type {
 } from "../public.js";
 
 export interface WorkerProcessIdentity {
+  readonly processId: number;
   readonly processInstanceId: string;
+  readonly processStartToken: string;
   readonly piSessionId: string;
   readonly observedConfig: Readonly<ObservedWorkerConfig>;
 }
@@ -51,6 +53,8 @@ export type WorkerRunOutcome =
     }
   | { readonly state: "worker_start_failed" }
   | { readonly state: "worker_protocol_failed" }
+  | { readonly state: "process-exited-without-result" }
+  | { readonly state: "liveness-unproven" }
   | { readonly state: "model_mismatch" }
   | { readonly state: "unsupported_capability" }
   | { readonly state: "tool_policy_violation" }
@@ -65,6 +69,7 @@ export interface Worker {
   ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError | ResultConflictError>;
   cancel(
     cancellationEpoch: number,
+    timeoutMs: number,
   ): Effect.Effect<WorkerCancellationEvidence | undefined>;
 }
 
@@ -80,7 +85,7 @@ export function makeSingleRunWorker(
       runStarted = true;
       return implementation.run(hooks);
     }),
-    cancel: (cancellationEpoch) => implementation.cancel(cancellationEpoch),
+    cancel: (cancellationEpoch, timeoutMs) => implementation.cancel(cancellationEpoch, timeoutMs),
   };
 }
 

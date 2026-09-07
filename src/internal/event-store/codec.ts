@@ -63,7 +63,9 @@ const Presentation = Schema.Struct({
   ownedByPions: Schema.Literal(true),
 });
 const WorkerIdentity = Schema.Struct({
+  processId: SafeInteger,
   processInstanceId: Schema.String,
+  processStartToken: Schema.String,
   piSessionId: Schema.String,
   paneId: Schema.String,
 });
@@ -98,6 +100,7 @@ const ResultConflict = Schema.Struct({
 const FailureReason = Schema.Literal(
   "worker_start_failed",
   "worker_protocol_failed",
+  "process-exited-without-result",
   "agent_failed",
   "model_mismatch",
   "unsupported_capability",
@@ -195,6 +198,11 @@ const OperationEventSchema = Schema.Union(
     type: Schema.Literal("operation_unknown"),
     cancellationEpoch: SafeInteger,
     reason: Schema.Literal("cancel-unproven"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("operation_unknown"),
+    reason: Schema.Literal("liveness-unproven"),
   }),
   Schema.Struct({
     ...EventMetadataFields,

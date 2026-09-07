@@ -16,6 +16,7 @@ import {
   observePiAgentConfiguration,
   runPiAgentSession,
 } from "./internal/pi-agent-backend.js";
+import { currentProcessStartToken } from "./internal/worker-process-control.js";
 import {
   WorkerProtocolPeer,
   decodeWorkerConfig,
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
     socket.once("error", reject);
   });
   const processInstanceId = randomBytes(32).toString("hex");
+  const processStartToken = await currentProcessStartToken();
   const protocol = new WorkerProtocolPeer({
     operationId: config.operationId,
     capability: config.capability,
@@ -54,7 +56,7 @@ async function main(): Promise<void> {
   const send = (event: WorkerProtocolEvent): void => {
     socket.write(protocol.send(event));
   };
-  send({ type: "hello", processInstanceId });
+  send({ type: "hello", processId: process.pid, processInstanceId, processStartToken });
 
   let session;
   try {
@@ -107,10 +109,32 @@ async function main(): Promise<void> {
     ),
   });
 
+  let cancellationRequested = false;
+  let resolveAcknowledgement!: () => void;
+  const acknowledgement = new Promise<void>((resolve) => {
+    resolveAcknowledgement = resolve;
+  });
+  socket.on("data", (chunk: Buffer) => {
+    try {
+      const reception = protocol.receive(chunk);
+      if (reception.acknowledgementsComplete) resolveAcknowledgement();
+      if (reception.cancellationRequested && !cancellationRequested) {
+        cancellationRequested = true;
+        void session.abort().then(() => {
+          send({ type: "cancelled" });
+          socket.end();
+        }).finally(() => session.dispose());
+      }
+    } catch {
+      socket.destroy();
+    }
+  });
+
   let result;
   try {
     result = await runPiAgentSession(session, prompt, displayEvent);
   } catch (error) {
+    if (cancellationRequested) return;
     if (!(error instanceof PiAgentFailedError)) throw error;
     send({
       type: "failed",
@@ -121,20 +145,18 @@ async function main(): Promise<void> {
     socket.end();
     return;
   }
+  if (cancellationRequested) return;
   send({ type: "result", body: result.body, deliverySequenceNumber: 1 });
   send({ type: "done", usage: result.usage, toolUses: result.toolUses });
-  await new Promise<void>((resolve, reject) => {
-    socket.on("data", (chunk: Buffer) => {
-      try {
-        if (protocol.receive(chunk).acknowledgementsComplete) resolve();
-      } catch (error) {
-        reject(error);
-      }
-    });
-    socket.once("error", reject);
-    socket.once("end", () => reject(new Error("Worker protocol disconnected before ACK")));
-  });
+  await Promise.race([
+    acknowledgement,
+    new Promise<never>((_resolve, reject) => {
+      socket.once("error", reject);
+      socket.once("end", () => reject(new Error("Worker protocol disconnected before ACK")));
+    }),
+  ]);
   socket.end();
+  session.dispose();
 }
 
 void main().catch(async (error) => {

@@ -60,7 +60,7 @@ export interface Operation {
   readonly resultConflict?: Readonly<ResultConflictEvidence>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
-  readonly terminalReason?: OperationFailureReason | "cancel-unproven";
+  readonly terminalReason?: OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
 export interface ResultReference {
@@ -76,7 +76,7 @@ export interface ResultConflictEvidence {
   readonly deliverySequenceNumber: number;
 }
 
-export const EVENT_SCHEMA_VERSION = 5 as const;
+export const EVENT_SCHEMA_VERSION = 6 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 

@@ -15,7 +15,9 @@ export interface PresentationOwnership extends CreatedPresentation {
 }
 
 export interface WorkerIdentity {
+  readonly processId: number;
   readonly processInstanceId: string;
+  readonly processStartToken: string;
   readonly piSessionId: string;
   readonly paneId: string;
 }
@@ -74,6 +76,10 @@ export type OperationIntent =
       readonly type: "operation_unknown";
       readonly cancellationEpoch: number;
       readonly reason: "cancel-unproven";
+    }
+  | {
+      readonly type: "operation_unknown";
+      readonly reason: "liveness-unproven";
     }
   | {
       readonly type: "operation_failed";

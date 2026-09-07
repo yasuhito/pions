@@ -15,6 +15,7 @@ import {
   OperationCancelledError,
   OperationFailedError,
   OperationPersistenceError,
+  OperationUnknownError,
   ResultConflictError,
   SpawnRejectedError,
   WorkerConfigurationError,
@@ -100,7 +101,9 @@ class ControlledWorkerAdapter implements WorkerAdapter {
       this.startCount += 1;
       yield* hooks.workerLaunched();
       yield* hooks.workerIdentified({
+        processId: 1234,
         processInstanceId: `process:${operation.operationId}`,
+        processStartToken: `start:${operation.operationId}`,
         piSessionId: `session:${operation.operationId}`,
         observedConfig: {
           model: { state: "observed", value: { ...operation.effectiveConfig.model } },
@@ -834,10 +837,22 @@ test("an observed model mismatch becomes a typed Operation failure", async () =>
   );
 });
 
+test("Operation records the worker process identifier", async () => {
+  const { store } = await completeOperation();
+
+  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.processId, 1234);
+});
+
 test("Operation records the worker process instance identity", async () => {
   const { store } = await completeOperation();
 
   assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.processInstanceId, "fake-process-instance");
+});
+
+test("Operation records the worker process start identity", async () => {
+  const { store } = await completeOperation();
+
+  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.processStartToken, "fake-process-start");
 });
 
 test("Operation records the Pi session identity", async () => {
@@ -1097,6 +1112,38 @@ test("a settled Pi failure retains usage and tool evidence", async () => {
     usage: { input: 10, output: 4, cacheRead: 2, cacheWrite: 1, totalTokens: 17, cost: 0.33 },
     toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: true }],
   });
+});
+
+test("confirmed process exit without a Result becomes a bounded failure", async () => {
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter({ failure: "process-exited-without-result" }),
+    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `exit-time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+  });
+  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+
+  await assert.rejects(
+    handle.result(),
+    (error) => error instanceof OperationFailedError && error.reason === "process-exited-without-result",
+  );
+});
+
+test("unproven Worker liveness becomes an unknown Operation", async () => {
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter({ failure: "liveness-unproven" }),
+    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `unknown-time-${index}`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+  });
+  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+
+  await assert.rejects(
+    handle.result(),
+    (error) => error instanceof OperationUnknownError && error.reason === "liveness-unproven",
+  );
 });
 
 test("a Worker protocol failure is durably classified without fake completion", async () => {

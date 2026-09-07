@@ -289,7 +289,10 @@ export function reduceOperation(
         current.state !== "running" ||
         current.workerIdentity !== undefined ||
         current.presentation === undefined ||
+        !Number.isSafeInteger(event.workerIdentity.processId) ||
+        event.workerIdentity.processId < 1 ||
         event.workerIdentity.processInstanceId.length === 0 ||
+        event.workerIdentity.processStartToken.length === 0 ||
         event.workerIdentity.piSessionId.length === 0 ||
         event.workerIdentity.paneId !== current.presentation.paneId ||
         current.observedConfig !== undefined
@@ -435,11 +438,19 @@ export function reduceOperation(
       return immutable({ ...current, state: "cancelled", stateSeq: event.seq });
 
     case "operation_unknown":
-      if (
-        current.state !== "cancelling" ||
-        event.cancellationEpoch !== current.cancellationEpoch
+      if (event.reason === "cancel-unproven") {
+        if (
+          current.state !== "cancelling" ||
+          event.cancellationEpoch !== current.cancellationEpoch
+        ) {
+          throw new TransitionError("cancellation_epoch_mismatch");
+        }
+      } else if (
+        current.state !== "starting" &&
+        current.state !== "running" &&
+        current.state !== "blocked"
       ) {
-        throw new TransitionError("cancellation_epoch_mismatch");
+        throw new TransitionError("illegal_transition");
       }
       return immutable({
         ...current,

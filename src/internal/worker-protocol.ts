@@ -15,7 +15,7 @@ import {
   ObservedWorkerConfigSchema,
 } from "./worker-configuration.js";
 
-export const WORKER_PROTOCOL_VERSION = 4 as const;
+export const WORKER_PROTOCOL_VERSION = 5 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -77,7 +77,9 @@ const CommonWorkerFrameFields = {
 const HelloSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("hello"),
+  processId: Schema.Number,
   processInstanceId: ProcessInstanceIdSchema,
+  processStartToken: Schema.NonEmptyString,
 });
 const StartedSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
@@ -123,12 +125,21 @@ const FailedSchema = Schema.Struct({
   usage: UsageSchema,
   toolUses: Schema.Array(ToolUseSchema),
 });
+const CancelledSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("cancelled"),
+});
 const AcknowledgementSchema = Schema.Struct({
   protocolVersion: Schema.Number,
   operationId: Schema.NonEmptyString,
   digest: DigestSchema,
   deliverySequenceNumber: Schema.Number,
   type: Schema.Literal("ack"),
+});
+const CancellationRequestSchema = Schema.Struct({
+  protocolVersion: Schema.Number,
+  operationId: Schema.NonEmptyString,
+  type: Schema.Literal("cancel"),
 });
 
 const WorkerConfigSchema = Schema.Struct({
@@ -186,12 +197,15 @@ export interface ResultReception {
 
 export interface WorkerProtocolReception {
   readonly acknowledgementsComplete: boolean;
+  readonly cancellationRequested?: true;
 }
 
 export type HostProtocolEvent =
   | {
       readonly type: "started";
+      readonly processId: number;
       readonly processInstanceId: string;
+      readonly processStartToken: string;
       readonly piSessionId: string;
       readonly observedConfig: Readonly<ObservedWorkerConfig>;
     }
@@ -208,10 +222,16 @@ export type HostProtocolEvent =
       readonly type: "worker_failed";
       readonly errorMessage: string;
       readonly evidence: Readonly<AgentRunEvidence>;
-    };
+    }
+  | { readonly type: "worker_cancelled" };
 
 export type WorkerProtocolEvent =
-  | { readonly type: "hello"; readonly processInstanceId: string }
+  | {
+      readonly type: "hello";
+      readonly processId: number;
+      readonly processInstanceId: string;
+      readonly processStartToken: string;
+    }
   | {
       readonly type: "started";
       readonly piSessionId: string;
@@ -227,7 +247,8 @@ export type WorkerProtocolEvent =
       readonly deliverySequenceNumber: number;
     }
   | ({ readonly type: "done" } & Readonly<AgentRunEvidence>)
-  | ({ readonly type: "failed"; readonly errorMessage: string } & Readonly<AgentRunEvidence>);
+  | ({ readonly type: "failed"; readonly errorMessage: string } & Readonly<AgentRunEvidence>)
+  | { readonly type: "cancelled" };
 
 function violation(
   reason: ProtocolViolationReason,
@@ -391,7 +412,9 @@ export class HostProtocolPeer extends FramedPeer {
     | "done"
     | "failed" = "awaiting_hello";
   private lastSequenceNumber = 0;
+  private processId = 0;
   private processInstanceId = "";
+  private processStartToken = "";
   private readonly resultBudget: ResultBudget;
   private readonly deliveries: Array<ResultDelivery> = [];
   private readonly pendingAcknowledgements = new Map<string, number>();
@@ -514,7 +537,9 @@ export class HostProtocolPeer extends FramedPeer {
       this.state = "receiving_results";
       return {
         type: "started",
+        processId: this.processId,
         processInstanceId: this.processInstanceId,
+        processStartToken: this.processStartToken,
         piSessionId: started.piSessionId,
         observedConfig: started.observedConfig as ObservedWorkerConfig,
       };
@@ -531,6 +556,19 @@ export class HostProtocolPeer extends FramedPeer {
       }
       this.state = "done";
       return { type: "worker_configuration_failed", reason: failed.reason };
+    }
+    if (object.type === "cancelled") {
+      const cancelled = decodeShape(
+        CancelledSchema,
+        value,
+        "Worker cancellation frame has an invalid shape",
+      );
+      this.validateCommon(cancelled);
+      if (this.state !== "receiving_results") {
+        throw violation("invalid_transition", "Worker cancellation arrived outside an active Pi run");
+      }
+      this.state = "done";
+      return { type: "worker_cancelled" };
     }
     if (object.type === "result") {
       const result = decodeShape(
@@ -612,7 +650,9 @@ export class HostProtocolPeer extends FramedPeer {
       readonly operationId: string;
       readonly capability: string;
       readonly sequenceNumber: number;
+      readonly processId?: number;
       readonly processInstanceId?: string;
+      readonly processStartToken?: string;
     },
     hello = false,
   ): void {
@@ -627,7 +667,14 @@ export class HostProtocolPeer extends FramedPeer {
       throw violation("sequence_mismatch", "Worker protocol sequence is stale or out of order");
     }
     this.lastSequenceNumber = frame.sequenceNumber;
-    if (hello) this.processInstanceId = frame.processInstanceId ?? "";
+    if (hello) {
+      if (!Number.isSafeInteger(frame.processId) || (frame.processId ?? 0) < 1) {
+        throw violation("invalid_frame", "processId must be a positive safe integer");
+      }
+      this.processId = frame.processId ?? 0;
+      this.processInstanceId = frame.processInstanceId ?? "";
+      this.processStartToken = frame.processStartToken ?? "";
+    }
   }
 }
 
@@ -637,6 +684,7 @@ export class WorkerProtocolPeer extends FramedPeer {
     | "identified"
     | "started"
     | "delivering"
+    | "cancelling"
     | "done"
     | "acknowledged"
     | "failed" = "new";
@@ -657,12 +705,20 @@ export class WorkerProtocolPeer extends FramedPeer {
     switch (event.type) {
       case "hello": {
         if (this.state !== "new") return this.invalidSend(event.type);
+        if (!Number.isSafeInteger(event.processId) || event.processId < 1) {
+          throw violation("invalid_frame", "processId must be a positive safe integer");
+        }
         if (!/^[0-9a-f]{64}$/u.test(event.processInstanceId)) {
           throw violation("invalid_frame", "processInstanceId has an invalid shape");
         }
+        if (event.processStartToken.length === 0) {
+          throw violation("invalid_frame", "processStartToken must not be empty");
+        }
         const bytes = this.encodeWorkerFrame({
           type: "hello",
+          processId: event.processId,
           processInstanceId: event.processInstanceId,
+          processStartToken: event.processStartToken,
         });
         this.state = "identified";
         return bytes;
@@ -735,17 +791,41 @@ export class WorkerProtocolPeer extends FramedPeer {
         this.state = "done";
         return bytes;
       }
+      case "cancelled": {
+        if (this.state !== "cancelling") return this.invalidSend(event.type);
+        const bytes = this.encodeWorkerFrame({ type: "cancelled" });
+        this.state = "done";
+        return bytes;
+      }
     }
   }
 
   receive(bytes: Buffer): WorkerProtocolReception {
     try {
-      if (this.state !== "done") {
-        throw violation("invalid_transition", "Acknowledgement arrived outside the completed delivery state");
-      }
+      let cancellationRequested = false;
       this.acceptBytes(bytes, false, (frameBytes) => {
         const value = parseFrame(frameBytes);
         validateProtocolVersion(value, "Worker protocol");
+        const object = value as { readonly type?: unknown };
+        if (object.type === "cancel") {
+          const cancellation = decodeShape(
+            CancellationRequestSchema,
+            value,
+            "Worker cancellation request has an invalid shape",
+          );
+          if (cancellation.operationId !== this.authority.operationId) {
+            throw violation("authority_mismatch", "Cancellation operation does not match");
+          }
+          if (this.state !== "started" && this.state !== "delivering") {
+            throw violation("invalid_transition", "Cancellation arrived outside an active Pi run");
+          }
+          this.state = "cancelling";
+          cancellationRequested = true;
+          return;
+        }
+        if (this.state !== "done") {
+          throw violation("invalid_transition", "Acknowledgement arrived outside the completed delivery state");
+        }
         const acknowledgement = decodeShape(
           AcknowledgementSchema,
           value,
@@ -769,12 +849,15 @@ export class WorkerProtocolPeer extends FramedPeer {
         if (pending === 1) this.pendingAcknowledgements.delete(key);
         else this.pendingAcknowledgements.set(key, pending - 1);
       });
-      const acknowledgementsComplete = this.pendingAcknowledgements.size === 0;
+      const acknowledgementsComplete = this.state === "done" && this.pendingAcknowledgements.size === 0;
       if (acknowledgementsComplete) {
         this.requireFrameBoundary();
         this.state = "acknowledged";
       }
-      return { acknowledgementsComplete };
+      return {
+        acknowledgementsComplete,
+        ...(cancellationRequested ? { cancellationRequested: true as const } : {}),
+      };
     } catch (error) {
       this.state = "failed";
       throw error;

@@ -188,6 +188,25 @@ test("configuration projection is size-limited", async () => {
   assert.equal(Buffer.byteLength(projected, "utf8") <= 512, true);
 });
 
+test("investigation-worthy and phase-one terminal states retain their owned panes", async () => {
+  const retainedStates: ReadonlyArray<Operation["state"]> = [
+    "blocked",
+    "failed",
+    "cancelled",
+    "unknown",
+    "completed",
+  ];
+  const executor = new FakeCommandExecutor(
+    retainedStates.map(() => ({ stdout: JSON.stringify({ result: {} }) })),
+  );
+  const adapter = presentation(executor);
+  for (const state of retainedStates) {
+    await Effect.runPromise(adapter.project({ ...operation("opaque:new-pane"), state }));
+  }
+
+  assert.equal(executor.invocations.some(({ args }) => args.includes("close")), false);
+});
+
 test("projection without durable ownership does not target a pane", async () => {
   const executor = new FakeCommandExecutor([]);
   await Effect.runPromise(presentation(executor).project(operation()));

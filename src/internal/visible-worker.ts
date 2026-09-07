@@ -23,6 +23,7 @@ import {
 import type {
   AgentRunEvidence,
   Worker,
+  WorkerCancellationEvidence,
   WorkerAdapter,
   WorkerProcessIdentity,
   WorkerRunHooks,
@@ -35,6 +36,10 @@ import type {
 } from "../public.js";
 import { configurationMismatch } from "./worker-configuration.js";
 import type { CommandExecutor } from "./herdr-presentation.js";
+import {
+  NodeWorkerProcessControl,
+  type WorkerProcessControl,
+} from "./worker-process-control.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -57,6 +62,9 @@ export interface VisibleWorkerOptions {
   readonly capabilityGenerator?: WorkerCapabilityGenerator;
   readonly promptReader?: PromptReader;
   readonly serverFactory?: () => Server;
+  readonly processControl?: WorkerProcessControl;
+  readonly backendCancellationGraceMs?: number;
+  readonly exitObservationGraceMs?: number;
 }
 
 interface WorkerProtocolError {
@@ -66,7 +74,8 @@ interface WorkerProtocolError {
 
 type WorkerStartReception =
   | { readonly state: "identified"; readonly identity: Readonly<WorkerProcessIdentity> }
-  | { readonly state: "configuration_failed"; readonly reason: WorkerConfigurationFailureReason };
+  | { readonly state: "configuration_failed"; readonly reason: WorkerConfigurationFailureReason }
+  | { readonly state: "liveness-unproven" };
 
 type WorkerCompletionReception =
   | {
@@ -77,7 +86,11 @@ type WorkerCompletionReception =
   | {
       readonly state: "agent_failed";
       readonly evidence: Readonly<AgentRunEvidence>;
-    };
+    }
+  | { readonly state: "cancelled" }
+  | { readonly state: "process-exited-without-result" }
+  | { readonly state: "liveness-unproven" }
+  | { readonly state: "worker_protocol_failed" };
 
 class WorkerCancellation {
   private isRequested = false;
@@ -107,7 +120,10 @@ interface Session {
   readonly startedReception: Promise<WorkerStartReception>;
   resolveStarted(value: WorkerStartReception): void;
   rejectStarted(error: WorkerProtocolError): void;
+  readonly cancellationReception: Promise<WorkerCancellationEvidence>;
+  resolveCancellation(value: WorkerCancellationEvidence): void;
   socket?: Socket;
+  identity?: Readonly<WorkerProcessIdentity>;
   receptionCompleted: boolean;
   readonly protocol: HostProtocolPeer;
 }
@@ -163,28 +179,54 @@ export class VisibleWorker implements WorkerAdapter {
   private readonly capabilityGenerator: WorkerCapabilityGenerator;
   private readonly promptReader: PromptReader;
   private readonly serverFactory: () => Server;
+  private readonly processControl: WorkerProcessControl;
+  private readonly backendCancellationGraceMs: number;
+  private readonly exitObservationGraceMs: number;
 
   constructor(private readonly options: VisibleWorkerOptions) {
     this.capabilityGenerator = options.capabilityGenerator ?? defaultCapabilityGenerator;
     this.promptReader = options.promptReader ?? defaultPromptReader;
     this.serverFactory = options.serverFactory ?? createServer;
+    this.processControl = options.processControl ?? new NodeWorkerProcessControl();
+    this.backendCancellationGraceMs = options.backendCancellationGraceMs ?? 500;
+    this.exitObservationGraceMs = options.exitObservationGraceMs ?? 250;
   }
 
   open(operation: Operation): Worker {
     const cancellation = new WorkerCancellation();
     return makeSingleRunWorker({
       run: (hooks) => this.runSession(operation, hooks, cancellation),
-      cancel: (_cancellationEpoch) => Effect.sync(() => {
+      cancel: (_cancellationEpoch, timeoutMs) => Effect.suspend(() => {
         cancellation.request();
         const session = this.sessions.get(operation.operationId);
-        if (session?.socket !== undefined) {
-          const cancellation = session.protocol.requestCancellation();
-          if (cancellation !== undefined) session.socket.write(cancellation);
+        if (session?.socket === undefined) {
+          if (session !== undefined) this.reject(session, "Visible Worker cancelled before protocol identification");
+          return Effect.succeed(undefined);
         }
-        if (session !== undefined) {
-          this.reject(session, "Visible Worker cancellation has no stop evidence");
+        const request = session.protocol.requestCancellation();
+        if (request === undefined) {
+          this.reject(session, "Visible Worker cancellation has no active backend");
+          return Effect.succeed(undefined);
         }
-        return undefined;
+        session.socket.write(request);
+        const backendResponse = Effect.promise(() => session.cancellationReception);
+        const forcedStop = Effect.sleep(
+          Math.min(this.backendCancellationGraceMs, Math.max(0, Math.floor(timeoutMs * 0.75))),
+        ).pipe(
+          Effect.flatMap(() => session.identity === undefined
+            ? Effect.succeed(undefined)
+            : this.processControl.terminate(session.identity)),
+          Effect.tap((evidence) => Effect.sync(() => {
+            if (evidence === undefined) {
+              this.reject(session, "Visible Worker cancellation has no stop evidence");
+            } else {
+              session.receptionCompleted = true;
+              session.resolveReception({ state: "cancelled" });
+              this.closeSession(session);
+            }
+          })),
+        );
+        return Effect.raceFirst(backendResponse, forcedStop);
       }),
     });
   }
@@ -224,12 +266,22 @@ export class VisibleWorker implements WorkerAdapter {
         if (started.state === "configuration_failed") {
           return { state: started.reason } as WorkerRunOutcome;
         }
+        if (started.state === "liveness-unproven") {
+          return { state: "liveness-unproven" } as const;
+        }
         const mismatch = configurationMismatch(operation.effectiveConfig, started.identity.observedConfig);
         if (mismatch !== undefined) return { state: mismatch } as WorkerRunOutcome;
         yield* hooks.workerIdentified(started.identity);
         const reception = yield* receiveWorkerProtocol(session!.reception);
         if (reception.state === "agent_failed") {
           return { state: "agent_failed", evidence: reception.evidence } as const;
+        }
+        if (reception.state !== "results_received") {
+          return {
+            state: reception.state === "cancelled"
+              ? "worker_protocol_failed"
+              : reception.state,
+          } as WorkerRunOutcome;
         }
         const acceptance = yield* hooks.acceptResults(reception.deliveries);
         return yield* acknowledgeResultAcceptance(
@@ -268,7 +320,7 @@ export class VisibleWorker implements WorkerAdapter {
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
-    const configPath = join(directory, "worker.v4.json");
+    const configPath = join(directory, "worker.v5.json");
     const socketPath = join(directory, "child.sock");
     const prompt = await this.promptReader.read(operation.task.promptRef);
     cancellation.requireLaunchAllowed();
@@ -332,6 +384,10 @@ export class VisibleWorker implements WorkerAdapter {
       resolveStarted = resolve;
       rejectStarted = reject;
     });
+    let resolveCancellation!: (value: WorkerCancellationEvidence) => void;
+    const cancellationReception = new Promise<WorkerCancellationEvidence>((resolve) => {
+      resolveCancellation = resolve;
+    });
     void reception.catch(() => undefined);
     void startedReception.catch(() => undefined);
     const server = this.serverFactory();
@@ -345,6 +401,8 @@ export class VisibleWorker implements WorkerAdapter {
       startedReception,
       resolveStarted,
       rejectStarted,
+      cancellationReception,
+      resolveCancellation,
       receptionCompleted: false,
       protocol: new HostProtocolPeer({
         operationId: operation.operationId,
@@ -366,26 +424,35 @@ export class VisibleWorker implements WorkerAdapter {
       try {
         for (const event of session.protocol.receive(chunk)) {
           if (event.type === "started") {
+            const identity = {
+              processId: event.processId,
+              processInstanceId: event.processInstanceId,
+              processStartToken: event.processStartToken,
+              piSessionId: event.piSessionId,
+              observedConfig: event.observedConfig,
+            };
+            session.identity = identity;
             session.resolveStarted({
               state: "identified",
-              identity: {
-                processInstanceId: event.processInstanceId,
-                piSessionId: event.piSessionId,
-                observedConfig: event.observedConfig,
-              },
+              identity,
             });
           } else if (event.type === "worker_configuration_failed") {
             session.receptionCompleted = true;
             session.resolveStarted({ state: "configuration_failed", reason: event.reason });
           } else {
             session.receptionCompleted = true;
-            session.resolveReception(event.type === "worker_failed"
-              ? { state: "agent_failed", evidence: event.evidence }
-              : {
-                  state: "results_received",
-                  deliveries: event.reception.deliveries,
-                  evidence: event.evidence,
-                });
+            if (event.type === "worker_cancelled") {
+              session.resolveCancellation({ proof: "acknowledgement" });
+              session.resolveReception({ state: "cancelled" });
+            } else {
+              session.resolveReception(event.type === "worker_failed"
+                ? { state: "agent_failed", evidence: event.evidence }
+                : {
+                    state: "results_received",
+                    deliveries: event.reception.deliveries,
+                    evidence: event.evidence,
+                  });
+            }
           }
         }
       } catch (error) {
@@ -393,17 +460,34 @@ export class VisibleWorker implements WorkerAdapter {
       }
     });
     socket.on("end", () => {
-      if (session.receptionCompleted) {
-        this.closeSession(session);
-        return;
-      }
-      try {
-        session.protocol.disconnect();
-      } catch (error) {
-        this.reject(session, error instanceof Error ? error.message : String(error));
-      }
+      void this.classifyDisconnect(session);
     });
     socket.on("error", (error) => this.reject(session, error.message));
+  }
+
+  private async classifyDisconnect(session: Session): Promise<void> {
+    if (session.receptionCompleted) {
+      this.closeSession(session);
+      return;
+    }
+    session.receptionCompleted = true;
+    if (session.identity === undefined) {
+      session.resolveReception({ state: "liveness-unproven" });
+      session.resolveStarted({ state: "liveness-unproven" });
+      this.closeSession(session);
+      return;
+    }
+    const state = await Effect.runPromise(
+      this.processControl.waitForStop(session.identity, this.exitObservationGraceMs),
+    );
+    session.resolveReception(
+      state === "stopped"
+        ? { state: "process-exited-without-result" }
+        : state === "unverifiable"
+          ? { state: "liveness-unproven" }
+          : { state: "worker_protocol_failed" },
+    );
+    this.closeSession(session);
   }
 
   private async sendAcknowledgement(

@@ -87,6 +87,7 @@ export interface Result {
 export type OperationFailureReason =
   | "worker_start_failed"
   | "worker_protocol_failed"
+  | "process-exited-without-result"
   | "agent_failed"
   | "model_mismatch"
   | "unsupported_capability"
@@ -135,7 +136,7 @@ export class OperationUnknownError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: "cancel-unproven",
+    readonly reason: "cancel-unproven" | "liveness-unproven",
   ) {
     super(`Operation ${operationId} has unknown outcome: ${reason}`);
   }
