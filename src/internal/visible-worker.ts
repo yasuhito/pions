@@ -273,6 +273,10 @@ export class VisibleWorker implements WorkerAdapter {
         const mismatch = configurationMismatch(operation.effectiveConfig, started.identity.observedConfig);
         if (mismatch !== undefined) return { state: mismatch } as WorkerRunOutcome;
         yield* hooks.workerIdentified(started.identity);
+        yield* Effect.tryPromise({
+          try: () => this.sendBegin(session!),
+          catch: (error) => protocolError(error instanceof Error ? error.message : String(error)),
+        });
         const reception = yield* receiveWorkerProtocol(session!.reception);
         if (reception.state === "agent_failed") {
           return { state: "agent_failed", evidence: reception.evidence } as const;
@@ -321,7 +325,7 @@ export class VisibleWorker implements WorkerAdapter {
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
-    const configPath = join(directory, "worker.v5.json");
+    const configPath = join(directory, "worker.v6.json");
     await mkdir(this.options.socketDirectory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(this.options.socketDirectory, DIRECTORY_MODE);
     const socketPath = join(this.options.socketDirectory, `${operationDirectoryKey(operation.operationId)}.sock`);
@@ -491,6 +495,13 @@ export class VisibleWorker implements WorkerAdapter {
           : { state: "worker_protocol_failed" },
     );
     this.closeSession(session);
+  }
+
+  private async sendBegin(session: Session): Promise<void> {
+    if (session.socket === undefined) {
+      throw protocolError("No Worker connection to begin execution");
+    }
+    await writeSocket(session.socket, session.protocol.begin());
   }
 
   private async sendAcknowledgement(

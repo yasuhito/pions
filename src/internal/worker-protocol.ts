@@ -15,7 +15,7 @@ import {
   ObservedWorkerConfigSchema,
 } from "./worker-configuration.js";
 
-export const WORKER_PROTOCOL_VERSION = 5 as const;
+export const WORKER_PROTOCOL_VERSION = 6 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -142,6 +142,10 @@ const AcknowledgementSchema = Schema.Struct({
   deliverySequenceNumber: Schema.Number,
   type: Schema.Literal("ack"),
 });
+const BeginRequestSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("begin"),
+});
 const CancellationRequestSchema = Schema.Struct({
   protocolVersion: Schema.Number,
   operationId: Schema.NonEmptyString,
@@ -203,6 +207,7 @@ export interface ResultReception {
 
 export interface WorkerProtocolReception {
   readonly acknowledgementsComplete: boolean;
+  readonly beginReceived?: true;
   readonly cancellationRequested?: true;
 }
 
@@ -414,7 +419,9 @@ export class HostProtocolPeer extends FramedPeer {
   private state:
     | "awaiting_hello"
     | "awaiting_started"
+    | "awaiting_begin"
     | "receiving_results"
+    | "cancelling"
     | "done"
     | "failed" = "awaiting_hello";
   private lastSequenceNumber = 0;
@@ -462,17 +469,35 @@ export class HostProtocolPeer extends FramedPeer {
     }
   }
 
+  begin(): Buffer {
+    if (this.state !== "awaiting_begin") {
+      throw violation("invalid_transition", "Worker execution cannot begin before identification");
+    }
+    const bytes = this.encodeFrame({
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+      operationId: this.authority.operationId,
+      capability: this.authority.capability,
+      sequenceNumber: 1,
+      type: "begin",
+    });
+    this.state = "receiving_results";
+    return bytes;
+  }
+
   requestCancellation(): Buffer | undefined {
     if (
       this.state === "awaiting_hello" ||
+      this.state === "cancelling" ||
       this.state === "failed" ||
       this.state === "done"
     ) return undefined;
-    return this.encodeFrame({
+    const bytes = this.encodeFrame({
       protocolVersion: WORKER_PROTOCOL_VERSION,
       operationId: this.authority.operationId,
       type: "cancel",
     });
+    this.state = "cancelling";
+    return bytes;
   }
 
   acknowledgeResult(acceptance: Readonly<ResultAcceptanceProof>): {
@@ -540,7 +565,7 @@ export class HostProtocolPeer extends FramedPeer {
       if (this.state !== "awaiting_started") {
         throw violation("invalid_transition", "Worker started more than once");
       }
-      this.state = "receiving_results";
+      this.state = "awaiting_begin";
       return {
         type: "started",
         processId: this.processId,
@@ -570,8 +595,8 @@ export class HostProtocolPeer extends FramedPeer {
         "Worker cancellation frame has an invalid shape",
       );
       this.validateCommon(cancelled);
-      if (this.state !== "receiving_results") {
-        throw violation("invalid_transition", "Worker cancellation arrived outside an active Pi run");
+      if (this.state !== "cancelling") {
+        throw violation("invalid_transition", "Worker cancellation arrived without a host request");
       }
       this.state = "done";
       return { type: "worker_cancelled" };
@@ -688,13 +713,15 @@ export class WorkerProtocolPeer extends FramedPeer {
   private state:
     | "new"
     | "identified"
-    | "started"
+    | "ready"
+    | "running"
     | "delivering"
     | "cancelling"
     | "done"
     | "acknowledged"
     | "failed" = "new";
   private sequenceNumber = 1;
+  private lastHostSequenceNumber = 0;
   private readonly resultBudget: ResultBudget;
   private readonly pendingAcknowledgements = new Map<string, number>();
 
@@ -739,7 +766,7 @@ export class WorkerProtocolPeer extends FramedPeer {
           piSessionId: event.piSessionId,
           observedConfig: event.observedConfig,
         });
-        this.state = "started";
+        this.state = "ready";
         return bytes;
       }
       case "configuration_failed": {
@@ -752,7 +779,7 @@ export class WorkerProtocolPeer extends FramedPeer {
         return bytes;
       }
       case "result": {
-        if (this.state !== "started" && this.state !== "delivering") {
+        if (this.state !== "running" && this.state !== "delivering") {
           return this.invalidSend(event.type);
         }
         validateSafePositiveInteger(event.deliverySequenceNumber, "deliverySequenceNumber");
@@ -777,7 +804,7 @@ export class WorkerProtocolPeer extends FramedPeer {
         return bytes;
       }
       case "failed": {
-        if (this.state !== "started") return this.invalidSend(event.type);
+        if (this.state !== "running") return this.invalidSend(event.type);
         const bytes = this.encodeWorkerFrame({
           type: "failed",
           errorMessage: event.errorMessage,
@@ -808,11 +835,36 @@ export class WorkerProtocolPeer extends FramedPeer {
 
   receive(bytes: Buffer): WorkerProtocolReception {
     try {
+      let beginReceived = false;
       let cancellationRequested = false;
       this.acceptBytes(bytes, false, (frameBytes) => {
         const value = parseFrame(frameBytes);
         validateProtocolVersion(value, "Worker protocol");
         const object = value as { readonly type?: unknown };
+        if (object.type === "begin") {
+          const begin = decodeShape(
+            BeginRequestSchema,
+            value,
+            "Worker begin request has an invalid shape",
+          );
+          if (
+            begin.operationId !== this.authority.operationId ||
+            !sameSecret(this.authority.capability, begin.capability)
+          ) {
+            throw violation("authority_mismatch", "Begin authority does not match the Operation");
+          }
+          validateSafePositiveInteger(begin.sequenceNumber, "sequenceNumber");
+          if (begin.sequenceNumber !== this.lastHostSequenceNumber + 1) {
+            throw violation("sequence_mismatch", "Host protocol sequence is stale or out of order");
+          }
+          this.lastHostSequenceNumber = begin.sequenceNumber;
+          if (this.state !== "ready") {
+            throw violation("invalid_transition", "Begin arrived before Worker start or more than once");
+          }
+          this.state = "running";
+          beginReceived = true;
+          return;
+        }
         if (object.type === "cancel") {
           const cancellation = decodeShape(
             CancellationRequestSchema,
@@ -822,8 +874,12 @@ export class WorkerProtocolPeer extends FramedPeer {
           if (cancellation.operationId !== this.authority.operationId) {
             throw violation("authority_mismatch", "Cancellation operation does not match");
           }
-          if (this.state !== "started" && this.state !== "delivering") {
-            throw violation("invalid_transition", "Cancellation arrived outside an active Pi run");
+          if (
+            this.state !== "ready" &&
+            this.state !== "running" &&
+            this.state !== "delivering"
+          ) {
+            throw violation("invalid_transition", "Cancellation arrived outside an available Pi run");
           }
           this.state = "cancelling";
           cancellationRequested = true;
@@ -862,6 +918,7 @@ export class WorkerProtocolPeer extends FramedPeer {
       }
       return {
         acknowledgementsComplete,
+        ...(beginReceived ? { beginReceived: true as const } : {}),
         ...(cancellationRequested ? { cancellationRequested: true as const } : {}),
       };
     } catch (error) {

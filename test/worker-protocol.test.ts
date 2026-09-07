@@ -43,12 +43,18 @@ function successfulDelivery(
   worker: WorkerProtocolPeer,
   body = "finished",
 ): ReadonlyArray<HostProtocolEvent> {
-  return host.receive(Buffer.concat([
+  const started = host.receive(Buffer.concat([
     worker.send({ type: "hello", ...processIdentity }),
     worker.send({ type: "started", piSessionId, observedConfig }),
-    worker.send({ type: "result", body, deliverySequenceNumber: 1 }),
-    worker.send({ type: "done", ...agentRunEvidence }),
   ]));
+  worker.receive(host.begin());
+  return [
+    ...started,
+    ...host.receive(Buffer.concat([
+      worker.send({ type: "result", body, deliverySequenceNumber: 1 }),
+      worker.send({ type: "done", ...agentRunEvidence }),
+    ])),
+  ];
 }
 
 function rewriteFrame(
@@ -58,6 +64,70 @@ function rewriteFrame(
   const frame = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
   return Buffer.from(`${JSON.stringify({ ...frame, ...change })}\n`, "utf8");
 }
+
+test("Worker protocol accepts an authenticated begin after Worker start", () => {
+  const { host, worker } = peers();
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+
+  assert.deepEqual(worker.receive(host.begin()), {
+    acknowledgementsComplete: false,
+    beginReceived: true,
+  });
+});
+
+test("Worker protocol rejects a duplicate begin", () => {
+  const { host, worker } = peers();
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  const begin = host.begin();
+  worker.receive(begin);
+
+  assert.throws(
+    () => worker.receive(begin),
+    (error) => error instanceof ProtocolViolation && error.reason === "sequence_mismatch",
+  );
+});
+
+test("Worker protocol rejects begin before Worker start", () => {
+  const { host, worker } = peers();
+  worker.send({ type: "hello", ...processIdentity });
+  const begin = rewriteFrame(Buffer.from("{}\n"), {
+    protocolVersion: WORKER_PROTOCOL_VERSION,
+    operationId: authority.operationId,
+    capability: authority.capability,
+    sequenceNumber: 1,
+    type: "begin",
+  });
+
+  assert.throws(
+    () => worker.receive(begin),
+    (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
+  );
+});
+
+test("Worker protocol rejects begin from a different Operation authority", () => {
+  const { host, worker } = peers();
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  const begin = rewriteFrame(host.begin(), { capability: "cd".repeat(32) });
+
+  assert.throws(
+    () => worker.receive(begin),
+    (error) => error instanceof ProtocolViolation && error.reason === "authority_mismatch",
+  );
+});
+
+test("Worker protocol rejects Result before begin", () => {
+  const { host, worker } = peers();
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+
+  assert.throws(
+    () => worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
+    (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
+  );
+});
 
 test("Worker protocol returns the authenticated process identity", () => {
   const { host, worker } = peers();
@@ -110,6 +180,7 @@ test("Worker protocol carries settled Pi failure evidence", () => {
   const { host, worker } = peers();
   host.receive(worker.send({ type: "hello", ...processIdentity }));
   host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  worker.receive(host.begin());
 
   const events = host.receive(worker.send({
     type: "failed",
@@ -136,6 +207,7 @@ test("Worker protocol accepts a same-delivery retry", () => {
   const { host, worker } = peers();
   host.receive(worker.send({ type: "hello", ...processIdentity }));
   host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  worker.receive(host.begin());
   host.receive(worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }));
   host.receive(worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }));
 
@@ -168,8 +240,8 @@ test("Worker protocol rejects a stale Worker sequence", () => {
   );
 });
 
-test("Worker protocol uses version 5", () => {
-  assert.equal(WORKER_PROTOCOL_VERSION, 5);
+test("Worker protocol uses version 6", () => {
+  assert.equal(WORKER_PROTOCOL_VERSION, 6);
 });
 
 test("Worker protocol rejects a different frame version", () => {
@@ -251,12 +323,14 @@ test("Worker protocol refuses to emit an oversized first frame", () => {
 });
 
 test("Worker protocol refuses to emit an oversized normal frame", () => {
+  const host = new HostProtocolPeer(authority);
   const worker = new WorkerProtocolPeer(authority, {
     frameBytes: 512,
     resultBytes: 1024,
   });
-  worker.send({ type: "hello", ...processIdentity });
-  worker.send({ type: "started", piSessionId, observedConfig });
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  worker.receive(host.begin());
 
   assert.throws(
     () => worker.send({ type: "result", body: "x".repeat(500), deliverySequenceNumber: 1 }),
@@ -265,12 +339,14 @@ test("Worker protocol refuses to emit an oversized normal frame", () => {
 });
 
 test("a failed Worker protocol send leaves its sequence unchanged", () => {
+  const host = new HostProtocolPeer(authority);
   const worker = new WorkerProtocolPeer(authority, {
     frameBytes: 512,
     resultBytes: 1024,
   });
-  worker.send({ type: "hello", ...processIdentity });
-  worker.send({ type: "started", piSessionId, observedConfig });
+  host.receive(worker.send({ type: "hello", ...processIdentity }));
+  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  worker.receive(host.begin());
   try {
     worker.send({ type: "result", body: "x".repeat(500), deliverySequenceNumber: 1 });
   } catch {
@@ -289,6 +365,7 @@ test("Worker protocol rejects an excessive inbound session Result total", () => 
   const worker = new WorkerProtocolPeer(authority);
   host.receive(worker.send({ type: "hello", ...processIdentity }));
   host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  worker.receive(host.begin());
   host.receive(worker.send({ type: "result", body: "12345", deliverySequenceNumber: 1 }));
 
   assert.throws(
@@ -302,6 +379,7 @@ test("Worker protocol rejects too many inbound Result deliveries", () => {
   const worker = new WorkerProtocolPeer(authority);
   host.receive(worker.send({ type: "hello", ...processIdentity }));
   host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  worker.receive(host.begin());
   host.receive(worker.send({ type: "result", body: "first", deliverySequenceNumber: 1 }));
 
   assert.throws(
@@ -314,6 +392,7 @@ test("Worker protocol rejects a mismatched Result digest", () => {
   const { host, worker } = peers();
   host.receive(worker.send({ type: "hello", ...processIdentity }));
   host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
+  worker.receive(host.begin());
   const result = rewriteFrame(
     worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
     { digest: `sha256:${"0".repeat(64)}` },
@@ -363,6 +442,9 @@ test("Worker protocol makes a failed ACK reception terminal", () => {
   host.receive(Buffer.concat([
     worker.send({ type: "hello", ...processIdentity }),
     worker.send({ type: "started", piSessionId, observedConfig }),
+  ]));
+  worker.receive(host.begin());
+  host.receive(Buffer.concat([
     worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
     worker.send({ type: "result", body: "finished", deliverySequenceNumber: 2 }),
     worker.send({ type: "done", ...agentRunEvidence }),
@@ -389,6 +471,9 @@ test("ACK distinguishes conflicting Results with the same delivery sequence", ()
   host.receive(Buffer.concat([
     worker.send({ type: "hello", ...processIdentity }),
     worker.send({ type: "started", piSessionId, observedConfig }),
+  ]));
+  worker.receive(host.begin());
+  host.receive(Buffer.concat([
     worker.send({ type: "result", body: "accepted", deliverySequenceNumber: 1 }),
     worker.send({ type: "result", body: "conflicting", deliverySequenceNumber: 1 }),
     worker.send({ type: "done", ...agentRunEvidence }),
@@ -426,9 +511,12 @@ test("Host protocol peer makes a frame received after done terminal", () => {
 
 test("Host protocol peer rejects an incomplete frame after done", () => {
   const { host, worker } = peers();
-  const bytes = Buffer.concat([
+  host.receive(Buffer.concat([
     worker.send({ type: "hello", ...processIdentity }),
     worker.send({ type: "started", piSessionId, observedConfig }),
+  ]));
+  worker.receive(host.begin());
+  const bytes = Buffer.concat([
     worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
     worker.send({ type: "done", ...agentRunEvidence }),
     Buffer.from("{", "utf8"),

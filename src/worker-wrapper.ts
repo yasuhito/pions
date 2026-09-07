@@ -41,7 +41,6 @@ async function main(): Promise<void> {
   const configPath = process.argv[2];
   if (configPath === undefined) throw new Error("Worker configuration path is required");
   const config = decodeWorkerConfig(await readFile(configPath, "utf8"));
-  const prompt = await readFile(config.promptPath, "utf8");
   const socket = connect(config.socketPath);
   await new Promise<void>((resolve, reject) => {
     socket.once("connect", resolve);
@@ -110,6 +109,11 @@ async function main(): Promise<void> {
   });
 
   let cancellationRequested = false;
+  let executionBegan = false;
+  let resolveBegin!: () => void;
+  const begin = new Promise<void>((resolve) => {
+    resolveBegin = resolve;
+  });
   let resolveAcknowledgement!: () => void;
   const acknowledgement = new Promise<void>((resolve) => {
     resolveAcknowledgement = resolve;
@@ -117,19 +121,31 @@ async function main(): Promise<void> {
   socket.on("data", (chunk: Buffer) => {
     try {
       const reception = protocol.receive(chunk);
+      if (reception.beginReceived) resolveBegin();
       if (reception.acknowledgementsComplete) resolveAcknowledgement();
       if (reception.cancellationRequested && !cancellationRequested) {
         cancellationRequested = true;
-        void session.abort().then(() => {
+        if (!executionBegan) {
           send({ type: "cancelled" });
           socket.end();
-        }).finally(() => session.dispose());
+          session.dispose();
+          resolveBegin();
+        } else {
+          void session.abort().then(() => {
+            send({ type: "cancelled" });
+            socket.end();
+          }).finally(() => session.dispose());
+        }
       }
     } catch {
       socket.destroy();
     }
   });
 
+  await begin;
+  if (cancellationRequested) return;
+  executionBegan = true;
+  const prompt = await readFile(config.promptPath, "utf8");
   let result;
   try {
     result = await runPiAgentSession(session, prompt, displayEvent);

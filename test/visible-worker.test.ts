@@ -8,7 +8,10 @@ import { test } from "node:test";
 import { Effect } from "effect";
 
 import type { Operation } from "../src/internal/event-store/index.js";
-import type { CommandInvocation } from "../src/internal/herdr-presentation.js";
+import type {
+  CommandInvocation,
+  CommandOutput,
+} from "../src/internal/herdr-presentation.js";
 import type {
   WorkerCancellationEvidence,
   WorkerProcessIdentity,
@@ -80,6 +83,33 @@ class FakeExecutor {
   }
 }
 
+class DeferredExecutor {
+  readonly invocations: Array<CommandInvocation> = [];
+  private resume?: (effect: Effect.Effect<CommandOutput, Error>) => void;
+  private settlement?: Effect.Effect<CommandOutput, Error>;
+
+  execute(invocation: CommandInvocation): Effect.Effect<CommandOutput, Error> {
+    this.invocations.push(invocation);
+    return Effect.async((resume) => {
+      this.resume = resume;
+      if (this.settlement !== undefined) resume(this.settlement);
+    });
+  }
+
+  complete(output: CommandOutput = { stdout: "{}", stderr: "", exitCode: 0 }): void {
+    this.settle(Effect.succeed(output));
+  }
+
+  fail(error: Error): void {
+    this.settle(Effect.fail(error));
+  }
+
+  private settle(effect: Effect.Effect<CommandOutput, Error>): void {
+    this.settlement = effect;
+    this.resume?.(effect);
+  }
+}
+
 function operation(
   operationId = "operation-1",
   paneId = "opaque:pane",
@@ -117,9 +147,11 @@ async function fixture(options: {
   readonly processControl?: WorkerProcessControl;
   readonly backendCancellationGraceMs?: number;
   readonly socketDirectory?: string;
+  readonly executor?: FakeExecutor | DeferredExecutor;
+  readonly workerIdentified?: WorkerRunHooks["workerIdentified"];
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
-  const executor = new FakeExecutor();
+  const executor = options.executor ?? new FakeExecutor();
   const capability = "ab".repeat(32);
   let protocolServer!: Server;
   let protocolSocket: Socket | undefined;
@@ -154,7 +186,7 @@ async function fixture(options: {
     workerIdentified: (identity) => Effect.sync(() => {
       identities.push(identity.processInstanceId);
       piSessionIds.push(identity.piSessionId);
-    }),
+    }).pipe(Effect.andThen(options.workerIdentified?.(identity) ?? Effect.void)),
     acceptResults: (received) => Effect.sync(() => {
       deliveries.push(...received);
       const first = received[0];
@@ -175,7 +207,7 @@ async function fixture(options: {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const directory = join(root, operationDirectoryKey(current.operationId));
-  const config = JSON.parse(await readFile(join(directory, "worker.v5.json"), "utf8")) as {
+  const config = JSON.parse(await readFile(join(directory, "worker.v6.json"), "utf8")) as {
     readonly socketPath: string;
   };
   const protocolSession = {
@@ -247,26 +279,36 @@ function frame(
   };
 }
 
-function sendResultDelivery(
+function receiveFrame(client: Socket): Promise<string> {
+  return new Promise((resolve) => {
+    client.once("data", (bytes) => resolve(bytes.toString("utf8")));
+  });
+}
+
+async function sendResultDelivery(
   client: Socket,
   options: {
     readonly capability: string;
     readonly operationId: string;
     readonly body: string;
   },
-): void {
+): Promise<{ readonly acknowledgement: Promise<string>; readonly begin: string }> {
   const withOperation = (value: ReturnType<typeof frame>) => ({
     ...value,
     operationId: options.operationId,
   });
+  const begin = receiveFrame(client);
   send(client, withOperation(frame(options.capability, 1, "hello", { processInstanceId })));
   send(client, withOperation(frame(options.capability, 2, "started", { piSessionId, observedConfig })));
+  const receivedBegin = await begin;
+  const acknowledgement = receiveFrame(client);
   send(client, withOperation(frame(options.capability, 3, "result", {
     body: options.body,
     digest: resultDigest(options.body),
     deliverySequenceNumber: 1,
   })));
   send(client, withOperation(frame(options.capability, 4, "done", { ...agentRunEvidence })));
+  return { acknowledgement, begin: receivedBegin };
 }
 
 async function deliver(
@@ -274,15 +316,12 @@ async function deliver(
   body = "finished",
 ) {
   const client = await socket(workerFixture.config.socketPath);
-  const acknowledgement = new Promise<string>((resolve) => {
-    client.once("data", (bytes) => resolve(bytes.toString("utf8")));
-  });
-  sendResultDelivery(client, {
+  const { acknowledgement, begin } = await sendResultDelivery(client, {
     capability: workerFixture.capability,
     operationId: workerFixture.current.operationId,
     body,
   });
-  return { acknowledgement, client, outcome: await workerFixture.outcome };
+  return { acknowledgement, begin, client, outcome: await workerFixture.outcome };
 }
 
 test("public visible Runtime composes the production path", async (context) => {
@@ -325,10 +364,10 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   while (executor.invocations.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v5.json");
+  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v6.json");
   const config = JSON.parse(await readFile(configPath, "utf8")) as { readonly socketPath: string };
   const client = await socket(config.socketPath);
-  sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
+  await sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
 
   assert.deepEqual(await handle.result(), {
     body: "finished",
@@ -359,7 +398,7 @@ test("visible Worker launch targets only the persisted owned pane", async (conte
     "pane",
     "run",
     "opaque:pane",
-    `'/node/bin/node' '/pions/worker-wrapper.js' '${join(value.directory, "worker.v5.json")}'`,
+    `'/node/bin/node' '/pions/worker-wrapper.js' '${join(value.directory, "worker.v6.json")}'`,
   ]);
 });
 
@@ -385,7 +424,7 @@ test("visible Worker configuration uses private permissions", async (context) =>
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal(await mode(join(value.directory, "worker.v5.json")), 0o600);
+  assert.equal(await mode(join(value.directory, "worker.v6.json")), 0o600);
 });
 
 test("invalid Worker configuration reports a Worker start failure", async (context) => {
@@ -485,6 +524,100 @@ test("visible Worker keeps Node alive while awaiting the wrapper connection", as
   assert.equal(unrefCount, 0);
 });
 
+test("visible Worker does not send begin while the launch command is incomplete", async (context) => {
+  const executor = new DeferredExecutor();
+  const value = await fixture({ executor });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const frames: Array<string> = [];
+  client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const framesBeforeLaunchCompleted = frames.length;
+  executor.complete();
+  while (frames.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "failed", {
+    errorMessage: "finished cleanup",
+    ...agentRunEvidence,
+  }));
+  await value.outcome;
+
+  assert.equal(framesBeforeLaunchCompleted, 0);
+});
+
+test("visible Worker does not send begin when the launch command fails", async (context) => {
+  const executor = new DeferredExecutor();
+  const value = await fixture({ executor });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const frames: Array<string> = [];
+  client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  executor.complete({ stdout: "", stderr: "launch failed", exitCode: 1 });
+  await value.outcome;
+
+  assert.equal(frames.length, 0);
+});
+
+test("visible Worker does not send begin when the launch command times out", async (context) => {
+  const executor = new DeferredExecutor();
+  const value = await fixture({ executor });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const frames: Array<string> = [];
+  client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  executor.fail(new Error("launch timed out"));
+  await value.outcome;
+
+  assert.equal(frames.length, 0);
+});
+
+test("a Worker cancelled before begin does not receive begin", async (context) => {
+  let identified!: () => void;
+  const identification = new Promise<void>((resolve) => {
+    identified = resolve;
+  });
+  let releaseIdentification!: () => void;
+  const value = await fixture({
+    workerIdentified: () => Effect.async<void>((resume) => {
+      identified();
+      releaseIdentification = () => resume(Effect.void);
+    }),
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  await identification;
+  const control = receiveFrame(client);
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  const receivedControl = JSON.parse(await control) as { readonly type: string };
+  send(client, frame(value.capability, 3, "cancelled"));
+  await cancellation;
+  releaseIdentification();
+  await value.outcome;
+
+  assert.equal(receivedControl.type, "cancel");
+});
+
+test("visible Worker sends authenticated begin through the Worker protocol", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const { begin } = await deliver(value);
+
+  assert.deepEqual(JSON.parse(begin), {
+    protocolVersion: WORKER_PROTOCOL_VERSION,
+    operationId: value.current.operationId,
+    capability: value.capability,
+    sequenceNumber: 1,
+    type: "begin",
+  });
+});
+
 test("authenticated Result is observed through the Worker interface", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -558,6 +691,25 @@ test("observed model mismatch becomes a typed Worker failure", async (context) =
   assert.equal((await value.outcome).state, "model_mismatch");
 });
 
+test("visible Worker does not send begin when observed configuration mismatches", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const frames: Array<string> = [];
+  client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: {
+      ...observedConfig,
+      model: { state: "observed", value: { provider: "other", id: "model" } },
+    },
+  }));
+  await value.outcome;
+
+  assert.equal(frames.length, 0);
+});
+
 test("pre-start configuration failure becomes a typed Worker failure", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -575,7 +727,9 @@ test("settled Pi failure becomes an agent failure with evidence", async (context
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  const begin = receiveFrame(client);
   send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  await begin;
   send(client, frame(value.capability, 3, "failed", {
     errorMessage: "provider failed",
     ...agentRunEvidence,
@@ -761,17 +915,17 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   }
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
-  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v5.json"), "utf8")) as { readonly socketPath: string };
-  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v5.json"), "utf8")) as { readonly socketPath: string };
+  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v6.json"), "utf8")) as { readonly socketPath: string };
+  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v6.json"), "utf8")) as { readonly socketPath: string };
   const secondClient = await socket(secondConfig.socketPath);
-  sendResultDelivery(secondClient, {
+  await sendResultDelivery(secondClient, {
     capability: "cd".repeat(32),
     operationId: second.operationId,
     body: "second",
   });
   await secondAtAcceptance;
   const firstClient = await socket(firstConfig.socketPath);
-  sendResultDelivery(firstClient, {
+  await sendResultDelivery(firstClient, {
     capability: "ab".repeat(32),
     operationId: first.operationId,
     body: "first",
