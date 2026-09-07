@@ -32,6 +32,7 @@ import type {
 import type {
   OperationPersistenceError,
   ResultConflictError,
+  ResourceProofRejectedError,
   WorkerConfigurationFailureReason,
 } from "../public.js";
 import { configurationMismatch } from "./worker-configuration.js";
@@ -228,7 +229,7 @@ export class VisibleWorker implements WorkerAdapter {
     cancellation: WorkerCancellation,
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResultConflictError
+    OperationPersistenceError | ResultConflictError | ResourceProofRejectedError
   > {
     let session: Session | undefined;
     return Effect.gen(this, function* () {

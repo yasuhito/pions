@@ -6,6 +6,7 @@ import type {
   Operation,
 } from "./event-store/index.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
+import type { InternalResourceProofController } from "./resource-controller.js";
 import type {
   ResultAcceptanceProof,
   ResultDelivery,
@@ -15,6 +16,7 @@ import type {
   OperationPersistenceError,
   StartAuthorizationAuthenticator,
   ResultConflictError,
+  ResourceProofRejectedError,
   WorkerProfilePolicy,
 } from "../public.js";
 
@@ -54,7 +56,7 @@ export interface WorkerRunHooks {
   workerLaunched(): Effect.Effect<void, OperationPersistenceError | ResultConflictError>;
   workerIdentified(
     identity: Readonly<WorkerProcessIdentity>,
-  ): Effect.Effect<void, OperationPersistenceError | ResultConflictError>;
+  ): Effect.Effect<void, OperationPersistenceError | ResultConflictError | ResourceProofRejectedError>;
   acceptResults(
     deliveries: ReadonlyArray<ResultDelivery>,
   ): Effect.Effect<ResultAcceptanceOutcome, OperationPersistenceError>;
@@ -85,7 +87,7 @@ export type WorkerRunOutcome =
 export interface Worker {
   run(
     hooks: Readonly<WorkerRunHooks>,
-  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError | ResultConflictError>;
+  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError | ResultConflictError | ResourceProofRejectedError>;
   cancel(
     cancellationEpoch: number,
     timeoutMs: number,
@@ -160,6 +162,7 @@ export interface RuntimeServices {
   readonly presentation: Presentation;
   readonly store: EventStore;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
+  readonly resourceProofController?: InternalResourceProofController;
   readonly configuration?: Readonly<{
     readonly cwd: string;
     readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;

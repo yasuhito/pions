@@ -6,11 +6,15 @@ import { Effect } from "effect";
 
 import { HerdrPresentation, NodeCommandExecutor } from "./herdr-presentation.js";
 import { PrivateFileEventStore } from "./event-store/index.js";
+import { EventStoreResourceEvidenceRepository } from "./event-store-resource-evidence.js";
+import { makeResourceProofController } from "./resource-controller.js";
 import { makeRuntime } from "./runtime.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
 import type {
+  ResourceAuthorityRegistration,
+  ResourceCleanupAuthenticator,
   Runtime,
   StartAuthorizationAuthenticator,
   WorkerProfilePolicy,
@@ -23,6 +27,8 @@ export interface VisibleRuntimeOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly extensionEntryPath?: string;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
+  readonly resourceAuthorities?: ReadonlyArray<Readonly<ResourceAuthorityRegistration>>;
+  readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
 }
 
 const systemClock: RuntimeClock = {
@@ -57,15 +63,27 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
       cwd: options.cwd,
     }),
   });
+  const store = new PrivateFileEventStore(options.stateDirectory, systemClock);
   return makeRuntime({
     worker,
     clock: systemClock,
     ids: { nextOperationId: () => Effect.sync(() => randomUUID()) },
     presentation,
-    store: new PrivateFileEventStore(options.stateDirectory, systemClock),
+    store,
     ...(options.startAuthorizationAuthenticator === undefined
       ? {}
       : { startAuthorizationAuthenticator: options.startAuthorizationAuthenticator }),
+    ...(options.resourceAuthorities === undefined
+      ? {}
+      : {
+          resourceProofController: makeResourceProofController({
+            registrations: options.resourceAuthorities,
+            repository: new EventStoreResourceEvidenceRepository(store),
+            ...(options.resourceCleanupAuthenticator === undefined
+              ? {}
+              : { cleanupAuthenticator: options.resourceCleanupAuthenticator }),
+          }),
+        }),
     configuration: { cwd: options.cwd, profiles: options.profiles },
   });
 }

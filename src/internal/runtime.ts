@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { Cause, Effect, Exit, Schema } from "effect";
 
 import type {
@@ -8,6 +10,7 @@ import type {
   StoreError,
 } from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
+import { validateWorkspaceScope } from "./resource-proof.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
   RequestedWorkerConfigSchema,
@@ -26,6 +29,7 @@ import {
   OperationPersistenceError,
   OperationUnknownError,
   StartAuthorizationAuthenticationError,
+  ResourceProofRejectedError,
   ResultConflictError,
   SpawnRejectedError,
 } from "../public.js";
@@ -71,6 +75,7 @@ interface OperationRecord {
   finalizing?: Promise<void>;
   resultDeliveryError?: ResultConflictError;
   successfulExitConfirmed?: true;
+  executionRejected?: true;
   worker?: Worker;
 }
 
@@ -188,6 +193,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       cleanupDiagnostics: Object.freeze(operation.presentationCleanupFailure === undefined
         ? []
         : [Object.freeze({ code: operation.presentationCleanupFailure })]),
+      ...(operation.resourceEvidenceRecord === undefined
+        ? {}
+        : {
+            resourceEvidence: Object.freeze({
+              version: operation.resourceEvidenceRecord.version,
+              evidence: operation.resourceEvidenceRecord.snapshot,
+            }),
+          }),
     });
   };
 
@@ -275,6 +288,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         operation.terminalReason === "model_auth_unavailable" ||
         operation.terminalReason === "unsupported_capability" ||
         operation.terminalReason === "tool_policy_violation" ||
+        operation.terminalReason === "resource_proof_rejected" ||
         operation.terminalReason === "descendant_failed"
           ? operation.terminalReason
           : "descendant_failed";
@@ -365,23 +379,57 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           Effect.tap((launched) => project(launched)),
           Effect.asVoid,
         ),
-        workerIdentified: (workerIdentity) => advanceOperation(
-          record.operationId,
-          { type: "automatic_operation_started" },
-        ).pipe(
-          Effect.tap((started) => project(started)),
-          Effect.flatMap((started) => advanceOperation(record.operationId, {
-            type: "worker_identified",
-            workerIdentity: {
-              processId: workerIdentity.processId,
-              processInstanceId: workerIdentity.processInstanceId,
-              processStartToken: workerIdentity.processStartToken,
-              piSessionId: workerIdentity.piSessionId,
-              paneId: started.presentation?.paneId ?? "",
-            },
-            observedConfig: workerIdentity.observedConfig,
-          })),
+        workerIdentified: (workerIdentity) => advanceOperation(record.operationId, {
+          type: "worker_identified",
+          workerIdentity: {
+            processId: workerIdentity.processId,
+            processInstanceId: workerIdentity.processInstanceId,
+            processStartToken: workerIdentity.processStartToken,
+            piSessionId: workerIdentity.piSessionId,
+            paneId: operation.presentation?.paneId ?? "",
+          },
+          observedConfig: workerIdentity.observedConfig,
+        }).pipe(
           Effect.tap((identified) => project(identified)),
+          Effect.flatMap((identified) => {
+            const runtimeConfiguration = services.configuration ?? {
+              cwd: "/test/workspace",
+              profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
+            };
+            const resourcePolicy = runtimeConfiguration.profiles[identified.task.profile]?.resources;
+            if (resourcePolicy?.resourceProofPolicy !== "required") return Effect.void;
+            const controller = services.resourceProofController;
+            if (controller === undefined) {
+              return Effect.fail(new ResourceProofRejectedError(
+                "authority_unavailable",
+                "Required resource proof adapters are unavailable",
+              ));
+            }
+            return Effect.tryPromise({
+              try: async () => {
+                await controller.prepare({
+                  operationId: identified.operationId,
+                  workerProcessInstanceId: workerIdentity.processInstanceId,
+                  startAttemptId: `${identified.operationId}:start:1`,
+                  workspace: resourcePolicy.workspace,
+                  requestedManifest: resourcePolicy.permissionManifest,
+                  effectiveManifest: resourcePolicy.permissionManifest,
+                  requirements: resourcePolicy,
+                });
+                await controller.revalidate(identified.operationId);
+              },
+              catch: (error) => error instanceof ResourceProofRejectedError
+                ? error
+                : new ResourceProofRejectedError(
+                    "validation_unknown",
+                    error instanceof Error ? error.message : String(error),
+                  ),
+            });
+          }),
+          Effect.flatMap(() => advanceOperation(record.operationId, {
+            type: "automatic_operation_started",
+          })),
+          Effect.tap((started) => project(started)),
           Effect.asVoid,
         ),
         acceptResults: (deliveries) => resultAcceptance.accept(
@@ -392,6 +440,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (workerOutcome.state !== "result_acknowledged") {
         const current = await runEffect(getOperation(record.operationId));
         if (isTerminal(current) || current.state === "cancelling") return;
+        if (workerOutcome.state === "process-exited-without-result") {
+          await services.resourceProofController?.safetyCleanup(record.operationId).catch(() => undefined);
+        } else if (
+          workerOutcome.state === "liveness-unproven" ||
+          workerOutcome.state === "worker_protocol_failed" ||
+          workerOutcome.state === "agent_failed"
+        ) {
+          await services.resourceProofController?.markCleanupUnresolved(record.operationId).catch(() => undefined);
+        }
         if (workerOutcome.state === "liveness-unproven") {
           operation = await runEffect(
             advanceOperation(record.operationId, {
@@ -444,6 +501,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           }),
         );
         await runEffect(project(operation));
+        const runtimeConfiguration = services.configuration ?? {
+          cwd: "/test/workspace",
+          profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
+        };
+        const resources = runtimeConfiguration.profiles[operation.task.profile]?.resources;
+        if (resources?.resourceProofPolicy === "required" && resources.cleanupPolicy === "automatic") {
+          await services.resourceProofController?.automaticCleanup(record.operationId).catch(() => undefined);
+        }
       }
 
       operation = await runEffect(
@@ -467,6 +532,28 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         current !== undefined &&
         (isTerminal(current) || current.state === "cancelling")
       ) {
+        return;
+      }
+      if (error instanceof ResourceProofRejectedError && current !== undefined) {
+        const stopped = record.worker === undefined
+          ? undefined
+          : await runEffect(record.worker.cancel(current.cancellationEpoch + 1, 1_000)).catch(() => undefined);
+        if (stopped === undefined) {
+          const unknown = await runEffect(advanceOperation(record.operationId, {
+            type: "operation_unknown",
+            reason: "liveness-unproven",
+          }));
+          await settleTerminal(record, unknown);
+          return;
+        }
+        await services.resourceProofController?.safetyCleanup(record.operationId).catch(() => undefined);
+        const failed = await runEffect(advanceOperation(record.operationId, {
+          type: "self_settled",
+          outcome: "failed",
+          reason: "resource_proof_rejected",
+        }));
+        await runEffect(project(failed));
+        await tryFinalize(record);
         return;
       }
       record.rejectTerminal(
@@ -564,16 +651,40 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
     };
     let effectiveConfig;
+    let resourceConfigurationRejected = false;
+    const configuredProfile = runtimeConfiguration.profiles[task.profile];
     try {
       effectiveConfig = resolveWorkerConfig({
         requested: requestedConfig,
-        profile: runtimeConfiguration.profiles[task.profile],
+        profile: configuredProfile,
         runtimeCwd: runtimeConfiguration.cwd,
         ...(parentOperation === undefined ? {} : { parent: parentOperation.effectiveConfig }),
       });
     } catch (error) {
-      if (parent !== undefined) parent.pendingAdmissions -= 1;
-      throw error;
+      if (!(error instanceof ResourceProofRejectedError) || configuredProfile === undefined) {
+        if (parent !== undefined) parent.pendingAdmissions -= 1;
+        throw error;
+      }
+      resourceConfigurationRejected = true;
+      try {
+        effectiveConfig = resolveWorkerConfig({
+          requested: requestedConfig,
+          profile: { ...configuredProfile, resources: { resourceProofPolicy: "disabled" } },
+          runtimeCwd: runtimeConfiguration.cwd,
+          ...(parentOperation === undefined ? {} : { parent: parentOperation.effectiveConfig }),
+        });
+      } catch (configurationError) {
+        if (parent !== undefined) parent.pendingAdmissions -= 1;
+        throw configurationError;
+      }
+    }
+
+    const resourcePolicy = configuredProfile?.resources;
+    const resourceAdmissionRejected = resourceConfigurationRejected ||
+      resourcePolicy?.resourceProofPolicy === "required" && services.resourceProofController === undefined;
+    if (!resourceConfigurationRejected && resourcePolicy?.resourceProofPolicy === "required") {
+      await validateWorkspaceScope(resourcePolicy.workspace.normalizedPath, resourcePolicy.permissionManifest.read);
+      await validateWorkspaceScope(resourcePolicy.workspace.normalizedPath, resourcePolicy.permissionManifest.write);
     }
 
     let operationId: string;
@@ -626,6 +737,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ),
     );
     await runEffect(project(operation));
+
+    if (resourceAdmissionRejected) {
+      operation = await runEffect(advanceOperation(operationId, { type: "operation_starting" }));
+      operation = await runEffect(advanceOperation(operationId, {
+        type: "self_settled",
+        outcome: "failed",
+        reason: "resource_proof_rejected",
+      }));
+      operation = await runEffect(advanceOperation(operationId, {
+        type: "operation_failed",
+        reason: "resource_proof_rejected",
+      }));
+      record.executionRejected = true;
+      await settleTerminal(record, operation);
+      return record;
+    }
 
     const createdPresentation = await runEffect(services.presentation.create(operation));
     try {
@@ -781,6 +908,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             }),
           );
           await runEffect(project(acknowledged));
+          await services.resourceProofController?.safetyCleanup(node.record.operationId).catch(() => undefined);
         }
 
         const terminal = unproven
@@ -846,12 +974,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     return beginCancellation(record, options);
   };
 
+  const readPublicSnapshot = async (operationId: string): Promise<Readonly<PublicOperationSnapshot>> =>
+    publicSnapshot(await readStoredSnapshot(operationId));
+
   const createReader = (operationId: string): OperationReader => ({
     operationId,
-    read: async () => publicSnapshot(await readStoredSnapshot(operationId)),
+    read: () => readPublicSnapshot(operationId),
     waitForStartupReceipt: async () => {
       while (true) {
-        const snapshot = publicSnapshot(await readStoredSnapshot(operationId));
+        const snapshot = await readPublicSnapshot(operationId);
         const receipt = snapshot.startAuthorization.receipt;
         if (receipt !== undefined) return receipt;
         if (snapshot.state === "completed" || snapshot.state === "failed" ||
@@ -868,7 +999,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     options: SpawnOptions | undefined,
   ): Promise<OperationHandle> => {
     const record = await createOperation(task, options);
-    void execute(record);
+    if (record.executionRejected !== true) void execute(record);
     return {
       ...createReader(record.operationId),
       result: () => record.terminalPromise,
@@ -897,6 +1028,49 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     async operation(operationId: string): Promise<OperationReader> {
       await readStoredSnapshot(operationId);
       return createReader(operationId);
+    },
+
+    resourceProofs() {
+      const controller = services.resourceProofController;
+      if (controller === undefined) {
+        throw new ResourceProofRejectedError(
+          "authority_unavailable",
+          "Resource proof adapters are unavailable",
+        );
+      }
+      return {
+        prepare: async (request) => {
+          const stored = await readStoredSnapshot(request.operationId);
+          const profile = services.configuration?.profiles[stored.operation.task.profile];
+          if (profile?.resources.resourceProofPolicy !== "required" ||
+              !isDeepStrictEqual(profile.resources, request.requirements)) {
+            throw new ResourceProofRejectedError(
+              "binding_mismatch",
+              "Resource request differs from the Operation's fixed profile",
+            );
+          }
+          if (stored.operation.state !== "starting" ||
+              stored.operation.workerIdentity?.processInstanceId !== request.workerProcessInstanceId) {
+            throw new ResourceProofRejectedError(
+              "binding_mismatch",
+              "Resource request is not bound to the Operation Worker",
+            );
+          }
+          return controller.prepare(request);
+        },
+        revalidate: async (operationId) => {
+          await readStoredSnapshot(operationId);
+          return controller.revalidate(operationId);
+        },
+        cleanup: async (operationId, credential) => {
+          await readStoredSnapshot(operationId);
+          return controller.cleanup(operationId, credential);
+        },
+        read: async (operationId) => {
+          await readStoredSnapshot(operationId);
+          return controller.read(operationId);
+        },
+      };
     },
 
     async startAuthorizationInbox(credential: string) {

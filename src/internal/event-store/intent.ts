@@ -6,6 +6,7 @@ import type {
   StartupReceipt,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
+import type { PersistedResourceRecord } from "../resource-controller.js";
 import type { ResultDelivery } from "../worker-protocol.js";
 
 export interface CreatedPresentation {
@@ -62,6 +63,7 @@ export type OperationIntent =
       readonly proof: "authenticated-worker-acknowledgement";
     }
   | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
+  | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
   // Existing trusted profiles have no external gate or Startup receipt.
   | { readonly type: "automatic_operation_started" }
   | {

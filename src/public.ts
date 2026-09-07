@@ -46,10 +46,52 @@ export interface ObservedWorkerConfig {
   readonly cwd: ObservedSetting<string>;
 }
 
+export type ResourceProofPolicy = "disabled" | "required";
+
+export type WorkspaceAccessScope =
+  | { readonly kind: "none" }
+  | { readonly kind: "workspace" }
+  | { readonly kind: "literals"; readonly paths: ReadonlyArray<string> };
+
+export type ResourceUsage = "shared_read" | "exclusive";
+
+export interface ExternalResourcePermission {
+  readonly authorityId: string;
+  readonly selector: string;
+  readonly usage: ResourceUsage;
+}
+
+export interface PermissionManifest {
+  readonly tools: ReadonlyArray<string>;
+  readonly read: Readonly<WorkspaceAccessScope>;
+  readonly write: Readonly<WorkspaceAccessScope>;
+  readonly commands: "none" | "unrestricted";
+  readonly network: "none" | "unrestricted";
+  readonly externalResources: ReadonlyArray<Readonly<ExternalResourcePermission>>;
+}
+
+export interface ResourceProofRequirements {
+  readonly authorityId: string;
+  readonly authorityRegistrationId: string;
+  readonly authorityGeneration: string;
+  readonly normalizationVersion: string;
+  readonly workspace: Readonly<ResourceWorkspace>;
+  readonly permissionManifest: Readonly<PermissionManifest>;
+  readonly cleanupPolicy: "automatic" | "coordinator_required";
+  readonly cleanupTimeoutMs: number;
+  readonly maxCleanupAttempts: number;
+  readonly safetyCleanupOperations: ReadonlyArray<"inspect" | "revoke" | "release">;
+}
+
+export type WorkerResourcePolicy =
+  | { readonly resourceProofPolicy: "disabled" }
+  | ({ readonly resourceProofPolicy: "required" } & ResourceProofRequirements);
+
 export interface WorkerProfilePolicy {
   readonly modelCandidates: ReadonlyArray<Readonly<ModelReference>>;
   readonly thinkingLevel: ThinkingLevel;
   readonly tools: ReadonlyArray<string>;
+  readonly resources: Readonly<WorkerResourcePolicy>;
 }
 
 export interface TaskSpec extends RequestedWorkerConfig {
@@ -163,6 +205,15 @@ export interface StartupReceipt {
     readonly manifestId: string;
     readonly digest: `sha256:${string}`;
   }>;
+  readonly resourceEvidence?: Readonly<{
+    readonly startAttemptId: string;
+    readonly acquisitionId: string;
+    readonly requestDigest: `sha256:${string}`;
+    readonly proofDigest: `sha256:${string}`;
+    readonly workspaceProofDigest: `sha256:${string}`;
+    readonly acquisitionState: "held";
+    readonly generation?: string;
+  }>;
   readonly reviewSubject: Readonly<{
     readonly artifactId: string;
     readonly byteCount: number;
@@ -222,6 +273,219 @@ export interface CleanupDiagnostic {
   readonly code: "pane_close_failed";
 }
 
+export type ResourceAcquisitionState =
+  | "planned"
+  | "acquiring"
+  | "held"
+  | "releasing"
+  | "released"
+  | "unresolved";
+
+export type ResourceValidationState = "valid" | "invalid" | "unknown";
+
+export type ResourceProofRejectionReason =
+  | "invalid_profile"
+  | "authority_unavailable"
+  | "invalid_proof"
+  | "proof_limit_exceeded"
+  | "binding_mismatch"
+  | "permission_mismatch"
+  | "permission_contradiction"
+  | "observation_missing"
+  | "enforcement_missing"
+  | "resource_conflict"
+  | "authority_revoked"
+  | "validation_unknown"
+  | "handoff_unconfirmed"
+  | "persistence_failed"
+  | "cleanup_unresolved";
+
+export interface CanonicalProofDocument {
+  readonly json: string;
+  readonly byteCount: number;
+  readonly digest: `sha256:${string}`;
+  readonly value: unknown;
+}
+
+export interface ResourceValidationEvidence {
+  readonly validationId: string;
+  readonly acquisitionId: string;
+  readonly startAttemptId: string;
+  readonly state: ResourceValidationState;
+  readonly authorityId: string;
+  readonly authorityRegistrationId: string;
+  readonly authorityGeneration: string;
+  readonly operationId: string;
+  readonly workerProcessInstanceId: string;
+  readonly requestDigest: `sha256:${string}`;
+  readonly proofDigest: `sha256:${string}`;
+  readonly checkedAt: string;
+  readonly validUntil?: string;
+  readonly generation?: string;
+  readonly handoffConfirmed: boolean;
+  readonly relatedExecutionAccessBlocked: boolean;
+  readonly evidence: Uint8Array;
+}
+
+export interface ResourceWorkspace {
+  readonly workspaceId: string;
+  readonly normalizedPath: string;
+  readonly baseRevision: string;
+  readonly owner: { readonly state: "known"; readonly ownerId: string } | { readonly state: "unknown" };
+  readonly pionsMayDelete: false;
+}
+
+export type PermissionConstraint = "tools" | "read" | "write" | "commands" | "network" | "externalResources";
+
+export interface PermissionGuaranteeEvidence {
+  readonly authorityId: string;
+  readonly operationId: string;
+  readonly workerProcessInstanceId: string;
+  readonly permissionManifestDigest: `sha256:${string}`;
+  readonly constraint: PermissionConstraint;
+  readonly method: string;
+  readonly scope: string;
+  readonly checkedAt: string;
+  readonly validUntil?: string;
+  readonly generation?: string;
+  readonly result: "satisfied";
+  readonly basis: string;
+}
+
+export interface ResourceProofEvidence {
+  readonly acquisitionId: string;
+  readonly startAttemptId: string;
+  readonly requestDigest: `sha256:${string}`;
+  readonly authorityId: string;
+  readonly authorityRegistrationId: string;
+  readonly authorityGeneration: string;
+  readonly operationId: string;
+  readonly workerProcessInstanceId: string;
+  readonly permissionManifestDigest: `sha256:${string}`;
+  readonly workspace: Readonly<ResourceWorkspace>;
+  readonly workspaceEvidence: Uint8Array;
+  readonly conflictControlId: string;
+  readonly noConflict: boolean;
+  readonly revocationOwner: string;
+  readonly observations: ReadonlyArray<Readonly<PermissionGuaranteeEvidence>>;
+  readonly enforcements: ReadonlyArray<Readonly<PermissionGuaranteeEvidence>>;
+  readonly validUntil?: string;
+  readonly generation?: string;
+  readonly evidence: Uint8Array;
+}
+
+export interface CanonicalResourceRequest {
+  readonly authorityId: string;
+  readonly namespace: string;
+  readonly normalizationVersion: string;
+  readonly selector: string;
+  readonly conflictScopes: ReadonlyArray<string>;
+  readonly usage: ResourceUsage;
+}
+
+export interface ResourceAdapterRequest {
+  readonly acquisitionId: string;
+  readonly startAttemptId: string;
+  readonly requestDigest: `sha256:${string}`;
+  readonly operationId: string;
+  readonly workerProcessInstanceId: string;
+  readonly permissionManifest: Readonly<PermissionManifest>;
+  readonly workspace: Readonly<ResourceWorkspace>;
+  readonly resources: ReadonlyArray<Readonly<CanonicalResourceRequest>>;
+  readonly permissionManifestDigest: `sha256:${string}`;
+}
+
+export interface ResourceProofIssuer {
+  verify(evidence: Uint8Array): Promise<boolean>;
+  isCurrentlyTrusted(generation: string): Promise<"trusted" | "revoked" | "unknown">;
+}
+
+export interface ResourceAdapter {
+  normalizeSelector(selector: string, normalizationVersion: string): Promise<Readonly<{
+    readonly namespace: string;
+    readonly selector: string;
+    readonly conflictScopes: ReadonlyArray<string>;
+  }>>;
+  acquire(request: Readonly<ResourceAdapterRequest>): Promise<Readonly<ResourceProofEvidence>>;
+  recover(request: Readonly<ResourceAdapterRequest>): Promise<Readonly<ResourceProofEvidence> | "released" | "unknown">;
+  inspect(request: Readonly<ResourceAdapterRequest>): Promise<Readonly<ResourceValidationEvidence>>;
+  revokeAccess(request: Readonly<ResourceAdapterRequest>): Promise<"blocked" | "unknown">;
+  release(request: Readonly<ResourceAdapterRequest>): Promise<"released" | "unknown">;
+}
+
+export interface ResourceAuthorityRegistration {
+  readonly authorityId: string;
+  readonly registrationId: string;
+  readonly generation: string;
+  readonly normalizationVersion: string;
+  readonly issuer: ResourceProofIssuer;
+  readonly adapter: ResourceAdapter;
+}
+
+export interface PersistedResourceValidation extends Omit<ResourceValidationEvidence, "evidence"> {
+  readonly evidence: Readonly<CanonicalProofDocument>;
+}
+
+export interface ResourceCleanupEvidence {
+  readonly cleanupId: string;
+  readonly actorId: string;
+  readonly state: "running" | "completed" | "unresolved";
+  readonly attempt: number;
+}
+
+export interface ResourceEvidenceSnapshot {
+  readonly state: ResourceAcquisitionState;
+  readonly acquisitionId: string;
+  readonly requestDigest: `sha256:${string}`;
+  readonly proof?: Readonly<CanonicalProofDocument>;
+  readonly workspaceProof?: Readonly<CanonicalProofDocument>;
+  readonly validations: ReadonlyArray<Readonly<PersistedResourceValidation>>;
+  readonly cleanupAttempts: number;
+  readonly cleanup?: Readonly<ResourceCleanupEvidence>;
+  readonly accessRevocation?: "blocked" | "unknown";
+  readonly release?: "released" | "unknown";
+  readonly diagnostic?: ResourceProofRejectionReason;
+}
+
+export interface ResourcePreparationRequest {
+  readonly operationId: string;
+  readonly workerProcessInstanceId: string;
+  readonly startAttemptId: string;
+  readonly workspace: Readonly<ResourceWorkspace>;
+  readonly requestedManifest: Readonly<PermissionManifest>;
+  readonly effectiveManifest: Readonly<PermissionManifest>;
+  readonly requirements: Readonly<ResourceProofRequirements>;
+}
+
+export interface ResourceCleanupPrincipal {
+  readonly subjectId: string;
+  canCleanup(operationId: string, operations: ReadonlyArray<"inspect" | "revoke" | "release">): Promise<boolean>;
+}
+
+export interface ResourceCleanupAuthenticator {
+  authenticate(credential: string): Promise<Readonly<ResourceCleanupPrincipal>>;
+}
+
+export interface VersionedResourceEvidenceSnapshot {
+  readonly version: number;
+  readonly evidence: Readonly<ResourceEvidenceSnapshot>;
+}
+
+export interface ResourceProofController {
+  prepare(request: Readonly<ResourcePreparationRequest>): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  revalidate(operationId: string): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  cleanup(operationId: string, credential: string): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  read(operationId: string): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+}
+
+export class ResourceProofRejectedError extends Error {
+  override readonly name = "ResourceProofRejectedError";
+
+  constructor(readonly reason: ResourceProofRejectionReason, message: string) {
+    super(message);
+  }
+}
+
 export interface OperationSnapshot {
   readonly operationId: string;
   readonly version: Readonly<OperationVersion>;
@@ -233,6 +497,7 @@ export interface OperationSnapshot {
   readonly resultAcceptance?: Readonly<ResultAcceptanceEvidence>;
   readonly stopConfirmation?: Readonly<StopConfirmationEvidence>;
   readonly cleanupDiagnostics: ReadonlyArray<Readonly<CleanupDiagnostic>>;
+  readonly resourceEvidence?: Readonly<VersionedResourceEvidenceSnapshot>;
 }
 
 export interface OperationReader {
@@ -277,7 +542,8 @@ export type OperationFailureReason =
   | "model_auth_unavailable"
   | "unsupported_capability"
   | "tool_policy_violation"
-  | "descendant_failed";
+  | "descendant_failed"
+  | "resource_proof_rejected";
 
 export class HerdrPreconditionError extends Error {
   override readonly name = "HerdrPreconditionError";
@@ -399,4 +665,5 @@ export interface Runtime {
   spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle>;
   operation(operationId: string): Promise<OperationReader>;
   startAuthorizationInbox(credential: string): Promise<StartAuthorizationInbox>;
+  resourceProofs(): ResourceProofController;
 }

@@ -16,6 +16,7 @@ import {
   OperationFailedError,
   OperationPersistenceError,
   OperationUnknownError,
+  ResourceProofRejectedError,
   ResultConflictError,
   SpawnRejectedError,
   WorkerConfigurationError,
@@ -95,7 +96,7 @@ class ControlledWorkerAdapter implements WorkerAdapter {
     hooks: Readonly<WorkerRunHooks>,
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResultConflictError
+    OperationPersistenceError | ResultConflictError | ResourceProofRejectedError
   > {
     return Effect.gen(this, function* () {
       this.startCount += 1;
@@ -154,7 +155,7 @@ class FailingChildWorkerAdapter extends ControlledWorkerAdapter {
     hooks: Readonly<WorkerRunHooks>,
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResultConflictError
+    OperationPersistenceError | ResultConflictError | ResourceProofRejectedError
   > {
     if (operation.operationId === "child") {
       this.startCount += 1;
@@ -789,6 +790,7 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "network"],
+          resources: { resourceProofPolicy: "disabled" },
         },
       },
     },
@@ -922,8 +924,8 @@ test("Runtime records the successful Operation event sequence", async () => {
       "presentation_owned",
       "operation_starting",
       "worker_launched",
-      "automatic_operation_started",
       "worker_identified",
+      "automatic_operation_started",
       "result_persisted",
       "agent_settled",
       "self_settled",

@@ -86,6 +86,7 @@ function immutable(operation: Operation): Operation {
   if (operation.startInstructionAcceptance !== undefined) {
     Object.freeze(operation.startInstructionAcceptance);
   }
+  if (operation.resourceEvidenceRecord !== undefined) deepFreeze(operation.resourceEvidenceRecord);
   if (operation.agentRunEvidence !== undefined) {
     Object.freeze(operation.agentRunEvidence.usage);
     operation.agentRunEvidence.toolUses.forEach(Object.freeze);
@@ -161,6 +162,9 @@ function sanitizedStartupReceipt(
       manifestId: receipt.permissionManifest.manifestId,
       digest: receipt.permissionManifest.digest,
     },
+    ...(receipt.resourceEvidence === undefined
+      ? {}
+      : { resourceEvidence: { ...receipt.resourceEvidence } }),
     reviewSubject: {
       artifactId: receipt.reviewSubject.artifactId,
       byteCount: receipt.reviewSubject.byteCount,
@@ -291,6 +295,7 @@ export function reduceOperation(
   if (
     event.type !== "result_conflict_recorded" &&
     event.type !== "presentation_cleanup_failed" &&
+    event.type !== "resource_evidence_recorded" &&
     (current.state === "completed" ||
       current.state === "failed" ||
       current.state === "cancelled" ||
@@ -472,6 +477,20 @@ export function reduceOperation(
           proof: event.proof,
         },
         state: "running",
+        stateSeq: event.seq,
+      });
+
+    case "resource_evidence_recorded":
+      if (
+        event.record.request.operationId !== current.operationId ||
+        event.record.version !== (current.resourceEvidenceRecord?.version ?? 0) + 1 ||
+        event.record.snapshot.acquisitionId.length === 0
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        resourceEvidenceRecord: structuredClone(event.record),
         stateSeq: event.seq,
       });
 

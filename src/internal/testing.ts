@@ -23,6 +23,7 @@ import type {
 } from "./services.js";
 import type {
   OperationPersistenceError,
+  ResourceProofRejectedError,
   Result,
   ResultConflictError,
 } from "../public.js";
@@ -82,7 +83,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
     hooks: Readonly<WorkerRunHooks>,
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResultConflictError
+    OperationPersistenceError | ResultConflictError | ResourceProofRejectedError
   > {
     return Effect.gen(this, function* () {
       this.startCount += 1;

@@ -9,7 +9,8 @@ import type {
   WorkerConfigurationFailureReason,
   WorkerProfilePolicy,
 } from "../public.js";
-import { WorkerConfigurationError } from "../public.js";
+import { ResourceProofRejectedError, WorkerConfigurationError } from "../public.js";
+import { normalizePermissionManifest } from "./resource-proof.js";
 
 export const ModelReferenceSchema = Schema.Struct({
   provider: Schema.NonEmptyString,
@@ -76,7 +77,37 @@ export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
   modelCandidates: Object.freeze([{ provider: "test", id: "test-model" }]),
   thinkingLevel: "medium",
   tools: Object.freeze(["read", "bash", "edit", "write"]),
+  resources: Object.freeze({ resourceProofPolicy: "disabled" }),
 });
+
+export function validateWorkerResourcePolicy(profile: Readonly<WorkerProfilePolicy>): void {
+  const resources = profile.resources;
+  if (resources === undefined || resources.resourceProofPolicy !== "disabled" && resources.resourceProofPolicy !== "required") {
+    throw new ResourceProofRejectedError("invalid_profile", "Resource proof policy must be explicit");
+  }
+  if (resources.resourceProofPolicy === "disabled") return;
+  if (
+    resources.authorityId.length === 0 ||
+    resources.authorityRegistrationId.length === 0 ||
+    resources.authorityGeneration.length === 0 ||
+    resources.normalizationVersion.length === 0 ||
+    resources.workspace.workspaceId.length === 0 ||
+    resources.workspace.normalizedPath.length === 0 ||
+    resources.workspace.baseRevision.length === 0 ||
+    resources.workspace.pionsMayDelete !== false ||
+    !Number.isSafeInteger(resources.cleanupTimeoutMs) || resources.cleanupTimeoutMs <= 0 ||
+    !Number.isSafeInteger(resources.maxCleanupAttempts) || resources.maxCleanupAttempts <= 0 ||
+    resources.safetyCleanupOperations.length !== 3 ||
+    !["inspect", "revoke", "release"].every((operation) => resources.safetyCleanupOperations.includes(operation as "inspect" | "revoke" | "release"))
+  ) {
+    throw new ResourceProofRejectedError("invalid_profile", "Required resource proof configuration is incomplete");
+  }
+  const manifest = normalizePermissionManifest(resources.permissionManifest);
+  const profileTools = [...new Set(profile.tools)].sort();
+  if (manifest.tools.length !== profileTools.length || manifest.tools.some((tool, index) => tool !== profileTools[index])) {
+    throw new ResourceProofRejectedError("permission_contradiction", "Profile tools and permission manifest tools differ");
+  }
+}
 
 function sameModel(left: Readonly<ModelReference>, right: Readonly<ModelReference>): boolean {
   return left.provider === right.provider && left.id === right.id;
@@ -117,6 +148,7 @@ export function resolveWorkerConfig(options: {
 }): EffectiveWorkerConfig {
   const { profile } = options;
   if (profile === undefined) fail("unsupported_capability", "Unknown Worker profile");
+  validateWorkerResourcePolicy(profile);
   boundedString(options.runtimeCwd, "working directory");
   if (profile.modelCandidates.length !== 1) {
     fail("model_mismatch", "Exactly one model candidate is required because fallback is forbidden");
@@ -147,6 +179,15 @@ export function resolveWorkerConfig(options: {
   }
   if (options.requested.cwd !== undefined && options.requested.cwd !== options.runtimeCwd) {
     fail("unsupported_capability", "Requested working directory is unavailable");
+  }
+  if (profile.resources.resourceProofPolicy === "required") {
+    if (profile.resources.workspace.normalizedPath !== options.runtimeCwd) {
+      throw new ResourceProofRejectedError("invalid_profile", "Resource workspace differs from the Runtime workspace");
+    }
+    const manifestTools = normalizePermissionManifest(profile.resources.permissionManifest).tools;
+    if (manifestTools.length !== tools.length || manifestTools.some((tool, index) => tool !== [...tools].sort()[index])) {
+      throw new ResourceProofRejectedError("permission_mismatch", "Effective tools differ from the required permission manifest");
+    }
   }
 
   const parent = options.parent;

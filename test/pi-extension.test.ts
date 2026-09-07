@@ -64,6 +64,10 @@ class FakeRuntime implements Runtime {
   startAuthorizationInbox(): Promise<never> {
     return Promise.reject(new Error("unused"));
   }
+
+  resourceProofs(): never {
+    throw new Error("unused");
+  }
 }
 
 function deferred<Value>() {
@@ -119,6 +123,10 @@ class PendingRuntime implements Runtime {
 
   startAuthorizationInbox(): Promise<never> {
     return Promise.reject(new Error("unused"));
+  }
+
+  resourceProofs(): never {
+    throw new Error("unused");
   }
 }
 

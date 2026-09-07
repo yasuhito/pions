@@ -114,6 +114,15 @@ const PermissionManifestReceipt = Schema.Struct({
   manifestId: Schema.String,
   digest: Digest,
 });
+const ResourceEvidenceReceipt = Schema.Struct({
+  startAttemptId: Schema.String,
+  acquisitionId: Schema.String,
+  requestDigest: Digest,
+  proofDigest: Digest,
+  workspaceProofDigest: Digest,
+  acquisitionState: Schema.Literal("held"),
+  generation: Schema.optional(Schema.String),
+});
 const ReviewSubjectReceipt = Schema.Struct({
   artifactId: Schema.String,
   byteCount: NonNegativeSafeInteger,
@@ -131,6 +140,7 @@ const StartupReceipt = Schema.Struct({
   observedConfig: ObservedWorkerConfigSchema,
   workspace: WorkspaceReceipt,
   permissionManifest: PermissionManifestReceipt,
+  resourceEvidence: Schema.optional(ResourceEvidenceReceipt),
   reviewSubject: ReviewSubjectReceipt,
   configuredAuthorizationPolicy: Schema.Literal("disabled", "optional", "required"),
   authorizationPolicy: Schema.Literal("disabled", "required"),
@@ -165,9 +175,123 @@ const FailureReason = Schema.Literal(
   "model_auth_unavailable",
   "unsupported_capability",
   "tool_policy_violation",
+  "resource_proof_rejected",
   "descendant_failed",
 );
 const CancellationProof = Schema.Literal("worker-stop");
+const WorkspaceAccessScope = Schema.Union(
+  Schema.Struct({ kind: Schema.Literal("none") }),
+  Schema.Struct({ kind: Schema.Literal("workspace") }),
+  Schema.Struct({ kind: Schema.Literal("literals"), paths: Schema.Array(Schema.String) }),
+);
+const ResourceWorkspace = Schema.Struct({
+  workspaceId: Schema.String,
+  normalizedPath: Schema.String,
+  baseRevision: Schema.String,
+  owner: Schema.Union(
+    Schema.Struct({ state: Schema.Literal("known"), ownerId: Schema.String }),
+    Schema.Struct({ state: Schema.Literal("unknown") }),
+  ),
+  pionsMayDelete: Schema.Literal(false),
+});
+const ExternalResourcePermission = Schema.Struct({
+  authorityId: Schema.String,
+  selector: Schema.String,
+  usage: Schema.Literal("shared_read", "exclusive"),
+});
+const PermissionManifest = Schema.Struct({
+  tools: Schema.Array(Schema.String),
+  read: WorkspaceAccessScope,
+  write: WorkspaceAccessScope,
+  commands: Schema.Literal("none", "unrestricted"),
+  network: Schema.Literal("none", "unrestricted"),
+  externalResources: Schema.Array(ExternalResourcePermission),
+});
+const ResourceRequirements = Schema.Struct({
+  authorityId: Schema.String,
+  authorityRegistrationId: Schema.String,
+  authorityGeneration: Schema.String,
+  normalizationVersion: Schema.String,
+  workspace: ResourceWorkspace,
+  permissionManifest: PermissionManifest,
+  cleanupPolicy: Schema.Literal("automatic", "coordinator_required"),
+  cleanupTimeoutMs: SafeInteger,
+  maxCleanupAttempts: SafeInteger,
+  safetyCleanupOperations: Schema.Array(Schema.Literal("inspect", "revoke", "release")),
+});
+const ResourcePreparationRequest = Schema.Struct({
+  operationId: Schema.String,
+  workerProcessInstanceId: Schema.String,
+  startAttemptId: Schema.String,
+  workspace: ResourceWorkspace,
+  requestedManifest: PermissionManifest,
+  effectiveManifest: PermissionManifest,
+  requirements: ResourceRequirements,
+});
+const CanonicalResourceRequest = Schema.Struct({
+  authorityId: Schema.String,
+  namespace: Schema.String,
+  normalizationVersion: Schema.String,
+  selector: Schema.String,
+  conflictScopes: Schema.Array(Schema.String),
+  usage: Schema.Literal("shared_read", "exclusive"),
+});
+const CanonicalProofDocument = Schema.Struct({
+  json: Schema.String,
+  byteCount: NonNegativeSafeInteger,
+  digest: Digest,
+  value: Schema.Unknown,
+});
+const PersistedResourceValidation = Schema.Struct({
+  validationId: Schema.String,
+  acquisitionId: Schema.String,
+  startAttemptId: Schema.String,
+  state: Schema.Literal("valid", "invalid", "unknown"),
+  authorityId: Schema.String,
+  authorityRegistrationId: Schema.String,
+  authorityGeneration: Schema.String,
+  operationId: Schema.String,
+  workerProcessInstanceId: Schema.String,
+  requestDigest: Digest,
+  proofDigest: Digest,
+  checkedAt: Schema.String,
+  validUntil: Schema.optional(Schema.String),
+  generation: Schema.optional(Schema.String),
+  handoffConfirmed: Schema.Boolean,
+  relatedExecutionAccessBlocked: Schema.Boolean,
+  evidence: CanonicalProofDocument,
+});
+const ResourceCleanupEvidence = Schema.Struct({
+  cleanupId: Schema.String,
+  actorId: Schema.String,
+  state: Schema.Literal("running", "completed", "unresolved"),
+  attempt: SafeInteger,
+});
+const ResourceEvidenceSnapshot = Schema.Struct({
+  state: Schema.Literal("planned", "acquiring", "held", "releasing", "released", "unresolved"),
+  acquisitionId: Schema.String,
+  requestDigest: Digest,
+  proof: Schema.optional(CanonicalProofDocument),
+  workspaceProof: Schema.optional(CanonicalProofDocument),
+  validations: Schema.Array(PersistedResourceValidation),
+  cleanupAttempts: NonNegativeSafeInteger,
+  cleanup: Schema.optional(ResourceCleanupEvidence),
+  accessRevocation: Schema.optional(Schema.Literal("blocked", "unknown")),
+  release: Schema.optional(Schema.Literal("released", "unknown")),
+  diagnostic: Schema.optional(Schema.Literal(
+    "invalid_profile", "authority_unavailable", "invalid_proof", "proof_limit_exceeded",
+    "binding_mismatch", "permission_mismatch", "permission_contradiction", "observation_missing",
+    "enforcement_missing", "resource_conflict", "authority_revoked", "validation_unknown",
+    "handoff_unconfirmed", "persistence_failed", "cleanup_unresolved",
+  )),
+});
+const PersistedResourceRecord = Schema.Struct({
+  version: SafeInteger,
+  request: ResourcePreparationRequest,
+  registrationGeneration: Schema.String,
+  canonicalResources: Schema.Array(CanonicalResourceRequest),
+  snapshot: ResourceEvidenceSnapshot,
+});
 
 const OperationEventSchema = Schema.Union(
   Schema.Struct({
@@ -206,6 +330,11 @@ const OperationEventSchema = Schema.Union(
     type: Schema.Literal("start_instruction_accepted"),
     instruction: StartInstructionReference,
     proof: Schema.Literal("authenticated-worker-acknowledgement"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("resource_evidence_recorded"),
+    record: PersistedResourceRecord,
   }),
   Schema.Struct({
     ...EventMetadataFields,

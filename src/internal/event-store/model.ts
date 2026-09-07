@@ -15,6 +15,7 @@ import type {
   TaskSpec,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
+import type { PersistedResourceRecord } from "../resource-controller.js";
 import type {
   PersistableOperationIntent,
   PresentationOwnership,
@@ -51,6 +52,7 @@ export interface Operation {
   readonly resultAcceptedAt?: string;
   readonly workerStopConfirmedAt?: string;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
+  readonly resourceEvidenceRecord?: Readonly<PersistedResourceRecord>;
   readonly state: OperationState;
   readonly stateSeq: number;
   readonly workerLaunched: boolean;
@@ -80,7 +82,7 @@ export interface ResultConflictEvidence {
   readonly deliverySequenceNumber: number;
 }
 
-export const EVENT_SCHEMA_VERSION = 9 as const;
+export const EVENT_SCHEMA_VERSION = 10 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -128,6 +130,7 @@ export type OperationEvent = EventMetadata &
         readonly proof: "authenticated-worker-acknowledgement";
       }
     | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
+    | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
     | PersistableOperationIntent
     | {
         readonly type: "result_persisted";

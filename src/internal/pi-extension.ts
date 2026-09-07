@@ -415,6 +415,7 @@ export function installPionsExtension(
         modelCandidates: [model],
         thinkingLevel,
         tools: REVIEW_TOOLS,
+        resources: { resourceProofPolicy: "disabled" },
       };
       const configKey = `${normalizedRoot}\0${model.provider}\0${model.id}\0${thinkingLevel}`;
       let runtime = options.runtime;

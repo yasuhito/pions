@@ -37,6 +37,7 @@ export const profilePolicy: WorkerProfilePolicy = {
   modelCandidates: [{ provider: "test", id: "test-model" }],
   thinkingLevel: "medium",
   tools: ["read", "bash", "edit", "write"],
+  resources: { resourceProofPolicy: "disabled" },
 };
 
 export const piSessionId = "pi-session-1";
