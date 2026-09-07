@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0005
 ---
 
 # Pi の `AgentSession` をワーカーバックエンドに使用する
