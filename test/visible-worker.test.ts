@@ -986,7 +986,7 @@ test("disconnect releases Worker protocol listeners", async (context) => {
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
 });
 
-test("confirmed process exit without a Result is classified separately", async (context) => {
+test("communication loss stays unknown when Pi has stopped without a Result", async (context) => {
   const value = await fixture({ processControl: new FakeProcessControl("stopped") });
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const client = await socket(value.config.socketPath);
@@ -994,7 +994,7 @@ test("confirmed process exit without a Result is classified separately", async (
   send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
   client.end();
 
-  assert.equal((await value.outcome).state, "process-exited-without-result");
+  assert.equal((await value.outcome).state, "liveness-unproven");
 });
 
 test("unverifiable process liveness is classified as unknown evidence", async (context) => {

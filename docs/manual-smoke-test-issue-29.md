@@ -7,7 +7,8 @@
 ## 実行条件
 
 - 実行日: 2026-09-07
-- 対象コミット: `72acb5b102515617a5441545fdc8dff6dddcbf61`
+- 試験開始時の固定点: `72acb5b102515617a5441545fdc8dff6dddcbf61`
+- 通信断修正後の再試験対象: `7358ff769ea7f979a485edc03539ae126e51305e`
 - OS: Linux 7.1.8-arch1-3 x86_64
 - Node.js: 26.7.0
 - Pi: 0.85.1
@@ -76,7 +77,7 @@ Herdrが報告した前景プロセスは`argv: ["pi"]`、エージェント名�
 
 TUIの読込資源には`[Context] AGENTS.md`と`[Extensions] worker-extension.js`だけが表示された。起動指定は`--no-session`、`--no-extensions`、`--no-skills`、`--no-prompt-templates`、`--no-themes`と、明示した内部拡張を含んでいた。
 
-今回識別した7件のワーカーPiセッション識別子に一致する標準セッションファイルは0件だった。試験のため別途起動した委譲元Piの標準セッションは保存されており、ワーカーの一時セッションと区別できた。
+受け入れ試験で記録した各ワーカーPiセッション識別子に一致する標準セッションファイルは0件だった。試験のため別途起動した委譲元Piの標準セッションは保存されており、ワーカーの一時セッションと区別できた。
 
 ## 高速終了
 
@@ -122,19 +123,23 @@ TUIの読込資源には`[Context] AGENTS.md`と`[Extensions] worker-extension.j
 
 ## 状態不明
 
-### 操作
+### 停止検証不能
 
-最初の未ビルド試行で、内部拡張が設定版不一致により識別前に停止した状態から、オペレーションをキャンセルした。これは停止を認証済みワーカープロトコルで検証できない経路を実際のPiとHerdrで作る操作になった。
+期待結果は、停止を証明できないキャンセルをキャンセル済みへ確定せず、状態不明としてプロセスとペインを保持することである。最初の未ビルド試行で、内部拡張が設定版不一致により識別前に停止した状態から、オペレーションをキャンセルした。`Operation` `27c00b23-68bd-4bb8-8964-fd8258e42c45`は`cancellation_requested`、`cancel_dispatched`の後に、理由`cancel-unproven`の`operation_unknown`となった。ペイン`wS9:p2C`とPiプロセスは保持され、`Worker configuration version does not match`の画面を調査できた。
 
-### 期待結果
+### 通信断
 
-停止検証不能を成功またはキャンセル済みにせず、状態不明としてペインを保持する。
+他の委譲が動いていないことを確認し、1つ目の端末で次を実行した。
 
-### 実測結果
+```bash
+node scripts/manual-smoke-test-issue-29-disconnect.mjs
+```
 
-`Operation` `27c00b23-68bd-4bb8-8964-fd8258e42c45`は`cancellation_requested`、`cancel_dispatched`の後に、理由`cancel-unproven`の`operation_unknown`となった。ペイン`wS9:p2C`とPiプロセスは保持され、`Worker configuration version does not match`の画面を調査できた。
+`次のpions_delegate呼び出しを待っています。`と表示された後、2つ目のPiから、`node -e "setTimeout(() => {}, 12000)"`を実行して待つタスクを1回だけ`pions_delegate`へ渡した。スクリプトは新しいワーカー設定を検出し、実ワーカーとランタイムのUnixドメインソケット間へ一時的な中継を置く。中継は`hello`と`started`をランタイムへ、認証済み`begin`をワーカーへそのまま転送した後、ランタイム側の接続だけを正常切断する。製品コードの実行経路に試験用分岐は追加していない。
 
-通信中の委譲元を強制終了した追加試験では、ワーカーPiとペイン`wS9:p2H`が保持された。ただし委譲元ランタイム自体が存在しなくなったため、永続イベント列は`worker_identified`で止まった。この試験は、実行中プロセスの画面を保持することの確認にだけ使用し、状態不明の分類証拠には使用しない。
+期待結果は、稼働中のPiを失敗や成功へ確定せず、状態不明としてプロセスとペインを保持することである。最初の実測では`worker_protocol_failed`となったため、`WorkerAdapter.open(Operation): Worker`の継ぎ目へ回帰テストを追加し、稼働中のPiとの通信断も`liveness-unproven`へ分類するよう修正した。
+
+保存した手順を使った修正後の`Operation` `8bcca29b-1f33-4b4d-a7c1-d2d898130526`では、スクリプトに`通信を切断しました。オペレーション状態とHerdrペインを確認してください。`と表示された。イベント列は`operation_requested`、`presentation_owned`、`operation_starting`、`worker_launched`、`operation_started`、`worker_identified`、`operation_unknown`の順となり、末尾の理由は`liveness-unproven`だった。ペイン`wS9:p38`とPiプロセスは保持され、通信断後のTUIを調査できた。
 
 ## 自動検査
 

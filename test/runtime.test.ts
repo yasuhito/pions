@@ -1258,10 +1258,10 @@ async function acknowledgementFailure(
   return store;
 }
 
-test("an acknowledgement failure is durably classified", async () => {
+test("an acknowledgement failure leaves the Operation unknown", async () => {
   const store = await acknowledgementFailure();
 
-  assert.equal((await storedOperation(store, "operation-1")).terminalReason, "worker_protocol_failed");
+  assert.equal((await storedOperation(store, "operation-1")).terminalReason, "liveness-unproven");
 });
 
 test("an acknowledgement failure retains the accepted Result", async () => {

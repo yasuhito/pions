@@ -91,9 +91,7 @@ type WorkerCompletionReception =
       readonly evidence: Readonly<AgentRunEvidence>;
     }
   | { readonly state: "cancelled" }
-  | { readonly state: "process-exited-without-result" }
-  | { readonly state: "liveness-unproven" }
-  | { readonly state: "worker_protocol_failed" };
+  | { readonly state: "liveness-unproven" };
 
 class WorkerCancellation {
   private isRequested = false;
@@ -287,6 +285,12 @@ export class VisibleWorker implements WorkerAdapter {
           } as WorkerRunOutcome;
         }
         const acceptance = yield* hooks.acceptResults(reception.deliveries);
+        if (
+          acceptance.state === "accepted" &&
+          acceptance.proofs.some((proof) => proof.operationId !== operation.operationId)
+        ) {
+          return { state: "worker_protocol_failed" } as const;
+        }
         const acknowledged = yield* acknowledgeResultAcceptance(
           acceptance,
           reception.evidence,
@@ -484,15 +488,11 @@ export class VisibleWorker implements WorkerAdapter {
         this.reject(session, error instanceof Error ? error.message : String(error));
       }
     });
-    socket.on("end", () => {
-      void this.classifyDisconnect(session);
-    });
-    socket.on("error", () => {
-      void this.classifyDisconnect(session);
-    });
+    socket.on("end", () => this.classifyDisconnect(session));
+    socket.on("error", () => this.classifyDisconnect(session));
   }
 
-  private async classifyDisconnect(session: Session): Promise<void> {
+  private classifyDisconnect(session: Session): void {
     if (session.receptionCompleted) {
       this.closeSession(session);
       return;
@@ -504,14 +504,7 @@ export class VisibleWorker implements WorkerAdapter {
       this.closeSession(session);
       return;
     }
-    const state = await Effect.runPromise(
-      this.processControl.waitForStop(session.identity, this.exitObservationGraceMs),
-    );
-    session.resolveReception(
-      state === "stopped"
-        ? { state: "process-exited-without-result" }
-        : { state: "liveness-unproven" },
-    );
+    session.resolveReception({ state: "liveness-unproven" });
     this.closeSession(session);
   }
 

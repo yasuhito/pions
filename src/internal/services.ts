@@ -125,7 +125,7 @@ export function acknowledgeResultAcceptance(
   };
   return Effect.forEach(acceptance.proofs, acknowledge, { discard: true }).pipe(
     Effect.as(outcome),
-    Effect.catchAll(() => Effect.succeed({ state: "worker_protocol_failed" } as const)),
+    Effect.catchAll(() => Effect.succeed({ state: "liveness-unproven" } as const)),
   );
 }
 
