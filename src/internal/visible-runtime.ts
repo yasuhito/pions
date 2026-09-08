@@ -11,7 +11,11 @@ import { makeResourceProofController } from "./resource-controller.js";
 import { makeRuntime } from "./runtime.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
-import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
+import {
+  resolveClaudeBridgeExtension,
+  resolveWorkerExtensionEntryPath,
+  validateClaudeBridgePolicy,
+} from "./worker-extension-entry.js";
 import type {
   ResourceAuthorityRegistration,
   ResourceCleanupAuthenticator,
@@ -53,6 +57,11 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     environment,
     executor,
   });
+  const providerExtension = resolveClaudeBridgeExtension();
+  if (Object.values(options.profiles).some((profile) =>
+    profile.modelCandidates.some((model) => model.provider === providerExtension.provider))) {
+    validateClaudeBridgePolicy({ cwd: options.cwd, environment });
+  }
   const worker = new VisibleWorker({
     rootDirectory: options.stateDirectory,
     socketDirectory,
@@ -62,6 +71,7 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
       ...(options.extensionEntryPath === undefined ? {} : { explicitPath: options.extensionEntryPath }),
       cwd: options.cwd,
     }),
+    providerExtension,
   });
   const store = new PrivateFileEventStore(options.stateDirectory, systemClock);
   return makeRuntime({

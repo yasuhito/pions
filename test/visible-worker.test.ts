@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,6 +22,10 @@ import type {
   WorkerProcessState,
 } from "../src/internal/worker-process-control.js";
 import { operationDirectoryKey } from "../src/internal/event-store/index.js";
+import {
+  type ApprovedProviderExtension,
+  resolveClaudeBridgeExtension,
+} from "../src/internal/worker-extension-entry.js";
 import { VisibleWorker } from "../src/internal/visible-worker.js";
 import { makeRuntime } from "../src/internal/runtime.js";
 import {
@@ -69,6 +73,20 @@ class FakeProcessControl implements WorkerProcessControl {
       this.terminations.push(identity);
       return this.terminationEvidence;
     });
+  }
+}
+
+class FakeClaudeProcessControl extends FakeProcessControl {
+  captureDescendants() {
+    return Effect.succeed([{ processId: 4321, processStartToken: "child-start" }]);
+  }
+
+  waitForBackendStop() {
+    return Effect.succeed("stopped" as const);
+  }
+
+  terminateBackend() {
+    return Effect.succeed({ proof: "worker-stop" } as const);
   }
 }
 
@@ -149,6 +167,7 @@ class DeferredExecutor {
 function operation(
   operationId = "operation-1",
   paneId = "opaque:pane",
+  model = effectiveConfig.model,
 ): Operation {
   return {
     operationId,
@@ -159,7 +178,7 @@ function operation(
     workerLaunched: false,
     task: { promptRef: "secret prompt reference", profile: "coding", idempotencyKey: operationId },
     requestedConfig,
-    effectiveConfig,
+    effectiveConfig: { ...effectiveConfig, model },
     startAuthorizationTiming: {
       createdAt: "2026-09-06T10:00:00.000Z",
       windowMs: 0,
@@ -191,6 +210,8 @@ async function fixture(options: {
   readonly socketDirectory?: string;
   readonly executor?: FakeExecutor | DeferredExecutor;
   readonly workerIdentified?: WorkerRunHooks["workerIdentified"];
+  readonly providerExtension?: Readonly<ApprovedProviderExtension>;
+  readonly operationModel?: Readonly<{ readonly provider: string; readonly id: string }>;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
   const executor = options.executor ?? new FakeExecutor();
@@ -203,6 +224,9 @@ async function fixture(options: {
     cwd: "/work/project",
     executor,
     extensionEntryPath: "/pions/worker-extension.js",
+    ...(options.providerExtension === undefined
+      ? {}
+      : { providerExtension: options.providerExtension }),
     capabilityGenerator: { nextCapability: () => capability },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
     processControl: options.processControl ?? new FakeProcessControl("stopped"),
@@ -218,7 +242,7 @@ async function fixture(options: {
       return protocolServer;
     },
   });
-  const current = operation();
+  const current = operation("operation-1", "opaque:pane", options.operationModel ?? effectiveConfig.model);
   const deliveries: Array<ResultDelivery> = [];
   const identities: Array<string> = [];
   const piSessionIds: Array<string> = [];
@@ -376,6 +400,27 @@ test("public visible Runtime composes the production path", async (context) => {
   );
 });
 
+test("public visible Runtime rejects unsafe Claude bridge configuration", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-visible-runtime-"));
+  await mkdir(join(root, ".pi"));
+  await writeFile(join(root, ".pi", "claude-bridge.json"), JSON.stringify({
+    provider: { strictMcpConfig: false },
+  }));
+  context.after(() => rm(root, { recursive: true, force: true }));
+
+  assert.throws(() => makeVisibleRuntime({
+    cwd: root,
+    stateDirectory: join(root, "state"),
+    profiles: {
+      coding: {
+        ...profilePolicy,
+        modelCandidates: [{ provider: "claude-bridge", id: "claude-opus-5" }],
+      },
+    },
+    environment: {},
+  }), /strictMcpConfig/u);
+});
+
 test("visible Pi adapter satisfies the caller-facing Runtime Result contract", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pvc-"));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -466,6 +511,21 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--approve",
     "--pions-worker-config", join(value.directory, "worker.v7.json"),
   ]);
+});
+
+test("visible Claude Worker loads only Pions and the approved provider extension", async (context) => {
+  const providerExtension = resolveClaudeBridgeExtension();
+  const value = await fixture({
+    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+    providerExtension,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    value.executor.invocations[0]?.args.filter((argument, index, args) =>
+      argument === "--no-extensions" || args[index - 1] === "--extension"),
+    ["--no-extensions", "/pions/worker-extension.js", providerExtension.entryPath],
+  );
 });
 
 test("visible Worker agent name contains no task text", async (context) => {
@@ -1006,6 +1066,94 @@ test("settled Pi failure becomes an agent failure with evidence", async (context
   });
 });
 
+test("Claude Code login failure becomes an authentication failure", async (context) => {
+  const value = await fixture({
+    processControl: new FakeClaudeProcessControl("stopped"),
+    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  const begin = receiveFrame(client);
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
+  }));
+  await begin;
+  send(client, frame(value.capability, 3, "failed", {
+    errorMessage: "Not logged in. Please run /login in Claude Code.",
+    ...agentRunEvidence,
+  }));
+
+  assert.equal((await value.outcome).state, "model_auth_unavailable");
+});
+
+test("Claude Code unavailable model failure stays model-specific", async (context) => {
+  const value = await fixture({
+    processControl: new FakeClaudeProcessControl("stopped"),
+    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  const begin = receiveFrame(client);
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
+  }));
+  await begin;
+  send(client, frame(value.capability, 3, "failed", {
+    errorMessage: "Model claude-opus-5 is not available.",
+    ...agentRunEvidence,
+  }));
+
+  assert.equal((await value.outcome).state, "model_not_found");
+});
+
+test("Claude Code plan failure becomes an unsupported capability failure", async (context) => {
+  const value = await fixture({
+    processControl: new FakeClaudeProcessControl("stopped"),
+    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  const begin = receiveFrame(client);
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
+  }));
+  await begin;
+  send(client, frame(value.capability, 3, "failed", {
+    errorMessage: "Claude Opus 5 is not available on your current plan.",
+    ...agentRunEvidence,
+  }));
+
+  assert.equal((await value.outcome).state, "unsupported_capability");
+});
+
+test("Claude failure with uninspectable child processes has unknown liveness", async (context) => {
+  const value = await fixture({
+    processControl: new FakeProcessControl("stopped"),
+    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  const begin = receiveFrame(client);
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
+  }));
+  await begin;
+  send(client, frame(value.capability, 3, "failed", {
+    errorMessage: "provider failed",
+    ...agentRunEvidence,
+  }));
+
+  assert.equal((await value.outcome).state, "liveness-unproven");
+});
+
 test("protocol rejection becomes a Worker protocol failure", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -1121,6 +1269,50 @@ test("backend cancellation acknowledgement requires confirmed process stop", asy
   send(client, frame(value.capability, 3, "cancelled"));
 
   assert.deepEqual(await cancellation, { proof: "worker-stop" });
+});
+
+test("Claude cancellation requires both Worker and backend process stops", async (context) => {
+  const value = await fixture({
+    processControl: new FakeClaudeProcessControl("stopped"),
+    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
+  }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "cancelled"));
+
+  assert.deepEqual(await cancellation, { proof: "worker-stop" });
+});
+
+test("Claude cancellation without child-process observation remains unproven", async (context) => {
+  const value = await fixture({
+    processControl: new FakeProcessControl("stopped"),
+    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
+  }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "cancelled"));
+
+  assert.equal(await cancellation, undefined);
 });
 
 test("forced termination begins after cancellation acknowledgement grace", async (context) => {

@@ -38,9 +38,14 @@ import type {
 import { configurationMismatch } from "./worker-configuration.js";
 import type { CommandExecutor } from "./herdr-presentation.js";
 import {
+  type BackendProcessIdentity,
   NodeWorkerProcessControl,
   type WorkerProcessControl,
 } from "./worker-process-control.js";
+import {
+  type ApprovedProviderExtension,
+  verifyApprovedProviderExtension,
+} from "./worker-extension-entry.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -61,6 +66,7 @@ export interface VisibleWorkerOptions {
   readonly cwd: string;
   readonly executor: CommandExecutor;
   readonly extensionEntryPath: string;
+  readonly providerExtension?: Readonly<ApprovedProviderExtension>;
   readonly capabilityGenerator?: WorkerCapabilityGenerator;
   readonly promptReader?: PromptReader;
   readonly serverFactory?: () => Server;
@@ -88,7 +94,7 @@ type WorkerCompletionReception =
       readonly evidence: Readonly<AgentRunEvidence>;
     }
   | {
-      readonly state: "agent_failed";
+      readonly state: "agent_failed" | WorkerConfigurationFailureReason;
       readonly evidence: Readonly<AgentRunEvidence>;
     }
   | { readonly state: "cancelled" }
@@ -147,11 +153,30 @@ interface Session {
   identity?: Readonly<WorkerProcessIdentity>;
   receptionCompleted: boolean;
   successfulExitObservation?: Promise<boolean>;
+  backendProcesses: ReadonlyArray<Readonly<BackendProcessIdentity>> | undefined;
   readonly protocol: HostProtocolPeer;
 }
 
 function protocolError(message: string): WorkerProtocolError {
   return { _tag: "WorkerProtocolError", message };
+}
+
+function classifyAgentFailure(
+  provider: string,
+  errorMessage: string,
+): "agent_failed" | WorkerConfigurationFailureReason {
+  if (provider !== "claude-bridge") return "agent_failed";
+  const message = errorMessage.toLowerCase();
+  if (/\b(plan|subscription|extra usage|billing)\b/u.test(message)) {
+    return "unsupported_capability";
+  }
+  if (/\b(not logged in|login|authentication|authenticate|credentials?)\b/u.test(message)) {
+    return "model_auth_unavailable";
+  }
+  if (/\b(model)\b.*\b(not available|unavailable|not found|unknown)\b/u.test(message)) {
+    return "model_not_found";
+  }
+  return "agent_failed";
 }
 
 function receiveWorkerProtocol<Value>(
@@ -275,8 +300,13 @@ export class VisibleWorker implements WorkerAdapter {
           catch: (error) => protocolError(error instanceof Error ? error.message : String(error)),
         });
         const reception = yield* receiveWorkerProtocol(session!.reception);
-        if (reception.state === "agent_failed") {
-          return { state: "agent_failed", evidence: reception.evidence } as const;
+        if (reception.state === "agent_failed" ||
+            reception.state === "model_auth_unavailable" ||
+            reception.state === "model_not_found" ||
+            reception.state === "unsupported_capability") {
+          const backendInspected = yield* Effect.promise(() => this.captureBackendProcesses(session!));
+          if (!backendInspected) return { state: "liveness-unproven" } as const;
+          return { state: reception.state, evidence: reception.evidence } as WorkerRunOutcome;
         }
         if (reception.state !== "results_received") {
           return {
@@ -368,6 +398,12 @@ export class VisibleWorker implements WorkerAdapter {
 
       cancellation.requireLaunchAllowed();
       const effective = operation.effectiveConfig;
+      const providerExtension = effective.model.provider === this.options.providerExtension?.provider
+        ? verifyApprovedProviderExtension(this.options.providerExtension)
+        : undefined;
+      const approvedExtensionArgs = providerExtension === undefined
+        ? []
+        : ["--extension", providerExtension.entryPath];
       const output = await Effect.runPromise(this.options.executor.execute({
         executable: "herdr",
         args: [
@@ -384,6 +420,7 @@ export class VisibleWorker implements WorkerAdapter {
           "--tui-mode", "regular",
           "--no-extensions",
           "--extension", this.options.extensionEntryPath,
+          ...approvedExtensionArgs,
           "--no-skills",
           "--no-prompt-templates",
           "--no-themes",
@@ -435,6 +472,7 @@ export class VisibleWorker implements WorkerAdapter {
       cancellationReception,
       resolveCancellation,
       receptionCompleted: false,
+      backendProcesses: undefined,
       protocol: new HostProtocolPeer({
         operationId: operation.operationId,
         capability,
@@ -476,7 +514,13 @@ export class VisibleWorker implements WorkerAdapter {
               session.resolveCancellation();
             } else {
               session.resolveReception(event.type === "worker_failed"
-                ? { state: "agent_failed", evidence: event.evidence }
+                ? {
+                    state: classifyAgentFailure(
+                      session.operation.effectiveConfig.model.provider,
+                      event.errorMessage,
+                    ),
+                    evidence: event.evidence,
+                  }
                 : {
                     state: "results_received",
                     deliveries: event.reception.deliveries,
@@ -525,26 +569,34 @@ export class VisibleWorker implements WorkerAdapter {
       Math.floor(timeoutMs * CANCELLATION_TIMEOUT_BUDGET_RATIO),
     );
     const remaining = () => Math.max(0, cancellationDeadline - Date.now());
+    await this.captureBackendProcesses(session, remaining());
     const request = session.protocol.requestCancellation();
     if (request === undefined) {
       const exitObservation = session.successfulExitObservation;
       if (exitObservation === undefined) return undefined;
       const stopped = await this.waitForSuccessfulExit(exitObservation, remaining());
       if (stopped === undefined) return undefined;
-      if (stopped) return { proof: "worker-stop" };
+      if (stopped) {
+        return await this.confirmBackendStop(session, remaining())
+          ? { proof: "worker-stop" }
+          : undefined;
+      }
       if (session.identity === undefined) return undefined;
       const state = await Effect.runPromise(this.processControl.observe(session.identity));
-      if (state === "stopped") return { proof: "worker-stop" };
       if (state === "unverifiable" || remaining() === 0) return undefined;
-      return Effect.runPromise(
-        this.processControl.terminate(session.identity, remaining()),
-      );
+      const workerEvidence = state === "stopped"
+        ? { proof: "worker-stop" } as const
+        : await Effect.runPromise(this.processControl.terminate(session.identity, remaining()));
+      return workerEvidence !== undefined && await this.confirmBackendStop(session, remaining())
+        ? workerEvidence
+        : undefined;
     }
     try {
       await writeSocket(session.socket, request);
     } catch {
       return undefined;
     }
+    await this.captureBackendProcesses(session, remaining());
     const acknowledged = await this.waitForCancellationAcknowledgement(
       session,
       Math.min(this.backendCancellationGraceMs, remaining()),
@@ -556,8 +608,9 @@ export class VisibleWorker implements WorkerAdapter {
             this.processControl.terminate(session.identity, remaining()),
           )
         : undefined;
+      const backendStopped = evidence !== undefined && await this.confirmBackendStop(session, remaining());
       this.completeCancellation(session);
-      return evidence;
+      return backendStopped ? evidence : undefined;
     }
     if (session.identity === undefined) {
       this.completeCancellation(session);
@@ -576,8 +629,54 @@ export class VisibleWorker implements WorkerAdapter {
             this.processControl.terminate(session.identity, remaining()),
           )
         : undefined;
+    const backendStopped = evidence !== undefined && await this.confirmBackendStop(session, remaining());
     this.completeCancellation(session);
-    return evidence;
+    return backendStopped ? evidence : undefined;
+  }
+
+  private async captureBackendProcesses(
+    session: Session,
+    timeoutMs = this.backendCancellationGraceMs,
+  ): Promise<boolean> {
+    if (session.operation.effectiveConfig.model.provider !== "claude-bridge") return true;
+    if (session.identity === undefined || this.processControl.captureDescendants === undefined) return false;
+    const captured = await new Promise<ReadonlyArray<Readonly<BackendProcessIdentity>> | undefined>((resolve) => {
+      const timeout = setTimeout(() => resolve(undefined), Math.max(0, timeoutMs));
+      void Effect.runPromise(this.processControl.captureDescendants!(session.identity!)).then((identities) => {
+        clearTimeout(timeout);
+        resolve(identities);
+      });
+    });
+    if (captured === undefined) return false;
+    const existing = session.backendProcesses ?? [];
+    const identities = new Map(existing.map((identity) => [
+      `${identity.processId}:${identity.processStartToken}`,
+      identity,
+    ]));
+    for (const identity of captured) {
+      identities.set(`${identity.processId}:${identity.processStartToken}`, identity);
+    }
+    session.backendProcesses = Object.freeze([...identities.values()]);
+    return true;
+  }
+
+  private async confirmBackendStop(session: Session, timeoutMs: number): Promise<boolean> {
+    if (session.operation.effectiveConfig.model.provider !== "claude-bridge") return true;
+    const identities = session.backendProcesses;
+    const waitForStop = this.processControl.waitForBackendStop;
+    const terminate = this.processControl.terminateBackend;
+    if (identities === undefined || waitForStop === undefined || terminate === undefined) return false;
+    const deadline = Date.now() + timeoutMs;
+    const observationBudget = Math.min(this.exitObservationGraceMs, timeoutMs);
+    const state = await Effect.runPromise(
+      waitForStop.call(this.processControl, identities, observationBudget),
+    );
+    if (state === "stopped") return true;
+    const remaining = Math.max(0, deadline - Date.now());
+    if (state === "unverifiable" || remaining === 0) return false;
+    return await Effect.runPromise(
+      terminate.call(this.processControl, identities, remaining),
+    ) !== undefined;
   }
 
   private completeCancellation(session: Session): void {

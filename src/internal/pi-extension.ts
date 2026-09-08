@@ -17,7 +17,11 @@ import { Type } from "typebox";
 
 import { makeVisibleRuntime } from "./visible-runtime.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "./worker-configuration.js";
-import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
+import {
+  resolveClaudeBridgeExtension,
+  resolveWorkerExtensionEntryPath,
+  validateClaudeBridgePolicy,
+} from "./worker-extension-entry.js";
 import {
   OperationCancelledError,
   OperationUnknownError,
@@ -72,6 +76,7 @@ export interface PionsExtensionOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly homeDirectory?: string;
   readonly extensionEntryPath?: string;
+  readonly claudeBridgePackagePath?: string;
 }
 
 function opaqueDigest(value: string): string {
@@ -400,6 +405,20 @@ export function installPionsExtension(
       const model = configured?.model === undefined
         ? inheritedModel
         : configuredModel(context, configured.model);
+      const claudeBridge = model.provider === "claude-bridge"
+        ? resolveClaudeBridgeExtension({
+            ...(options.claudeBridgePackagePath === undefined
+              ? {}
+              : { packagePath: options.claudeBridgePackagePath }),
+          })
+        : undefined;
+      if (claudeBridge !== undefined) {
+        validateClaudeBridgePolicy({
+          cwd: normalizedRoot,
+          environment: options.environment ?? process.env,
+          homeDirectory: options.homeDirectory ?? homedir(),
+        });
+      }
       const thinkingLevel = configured?.thinkingLevel ?? inheritedThinkingLevel;
       const stateBase = options.stateBaseDirectory ?? userStateDirectory(
         options.environment ?? process.env,
@@ -419,7 +438,7 @@ export function installPionsExtension(
         resources: { resourceProofPolicy: "disabled" },
         workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
       };
-      const configKey = `${normalizedRoot}\0${model.provider}\0${model.id}\0${thinkingLevel}`;
+      const configKey = `${normalizedRoot}\0${model.provider}\0${model.id}\0${thinkingLevel}\0${claudeBridge?.sourceDigest ?? "builtin"}`;
       let runtime = options.runtime;
       if (runtime === undefined) {
         const extensionEntryPath = resolveWorkerExtensionEntryPath({

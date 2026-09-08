@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -481,6 +481,39 @@ test("configured model failure does not fall back to the delegating model", asyn
   await value.execute().catch(() => undefined);
 
   assert.equal(value.runtime.spawnCount, 0);
+});
+
+test("unsafe Claude bridge MCP configuration fails before an Operation is spawned", async (context) => {
+  const runtime = new FakeRuntime();
+  const harness = await fixture(runtime);
+  await writeFile(join(harness.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "claude-bridge", id: "claude-opus-5" } },
+  }));
+  await mkdir(join(harness.root, ".pi"));
+  await writeFile(join(harness.root, ".pi", "claude-bridge.json"), JSON.stringify({
+    provider: { strictMcpConfig: false },
+  }));
+  context.after(() => rm(harness.root, { recursive: true, force: true }));
+  await harness.execute().catch(() => undefined);
+
+  assert.equal(runtime.spawnCount, 0);
+});
+
+test("a Claude bridge version mismatch fails before an Operation is spawned", async (context) => {
+  const packageRoot = await mkdtemp(join(tmpdir(), "pions-bridge-version-"));
+  const packagePath = join(packageRoot, "package.json");
+  await writeFile(packagePath, JSON.stringify({ name: "pi-claude-bridge", version: "9.9.9" }));
+  const runtime = new FakeRuntime();
+  const harness = await fixture(runtime, { claudeBridgePackagePath: packagePath });
+  context.after(() => Promise.all([
+    rm(harness.root, { recursive: true, force: true }),
+    rm(packageRoot, { recursive: true, force: true }),
+  ]));
+  await writeFile(join(harness.root, ".pions.json"), JSON.stringify({
+    review: { model: { provider: "claude-bridge", id: "claude-opus-5" } },
+  }));
+
+  await assert.rejects(harness.execute(), /version 9\.9\.9.*expected 0\.7\.0/u);
 });
 
 test("delegation resolves the default Worker extension from the Pions distribution", async (context) => {

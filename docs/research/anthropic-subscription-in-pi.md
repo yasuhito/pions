@@ -101,15 +101,14 @@ Piの解決順はCLIキー、`auth.json`、環境変数、カスタム設定の�
 }
 ```
 
-ただし、**現状のPionsへパッケージを通常インストールするだけでは動かない**。ワーカー起動は`--no-extensions`の後にPions内部拡張だけを`--extension`で明示しているため、別プロセスはグローバルにインストール済みの`pi-claude-bridge`を自動読込しない。プロバイダーが登録されないまま`--provider claude-bridge --model claude-opus-5`が渡されるためである。[^pions-worker][^pi-extensions]
+Pionsは`pi-claude-bridge` 0.7.0を依存関係とロックファイルで固定し、委譲元のプロジェクト拡張とClaudeワーカーの双方へ同じ実エントリーを読み込む。ワーカーでは`--no-extensions`を維持し、Pions内部拡張と固定版プロバイダー拡張だけを個別の`--extension`で指定する。起動直前にパッケージ名、版、エントリーを再検査し、不一致ならオペレーションを開始しない。[^pions-worker][^pi-extensions]
 
-実装時には次の設計変更が必要である。
+運用上は次を満たす必要がある。
 
-1. 信頼する`pi-claude-bridge`の**固定版または固定コミットの拡張エントリー**を、Pions内部拡張と並べて各ワーカーへ明示的な`--extension`で渡す。`--no-extensions`は維持し、他のユーザー拡張を混入させない。Piはnpm/gitパッケージの版固定と一時`-e`読込をサポートする。[^pi-packages][^pi-extensions]
-2. 委譲元Piにも同じ拡張を読み込ませ、`claude-bridge/claude-opus-5`をモデルレジストリーへ登録する。Pionsの事前検査は登録されたモデルと「設定済み認証」を要求するが、この拡張は`apiKey: "not-used"`を登録するため、Claude Codeログインの実在までは事前検査できない。ワーカー起動前に未改変Claude Codeで`claude`を実行し、同一ユーザーの`~/.claude`へログインしておく。[^pions-extension][^bridge-source][^anthropic-auth]
-3. ワーカーの`HOME`、`CLAUDE_CONFIG_DIR`、必要な環境変数と`~/.claude`への読み書きをClaude Codeサブプロセスまで伝播する。Agent SDK公式文書はセッションを既定で`~/.claude/projects/`へ保存するとする。隔離環境では専用`CLAUDE_CONFIG_DIR`と永続領域を設け、複数ワーカーの資格情報共有とセッション競合を明示的に管理する。[^agent-sdk-hosting][^bridge-readme]
-4. 親子で拡張版、Pi版、モデルID、`provider.plan`、思考レベルを一致させる。Pionsは暗黙フォールバックを禁止しているため、Opusがプランで利用不能なら明示的失敗にする。[^pions-extension][^bridge-models]
-5. Pionsの読み取り中心方針を壊さないよう、`AskClaude`は無効のままにし、Claude Code内蔵ツールではなくPiから橋渡しした許可済みツールだけを使う構成を試験する。拡張ソースはプロバイダー経路でClaude Code側の`tools: []`とPiツール用MCPサーバーを使う設計だが、第三者コードなのでリリースごとの監査が必要である。[^bridge-source][^pi-packages]
+1. 未改変Claude Codeで`claude`を実行し、同一利用者の`~/.claude`へ事前にログインする。分離する場合は委譲元Piの起動前から`CLAUDE_CONFIG_DIR`を指定する。資格情報はPions設定や引数へ複製しない。[^pions-extension][^bridge-source][^anthropic-auth]
+2. `provider.plan`は実契約に合わせる。Pionsは`longContextExtraUsage: true`を拒否し、未ログイン、モデル利用不可、プラン不適合を別の型付き理由として返し、別モデルへフォールバックしない。[^pions-extension][^bridge-models]
+3. `AskClaude`、Claude Code自動メモリー、利用者MCPを無効に保つ。Pionsはこれらを弱める設定を起動前に拒否し、Claude Code内蔵ツールではなくPiから橋渡しした許可済みツールだけを使う。[^bridge-source][^pi-packages]
+4. 実契約でのOpus 5、課金先、並列時のレート制限、キャンセル後のClaude Code子プロセスは[Issue #49手動スモークテスト](../manual-smoke-test-issue-49.md)に従って確認する。
 
 ### C. 直接OAuth互換拡張を使う場合
 
