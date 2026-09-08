@@ -212,6 +212,19 @@ test("mismatched Artifact Store evidence does not publish Result acceptance", as
   assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "preparation_mismatch");
 });
 
+test("successful publication returns ACK evidence reconstructed from the accepted event", async () => {
+  const store = await runningStore();
+  const request = reservation();
+  await Effect.runPromise(store.prepareResultAcceptance(request));
+
+  const outcome = await Effect.runPromise(store.publishResultAcceptance(evidence(request)));
+
+  assert.equal(
+    outcome.kind === "accepted" ? outcome.eventEvidence.acceptedAt : undefined,
+    (await Effect.runPromise(store.read("operation-1"))).operation.result?.acceptedAt,
+  );
+});
+
 test("a retry after publication returns the persisted acceptance identifier", async () => {
   const store = await runningStore();
   const request = reservation();
