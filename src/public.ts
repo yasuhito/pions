@@ -667,3 +667,140 @@ export interface Runtime {
   startAuthorizationInbox(credential: string): Promise<StartAuthorizationInbox>;
   resourceProofs(): ResourceProofController;
 }
+
+export type ArtifactDigest = `sha256:${string}`;
+
+export interface ArtifactMetadata {
+  readonly artifactId: string;
+  readonly byteCount: number;
+  readonly digest: ArtifactDigest;
+  readonly formatId: string;
+  readonly normalizationId: string;
+  readonly dependencies: ReadonlyArray<string>;
+}
+
+export interface ArtifactRegistrationRequest {
+  readonly registrationId: string;
+  readonly expectedByteCount: number;
+  readonly expectedDigest: ArtifactDigest;
+  readonly formatId: string;
+  readonly normalizationId: string;
+  readonly dependencies: ReadonlyArray<string>;
+  readonly deadline: string;
+  readonly recoveryBudget: number;
+}
+
+export interface ArtifactRegistrationSnapshot {
+  readonly registrationId: string;
+  readonly artifactId: string;
+  readonly state: "receiving" | "prepared";
+}
+
+export type ArtifactFailureReason =
+  | "unauthorized"
+  | "authority_revoked"
+  | "authority_unavailable"
+  | "request_mismatch"
+  | "conflict"
+  | "limit_exceeded"
+  | "deadline_expired"
+  | "transfer_incomplete"
+  | "invalid_format"
+  | "input_integrity_mismatch"
+  | "stored_artifact_corrupt"
+  | "artifact_deleted"
+  | "storage_inspection_unavailable"
+  | "recovery_budget_exceeded"
+  | "dependency_not_found"
+  | "dependency_cycle";
+
+export type ArtifactRegistrationOutcome =
+  | { readonly kind: "registered"; readonly artifact: Readonly<ArtifactMetadata> }
+  | {
+      readonly kind: "continuable";
+      readonly reason: "transfer_incomplete";
+      readonly registration: Readonly<ArtifactRegistrationSnapshot>;
+    }
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason;
+    };
+
+export type ArtifactRetrievalOutcome =
+  | {
+      readonly kind: "retrieved";
+      readonly artifact: Readonly<ArtifactMetadata>;
+      readonly bytes: Uint8Array;
+      readonly integrity: "verified";
+    }
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason;
+    };
+
+export type ArtifactAuthorityDecision = "allowed" | "denied" | "revoked" | "unknown";
+
+export interface ArtifactPrincipal {
+  readonly subjectId: string;
+  canRegister(request: Readonly<ArtifactRegistrationRequest>): Promise<ArtifactAuthorityDecision>;
+  canReference(artifactId: string): Promise<ArtifactAuthorityDecision>;
+  canRetrieve(artifactId: string): Promise<ArtifactAuthorityDecision>;
+}
+
+export interface ArtifactAuthenticator {
+  authenticate(credential: string): Promise<Readonly<ArtifactPrincipal>>;
+  restore(subjectId: string): Promise<Readonly<ArtifactPrincipal>>;
+}
+
+export interface ArtifactStorePolicy {
+  readonly maxArtifactBytes: number;
+  readonly maxConcurrentRegistrations: number;
+  readonly maxTemporaryBytes: number;
+  readonly maxDirectDependencies: number;
+  readonly maxDependencyDepth: number;
+  readonly maxDependencyCount: number;
+  readonly maxRegistrationWindowMs: number;
+  readonly maxRecoveryAttempts: number;
+}
+
+export interface OpenArtifactStoreOptions {
+  readonly rootDirectory: string;
+  readonly policy: Readonly<ArtifactStorePolicy>;
+  readonly authenticator: ArtifactAuthenticator;
+  readonly now?: () => Date;
+  readonly idGenerator?: () => string;
+}
+
+export interface ArtifactStore {
+  startRegistration(
+    credential: string,
+    request: Readonly<ArtifactRegistrationRequest>,
+  ): Promise<ArtifactRegistrationOutcome>;
+  transfer(
+    credential: string,
+    registrationId: string,
+    bytes: Uint8Array | AsyncIterable<Uint8Array>,
+  ): Promise<ArtifactRegistrationOutcome>;
+  registrationStatus(
+    credential: string,
+    registrationId: string,
+  ): Promise<ArtifactRegistrationOutcome>;
+  retrieve(credential: string, artifactId: string): Promise<ArtifactRetrievalOutcome>;
+  close(): Promise<void>;
+}
+
+export type ArtifactStoreOpenFailureReason =
+  | "writer_locked"
+  | "invalid_policy"
+  | "unsupported_root"
+  | "storage_inspection_unavailable";
+
+export class ArtifactStoreOpenError extends Error {
+  override readonly name = "ArtifactStoreOpenError";
+
+  constructor(readonly reason: ArtifactStoreOpenFailureReason, message: string) {
+    super(message);
+  }
+}

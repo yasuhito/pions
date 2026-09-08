@@ -1,3 +1,4 @@
+export { openArtifactStore } from "./internal/artifact-store.js";
 export { makeVisibleRuntime } from "./internal/visible-runtime.js";
 export {
   normalizePermissionManifest,
@@ -9,6 +10,7 @@ export {
 export type { VisibleRuntimeOptions } from "./internal/visible-runtime.js";
 
 export {
+  ArtifactStoreOpenError,
   CancellationRejectedError,
   HerdrPreconditionError,
   OperationCancelledError,
@@ -23,6 +25,20 @@ export {
   WorkerConfigurationError,
 } from "./public.js";
 export type {
+  ArtifactAuthenticator,
+  ArtifactAuthorityDecision,
+  ArtifactDigest,
+  ArtifactFailureReason,
+  ArtifactMetadata,
+  ArtifactPrincipal,
+  ArtifactRegistrationOutcome,
+  ArtifactRegistrationRequest,
+  ArtifactRegistrationSnapshot,
+  ArtifactRetrievalOutcome,
+  ArtifactStore,
+  ArtifactStoreOpenFailureReason,
+  ArtifactStorePolicy,
+  OpenArtifactStoreOptions,
   CancellationRejectionReason,
   CancellationResult,
   CancelOptions,
