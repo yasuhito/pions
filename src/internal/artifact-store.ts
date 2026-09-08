@@ -29,9 +29,9 @@ import {
   type ArtifactRetentionPinSnapshot,
   type ArtifactRetrievalOutcome,
   type ArtifactStore,
-  type ArtifactUseOutcome,
-  type ArtifactUseRequest,
-  type ArtifactUseSnapshot,
+  type ArtifactUseBindingOutcome,
+  type ArtifactUseBindingRequest,
+  type ArtifactUseBindingSnapshot,
   type OpenArtifactStoreOptions,
 } from "../public.js";
 
@@ -45,15 +45,17 @@ export type ArtifactStoreFaultPoint =
   | "artifact_published"
   | "registration_committed"
   | "success_response"
-  | "use_record_persisted"
-  | "use_retention_persisted"
-  | "use_parent_pin_persisted"
-  | "use_dependency_pin_persisted"
-  | "use_available_persisted"
-  | "use_rejection_persisted"
-  | "before_use_pins_released"
+  | "use_binding_record_persisted"
+  | "use_binding_retention_persisted"
+  | "use_binding_parent_pin_persisted"
+  | "use_binding_dependency_pin_persisted"
+  | "use_binding_available_persisted"
+  | "use_binding_rejection_persisted"
+  | "before_use_binding_pins_released"
+  | "before_explicit_pin_records_released"
   | "gc_eligibility_checked"
   | "deletion_pending_persisted"
+  | "before_gc_diagnostic_persisted"
   | "artifact_bytes_deleted"
   | "deletion_committed";
 
@@ -78,10 +80,11 @@ class ArtifactStoreInjectedFault extends Error {
 const ROOT_SCHEMA = "pions-artifacts.v2";
 const RECORD_SCHEMA = "pions-artifact-registration.v2";
 const ARTIFACT_SCHEMA = "pions-artifact.v2";
-const USE_SCHEMA = "pions-artifact-use.v1";
+const USE_SCHEMA = "pions-artifact-use-binding.v1";
 const PIN_SCHEMA = "pions-artifact-pin.v1";
 const RETENTION_SCHEMA = "pions-artifact-retention.v1";
 const EXPLICIT_PIN_SCHEMA = "pions-artifact-explicit-pin.v1";
+const GC_DIAGNOSTIC_SCHEMA = "pions-artifact-gc-diagnostic.v1";
 const ROOT_FILE = "root.json";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
 
@@ -113,7 +116,7 @@ interface ArtifactRecord extends ArtifactMetadata {
   readonly deletionRecoveryBudget?: number;
 }
 
-interface UseRecord extends ArtifactUseSnapshot {
+interface UseBindingRecord extends ArtifactUseBindingSnapshot {
   readonly schema: typeof USE_SCHEMA;
   readonly requestDigest: `sha256:${string}`;
   readonly effectiveReviewRetentionMs: number;
@@ -123,7 +126,7 @@ interface UseRecord extends ArtifactUseSnapshot {
 interface PinRecord {
   readonly schema: typeof PIN_SCHEMA;
   readonly pinId: string;
-  readonly ownerType: "artifact_use" | "principal";
+  readonly ownerType: "artifact_use_binding" | "principal";
   readonly ownerId: string;
   readonly purpose: string;
   readonly artifactId: string;
@@ -138,7 +141,7 @@ interface ExplicitPinRecord extends ArtifactRetentionPinSnapshot {
 interface RetentionRecord {
   readonly schema: typeof RETENTION_SCHEMA;
   readonly retentionId: string;
-  readonly ownerType: "registration_grace" | "artifact_use";
+  readonly ownerType: "registration_grace" | "artifact_use_binding";
   readonly ownerId: string;
   readonly artifactId: string;
   readonly retainUntil: string;
@@ -187,7 +190,7 @@ function failed(reason: ArtifactFailureReason, terminal = true): ArtifactRegistr
   return { kind: "failed", terminal, reason };
 }
 
-function useFailed(reason: ArtifactFailureReason, terminal = true): ArtifactUseOutcome {
+function useBindingFailed(reason: ArtifactFailureReason, terminal = true): ArtifactUseBindingOutcome {
   return { kind: "failed", terminal, reason };
 }
 
@@ -195,7 +198,7 @@ function gcFailed(reason: ArtifactFailureReason, terminal = true): ArtifactGarba
   return { kind: "failed", terminal, reason };
 }
 
-function useRequestDigest(request: Readonly<ArtifactUseRequest>): `sha256:${string}` {
+function useBindingRequestDigest(request: Readonly<ArtifactUseBindingRequest>): `sha256:${string}` {
   return sha256(JSON.stringify(request));
 }
 
@@ -211,11 +214,11 @@ function pinFailed(reason: ArtifactFailureReason, terminal = true): ArtifactRete
   return { kind: "failed", terminal, reason };
 }
 
-function useOutcome(record: UseRecord): ArtifactUseOutcome {
-  if (record.state === "available") return { kind: "available", use: record };
-  if (record.state === "released") return { kind: "released", use: record };
-  if (record.state === "preparing") return { kind: "continuable", use: record };
-  return useFailed(record.failureReason ?? "storage_inspection_unavailable", record.state === "rejected");
+function useBindingOutcome(record: UseBindingRecord): ArtifactUseBindingOutcome {
+  if (record.state === "available") return { kind: "available", binding: record };
+  if (record.state === "released") return { kind: "released", binding: record };
+  if (record.state === "preparing") return { kind: "continuable", binding: record };
+  return useBindingFailed(record.failureReason ?? "storage_inspection_unavailable", record.state === "rejected");
 }
 
 function retrievalFailed(reason: ArtifactFailureReason, terminal = true): ArtifactRetrievalOutcome {
@@ -357,10 +360,11 @@ function validRequestShape(request: Readonly<ArtifactRegistrationRequest>): bool
 class FileArtifactStore implements ArtifactStore {
   private readonly registrationDirectory: string;
   private readonly artifactDirectory: string;
-  private readonly useDirectory: string;
+  private readonly useBindingDirectory: string;
   private readonly pinDirectory: string;
   private readonly retentionDirectory: string;
   private readonly explicitPinDirectory: string;
+  private readonly garbageCollectionDiagnosticDirectory: string;
   private readonly formats = new Map<string, Readonly<ArtifactFormat>>();
   private readonly transferTokens = new Map<string, symbol>();
   private readonly transferStops = new Map<string, Promise<void>>();
@@ -379,10 +383,11 @@ class FileArtifactStore implements ArtifactStore {
   ) {
     this.registrationDirectory = join(options.rootDirectory, "registrations");
     this.artifactDirectory = join(options.rootDirectory, "artifacts");
-    this.useDirectory = join(options.rootDirectory, "uses");
+    this.useBindingDirectory = join(options.rootDirectory, "use-bindings");
     this.pinDirectory = join(options.rootDirectory, "pins");
     this.retentionDirectory = join(options.rootDirectory, "retentions");
     this.explicitPinDirectory = join(options.rootDirectory, "explicit-pins");
+    this.garbageCollectionDiagnosticDirectory = join(options.rootDirectory, "gc-diagnostics");
     for (const format of configuredFormats()) {
       this.formats.set(`${format.formatId}\0${format.normalizationId}`, format);
     }
@@ -432,8 +437,8 @@ class FileArtifactStore implements ArtifactStore {
     return join(this.artifactDirectory, `${artifactId}.json`);
   }
 
-  private usePath(useId: string): string {
-    return join(this.useDirectory, `${useId}.json`);
+  private useBindingPath(bindingId: string): string {
+    return join(this.useBindingDirectory, `${bindingId}.json`);
   }
 
   private pinPath(pinId: string): string {
@@ -472,38 +477,38 @@ class FileArtifactStore implements ArtifactStore {
     }
   }
 
-  private async readUse(useId: string): Promise<UseRecord | undefined> {
-    if (!IDENTIFIER.test(useId)) return undefined;
+  private async readUseBinding(bindingId: string): Promise<UseBindingRecord | undefined> {
+    if (!IDENTIFIER.test(bindingId)) return undefined;
     try {
-      const value = await readJson(this.usePath(useId)) as Partial<UseRecord>;
+      const value = await readJson(this.useBindingPath(bindingId)) as Partial<UseBindingRecord>;
       const states = ["preparing", "available", "rejected", "released", "unresolved"];
-      const request: ArtifactUseRequest = {
-        useId: value.useId ?? "",
+      const request: ArtifactUseBindingRequest = {
+        bindingId: value.bindingId ?? "",
         operationId: value.operationId ?? "",
         artifactId: value.artifactId ?? "",
         purpose: value.purpose as "review_subject",
         decisionId: value.decisionId ?? "",
         authorityBasis: value.authorityBasis ?? "",
       };
-      if (value.schema !== USE_SCHEMA || !IDENTIFIER.test(useId) || value.useId !== useId ||
+      if (value.schema !== USE_SCHEMA || !IDENTIFIER.test(bindingId) || value.bindingId !== bindingId ||
         !IDENTIFIER.test(request.operationId) || !IDENTIFIER.test(request.artifactId) ||
         request.purpose !== "review_subject" || !IDENTIFIER.test(request.decisionId) ||
         typeof request.authorityBasis !== "string" || request.authorityBasis.length === 0 ||
-        value.requestDigest !== useRequestDigest(request) || typeof value.subjectId !== "string" ||
+        value.requestDigest !== useBindingRequestDigest(request) || typeof value.subjectId !== "string" ||
         !Array.isArray(value.dependencyClosure) || !value.dependencyClosure.every((id) => typeof id === "string" && IDENTIFIER.test(id)) ||
         !Number.isFinite(Date.parse(value.retentionUntil ?? "")) || !states.includes(value.state ?? "") ||
         !Number.isSafeInteger(value.effectiveReviewRetentionMs) || (value.effectiveReviewRetentionMs ?? 0) <= 0) {
-        throw new Error("Invalid Artifact use record");
+        throw new Error("Invalid Artifact use binding record");
       }
-      return value as UseRecord;
+      return value as UseBindingRecord;
     } catch (error) {
       if (hasCode(error, "ENOENT")) return undefined;
       throw error;
     }
   }
 
-  private writeUse(record: UseRecord): Promise<void> {
-    return this.serializeIo(() => writeJson(this.usePath(record.useId), record));
+  private writeUseBinding(record: UseBindingRecord): Promise<void> {
+    return this.serializeIo(() => writeJson(this.useBindingPath(record.bindingId), record));
   }
 
   private async readRecord(registrationId: string): Promise<RegistrationRecord | undefined> {
@@ -1072,32 +1077,32 @@ class FileArtifactStore implements ArtifactStore {
     return { kind: "retrieved", artifact: record, bytes, integrity: "verified" };
   }
 
-  async prepareUse(
+  async prepareUseBinding(
     credential: string,
-    request: Readonly<ArtifactUseRequest>,
-  ): Promise<ArtifactUseOutcome> {
+    request: Readonly<ArtifactUseBindingRequest>,
+  ): Promise<ArtifactUseBindingOutcome> {
     try {
-      return await this.serialize(() => this.prepareUseUnserialized(credential, request));
+      return await this.serialize(() => this.prepareUseBindingBindingUnserialized(credential, request));
     } catch (error) {
       if (error instanceof ArtifactStoreInjectedFault) throw error;
-      return useFailed("storage_inspection_unavailable", false);
+      return useBindingFailed("storage_inspection_unavailable", false);
     }
   }
 
-  private validUseRequest(request: Readonly<ArtifactUseRequest>): boolean {
-    return IDENTIFIER.test(request.useId) && IDENTIFIER.test(request.operationId) &&
+  private validUseRequest(request: Readonly<ArtifactUseBindingRequest>): boolean {
+    return IDENTIFIER.test(request.bindingId) && IDENTIFIER.test(request.operationId) &&
       IDENTIFIER.test(request.artifactId) && request.purpose === "review_subject" &&
       IDENTIFIER.test(request.decisionId) && typeof request.authorityBasis === "string" && request.authorityBasis.length > 0;
   }
 
-  private async useAuthority(
+  private async useBindingAuthority(
     principal: Readonly<ArtifactPrincipal>,
-    request: Readonly<ArtifactUseRequest>,
+    request: Readonly<ArtifactUseBindingRequest>,
     artifactIds: ReadonlyArray<string>,
   ): Promise<ArtifactFailureReason | undefined> {
     for (const artifactId of artifactIds) {
       try {
-        const reason = authorityFailure(await principal.canBindUse(request, artifactId));
+        const reason = authorityFailure(await principal.canBindArtifactUse(request, artifactId));
         if (reason !== undefined) return reason;
       } catch {
         return "authority_unavailable";
@@ -1106,81 +1111,81 @@ class FileArtifactStore implements ArtifactStore {
     return undefined;
   }
 
-  private async prepareUseUnserialized(
+  private async prepareUseBindingBindingUnserialized(
     credential: string,
-    request: Readonly<ArtifactUseRequest>,
-  ): Promise<ArtifactUseOutcome> {
-    if (this.closed || !this.validUseRequest(request)) return useFailed("limit_exceeded");
+    request: Readonly<ArtifactUseBindingRequest>,
+  ): Promise<ArtifactUseBindingOutcome> {
+    if (this.closed || !this.validUseRequest(request)) return useBindingFailed("limit_exceeded");
     const principal = await this.authenticate(credential);
-    if (principal === undefined) return useFailed("unauthorized");
-    const existing = await this.readUse(request.useId);
+    if (principal === undefined) return useBindingFailed("unauthorized");
+    const existing = await this.readUseBinding(request.bindingId);
     if (existing !== undefined) {
-      if (existing.subjectId !== principal.subjectId) return useFailed("unauthorized");
-      if (existing.requestDigest !== useRequestDigest(request)) return useFailed("request_mismatch");
-      if (existing.state === "preparing") return this.finishPreparingUse(existing, principal);
-      return useOutcome(existing);
+      if (existing.subjectId !== principal.subjectId) return useBindingFailed("unauthorized");
+      if (existing.requestDigest !== useBindingRequestDigest(request)) return useBindingFailed("request_mismatch");
+      if (existing.state === "preparing") return this.finishPreparingUseBinding(existing, principal);
+      return useBindingOutcome(existing);
     }
-    const parentAuthority = await this.useAuthority(principal, request, [request.artifactId]);
-    if (parentAuthority !== undefined) return useFailed(parentAuthority, parentAuthority !== "authority_unavailable");
+    const parentAuthority = await this.useBindingAuthority(principal, request, [request.artifactId]);
+    if (parentAuthority !== undefined) return useBindingFailed(parentAuthority, parentAuthority !== "authority_unavailable");
     const parent = await this.readArtifactRecord(request.artifactId);
-    if (parent === undefined) return useFailed("unauthorized");
-    if (parent.lifecycle === "deletion_pending") return useFailed("artifact_deletion_pending");
-    if (parent.lifecycle === "deleted") return useFailed("artifact_deleted");
+    if (parent === undefined) return useBindingFailed("unauthorized");
+    if (parent.lifecycle === "deletion_pending") return useBindingFailed("artifact_deletion_pending");
+    if (parent.lifecycle === "deleted") return useBindingFailed("artifact_deleted");
     const closure = await this.dependencyClosure(
       parent.dependencies,
       this.options.policy,
-      (artifactId) => principal.canBindUse(request, artifactId),
+      (artifactId) => principal.canBindArtifactUse(request, artifactId),
     );
-    if (closure.reason !== undefined) return useFailed(closure.reason, closure.reason !== "authority_unavailable");
+    if (closure.reason !== undefined) return useBindingFailed(closure.reason, closure.reason !== "authority_unavailable");
     const artifactIds = [parent.artifactId, ...closure.records.map(({ artifactId }) => artifactId)];
     const retentionUntil = new Date(this.now().getTime() + this.options.policy.reviewInputRetentionMs).toISOString();
-    const record: UseRecord = {
+    const record: UseBindingRecord = {
       schema: USE_SCHEMA,
       ...request,
-      requestDigest: useRequestDigest(request),
+      requestDigest: useBindingRequestDigest(request),
       subjectId: principal.subjectId,
       dependencyClosure: closure.records.map(({ artifactId }) => artifactId),
       retentionUntil,
       effectiveReviewRetentionMs: this.options.policy.reviewInputRetentionMs,
       state: "preparing",
     };
-    await this.writeUse(record);
-    await this.fault("use_record_persisted");
+    await this.writeUseBinding(record);
+    await this.fault("use_binding_record_persisted");
     for (const artifactId of artifactIds) {
       const retention: RetentionRecord = {
         schema: RETENTION_SCHEMA,
-        retentionId: protectionId("use-retention", request.useId, artifactId),
-        ownerType: "artifact_use",
-        ownerId: request.useId,
+        retentionId: protectionId("use-retention", request.bindingId, artifactId),
+        ownerType: "artifact_use_binding",
+        ownerId: request.bindingId,
         artifactId,
         retainUntil: retentionUntil,
       };
       await this.serializeIo(() => writeJson(this.retentionPath(retention.retentionId), retention));
     }
-    await this.fault("use_retention_persisted");
+    await this.fault("use_binding_retention_persisted");
     for (let index = 0; index < artifactIds.length; index += 1) {
       const artifactId = artifactIds[index]!;
       const pin: PinRecord = {
         schema: PIN_SCHEMA,
-        pinId: protectionId("use-pin", request.useId, artifactId),
-        ownerType: "artifact_use",
-        ownerId: request.useId,
+        pinId: protectionId("use-pin", request.bindingId, artifactId),
+        ownerType: "artifact_use_binding",
+        ownerId: request.bindingId,
         purpose: request.purpose,
         artifactId,
         state: "held",
       };
       await this.serializeIo(() => writeJson(this.pinPath(pin.pinId), pin));
-      await this.fault(index === 0 ? "use_parent_pin_persisted" : "use_dependency_pin_persisted");
+      await this.fault(index === 0 ? "use_binding_parent_pin_persisted" : "use_binding_dependency_pin_persisted");
     }
-    return this.finishPreparingUse(record, principal);
+    return this.finishPreparingUseBinding(record, principal);
   }
 
-  private async finishPreparingUse(
-    record: UseRecord,
+  private async finishPreparingUseBinding(
+    record: UseBindingRecord,
     principal: Readonly<ArtifactPrincipal>,
-  ): Promise<ArtifactUseOutcome> {
-    const request: ArtifactUseRequest = {
-      useId: record.useId,
+  ): Promise<ArtifactUseBindingOutcome> {
+    const request: ArtifactUseBindingRequest = {
+      bindingId: record.bindingId,
       operationId: record.operationId,
       artifactId: record.artifactId,
       purpose: record.purpose,
@@ -1191,81 +1196,81 @@ class FileArtifactStore implements ArtifactStore {
     for (const artifactId of artifactIds) {
       const artifact = await this.readArtifactRecord(artifactId);
       if (artifact === undefined || artifact.lifecycle !== "available") {
-        return this.rejectUse(record, artifact?.lifecycle === "deletion_pending" ? "artifact_deletion_pending" : "artifact_deleted");
+        return this.rejectUseBinding(record, artifact?.lifecycle === "deletion_pending" ? "artifact_deletion_pending" : "artifact_deleted");
       }
       const bytes = await this.verifiedBytes(artifact);
       if (typeof bytes === "string") {
-        if (bytes === "storage_inspection_unavailable") return useFailed(bytes, false);
-        return this.rejectUse(record, bytes);
+        if (bytes === "storage_inspection_unavailable") return useBindingFailed(bytes, false);
+        return this.rejectUseBinding(record, bytes);
       }
     }
-    const authority = await this.useAuthority(principal, request, artifactIds);
+    const authority = await this.useBindingAuthority(principal, request, artifactIds);
     if (authority !== undefined) {
-      if (authority === "authority_unavailable") return useFailed(authority, false);
-      return this.rejectUse(record, authority);
+      if (authority === "authority_unavailable") return useBindingFailed(authority, false);
+      return this.rejectUseBinding(record, authority);
     }
-    const available: UseRecord = { ...record, state: "available" };
-    await this.writeUse(available);
-    await this.fault("use_available_persisted");
-    return useOutcome(available);
+    const available: UseBindingRecord = { ...record, state: "available" };
+    await this.writeUseBinding(available);
+    await this.fault("use_binding_available_persisted");
+    return useBindingOutcome(available);
   }
 
-  private async rejectUse(record: UseRecord, reason: ArtifactFailureReason): Promise<ArtifactUseOutcome> {
-    const rejected: UseRecord = { ...record, state: "rejected", failureReason: reason };
-    await this.writeUse(rejected);
-    await this.fault("use_rejection_persisted");
-    await this.releasePins(record.useId);
-    return useOutcome(rejected);
+  private async rejectUseBinding(record: UseBindingRecord, reason: ArtifactFailureReason): Promise<ArtifactUseBindingOutcome> {
+    const rejected: UseBindingRecord = { ...record, state: "rejected", failureReason: reason };
+    await this.writeUseBinding(rejected);
+    await this.fault("use_binding_rejection_persisted");
+    await this.releaseUseBindingPins(record.bindingId);
+    return useBindingOutcome(rejected);
   }
 
-  private async releasePins(useId: string): Promise<void> {
-    await this.fault("before_use_pins_released");
+  private async releaseUseBindingPins(bindingId: string): Promise<void> {
+    await this.fault("before_use_binding_pins_released");
     for (const entry of await readdir(this.pinDirectory)) {
       if (!entry.endsWith(".json")) continue;
       const path = join(this.pinDirectory, entry);
       const pin = await readJson(path) as Partial<PinRecord>;
-      if (pin.schema !== PIN_SCHEMA || pin.ownerId !== useId || pin.state !== "held") continue;
+      if (pin.schema !== PIN_SCHEMA || pin.ownerId !== bindingId || pin.state !== "held") continue;
       await this.serializeIo(() => writeJson(path, { ...pin, state: "released" }));
     }
   }
 
-  async useStatus(credential: string, useId: string): Promise<ArtifactUseOutcome> {
+  async useBindingStatus(credential: string, bindingId: string): Promise<ArtifactUseBindingOutcome> {
     try {
       const principal = await this.authenticate(credential);
-      if (principal === undefined) return useFailed("unauthorized");
-      const record = await this.readUse(useId);
-      if (record === undefined || record.subjectId !== principal.subjectId) return useFailed("unauthorized");
-      return useOutcome(record);
+      if (principal === undefined) return useBindingFailed("unauthorized");
+      const record = await this.readUseBinding(bindingId);
+      if (record === undefined || record.subjectId !== principal.subjectId) return useBindingFailed("unauthorized");
+      return useBindingOutcome(record);
     } catch {
-      return useFailed("storage_inspection_unavailable", false);
+      return useBindingFailed("storage_inspection_unavailable", false);
     }
   }
 
-  async retrieveForUse(credential: string, useId: string): Promise<ArtifactRetrievalOutcome> {
-    const status = await this.useStatus(credential, useId);
+  async retrieveForUseBinding(credential: string, bindingId: string): Promise<ArtifactRetrievalOutcome> {
+    const status = await this.useBindingStatus(credential, bindingId);
     if (status.kind !== "available") {
       return retrievalFailed(status.kind === "failed" ? status.reason : "conflict", status.kind === "failed" && status.terminal);
     }
-    return this.retrieve(credential, status.use.artifactId);
+    return this.retrieve(credential, status.binding.artifactId);
   }
 
-  async releaseUse(credential: string, useId: string): Promise<ArtifactUseOutcome> {
+  async releaseUseBinding(credential: string, bindingId: string): Promise<ArtifactUseBindingOutcome> {
     try {
       return await this.serialize(async () => {
         const principal = await this.authenticate(credential);
-        if (principal === undefined) return useFailed("unauthorized");
-        const record = await this.readUse(useId);
-        if (record === undefined || record.subjectId !== principal.subjectId) return useFailed("unauthorized");
-        if (record.state === "released") return useOutcome(record);
-        if (record.state !== "available") return useOutcome(record);
-        const released: UseRecord = { ...record, state: "released" };
-        await this.writeUse(released);
-        await this.releasePins(useId);
-        return useOutcome(released);
+        if (principal === undefined) return useBindingFailed("unauthorized");
+        const record = await this.readUseBinding(bindingId);
+        if (record === undefined || record.subjectId !== principal.subjectId) return useBindingFailed("unauthorized");
+        if (record.state === "released") return useBindingOutcome(record);
+        if (record.state !== "available") return useBindingOutcome(record);
+        const released: UseBindingRecord = { ...record, state: "released" };
+        await this.writeUseBinding(released);
+        await this.releaseUseBindingPins(bindingId);
+        return useBindingOutcome(released);
       });
     } catch (error) {
       if (error instanceof ArtifactStoreInjectedFault) throw error;
-      return useFailed("storage_inspection_unavailable", false);
+      return useBindingFailed("storage_inspection_unavailable", false);
     }
   }
 
@@ -1338,18 +1343,23 @@ class FileArtifactStore implements ArtifactStore {
         if (record.state === "released") return pinOutcome(record);
         const released: ExplicitPinRecord = { ...record, state: "released" };
         await this.serializeIo(() => writeJson(this.explicitPinPath(pinId), released));
-        for (const entry of await readdir(this.pinDirectory)) {
-          if (!entry.endsWith(".json")) continue;
-          const path = join(this.pinDirectory, entry);
-          const pin = await readJson(path) as Partial<PinRecord>;
-          if (pin.schema === PIN_SCHEMA && pin.ownerType === "principal" && pin.ownerId === pinId && pin.state === "held") {
-            await this.serializeIo(() => writeJson(path, { ...pin, state: "released" }));
-          }
-        }
+        await this.fault("before_explicit_pin_records_released");
+        await this.releaseExplicitPinRecords(pinId);
         return pinOutcome(released);
       });
     } catch {
       return pinFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  private async releaseExplicitPinRecords(pinId: string): Promise<void> {
+    for (const entry of await readdir(this.pinDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const path = join(this.pinDirectory, entry);
+      const pin = await readJson(path) as Partial<PinRecord>;
+      if (pin.schema === PIN_SCHEMA && pin.ownerType === "principal" && pin.ownerId === pinId && pin.state === "held") {
+        await this.serializeIo(() => writeJson(path, { ...pin, state: "released" }));
+      }
     }
   }
 
@@ -1361,8 +1371,21 @@ class FileArtifactStore implements ArtifactStore {
       return await this.serialize(() => this.collectGarbageUnserialized(credential, request));
     } catch (error) {
       if (error instanceof ArtifactStoreInjectedFault) throw error;
+      await this.persistGarbageCollectionDiagnostic(request, "gc_processing_unavailable").catch(() => undefined);
       return gcFailed("gc_processing_unavailable", false);
     }
+  }
+
+  private async persistGarbageCollectionDiagnostic(
+    request: Readonly<ArtifactGarbageCollectionRequest>,
+    reason: ArtifactFailureReason,
+  ): Promise<void> {
+    if (!IDENTIFIER.test(request.collectionId)) return;
+    await this.fault("before_gc_diagnostic_persisted");
+    await this.serializeIo(() => writeJson(
+      join(this.garbageCollectionDiagnosticDirectory, `${request.collectionId}.json`),
+      { schema: GC_DIAGNOSTIC_SCHEMA, collectionId: request.collectionId, reason, observedAt: this.now().toISOString() },
+    ));
   }
 
   private async collectGarbageUnserialized(
@@ -1374,7 +1397,8 @@ class FileArtifactStore implements ArtifactStore {
       !Number.isSafeInteger(request.deletionBudget) || request.deletionBudget <= 0 ||
       request.deletionBudget > this.options.policy.maxGarbageCollectionDeletes ||
       !Number.isSafeInteger(request.recoveryBudget) || request.recoveryBudget <= 0 ||
-      request.recoveryBudget > this.options.policy.maxGarbageCollectionRecoveryAttempts) {
+      request.recoveryBudget > this.options.policy.maxGarbageCollectionRecoveryAttempts ||
+      (request.afterArtifactId !== undefined && !IDENTIFIER.test(request.afterArtifactId))) {
       return gcFailed("limit_exceeded");
     }
     const principal = await this.authenticate(credential);
@@ -1382,17 +1406,35 @@ class FileArtifactStore implements ArtifactStore {
     let authority: ArtifactFailureReason | undefined;
     try { authority = authorityFailure(await principal.canGarbageCollect(request)); } catch { authority = "authority_unavailable"; }
     if (authority !== undefined) return gcFailed(authority, authority !== "authority_unavailable");
-    const entries = (await readdir(this.artifactDirectory)).filter((entry) => entry.endsWith(".json")).sort();
-    const scanned = entries.slice(0, request.scanBudget);
-    const remainingArtifactIds = entries.slice(request.scanBudget).map((entry) => entry.slice(0, -5));
+    const artifactIds = (await readdir(this.artifactDirectory))
+      .filter((entry) => entry.endsWith(".json"))
+      .map((entry) => entry.slice(0, -5))
+      .filter((artifactId) => request.afterArtifactId === undefined || artifactId > request.afterArtifactId)
+      .sort();
+    const scanned = artifactIds.slice(0, request.scanBudget);
+    const remainingArtifactIds = artifactIds.slice(request.scanBudget);
     const deletedArtifactIds: string[] = [];
-    for (const entry of scanned) {
+    for (const artifactId of scanned) {
       if (deletedArtifactIds.length >= request.deletionBudget) {
-        remainingArtifactIds.push(entry.slice(0, -5));
+        remainingArtifactIds.push(artifactId);
         continue;
       }
-      const record = await this.readArtifactRecord(entry.slice(0, -5));
-      if (record === undefined || record.lifecycle !== "available") continue;
+      const record = await this.readArtifactRecord(artifactId);
+      if (record === undefined || record.lifecycle === "deleted") continue;
+      if (record.lifecycle === "deletion_pending") {
+        const budget = record.deletionRecoveryBudget ?? request.recoveryBudget;
+        if (record.deletionRecoveryAttempts >= budget) return gcFailed("gc_processing_unavailable");
+        const attempting = { ...record, deletionRecoveryAttempts: record.deletionRecoveryAttempts + 1 };
+        await this.serializeIo(() => writeJson(this.artifactPath(record.artifactId), attempting));
+        try {
+          await this.finishDeletion(attempting);
+        } catch (error) {
+          if (error instanceof ArtifactStoreInjectedFault) throw error;
+          return gcFailed("storage_inspection_unavailable", false);
+        }
+        deletedArtifactIds.push(record.artifactId);
+        continue;
+      }
       if (!(await this.isDeletionEligible(record.artifactId, record.unusedRetentionUntil))) continue;
       await this.fault("gc_eligibility_checked");
       const pending: ArtifactRecord = {
@@ -1402,22 +1444,41 @@ class FileArtifactStore implements ArtifactStore {
       };
       await this.serializeIo(() => writeJson(this.artifactPath(record.artifactId), pending));
       await this.fault("deletion_pending_persisted");
-      await this.finishDeletion(pending);
+      try {
+        await this.finishDeletion(pending);
+      } catch (error) {
+        if (error instanceof ArtifactStoreInjectedFault) throw error;
+        return gcFailed("storage_inspection_unavailable", false);
+      }
       deletedArtifactIds.push(record.artifactId);
     }
     if (remainingArtifactIds.length > 0) {
-      return { kind: "continuable", reason: "gc_unprocessed", deletedArtifactIds, remainingArtifactIds };
+      return {
+        kind: "continuable",
+        reason: "gc_unprocessed",
+        deletedArtifactIds,
+        remainingArtifactIds,
+        nextCursor: scanned.at(-1) ?? request.afterArtifactId ?? "",
+      };
     }
     return { kind: "completed", deletedArtifactIds };
   }
 
   private async isDeletionEligible(artifactId: string, unusedRetentionUntil: string): Promise<boolean> {
     if (Date.parse(unusedRetentionUntil) > this.now().getTime()) return false;
-    for (const entry of await readdir(this.useDirectory)) {
+    for (const entry of await readdir(this.registrationDirectory)) {
       if (!entry.endsWith(".json")) continue;
-      const use = await this.readUse(entry.slice(0, -5));
-      if (use !== undefined && (use.state === "preparing" || use.state === "available") &&
-        (use.artifactId === artifactId || use.dependencyClosure.includes(artifactId))) return false;
+      const registration = await this.readRecord(entry.slice(0, -5));
+      if (registration === undefined || (registration.state !== "receiving" && registration.state !== "prepared")) continue;
+      if (registration.artifactId === artifactId || registration.request.dependencies.includes(artifactId)) return false;
+      const closure = await this.dependencyClosure(registration.request.dependencies, registration.effectivePolicy);
+      if (closure.reason !== undefined || closure.records.some((record) => record.artifactId === artifactId)) return false;
+    }
+    for (const entry of await readdir(this.useBindingDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const binding = await this.readUseBinding(entry.slice(0, -5));
+      if (binding !== undefined && (binding.state === "preparing" || binding.state === "available") &&
+        (binding.artifactId === artifactId || binding.dependencyClosure.includes(artifactId))) return false;
     }
     for (const entry of await readdir(this.explicitPinDirectory)) {
       if (!entry.endsWith(".json")) continue;
@@ -1456,13 +1517,18 @@ class FileArtifactStore implements ArtifactStore {
     await this.fault("deletion_committed");
   }
 
-  private async recoverUsesAndDeletions(): Promise<void> {
-    for (const entry of await readdir(this.useDirectory)) {
+  private async recoverUseBindingsPinsAndDeletions(): Promise<void> {
+    for (const entry of await readdir(this.explicitPinDirectory)) {
       if (!entry.endsWith(".json")) continue;
-      const record = await this.readUse(entry.slice(0, -5));
+      const pin = await this.readExplicitPin(entry.slice(0, -5));
+      if (pin?.state === "released") await this.releaseExplicitPinRecords(pin.pinId);
+    }
+    for (const entry of await readdir(this.useBindingDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const record = await this.readUseBinding(entry.slice(0, -5));
       if (record === undefined) continue;
       if (record.state === "rejected" || record.state === "released") {
-        await this.releasePins(record.useId);
+        await this.releaseUseBindingPins(record.bindingId);
         continue;
       }
       if (record.state !== "preparing") continue;
@@ -1470,18 +1536,18 @@ class FileArtifactStore implements ArtifactStore {
       for (const artifactId of artifactIds) {
         const retention: RetentionRecord = {
           schema: RETENTION_SCHEMA,
-          retentionId: protectionId("use-retention", record.useId, artifactId),
-          ownerType: "artifact_use",
-          ownerId: record.useId,
+          retentionId: protectionId("use-retention", record.bindingId, artifactId),
+          ownerType: "artifact_use_binding",
+          ownerId: record.bindingId,
           artifactId,
           retainUntil: record.retentionUntil,
         };
         if (!(await exists(this.retentionPath(retention.retentionId)))) await writeJson(this.retentionPath(retention.retentionId), retention);
         const pin: PinRecord = {
           schema: PIN_SCHEMA,
-          pinId: protectionId("use-pin", record.useId, artifactId),
-          ownerType: "artifact_use",
-          ownerId: record.useId,
+          pinId: protectionId("use-pin", record.bindingId, artifactId),
+          ownerType: "artifact_use_binding",
+          ownerId: record.bindingId,
           purpose: record.purpose,
           artifactId,
           state: "held",
@@ -1490,7 +1556,7 @@ class FileArtifactStore implements ArtifactStore {
       }
       try {
         const principal = await this.options.authenticator.restore(record.subjectId);
-        await this.finishPreparingUse(record, principal);
+        await this.finishPreparingUseBinding(record, principal);
       } catch (error) {
         if (error instanceof ArtifactStoreInjectedFault) throw error;
       }
@@ -1512,7 +1578,7 @@ class FileArtifactStore implements ArtifactStore {
   }
 
   async recover(): Promise<void> {
-    await this.recoverUsesAndDeletions();
+    await this.recoverUseBindingsPinsAndDeletions();
     for (const entry of await readdir(this.registrationDirectory)) {
       if (!entry.endsWith(".json")) continue;
       let record = await this.readRecord(entry.slice(0, -5));
@@ -1657,10 +1723,11 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
     await writeJson(join(rootDirectory, ROOT_FILE), { schema: ROOT_SCHEMA, formats });
     await mkdir(join(rootDirectory, "registrations"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "artifacts"), { mode: 0o700 });
-    await mkdir(join(rootDirectory, "uses"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "use-bindings"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "pins"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "retentions"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "explicit-pins"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "gc-diagnostics"), { mode: 0o700 });
     await syncDirectory(rootDirectory);
     return;
   }
@@ -1670,10 +1737,11 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
     await writeJson(rootFile, { schema: ROOT_SCHEMA, formats });
     await mkdir(join(rootDirectory, "registrations"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "artifacts"), { mode: 0o700 });
-    await mkdir(join(rootDirectory, "uses"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "use-bindings"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "pins"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "retentions"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "explicit-pins"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "gc-diagnostics"), { mode: 0o700 });
     await syncDirectory(rootDirectory);
     return;
   }
@@ -1684,10 +1752,11 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
   for (const directory of [
     join(rootDirectory, "registrations"),
     join(rootDirectory, "artifacts"),
-    join(rootDirectory, "uses"),
+    join(rootDirectory, "use-bindings"),
     join(rootDirectory, "pins"),
     join(rootDirectory, "retentions"),
     join(rootDirectory, "explicit-pins"),
+    join(rootDirectory, "gc-diagnostics"),
   ]) {
     const status = await lstat(directory);
     if (!status.isDirectory() || status.isSymbolicLink()) throw new ArtifactStoreOpenError("storage_inspection_unavailable", "Artifact storage directory is invalid");

@@ -745,8 +745,8 @@ export type ArtifactRetrievalOutcome =
 
 export type ArtifactAuthorityDecision = "allowed" | "denied" | "revoked" | "unknown";
 
-export interface ArtifactUseRequest {
-  readonly useId: string;
+export interface ArtifactUseBindingRequest {
+  readonly bindingId: string;
   readonly operationId: string;
   readonly artifactId: string;
   readonly purpose: "review_subject";
@@ -754,17 +754,17 @@ export interface ArtifactUseRequest {
   readonly authorityBasis: string;
 }
 
-export interface ArtifactUseSnapshot extends ArtifactUseRequest {
+export interface ArtifactUseBindingSnapshot extends ArtifactUseBindingRequest {
   readonly subjectId: string;
   readonly dependencyClosure: ReadonlyArray<string>;
   readonly retentionUntil: string;
   readonly state: "preparing" | "available" | "rejected" | "released" | "unresolved";
 }
 
-export type ArtifactUseOutcome =
-  | { readonly kind: "available"; readonly use: Readonly<ArtifactUseSnapshot> }
-  | { readonly kind: "released"; readonly use: Readonly<ArtifactUseSnapshot> }
-  | { readonly kind: "continuable"; readonly use: Readonly<ArtifactUseSnapshot> }
+export type ArtifactUseBindingOutcome =
+  | { readonly kind: "available"; readonly binding: Readonly<ArtifactUseBindingSnapshot> }
+  | { readonly kind: "released"; readonly binding: Readonly<ArtifactUseBindingSnapshot> }
+  | { readonly kind: "continuable"; readonly binding: Readonly<ArtifactUseBindingSnapshot> }
   | { readonly kind: "failed"; readonly terminal: boolean; readonly reason: ArtifactFailureReason };
 
 export interface ArtifactRetentionPinRequest {
@@ -791,6 +791,7 @@ export interface ArtifactGarbageCollectionRequest {
   readonly scanBudget: number;
   readonly deletionBudget: number;
   readonly recoveryBudget: number;
+  readonly afterArtifactId?: string;
 }
 
 export type ArtifactGarbageCollectionOutcome =
@@ -800,6 +801,7 @@ export type ArtifactGarbageCollectionOutcome =
       readonly reason: "gc_unprocessed";
       readonly deletedArtifactIds: ReadonlyArray<string>;
       readonly remainingArtifactIds: ReadonlyArray<string>;
+      readonly nextCursor: string;
     }
   | { readonly kind: "failed"; readonly terminal: boolean; readonly reason: ArtifactFailureReason };
 
@@ -808,7 +810,7 @@ export interface ArtifactPrincipal {
   canRegister(request: Readonly<ArtifactRegistrationRequest>): Promise<ArtifactAuthorityDecision>;
   canReference(artifactId: string): Promise<ArtifactAuthorityDecision>;
   canRetrieve(artifactId: string): Promise<ArtifactAuthorityDecision>;
-  canBindUse(request: Readonly<ArtifactUseRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
+  canBindArtifactUse(request: Readonly<ArtifactUseBindingRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
   canPinArtifact(request: Readonly<ArtifactRetentionPinRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
   canGarbageCollect(request: Readonly<ArtifactGarbageCollectionRequest>): Promise<ArtifactAuthorityDecision>;
 }
@@ -858,10 +860,10 @@ export interface ArtifactStore {
     registrationId: string,
   ): Promise<ArtifactRegistrationOutcome>;
   retrieve(credential: string, artifactId: string): Promise<ArtifactRetrievalOutcome>;
-  prepareUse(credential: string, request: Readonly<ArtifactUseRequest>): Promise<ArtifactUseOutcome>;
-  useStatus(credential: string, useId: string): Promise<ArtifactUseOutcome>;
-  retrieveForUse(credential: string, useId: string): Promise<ArtifactRetrievalOutcome>;
-  releaseUse(credential: string, useId: string): Promise<ArtifactUseOutcome>;
+  prepareUseBinding(credential: string, request: Readonly<ArtifactUseBindingRequest>): Promise<ArtifactUseBindingOutcome>;
+  useBindingStatus(credential: string, bindingId: string): Promise<ArtifactUseBindingOutcome>;
+  retrieveForUseBinding(credential: string, bindingId: string): Promise<ArtifactRetrievalOutcome>;
+  releaseUseBinding(credential: string, bindingId: string): Promise<ArtifactUseBindingOutcome>;
   createRetentionPin(
     credential: string,
     request: Readonly<ArtifactRetentionPinRequest>,
