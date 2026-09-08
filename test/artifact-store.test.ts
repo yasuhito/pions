@@ -32,6 +32,12 @@ const policy = {
   maxDependencyCount: 8,
   maxRegistrationWindowMs: 60_000,
   maxRecoveryAttempts: 3,
+  unusedArtifactRetentionMs: 1_000,
+  reviewInputRetentionMs: 2_000,
+  acceptedArtifactRetentionMs: 3_000,
+  maxGarbageCollectionScan: 16,
+  maxGarbageCollectionDeletes: 8,
+  maxGarbageCollectionRecoveryAttempts: 3,
 } as const;
 
 class Principal implements ArtifactPrincipal {
@@ -47,6 +53,15 @@ class Principal implements ArtifactPrincipal {
   }
   canRetrieve(artifactId: string): Promise<ArtifactAuthorityDecision> {
     return Promise.resolve(this.deniedRetrievals.has(artifactId) ? "denied" : this.decision);
+  }
+  canBindUse(): Promise<ArtifactAuthorityDecision> {
+    return Promise.resolve(this.decision);
+  }
+  canPinArtifact(): Promise<ArtifactAuthorityDecision> {
+    return Promise.resolve(this.decision);
+  }
+  canGarbageCollect(): Promise<ArtifactAuthorityDecision> {
+    return Promise.resolve(this.decision);
   }
 }
 
@@ -109,6 +124,379 @@ async function register(store: ArtifactStore, registrationId: string, body: stri
   await store.startRegistration("credential", spec);
   return store.transfer("credential", registrationId, Buffer.from(body));
 }
+
+test("a prepared use becomes available only after its bytes and current authority are verified", async (context) => {
+  const { store: artifacts } = await store(context);
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+
+  const outcome = await artifacts.prepareUse("credential", {
+    useId: "use-1",
+    operationId: "operation-1",
+    artifactId: registered.artifact.artifactId,
+    purpose: "review_subject",
+    decisionId: "decision-1",
+    authorityBasis: "review-policy-v1",
+  });
+
+  assert.equal(outcome.kind, "available");
+});
+
+test("a preparing use cannot retrieve bytes", async (context) => {
+  let interrupted = false;
+  const { store: artifacts } = await store(context, {
+    fault: (point) => {
+      if (!interrupted && point === "use_parent_pin_persisted") {
+        interrupted = true;
+        throw new Error("simulated interruption");
+      }
+    },
+  });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  await artifacts.prepareUse("credential", {
+    useId: "use-1",
+    operationId: "operation-1",
+    artifactId: registered.artifact.artifactId,
+    purpose: "review_subject",
+    decisionId: "decision-1",
+    authorityBasis: "review-policy-v1",
+  }).catch(() => undefined);
+
+  const outcome = await artifacts.retrieveForUse("credential", "use-1");
+
+  assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "conflict");
+});
+
+test("use authority is rechecked immediately before availability", async (context) => {
+  class RevokingPrincipal extends Principal {
+    private checks = 0;
+    override canBindUse(): Promise<ArtifactAuthorityDecision> {
+      this.checks += 1;
+      return Promise.resolve(this.checks > 1 ? "revoked" : "allowed");
+    }
+  }
+  const { store: artifacts } = await store(context, { principal: new RevokingPrincipal() });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+
+  const outcome = await artifacts.prepareUse("credential", {
+    useId: "use-1",
+    operationId: "operation-1",
+    artifactId: registered.artifact.artifactId,
+    purpose: "review_subject",
+    decisionId: "decision-1",
+    authorityBasis: "review-policy-v1",
+  });
+
+  assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "authority_revoked");
+});
+
+test("a use pin protects its parent and dependency from garbage collection", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  const { store: artifacts } = await store(context, { now: () => now });
+  const dependency = await register(artifacts, "dependency-registration", "dependency");
+  if (dependency.kind !== "registered") throw new Error("dependency registration failed");
+  const parentSpec = request("parent-registration", "parent", [dependency.artifact.artifactId]);
+  await artifacts.startRegistration("credential", parentSpec);
+  const parent = await artifacts.transfer("credential", parentSpec.registrationId, Buffer.from("parent"));
+  if (parent.kind !== "registered") throw new Error("parent registration failed");
+  await artifacts.prepareUse("credential", {
+    useId: "use-1",
+    operationId: "operation-1",
+    artifactId: parent.artifact.artifactId,
+    purpose: "review_subject",
+    decisionId: "decision-1",
+    authorityBasis: "review-policy-v1",
+  });
+  now = new Date("2026-09-07T10:01:00.000Z");
+
+  const outcome = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  assert.deepEqual(outcome.kind === "completed" ? outcome.deletedArtifactIds : undefined, []);
+});
+
+test("releasing one use does not release another use's pin", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  const { store: artifacts } = await store(context, { now: () => now });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  for (const useId of ["use-1", "use-2"]) {
+    await artifacts.prepareUse("credential", {
+      useId,
+      operationId: `operation-${useId}`,
+      artifactId: registered.artifact.artifactId,
+      purpose: "review_subject",
+      decisionId: `decision-${useId}`,
+      authorityBasis: "review-policy-v1",
+    });
+  }
+  await artifacts.releaseUse("credential", "use-1");
+  now = new Date("2026-09-07T10:01:00.000Z");
+
+  const outcome = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  assert.deepEqual(outcome.kind === "completed" ? outcome.deletedArtifactIds : undefined, []);
+});
+
+test("garbage collection deletes bytes only after grace, retention, and pins end", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  const { store: artifacts } = await store(context, { now: () => now });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  await artifacts.prepareUse("credential", {
+    useId: "use-1",
+    operationId: "operation-1",
+    artifactId: registered.artifact.artifactId,
+    purpose: "review_subject",
+    decisionId: "decision-1",
+    authorityBasis: "review-policy-v1",
+  });
+  await artifacts.releaseUse("credential", "use-1");
+  now = new Date("2026-09-07T10:01:00.000Z");
+
+  const outcome = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  assert.deepEqual(outcome.kind === "completed" ? outcome.deletedArtifactIds : undefined, [registered.artifact.artifactId]);
+});
+
+test("policy deletion remains distinct from missing bytes", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  const { store: artifacts } = await store(context, { now: () => now });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  now = new Date("2026-09-07T10:01:00.000Z");
+  await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  const outcome = await artifacts.retrieve("credential", registered.artifact.artifactId);
+
+  assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "artifact_deleted");
+});
+
+test("garbage collection reports unprocessed artifacts separately from processing failure", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  const { store: artifacts } = await store(context, { now: () => now });
+  await register(artifacts, "registration-1", "first");
+  await register(artifacts, "registration-2", "second");
+  now = new Date("2026-09-07T10:01:00.000Z");
+
+  const outcome = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 1,
+    deletionBudget: 1,
+    recoveryBudget: 2,
+  });
+
+  assert.equal(outcome.kind === "continuable" ? outcome.reason : undefined, "gc_unprocessed");
+});
+
+test("a use record protects bytes before its pin records are complete", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  let interrupted = false;
+  const { store: artifacts } = await store(context, {
+    now: () => now,
+    fault: (point) => {
+      if (!interrupted && point === "use_record_persisted") {
+        interrupted = true;
+        throw new Error("simulated interruption");
+      }
+    },
+  });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  await artifacts.prepareUse("credential", {
+    useId: "use-1",
+    operationId: "operation-1",
+    artifactId: registered.artifact.artifactId,
+    purpose: "review_subject",
+    decisionId: "decision-1",
+    authorityBasis: "review-policy-v1",
+  }).catch(() => undefined);
+  now = new Date("2026-09-07T10:01:00.000Z");
+
+  const outcome = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  assert.deepEqual(outcome.kind === "completed" ? outcome.deletedArtifactIds : undefined, []);
+});
+
+const recoverableDeletionFaults: ReadonlyArray<ArtifactStoreFaultPoint> = [
+  "gc_eligibility_checked",
+  "deletion_pending_persisted",
+  "artifact_bytes_deleted",
+  "deletion_committed",
+];
+
+for (const faultPoint of recoverableDeletionFaults) {
+  test(`garbage collection recovers after interruption at ${faultPoint}`, async (context) => {
+    const rootDirectory = await root(context);
+    let now = new Date("2026-09-07T10:00:00.000Z");
+    let interrupted = false;
+    const first = await store(context, {
+      rootDirectory,
+      now: () => now,
+      fault: (point) => {
+        if (!interrupted && point === faultPoint) {
+          interrupted = true;
+          throw new Error("simulated interruption");
+        }
+      },
+    });
+    const registered = await register(first.store, "registration-1", "hello");
+    if (registered.kind !== "registered") throw new Error("registration failed");
+    now = new Date("2026-09-07T10:01:00.000Z");
+    await first.store.collectGarbage("credential", {
+      collectionId: "gc-1",
+      scanBudget: 16,
+      deletionBudget: 8,
+      recoveryBudget: 2,
+    }).catch(() => undefined);
+    await first.store.close();
+    const reopened = await store(context, { rootDirectory, now: () => now });
+    await reopened.store.collectGarbage("credential", {
+      collectionId: "gc-2",
+      scanBudget: 16,
+      deletionBudget: 8,
+      recoveryBudget: 2,
+    });
+
+    const outcome = await reopened.store.retrieve("credential", registered.artifact.artifactId);
+
+    assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "artifact_deleted");
+  });
+}
+
+test("missing bytes without deletion pending are reported as corruption", async (context) => {
+  const { store: artifacts, rootDirectory } = await store(context);
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  await rm(join(rootDirectory, "artifacts", `${registered.artifact.artifactId}.bin`));
+
+  const outcome = await artifacts.retrieve("credential", registered.artifact.artifactId);
+
+  assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "stored_artifact_corrupt");
+});
+
+test("a deletion pending artifact remains pending when its storage cannot be inspected", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  let blockDeletion = false;
+  const { store: artifacts, rootDirectory } = await store(context, {
+    now: () => now,
+    fault: (point) => {
+      if (blockDeletion && point === "deletion_pending_persisted") {
+        blockDeletion = false;
+        throw new Error("simulated interruption");
+      }
+    },
+  });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  now = new Date("2026-09-07T10:01:00.000Z");
+  blockDeletion = true;
+  await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  }).catch(() => undefined);
+  const dataPath = join(rootDirectory, "artifacts", `${registered.artifact.artifactId}.bin`);
+  await rm(dataPath);
+  await mkdir(dataPath);
+
+  const outcome = await artifacts.retrieve("credential", registered.artifact.artifactId);
+
+  assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "artifact_deletion_pending");
+});
+
+test("pin creation wins against a concurrent garbage collection decision", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  let announce!: () => void;
+  let release!: () => void;
+  const announced = new Promise<void>((resolve) => { announce = resolve; });
+  const paused = new Promise<void>((resolve) => { release = resolve; });
+  const { store: artifacts } = await store(context, {
+    now: () => now,
+    fault: async (point) => {
+      if (point === "use_record_persisted") {
+        announce();
+        await paused;
+      }
+    },
+  });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  now = new Date("2026-09-07T10:01:00.000Z");
+  const binding = artifacts.prepareUse("credential", {
+    useId: "use-1",
+    operationId: "operation-1",
+    artifactId: registered.artifact.artifactId,
+    purpose: "review_subject",
+    decisionId: "decision-1",
+    authorityBasis: "review-policy-v1",
+  });
+  await announced;
+  const collection = artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+  release();
+  await binding;
+
+  const outcome = await collection;
+
+  assert.deepEqual(outcome.kind === "completed" ? outcome.deletedArtifactIds : undefined, []);
+});
+
+test("an explicit indefinite pin protects an artifact until explicitly released", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  const { store: artifacts } = await store(context, { now: () => now });
+  const registered = await register(artifacts, "registration-1", "hello");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  await artifacts.createRetentionPin("credential", {
+    pinId: "pin-1",
+    artifactId: registered.artifact.artifactId,
+    ownerId: "coordinator-1",
+    purpose: "legal-hold",
+    retention: "indefinite",
+  });
+  now = new Date("2026-09-07T10:01:00.000Z");
+  await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  const outcome = await artifacts.retrieve("credential", registered.artifact.artifactId);
+
+  assert.equal(outcome.kind, "retrieved");
+});
 
 test("a fixed byte sequence is registered under an identifier independent from its digest", async (context) => {
   const { store: artifacts } = await store(context);

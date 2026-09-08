@@ -17,13 +17,21 @@ import {
   ArtifactStoreOpenError,
   type ArtifactAuthorityDecision,
   type ArtifactFailureReason,
+  type ArtifactGarbageCollectionOutcome,
+  type ArtifactGarbageCollectionRequest,
   type ArtifactMetadata,
   type ArtifactPrincipal,
   type ArtifactRegistrationOutcome,
   type ArtifactRegistrationRequest,
   type ArtifactRegistrationSnapshot,
+  type ArtifactRetentionPinOutcome,
+  type ArtifactRetentionPinRequest,
+  type ArtifactRetentionPinSnapshot,
   type ArtifactRetrievalOutcome,
   type ArtifactStore,
+  type ArtifactUseOutcome,
+  type ArtifactUseRequest,
+  type ArtifactUseSnapshot,
   type OpenArtifactStoreOptions,
 } from "../public.js";
 
@@ -36,7 +44,18 @@ export type ArtifactStoreFaultPoint =
   | "recovery_attempt_persisted"
   | "artifact_published"
   | "registration_committed"
-  | "success_response";
+  | "success_response"
+  | "use_record_persisted"
+  | "use_retention_persisted"
+  | "use_parent_pin_persisted"
+  | "use_dependency_pin_persisted"
+  | "use_available_persisted"
+  | "use_rejection_persisted"
+  | "before_use_pins_released"
+  | "gc_eligibility_checked"
+  | "deletion_pending_persisted"
+  | "artifact_bytes_deleted"
+  | "deletion_committed";
 
 interface InternalOpenArtifactStoreOptions extends OpenArtifactStoreOptions {
   readonly faultInjector?: (point: ArtifactStoreFaultPoint) => void | Promise<void>;
@@ -56,9 +75,13 @@ class ArtifactStoreInjectedFault extends Error {
   override readonly name = "ArtifactStoreInjectedFault";
 }
 
-const ROOT_SCHEMA = "pions-artifacts.v1";
-const RECORD_SCHEMA = "pions-artifact-registration.v1";
-const ARTIFACT_SCHEMA = "pions-artifact.v1";
+const ROOT_SCHEMA = "pions-artifacts.v2";
+const RECORD_SCHEMA = "pions-artifact-registration.v2";
+const ARTIFACT_SCHEMA = "pions-artifact.v2";
+const USE_SCHEMA = "pions-artifact-use.v1";
+const PIN_SCHEMA = "pions-artifact-pin.v1";
+const RETENTION_SCHEMA = "pions-artifact-retention.v1";
+const EXPLICIT_PIN_SCHEMA = "pions-artifact-explicit-pin.v1";
 const ROOT_FILE = "root.json";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
 
@@ -84,6 +107,41 @@ interface ArtifactRecord extends ArtifactMetadata {
   readonly dataFile: string;
   readonly lifecycle: "available" | "deletion_pending" | "deleted";
   readonly storageStatus: "verified" | "corrupt" | "unknown";
+  readonly registeredAt: string;
+  readonly unusedRetentionUntil: string;
+  readonly deletionRecoveryAttempts: number;
+  readonly deletionRecoveryBudget?: number;
+}
+
+interface UseRecord extends ArtifactUseSnapshot {
+  readonly schema: typeof USE_SCHEMA;
+  readonly requestDigest: `sha256:${string}`;
+  readonly effectiveReviewRetentionMs: number;
+  readonly failureReason?: ArtifactFailureReason;
+}
+
+interface PinRecord {
+  readonly schema: typeof PIN_SCHEMA;
+  readonly pinId: string;
+  readonly ownerType: "artifact_use" | "principal";
+  readonly ownerId: string;
+  readonly purpose: string;
+  readonly artifactId: string;
+  readonly state: "held" | "released";
+}
+
+interface ExplicitPinRecord extends ArtifactRetentionPinSnapshot {
+  readonly schema: typeof EXPLICIT_PIN_SCHEMA;
+  readonly requestDigest: `sha256:${string}`;
+}
+
+interface RetentionRecord {
+  readonly schema: typeof RETENTION_SCHEMA;
+  readonly retentionId: string;
+  readonly ownerType: "registration_grace" | "artifact_use";
+  readonly ownerId: string;
+  readonly artifactId: string;
+  readonly retainUntil: string;
 }
 
 function hasCode(error: unknown, code: string): boolean {
@@ -108,6 +166,10 @@ function temporaryPrefix(registrationId: string): string {
   return `transfer-${sha256(registrationId).slice("sha256:".length)}-`;
 }
 
+function protectionId(ownerType: string, ownerId: string, artifactId: string): string {
+  return sha256(`${ownerType}\0${ownerId}\0${artifactId}`).slice("sha256:".length);
+}
+
 function requestDigest(request: Readonly<ArtifactRegistrationRequest>): `sha256:${string}` {
   return sha256(JSON.stringify({
     registrationId: request.registrationId,
@@ -123,6 +185,37 @@ function requestDigest(request: Readonly<ArtifactRegistrationRequest>): `sha256:
 
 function failed(reason: ArtifactFailureReason, terminal = true): ArtifactRegistrationOutcome {
   return { kind: "failed", terminal, reason };
+}
+
+function useFailed(reason: ArtifactFailureReason, terminal = true): ArtifactUseOutcome {
+  return { kind: "failed", terminal, reason };
+}
+
+function gcFailed(reason: ArtifactFailureReason, terminal = true): ArtifactGarbageCollectionOutcome {
+  return { kind: "failed", terminal, reason };
+}
+
+function useRequestDigest(request: Readonly<ArtifactUseRequest>): `sha256:${string}` {
+  return sha256(JSON.stringify(request));
+}
+
+function pinRequestDigest(request: Readonly<ArtifactRetentionPinRequest>): `sha256:${string}` {
+  return sha256(JSON.stringify(request));
+}
+
+function pinOutcome(record: ExplicitPinRecord): ArtifactRetentionPinOutcome {
+  return { kind: record.state, pin: record };
+}
+
+function pinFailed(reason: ArtifactFailureReason, terminal = true): ArtifactRetentionPinOutcome {
+  return { kind: "failed", terminal, reason };
+}
+
+function useOutcome(record: UseRecord): ArtifactUseOutcome {
+  if (record.state === "available") return { kind: "available", use: record };
+  if (record.state === "released") return { kind: "released", use: record };
+  if (record.state === "preparing") return { kind: "continuable", use: record };
+  return useFailed(record.failureReason ?? "storage_inspection_unavailable", record.state === "rejected");
 }
 
 function retrievalFailed(reason: ArtifactFailureReason, terminal = true): ArtifactRetrievalOutcome {
@@ -196,6 +289,12 @@ function policyIsValid(value: unknown): value is OpenArtifactStoreOptions["polic
     policy.maxDependencyCount,
     policy.maxRegistrationWindowMs,
     policy.maxRecoveryAttempts,
+    policy.unusedArtifactRetentionMs,
+    policy.reviewInputRetentionMs,
+    policy.acceptedArtifactRetentionMs,
+    policy.maxGarbageCollectionScan,
+    policy.maxGarbageCollectionDeletes,
+    policy.maxGarbageCollectionRecoveryAttempts,
   ].every((limit) => Number.isSafeInteger(limit) && (limit ?? 0) > 0);
 }
 
@@ -258,6 +357,10 @@ function validRequestShape(request: Readonly<ArtifactRegistrationRequest>): bool
 class FileArtifactStore implements ArtifactStore {
   private readonly registrationDirectory: string;
   private readonly artifactDirectory: string;
+  private readonly useDirectory: string;
+  private readonly pinDirectory: string;
+  private readonly retentionDirectory: string;
+  private readonly explicitPinDirectory: string;
   private readonly formats = new Map<string, Readonly<ArtifactFormat>>();
   private readonly transferTokens = new Map<string, symbol>();
   private readonly transferStops = new Map<string, Promise<void>>();
@@ -276,6 +379,10 @@ class FileArtifactStore implements ArtifactStore {
   ) {
     this.registrationDirectory = join(options.rootDirectory, "registrations");
     this.artifactDirectory = join(options.rootDirectory, "artifacts");
+    this.useDirectory = join(options.rootDirectory, "uses");
+    this.pinDirectory = join(options.rootDirectory, "pins");
+    this.retentionDirectory = join(options.rootDirectory, "retentions");
+    this.explicitPinDirectory = join(options.rootDirectory, "explicit-pins");
     for (const format of configuredFormats()) {
       this.formats.set(`${format.formatId}\0${format.normalizationId}`, format);
     }
@@ -323,6 +430,80 @@ class FileArtifactStore implements ArtifactStore {
 
   private artifactPath(artifactId: string): string {
     return join(this.artifactDirectory, `${artifactId}.json`);
+  }
+
+  private usePath(useId: string): string {
+    return join(this.useDirectory, `${useId}.json`);
+  }
+
+  private pinPath(pinId: string): string {
+    return join(this.pinDirectory, `${pinId}.json`);
+  }
+
+  private retentionPath(retentionId: string): string {
+    return join(this.retentionDirectory, `${retentionId}.json`);
+  }
+
+  private explicitPinPath(pinId: string): string {
+    return join(this.explicitPinDirectory, `${pinId}.json`);
+  }
+
+  private async readExplicitPin(pinId: string): Promise<ExplicitPinRecord | undefined> {
+    if (!IDENTIFIER.test(pinId)) return undefined;
+    try {
+      const value = await readJson(this.explicitPinPath(pinId)) as Partial<ExplicitPinRecord>;
+      const request: ArtifactRetentionPinRequest = {
+        pinId: value.pinId ?? "",
+        artifactId: value.artifactId ?? "",
+        ownerId: value.ownerId ?? "",
+        purpose: value.purpose ?? "",
+        retention: value.retention as "indefinite",
+      };
+      if (value.schema !== EXPLICIT_PIN_SCHEMA || value.pinId !== pinId ||
+        !IDENTIFIER.test(request.artifactId) || !IDENTIFIER.test(request.ownerId) ||
+        typeof request.purpose !== "string" || request.purpose.length === 0 || request.retention !== "indefinite" ||
+        value.requestDigest !== pinRequestDigest(request) || typeof value.subjectId !== "string" ||
+        !Array.isArray(value.dependencyClosure) || !value.dependencyClosure.every((id) => typeof id === "string" && IDENTIFIER.test(id)) ||
+        (value.state !== "held" && value.state !== "released")) throw new Error("Invalid explicit Artifact pin");
+      return value as ExplicitPinRecord;
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) return undefined;
+      throw error;
+    }
+  }
+
+  private async readUse(useId: string): Promise<UseRecord | undefined> {
+    if (!IDENTIFIER.test(useId)) return undefined;
+    try {
+      const value = await readJson(this.usePath(useId)) as Partial<UseRecord>;
+      const states = ["preparing", "available", "rejected", "released", "unresolved"];
+      const request: ArtifactUseRequest = {
+        useId: value.useId ?? "",
+        operationId: value.operationId ?? "",
+        artifactId: value.artifactId ?? "",
+        purpose: value.purpose as "review_subject",
+        decisionId: value.decisionId ?? "",
+        authorityBasis: value.authorityBasis ?? "",
+      };
+      if (value.schema !== USE_SCHEMA || !IDENTIFIER.test(useId) || value.useId !== useId ||
+        !IDENTIFIER.test(request.operationId) || !IDENTIFIER.test(request.artifactId) ||
+        request.purpose !== "review_subject" || !IDENTIFIER.test(request.decisionId) ||
+        typeof request.authorityBasis !== "string" || request.authorityBasis.length === 0 ||
+        value.requestDigest !== useRequestDigest(request) || typeof value.subjectId !== "string" ||
+        !Array.isArray(value.dependencyClosure) || !value.dependencyClosure.every((id) => typeof id === "string" && IDENTIFIER.test(id)) ||
+        !Number.isFinite(Date.parse(value.retentionUntil ?? "")) || !states.includes(value.state ?? "") ||
+        !Number.isSafeInteger(value.effectiveReviewRetentionMs) || (value.effectiveReviewRetentionMs ?? 0) <= 0) {
+        throw new Error("Invalid Artifact use record");
+      }
+      return value as UseRecord;
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) return undefined;
+      throw error;
+    }
+  }
+
+  private writeUse(record: UseRecord): Promise<void> {
+    return this.serializeIo(() => writeJson(this.usePath(record.useId), record));
   }
 
   private async readRecord(registrationId: string): Promise<RegistrationRecord | undefined> {
@@ -432,7 +613,12 @@ class FileArtifactStore implements ArtifactStore {
         typeof value.formatId !== "string" || typeof value.normalizationId !== "string" ||
         !this.formats.has(`${value.formatId}\0${value.normalizationId}`) ||
         !Array.isArray(value.dependencies) ||
-        !value.dependencies.every((dependency) => typeof dependency === "string" && IDENTIFIER.test(dependency))) {
+        !value.dependencies.every((dependency) => typeof dependency === "string" && IDENTIFIER.test(dependency)) ||
+        !Number.isFinite(Date.parse(value.registeredAt ?? "")) ||
+        !Number.isFinite(Date.parse(value.unusedRetentionUntil ?? "")) ||
+        !Number.isSafeInteger(value.deletionRecoveryAttempts) || (value.deletionRecoveryAttempts ?? -1) < 0 ||
+        (value.deletionRecoveryBudget !== undefined &&
+          (!Number.isSafeInteger(value.deletionRecoveryBudget) || value.deletionRecoveryBudget <= 0))) {
         throw new Error("Invalid Artifact record");
       }
       return value as ArtifactRecord;
@@ -462,7 +648,8 @@ class FileArtifactStore implements ArtifactStore {
       }
       const record = await this.readArtifactRecord(artifactId);
       if (record === undefined) return "dependency_not_found";
-      if (record.lifecycle !== "available") return "artifact_deleted";
+      if (record.lifecycle === "deletion_pending") return "artifact_deletion_pending";
+      if (record.lifecycle === "deleted") return "artifact_deleted";
       visiting.add(artifactId);
       for (const dependency of record.dependencies) {
         const reason = await walk(dependency, depth + 1);
@@ -769,7 +956,7 @@ class FileArtifactStore implements ArtifactStore {
     if (bytes.byteLength !== record.request.expectedByteCount || sha256(bytes) !== record.request.expectedDigest) {
       throw new Error("Prepared Artifact bytes do not match their fixed integrity metadata");
     }
-    const artifact: ArtifactRecord = {
+    let artifact: ArtifactRecord = {
       schema: ARTIFACT_SCHEMA,
       artifactId: record.artifactId,
       byteCount: record.request.expectedByteCount,
@@ -780,11 +967,20 @@ class FileArtifactStore implements ArtifactStore {
       dataFile,
       lifecycle: "available",
       storageStatus: "verified",
+      registeredAt: this.now().toISOString(),
+      unusedRetentionUntil: new Date(this.now().getTime() + record.effectivePolicy.unusedArtifactRetentionMs).toISOString(),
+      deletionRecoveryAttempts: 0,
     };
     const artifactPath = this.artifactPath(record.artifactId);
     if (await exists(artifactPath)) {
       const existing = await this.readArtifactRecord(record.artifactId);
-      if (JSON.stringify(existing) !== JSON.stringify(artifact)) throw new Error("Artifact identifier conflict");
+      if (existing === undefined || existing.artifactId !== artifact.artifactId || existing.digest !== artifact.digest ||
+        existing.byteCount !== artifact.byteCount || existing.formatId !== artifact.formatId ||
+        existing.normalizationId !== artifact.normalizationId ||
+        JSON.stringify(existing.dependencies) !== JSON.stringify(artifact.dependencies)) {
+        throw new Error("Artifact identifier conflict");
+      }
+      artifact = existing;
     } else {
       await writeJson(artifactPath, artifact);
     }
@@ -854,7 +1050,8 @@ class FileArtifactStore implements ArtifactStore {
     let record: ArtifactRecord | undefined;
     try { record = await this.readArtifactRecord(artifactId); } catch { return retrievalFailed("storage_inspection_unavailable"); }
     if (record === undefined) return retrievalFailed("unauthorized");
-    if (record.lifecycle !== "available") return retrievalFailed("artifact_deleted");
+    if (record.lifecycle === "deletion_pending") return retrievalFailed("artifact_deletion_pending");
+    if (record.lifecycle === "deleted") return retrievalFailed("artifact_deleted");
     const closure = await this.dependencyClosure(
       record.dependencies,
       this.options.policy,
@@ -875,7 +1072,447 @@ class FileArtifactStore implements ArtifactStore {
     return { kind: "retrieved", artifact: record, bytes, integrity: "verified" };
   }
 
+  async prepareUse(
+    credential: string,
+    request: Readonly<ArtifactUseRequest>,
+  ): Promise<ArtifactUseOutcome> {
+    try {
+      return await this.serialize(() => this.prepareUseUnserialized(credential, request));
+    } catch (error) {
+      if (error instanceof ArtifactStoreInjectedFault) throw error;
+      return useFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  private validUseRequest(request: Readonly<ArtifactUseRequest>): boolean {
+    return IDENTIFIER.test(request.useId) && IDENTIFIER.test(request.operationId) &&
+      IDENTIFIER.test(request.artifactId) && request.purpose === "review_subject" &&
+      IDENTIFIER.test(request.decisionId) && typeof request.authorityBasis === "string" && request.authorityBasis.length > 0;
+  }
+
+  private async useAuthority(
+    principal: Readonly<ArtifactPrincipal>,
+    request: Readonly<ArtifactUseRequest>,
+    artifactIds: ReadonlyArray<string>,
+  ): Promise<ArtifactFailureReason | undefined> {
+    for (const artifactId of artifactIds) {
+      try {
+        const reason = authorityFailure(await principal.canBindUse(request, artifactId));
+        if (reason !== undefined) return reason;
+      } catch {
+        return "authority_unavailable";
+      }
+    }
+    return undefined;
+  }
+
+  private async prepareUseUnserialized(
+    credential: string,
+    request: Readonly<ArtifactUseRequest>,
+  ): Promise<ArtifactUseOutcome> {
+    if (this.closed || !this.validUseRequest(request)) return useFailed("limit_exceeded");
+    const principal = await this.authenticate(credential);
+    if (principal === undefined) return useFailed("unauthorized");
+    const existing = await this.readUse(request.useId);
+    if (existing !== undefined) {
+      if (existing.subjectId !== principal.subjectId) return useFailed("unauthorized");
+      if (existing.requestDigest !== useRequestDigest(request)) return useFailed("request_mismatch");
+      if (existing.state === "preparing") return this.finishPreparingUse(existing, principal);
+      return useOutcome(existing);
+    }
+    const parentAuthority = await this.useAuthority(principal, request, [request.artifactId]);
+    if (parentAuthority !== undefined) return useFailed(parentAuthority, parentAuthority !== "authority_unavailable");
+    const parent = await this.readArtifactRecord(request.artifactId);
+    if (parent === undefined) return useFailed("unauthorized");
+    if (parent.lifecycle === "deletion_pending") return useFailed("artifact_deletion_pending");
+    if (parent.lifecycle === "deleted") return useFailed("artifact_deleted");
+    const closure = await this.dependencyClosure(
+      parent.dependencies,
+      this.options.policy,
+      (artifactId) => principal.canBindUse(request, artifactId),
+    );
+    if (closure.reason !== undefined) return useFailed(closure.reason, closure.reason !== "authority_unavailable");
+    const artifactIds = [parent.artifactId, ...closure.records.map(({ artifactId }) => artifactId)];
+    const retentionUntil = new Date(this.now().getTime() + this.options.policy.reviewInputRetentionMs).toISOString();
+    const record: UseRecord = {
+      schema: USE_SCHEMA,
+      ...request,
+      requestDigest: useRequestDigest(request),
+      subjectId: principal.subjectId,
+      dependencyClosure: closure.records.map(({ artifactId }) => artifactId),
+      retentionUntil,
+      effectiveReviewRetentionMs: this.options.policy.reviewInputRetentionMs,
+      state: "preparing",
+    };
+    await this.writeUse(record);
+    await this.fault("use_record_persisted");
+    for (const artifactId of artifactIds) {
+      const retention: RetentionRecord = {
+        schema: RETENTION_SCHEMA,
+        retentionId: protectionId("use-retention", request.useId, artifactId),
+        ownerType: "artifact_use",
+        ownerId: request.useId,
+        artifactId,
+        retainUntil: retentionUntil,
+      };
+      await this.serializeIo(() => writeJson(this.retentionPath(retention.retentionId), retention));
+    }
+    await this.fault("use_retention_persisted");
+    for (let index = 0; index < artifactIds.length; index += 1) {
+      const artifactId = artifactIds[index]!;
+      const pin: PinRecord = {
+        schema: PIN_SCHEMA,
+        pinId: protectionId("use-pin", request.useId, artifactId),
+        ownerType: "artifact_use",
+        ownerId: request.useId,
+        purpose: request.purpose,
+        artifactId,
+        state: "held",
+      };
+      await this.serializeIo(() => writeJson(this.pinPath(pin.pinId), pin));
+      await this.fault(index === 0 ? "use_parent_pin_persisted" : "use_dependency_pin_persisted");
+    }
+    return this.finishPreparingUse(record, principal);
+  }
+
+  private async finishPreparingUse(
+    record: UseRecord,
+    principal: Readonly<ArtifactPrincipal>,
+  ): Promise<ArtifactUseOutcome> {
+    const request: ArtifactUseRequest = {
+      useId: record.useId,
+      operationId: record.operationId,
+      artifactId: record.artifactId,
+      purpose: record.purpose,
+      decisionId: record.decisionId,
+      authorityBasis: record.authorityBasis,
+    };
+    const artifactIds = [record.artifactId, ...record.dependencyClosure];
+    for (const artifactId of artifactIds) {
+      const artifact = await this.readArtifactRecord(artifactId);
+      if (artifact === undefined || artifact.lifecycle !== "available") {
+        return this.rejectUse(record, artifact?.lifecycle === "deletion_pending" ? "artifact_deletion_pending" : "artifact_deleted");
+      }
+      const bytes = await this.verifiedBytes(artifact);
+      if (typeof bytes === "string") {
+        if (bytes === "storage_inspection_unavailable") return useFailed(bytes, false);
+        return this.rejectUse(record, bytes);
+      }
+    }
+    const authority = await this.useAuthority(principal, request, artifactIds);
+    if (authority !== undefined) {
+      if (authority === "authority_unavailable") return useFailed(authority, false);
+      return this.rejectUse(record, authority);
+    }
+    const available: UseRecord = { ...record, state: "available" };
+    await this.writeUse(available);
+    await this.fault("use_available_persisted");
+    return useOutcome(available);
+  }
+
+  private async rejectUse(record: UseRecord, reason: ArtifactFailureReason): Promise<ArtifactUseOutcome> {
+    const rejected: UseRecord = { ...record, state: "rejected", failureReason: reason };
+    await this.writeUse(rejected);
+    await this.fault("use_rejection_persisted");
+    await this.releasePins(record.useId);
+    return useOutcome(rejected);
+  }
+
+  private async releasePins(useId: string): Promise<void> {
+    await this.fault("before_use_pins_released");
+    for (const entry of await readdir(this.pinDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const path = join(this.pinDirectory, entry);
+      const pin = await readJson(path) as Partial<PinRecord>;
+      if (pin.schema !== PIN_SCHEMA || pin.ownerId !== useId || pin.state !== "held") continue;
+      await this.serializeIo(() => writeJson(path, { ...pin, state: "released" }));
+    }
+  }
+
+  async useStatus(credential: string, useId: string): Promise<ArtifactUseOutcome> {
+    try {
+      const principal = await this.authenticate(credential);
+      if (principal === undefined) return useFailed("unauthorized");
+      const record = await this.readUse(useId);
+      if (record === undefined || record.subjectId !== principal.subjectId) return useFailed("unauthorized");
+      return useOutcome(record);
+    } catch {
+      return useFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  async retrieveForUse(credential: string, useId: string): Promise<ArtifactRetrievalOutcome> {
+    const status = await this.useStatus(credential, useId);
+    if (status.kind !== "available") {
+      return retrievalFailed(status.kind === "failed" ? status.reason : "conflict", status.kind === "failed" && status.terminal);
+    }
+    return this.retrieve(credential, status.use.artifactId);
+  }
+
+  async releaseUse(credential: string, useId: string): Promise<ArtifactUseOutcome> {
+    try {
+      return await this.serialize(async () => {
+        const principal = await this.authenticate(credential);
+        if (principal === undefined) return useFailed("unauthorized");
+        const record = await this.readUse(useId);
+        if (record === undefined || record.subjectId !== principal.subjectId) return useFailed("unauthorized");
+        if (record.state === "released") return useOutcome(record);
+        if (record.state !== "available") return useOutcome(record);
+        const released: UseRecord = { ...record, state: "released" };
+        await this.writeUse(released);
+        await this.releasePins(useId);
+        return useOutcome(released);
+      });
+    } catch (error) {
+      if (error instanceof ArtifactStoreInjectedFault) throw error;
+      return useFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  async createRetentionPin(
+    credential: string,
+    request: Readonly<ArtifactRetentionPinRequest>,
+  ): Promise<ArtifactRetentionPinOutcome> {
+    try {
+      return await this.serialize(async () => {
+        if (!IDENTIFIER.test(request.pinId) || !IDENTIFIER.test(request.artifactId) ||
+          !IDENTIFIER.test(request.ownerId) || typeof request.purpose !== "string" ||
+          request.purpose.length === 0 || request.retention !== "indefinite") return pinFailed("limit_exceeded");
+        const principal = await this.authenticate(credential);
+        if (principal === undefined) return pinFailed("unauthorized");
+        const existing = await this.readExplicitPin(request.pinId);
+        if (existing !== undefined) {
+          if (existing.subjectId !== principal.subjectId) return pinFailed("unauthorized");
+          if (existing.requestDigest !== pinRequestDigest(request)) return pinFailed("request_mismatch");
+          return pinOutcome(existing);
+        }
+        let parentAuthority: ArtifactFailureReason | undefined;
+        try { parentAuthority = authorityFailure(await principal.canPinArtifact(request, request.artifactId)); } catch { parentAuthority = "authority_unavailable"; }
+        if (parentAuthority !== undefined) return pinFailed(parentAuthority, parentAuthority !== "authority_unavailable");
+        const parent = await this.readArtifactRecord(request.artifactId);
+        if (parent === undefined) return pinFailed("unauthorized");
+        if (parent.lifecycle === "deletion_pending") return pinFailed("artifact_deletion_pending");
+        if (parent.lifecycle === "deleted") return pinFailed("artifact_deleted");
+        const closure = await this.dependencyClosure(
+          parent.dependencies,
+          this.options.policy,
+          (artifactId) => principal.canPinArtifact(request, artifactId),
+        );
+        if (closure.reason !== undefined) return pinFailed(closure.reason, closure.reason !== "authority_unavailable");
+        const artifactIds = [parent.artifactId, ...closure.records.map(({ artifactId }) => artifactId)];
+        const record: ExplicitPinRecord = {
+          schema: EXPLICIT_PIN_SCHEMA,
+          ...request,
+          requestDigest: pinRequestDigest(request),
+          subjectId: principal.subjectId,
+          dependencyClosure: closure.records.map(({ artifactId }) => artifactId),
+          state: "held",
+        };
+        await this.serializeIo(() => writeJson(this.explicitPinPath(request.pinId), record));
+        for (const artifactId of artifactIds) {
+          const pin: PinRecord = {
+            schema: PIN_SCHEMA,
+            pinId: protectionId("explicit-pin", request.pinId, artifactId),
+            ownerType: "principal",
+            ownerId: request.pinId,
+            purpose: request.purpose,
+            artifactId,
+            state: "held",
+          };
+          await this.serializeIo(() => writeJson(this.pinPath(pin.pinId), pin));
+        }
+        return pinOutcome(record);
+      });
+    } catch {
+      return pinFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  async releaseRetentionPin(credential: string, pinId: string): Promise<ArtifactRetentionPinOutcome> {
+    try {
+      return await this.serialize(async () => {
+        const principal = await this.authenticate(credential);
+        if (principal === undefined) return pinFailed("unauthorized");
+        const record = await this.readExplicitPin(pinId);
+        if (record === undefined || record.subjectId !== principal.subjectId) return pinFailed("unauthorized");
+        if (record.state === "released") return pinOutcome(record);
+        const released: ExplicitPinRecord = { ...record, state: "released" };
+        await this.serializeIo(() => writeJson(this.explicitPinPath(pinId), released));
+        for (const entry of await readdir(this.pinDirectory)) {
+          if (!entry.endsWith(".json")) continue;
+          const path = join(this.pinDirectory, entry);
+          const pin = await readJson(path) as Partial<PinRecord>;
+          if (pin.schema === PIN_SCHEMA && pin.ownerType === "principal" && pin.ownerId === pinId && pin.state === "held") {
+            await this.serializeIo(() => writeJson(path, { ...pin, state: "released" }));
+          }
+        }
+        return pinOutcome(released);
+      });
+    } catch {
+      return pinFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  async collectGarbage(
+    credential: string,
+    request: Readonly<ArtifactGarbageCollectionRequest>,
+  ): Promise<ArtifactGarbageCollectionOutcome> {
+    try {
+      return await this.serialize(() => this.collectGarbageUnserialized(credential, request));
+    } catch (error) {
+      if (error instanceof ArtifactStoreInjectedFault) throw error;
+      return gcFailed("gc_processing_unavailable", false);
+    }
+  }
+
+  private async collectGarbageUnserialized(
+    credential: string,
+    request: Readonly<ArtifactGarbageCollectionRequest>,
+  ): Promise<ArtifactGarbageCollectionOutcome> {
+    if (this.closed || !IDENTIFIER.test(request.collectionId) || !Number.isSafeInteger(request.scanBudget) ||
+      request.scanBudget <= 0 || request.scanBudget > this.options.policy.maxGarbageCollectionScan ||
+      !Number.isSafeInteger(request.deletionBudget) || request.deletionBudget <= 0 ||
+      request.deletionBudget > this.options.policy.maxGarbageCollectionDeletes ||
+      !Number.isSafeInteger(request.recoveryBudget) || request.recoveryBudget <= 0 ||
+      request.recoveryBudget > this.options.policy.maxGarbageCollectionRecoveryAttempts) {
+      return gcFailed("limit_exceeded");
+    }
+    const principal = await this.authenticate(credential);
+    if (principal === undefined) return gcFailed("unauthorized");
+    let authority: ArtifactFailureReason | undefined;
+    try { authority = authorityFailure(await principal.canGarbageCollect(request)); } catch { authority = "authority_unavailable"; }
+    if (authority !== undefined) return gcFailed(authority, authority !== "authority_unavailable");
+    const entries = (await readdir(this.artifactDirectory)).filter((entry) => entry.endsWith(".json")).sort();
+    const scanned = entries.slice(0, request.scanBudget);
+    const remainingArtifactIds = entries.slice(request.scanBudget).map((entry) => entry.slice(0, -5));
+    const deletedArtifactIds: string[] = [];
+    for (const entry of scanned) {
+      if (deletedArtifactIds.length >= request.deletionBudget) {
+        remainingArtifactIds.push(entry.slice(0, -5));
+        continue;
+      }
+      const record = await this.readArtifactRecord(entry.slice(0, -5));
+      if (record === undefined || record.lifecycle !== "available") continue;
+      if (!(await this.isDeletionEligible(record.artifactId, record.unusedRetentionUntil))) continue;
+      await this.fault("gc_eligibility_checked");
+      const pending: ArtifactRecord = {
+        ...record,
+        lifecycle: "deletion_pending",
+        deletionRecoveryBudget: request.recoveryBudget,
+      };
+      await this.serializeIo(() => writeJson(this.artifactPath(record.artifactId), pending));
+      await this.fault("deletion_pending_persisted");
+      await this.finishDeletion(pending);
+      deletedArtifactIds.push(record.artifactId);
+    }
+    if (remainingArtifactIds.length > 0) {
+      return { kind: "continuable", reason: "gc_unprocessed", deletedArtifactIds, remainingArtifactIds };
+    }
+    return { kind: "completed", deletedArtifactIds };
+  }
+
+  private async isDeletionEligible(artifactId: string, unusedRetentionUntil: string): Promise<boolean> {
+    if (Date.parse(unusedRetentionUntil) > this.now().getTime()) return false;
+    for (const entry of await readdir(this.useDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const use = await this.readUse(entry.slice(0, -5));
+      if (use !== undefined && (use.state === "preparing" || use.state === "available") &&
+        (use.artifactId === artifactId || use.dependencyClosure.includes(artifactId))) return false;
+    }
+    for (const entry of await readdir(this.explicitPinDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const pin = await this.readExplicitPin(entry.slice(0, -5));
+      if (pin !== undefined && pin.state === "held" &&
+        (pin.artifactId === artifactId || pin.dependencyClosure.includes(artifactId))) return false;
+    }
+    for (const entry of await readdir(this.pinDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const pin = await readJson(join(this.pinDirectory, entry)) as Partial<PinRecord>;
+      if (pin.schema === PIN_SCHEMA && pin.artifactId === artifactId && pin.state === "held") return false;
+    }
+    for (const entry of await readdir(this.retentionDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const retention = await readJson(join(this.retentionDirectory, entry)) as Partial<RetentionRecord>;
+      if (retention.schema === RETENTION_SCHEMA && retention.artifactId === artifactId &&
+        Date.parse(retention.retainUntil ?? "") > this.now().getTime()) return false;
+    }
+    return true;
+  }
+
+  private async finishDeletion(record: ArtifactRecord): Promise<void> {
+    const dataPath = join(this.artifactDirectory, record.dataFile);
+    try {
+      await unlink(dataPath);
+      await syncDirectory(this.artifactDirectory);
+    } catch (error) {
+      if (!hasCode(error, "ENOENT")) {
+        await this.serializeIo(() => writeJson(this.artifactPath(record.artifactId), { ...record, storageStatus: "unknown" }));
+        throw error;
+      }
+    }
+    await this.fault("artifact_bytes_deleted");
+    const deleted: ArtifactRecord = { ...record, lifecycle: "deleted" };
+    await this.serializeIo(() => writeJson(this.artifactPath(record.artifactId), deleted));
+    await this.fault("deletion_committed");
+  }
+
+  private async recoverUsesAndDeletions(): Promise<void> {
+    for (const entry of await readdir(this.useDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const record = await this.readUse(entry.slice(0, -5));
+      if (record === undefined) continue;
+      if (record.state === "rejected" || record.state === "released") {
+        await this.releasePins(record.useId);
+        continue;
+      }
+      if (record.state !== "preparing") continue;
+      const artifactIds = [record.artifactId, ...record.dependencyClosure];
+      for (const artifactId of artifactIds) {
+        const retention: RetentionRecord = {
+          schema: RETENTION_SCHEMA,
+          retentionId: protectionId("use-retention", record.useId, artifactId),
+          ownerType: "artifact_use",
+          ownerId: record.useId,
+          artifactId,
+          retainUntil: record.retentionUntil,
+        };
+        if (!(await exists(this.retentionPath(retention.retentionId)))) await writeJson(this.retentionPath(retention.retentionId), retention);
+        const pin: PinRecord = {
+          schema: PIN_SCHEMA,
+          pinId: protectionId("use-pin", record.useId, artifactId),
+          ownerType: "artifact_use",
+          ownerId: record.useId,
+          purpose: record.purpose,
+          artifactId,
+          state: "held",
+        };
+        if (!(await exists(this.pinPath(pin.pinId)))) await writeJson(this.pinPath(pin.pinId), pin);
+      }
+      try {
+        const principal = await this.options.authenticator.restore(record.subjectId);
+        await this.finishPreparingUse(record, principal);
+      } catch (error) {
+        if (error instanceof ArtifactStoreInjectedFault) throw error;
+      }
+    }
+    for (const entry of await readdir(this.artifactDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const record = await this.readArtifactRecord(entry.slice(0, -5));
+      if (record?.lifecycle !== "deletion_pending") continue;
+      const budget = record.deletionRecoveryBudget ?? this.options.policy.maxGarbageCollectionRecoveryAttempts;
+      if (record.deletionRecoveryAttempts >= budget) continue;
+      const attempting = { ...record, deletionRecoveryAttempts: record.deletionRecoveryAttempts + 1 };
+      await writeJson(this.artifactPath(record.artifactId), attempting);
+      try {
+        await this.finishDeletion(attempting);
+      } catch (error) {
+        if (error instanceof ArtifactStoreInjectedFault) throw error;
+      }
+    }
+  }
+
   async recover(): Promise<void> {
+    await this.recoverUsesAndDeletions();
     for (const entry of await readdir(this.registrationDirectory)) {
       if (!entry.endsWith(".json")) continue;
       let record = await this.readRecord(entry.slice(0, -5));
@@ -1020,6 +1657,10 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
     await writeJson(join(rootDirectory, ROOT_FILE), { schema: ROOT_SCHEMA, formats });
     await mkdir(join(rootDirectory, "registrations"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "artifacts"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "uses"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "pins"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "retentions"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "explicit-pins"), { mode: 0o700 });
     await syncDirectory(rootDirectory);
     return;
   }
@@ -1029,6 +1670,10 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
     await writeJson(rootFile, { schema: ROOT_SCHEMA, formats });
     await mkdir(join(rootDirectory, "registrations"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "artifacts"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "uses"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "pins"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "retentions"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "explicit-pins"), { mode: 0o700 });
     await syncDirectory(rootDirectory);
     return;
   }
@@ -1036,7 +1681,14 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
   if (marker.schema !== ROOT_SCHEMA || JSON.stringify(marker.formats) !== JSON.stringify(formats)) {
     throw new ArtifactStoreOpenError("unsupported_root", "Unsupported Artifact storage root format or format registry");
   }
-  for (const directory of [join(rootDirectory, "registrations"), join(rootDirectory, "artifacts")]) {
+  for (const directory of [
+    join(rootDirectory, "registrations"),
+    join(rootDirectory, "artifacts"),
+    join(rootDirectory, "uses"),
+    join(rootDirectory, "pins"),
+    join(rootDirectory, "retentions"),
+    join(rootDirectory, "explicit-pins"),
+  ]) {
     const status = await lstat(directory);
     if (!status.isDirectory() || status.isSymbolicLink()) throw new ArtifactStoreOpenError("storage_inspection_unavailable", "Artifact storage directory is invalid");
   }

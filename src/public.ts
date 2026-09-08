@@ -708,7 +708,10 @@ export type ArtifactFailureReason =
   | "invalid_format"
   | "input_integrity_mismatch"
   | "stored_artifact_corrupt"
+  | "artifact_deletion_pending"
   | "artifact_deleted"
+  | "gc_unprocessed"
+  | "gc_processing_unavailable"
   | "storage_inspection_unavailable"
   | "recovery_budget_exceeded"
   | "dependency_not_found"
@@ -742,11 +745,72 @@ export type ArtifactRetrievalOutcome =
 
 export type ArtifactAuthorityDecision = "allowed" | "denied" | "revoked" | "unknown";
 
+export interface ArtifactUseRequest {
+  readonly useId: string;
+  readonly operationId: string;
+  readonly artifactId: string;
+  readonly purpose: "review_subject";
+  readonly decisionId: string;
+  readonly authorityBasis: string;
+}
+
+export interface ArtifactUseSnapshot extends ArtifactUseRequest {
+  readonly subjectId: string;
+  readonly dependencyClosure: ReadonlyArray<string>;
+  readonly retentionUntil: string;
+  readonly state: "preparing" | "available" | "rejected" | "released" | "unresolved";
+}
+
+export type ArtifactUseOutcome =
+  | { readonly kind: "available"; readonly use: Readonly<ArtifactUseSnapshot> }
+  | { readonly kind: "released"; readonly use: Readonly<ArtifactUseSnapshot> }
+  | { readonly kind: "continuable"; readonly use: Readonly<ArtifactUseSnapshot> }
+  | { readonly kind: "failed"; readonly terminal: boolean; readonly reason: ArtifactFailureReason };
+
+export interface ArtifactRetentionPinRequest {
+  readonly pinId: string;
+  readonly artifactId: string;
+  readonly ownerId: string;
+  readonly purpose: string;
+  readonly retention: "indefinite";
+}
+
+export interface ArtifactRetentionPinSnapshot extends ArtifactRetentionPinRequest {
+  readonly subjectId: string;
+  readonly dependencyClosure: ReadonlyArray<string>;
+  readonly state: "held" | "released";
+}
+
+export type ArtifactRetentionPinOutcome =
+  | { readonly kind: "held"; readonly pin: Readonly<ArtifactRetentionPinSnapshot> }
+  | { readonly kind: "released"; readonly pin: Readonly<ArtifactRetentionPinSnapshot> }
+  | { readonly kind: "failed"; readonly terminal: boolean; readonly reason: ArtifactFailureReason };
+
+export interface ArtifactGarbageCollectionRequest {
+  readonly collectionId: string;
+  readonly scanBudget: number;
+  readonly deletionBudget: number;
+  readonly recoveryBudget: number;
+}
+
+export type ArtifactGarbageCollectionOutcome =
+  | { readonly kind: "completed"; readonly deletedArtifactIds: ReadonlyArray<string> }
+  | {
+      readonly kind: "continuable";
+      readonly reason: "gc_unprocessed";
+      readonly deletedArtifactIds: ReadonlyArray<string>;
+      readonly remainingArtifactIds: ReadonlyArray<string>;
+    }
+  | { readonly kind: "failed"; readonly terminal: boolean; readonly reason: ArtifactFailureReason };
+
 export interface ArtifactPrincipal {
   readonly subjectId: string;
   canRegister(request: Readonly<ArtifactRegistrationRequest>): Promise<ArtifactAuthorityDecision>;
   canReference(artifactId: string): Promise<ArtifactAuthorityDecision>;
   canRetrieve(artifactId: string): Promise<ArtifactAuthorityDecision>;
+  canBindUse(request: Readonly<ArtifactUseRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
+  canPinArtifact(request: Readonly<ArtifactRetentionPinRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
+  canGarbageCollect(request: Readonly<ArtifactGarbageCollectionRequest>): Promise<ArtifactAuthorityDecision>;
 }
 
 export interface ArtifactAuthenticator {
@@ -763,6 +827,12 @@ export interface ArtifactStorePolicy {
   readonly maxDependencyCount: number;
   readonly maxRegistrationWindowMs: number;
   readonly maxRecoveryAttempts: number;
+  readonly unusedArtifactRetentionMs: number;
+  readonly reviewInputRetentionMs: number;
+  readonly acceptedArtifactRetentionMs: number;
+  readonly maxGarbageCollectionScan: number;
+  readonly maxGarbageCollectionDeletes: number;
+  readonly maxGarbageCollectionRecoveryAttempts: number;
 }
 
 export interface OpenArtifactStoreOptions {
@@ -788,6 +858,19 @@ export interface ArtifactStore {
     registrationId: string,
   ): Promise<ArtifactRegistrationOutcome>;
   retrieve(credential: string, artifactId: string): Promise<ArtifactRetrievalOutcome>;
+  prepareUse(credential: string, request: Readonly<ArtifactUseRequest>): Promise<ArtifactUseOutcome>;
+  useStatus(credential: string, useId: string): Promise<ArtifactUseOutcome>;
+  retrieveForUse(credential: string, useId: string): Promise<ArtifactRetrievalOutcome>;
+  releaseUse(credential: string, useId: string): Promise<ArtifactUseOutcome>;
+  createRetentionPin(
+    credential: string,
+    request: Readonly<ArtifactRetentionPinRequest>,
+  ): Promise<ArtifactRetentionPinOutcome>;
+  releaseRetentionPin(credential: string, pinId: string): Promise<ArtifactRetentionPinOutcome>;
+  collectGarbage(
+    credential: string,
+    request: Readonly<ArtifactGarbageCollectionRequest>,
+  ): Promise<ArtifactGarbageCollectionOutcome>;
   close(): Promise<void>;
 }
 
