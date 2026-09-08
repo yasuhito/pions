@@ -12,6 +12,7 @@ import type {
   WorkerProfilePolicy,
 } from "../src/public.js";
 import type { AgentRunEvidence } from "../src/internal/services.js";
+import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
 
 export const requestedConfig: RequestedWorkerConfig = {};
 export const effectiveConfig: EffectiveWorkerConfig = {
@@ -38,6 +39,7 @@ export const profilePolicy: WorkerProfilePolicy = {
   thinkingLevel: "medium",
   tools: ["read", "bash", "edit", "write"],
   resources: { resourceProofPolicy: "disabled" },
+  workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
 };
 
 export const piSessionId = "pi-session-1";

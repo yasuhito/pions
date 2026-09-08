@@ -10,6 +10,7 @@ import {
 } from "effect";
 
 import { makeRuntime } from "../src/internal/runtime.js";
+import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
 import {
   CancellationRejectedError,
   OperationCancelledError,
@@ -791,6 +792,7 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
           thinkingLevel: "medium",
           tools: ["read", "network"],
           resources: { resourceProofPolicy: "disabled" },
+          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
         },
       },
     },

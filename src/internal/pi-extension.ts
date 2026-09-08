@@ -16,6 +16,7 @@ import type {
 import { Type } from "typebox";
 
 import { makeVisibleRuntime } from "./visible-runtime.js";
+import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "./worker-configuration.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
 import {
   OperationCancelledError,
@@ -416,6 +417,7 @@ export function installPionsExtension(
         thinkingLevel,
         tools: REVIEW_TOOLS,
         resources: { resourceProofPolicy: "disabled" },
+        workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
       };
       const configKey = `${normalizedRoot}\0${model.provider}\0${model.id}\0${thinkingLevel}`;
       let runtime = options.runtime;

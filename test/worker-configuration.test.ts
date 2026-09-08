@@ -26,6 +26,19 @@ test("a profile without an explicit resource proof policy is rejected", () => {
   }), { name: "ResourceProofRejectedError", reason: "invalid_profile" });
 });
 
+test("a profile without explicit work product requirements is rejected", () => {
+  assert.throws(() => resolveWorkerConfig({
+    requested: {},
+    profile: {
+      modelCandidates: [{ provider: "test", id: "test-model" }],
+      thinkingLevel: "medium",
+      tools: ["read"],
+      resources: { resourceProofPolicy: "disabled" },
+    } as never,
+    runtimeCwd: "/workspace",
+  }), { name: "WorkProductRequirementsError", reason: "invalid_requirement" });
+});
+
 test("unavailable observed thinking is rejected", () => {
   const observed = {
     ...observedConfig,

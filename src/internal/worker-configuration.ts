@@ -11,6 +11,7 @@ import type {
 } from "../public.js";
 import { ResourceProofRejectedError, WorkerConfigurationError } from "../public.js";
 import { normalizePermissionManifest } from "./resource-proof.js";
+import { resolveWorkProductRequirements } from "./result-acceptance-manifest.js";
 
 export const ModelReferenceSchema = Schema.Struct({
   provider: Schema.NonEmptyString,
@@ -73,11 +74,22 @@ const PI_BUILTIN_TOOLS = new Set([
   "ls",
 ]);
 
+export const BODY_ONLY_WORK_PRODUCT_REQUIREMENTS = Object.freeze({
+  body: Object.freeze({
+    formatId: "pions.result-body.v1",
+    normalizationId: "identity.v1",
+    maxByteCount: 1_048_576,
+  }),
+  workProducts: Object.freeze([]),
+  maxTotalByteCount: 1_048_576,
+});
+
 export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze({
   modelCandidates: Object.freeze([{ provider: "test", id: "test-model" }]),
   thinkingLevel: "medium",
   tools: Object.freeze(["read", "bash", "edit", "write"]),
   resources: Object.freeze({ resourceProofPolicy: "disabled" }),
+  workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
 });
 
 export function validateWorkerResourcePolicy(profile: Readonly<WorkerProfilePolicy>): void {
@@ -149,6 +161,7 @@ export function resolveWorkerConfig(options: {
   const { profile } = options;
   if (profile === undefined) fail("unsupported_capability", "Unknown Worker profile");
   validateWorkerResourcePolicy(profile);
+  resolveWorkProductRequirements(profile);
   boundedString(options.runtimeCwd, "working directory");
   if (profile.modelCandidates.length !== 1) {
     fail("model_mismatch", "Exactly one model candidate is required because fallback is forbidden");

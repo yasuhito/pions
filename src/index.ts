@@ -1,6 +1,11 @@
 export { openArtifactStore } from "./internal/artifact-store.js";
 export { makeVisibleRuntime } from "./internal/visible-runtime.js";
 export {
+  resolveWorkProductRequirements,
+  resultAcceptanceManifestDocument,
+  validateResultAcceptanceManifest,
+} from "./internal/result-acceptance-manifest.js";
+export {
   normalizePermissionManifest,
   parseProofDocument,
   permissionManifestDocument,
@@ -19,12 +24,15 @@ export {
   OperationPersistenceError,
   ProjectConfigurationError,
   ResourceProofRejectedError,
+  ResultAcceptanceManifestError,
   ResultConflictError,
   SpawnRejectedError,
   StartAuthorizationAuthenticationError,
   WorkerConfigurationError,
+  WorkProductRequirementsError,
 } from "./public.js";
 export type {
+  ArtifactContentRequirement,
   ArtifactAuthenticator,
   ArtifactAuthorityDecision,
   ArtifactDigest,
@@ -110,10 +118,19 @@ export type {
   StopConfirmationEvidence,
   ResultAcceptanceEvidence,
   CleanupDiagnostic,
+  CanonicalResultAcceptanceManifestDocument,
+  ResultAcceptanceManifest,
+  ResultAcceptanceManifestFailureReason,
+  ResultAcceptanceManifestWorkProduct,
+  ResolvedWorkProductRequirements,
+  ValidatedResultAcceptanceManifest,
   WaitingStartAuthorization,
   AuthenticatedStartAuthorizer,
   TaskSpec,
   ThinkingLevel,
   WorkerConfigurationFailureReason,
   WorkerProfilePolicy,
+  WorkProductRequirement,
+  WorkProductRequirementsFailureReason,
+  WorkProductRequirementsPolicy,
 } from "./public.js";

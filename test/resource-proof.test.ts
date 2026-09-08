@@ -8,6 +8,7 @@ import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
 import { EventStoreResourceEvidenceRepository } from "../src/internal/event-store-resource-evidence.js";
 import { makeResourceProofController } from "../src/internal/resource-controller.js";
 import { makeRuntime } from "../src/internal/runtime.js";
+import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
 import { FakeClock, FakeIdGenerator, FakePresentation, FakeWorkerAdapter, InMemoryEventStore } from "../src/internal/testing.js";
 import {
   normalizePermissionManifest,
@@ -394,6 +395,7 @@ const unavailableRequiredRuntime = async () => {
           thinkingLevel: "medium",
           tools: ["read", "bash"],
           resources: { resourceProofPolicy: "required", ...request.requirements },
+          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
         },
       },
     },
@@ -433,6 +435,7 @@ test("a required Runtime profile revalidates the acquisition before execution", 
           thinkingLevel: "medium",
           tools: ["read", "bash"],
           resources: { resourceProofPolicy: "required", ...request.requirements },
+          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
         },
       },
     },
@@ -468,6 +471,7 @@ test("resource evidence is reconstructed from a reopened Operation event store",
           thinkingLevel: "medium",
           tools: ["read", "bash"],
           resources: { resourceProofPolicy: "required", ...request.requirements },
+          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
         },
       },
     },
@@ -506,6 +510,7 @@ test("Runtime Operation snapshots expose persisted resource evidence", async () 
           thinkingLevel: "medium",
           tools: ["read", "bash"],
           resources: { resourceProofPolicy: "required", ...request.requirements },
+          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
         },
       },
     },

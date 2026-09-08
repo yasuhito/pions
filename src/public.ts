@@ -87,11 +87,103 @@ export type WorkerResourcePolicy =
   | { readonly resourceProofPolicy: "disabled" }
   | ({ readonly resourceProofPolicy: "required" } & ResourceProofRequirements);
 
+export interface ArtifactContentRequirement {
+  readonly formatId: string;
+  readonly normalizationId: string;
+  readonly maxByteCount: number;
+}
+
+export interface WorkProductRequirement extends ArtifactContentRequirement {
+  readonly key: string;
+  readonly minCount: number;
+  readonly maxCount: number;
+}
+
+export interface WorkProductRequirementsPolicy {
+  readonly body: Readonly<ArtifactContentRequirement>;
+  readonly workProducts: ReadonlyArray<Readonly<WorkProductRequirement>>;
+  readonly maxTotalByteCount: number;
+}
+
+export interface ResolvedWorkProductRequirements extends WorkProductRequirementsPolicy {
+  readonly requirementSetId: `pions.work-product-requirements.v1:${string}`;
+  readonly digest: ArtifactDigest;
+  readonly canonicalJson: string;
+}
+
 export interface WorkerProfilePolicy {
   readonly modelCandidates: ReadonlyArray<Readonly<ModelReference>>;
   readonly thinkingLevel: ThinkingLevel;
   readonly tools: ReadonlyArray<string>;
   readonly resources: Readonly<WorkerResourcePolicy>;
+  readonly workProductRequirements: Readonly<WorkProductRequirementsPolicy>;
+}
+
+export type WorkProductRequirementsFailureReason =
+  | "invalid_key"
+  | "duplicate_key"
+  | "invalid_requirement";
+
+export class WorkProductRequirementsError extends Error {
+  override readonly name = "WorkProductRequirementsError";
+
+  constructor(readonly reason: WorkProductRequirementsFailureReason, message: string) {
+    super(message);
+  }
+}
+
+export interface ResultAcceptanceManifestWorkProduct {
+  readonly key: string;
+  readonly artifactIds: ReadonlyArray<string>;
+}
+
+export interface ResultAcceptanceManifest {
+  readonly formatId: "pions.result-acceptance-manifest.v1";
+  readonly normalizationId: "pions.canonical-json.v1";
+  readonly bodyArtifactId: string;
+  readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
+  readonly requirementSetDigest: ArtifactDigest;
+  readonly workProducts: ReadonlyArray<Readonly<ResultAcceptanceManifestWorkProduct>>;
+}
+
+export interface CanonicalResultAcceptanceManifestDocument {
+  readonly json: string;
+  readonly bytes: Uint8Array;
+  readonly byteCount: number;
+  readonly digest: ArtifactDigest;
+  readonly value: Readonly<ResultAcceptanceManifest>;
+}
+
+export interface ValidatedResultAcceptanceManifest extends CanonicalResultAcceptanceManifestDocument {
+  readonly totalByteCount: number;
+  readonly artifactIds: ReadonlyArray<string>;
+}
+
+export type ResultAcceptanceManifestFailureReason =
+  | "invalid_manifest"
+  | "unsupported_format"
+  | "unsupported_normalization"
+  | "duplicate_key"
+  | "duplicate_artifact"
+  | "unknown_field"
+  | "requirement_set_mismatch"
+  | "undeclared_key"
+  | "missing_required_work_product"
+  | "work_product_count_below_minimum"
+  | "work_product_count_exceeded"
+  | "artifact_not_found"
+  | "artifact_format_mismatch"
+  | "artifact_normalization_mismatch"
+  | "artifact_size_exceeded"
+  | "total_size_exceeded"
+  | "artifact_dependency_cycle";
+
+export class ResultAcceptanceManifestError extends Error {
+  override readonly name = "ResultAcceptanceManifestError";
+
+  constructor(readonly reason: ResultAcceptanceManifestFailureReason, message: string) {
+    super(message);
+  }
 }
 
 export interface TaskSpec extends RequestedWorkerConfig {
