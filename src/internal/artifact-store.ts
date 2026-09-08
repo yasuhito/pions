@@ -1082,7 +1082,7 @@ class FileArtifactStore implements ArtifactStore {
     request: Readonly<ArtifactUseBindingRequest>,
   ): Promise<ArtifactUseBindingOutcome> {
     try {
-      return await this.serialize(() => this.prepareUseBindingBindingUnserialized(credential, request));
+      return await this.serialize(() => this.prepareUseBindingUnserialized(credential, request));
     } catch (error) {
       if (error instanceof ArtifactStoreInjectedFault) throw error;
       return useBindingFailed("storage_inspection_unavailable", false);
@@ -1111,7 +1111,7 @@ class FileArtifactStore implements ArtifactStore {
     return undefined;
   }
 
-  private async prepareUseBindingBindingUnserialized(
+  private async prepareUseBindingUnserialized(
     credential: string,
     request: Readonly<ArtifactUseBindingRequest>,
   ): Promise<ArtifactUseBindingOutcome> {
@@ -1209,7 +1209,19 @@ class FileArtifactStore implements ArtifactStore {
       if (authority === "authority_unavailable") return useBindingFailed(authority, false);
       return this.rejectUseBinding(record, authority);
     }
-    const available: UseBindingRecord = { ...record, state: "available" };
+    const retentionUntil = new Date(this.now().getTime() + record.effectiveReviewRetentionMs).toISOString();
+    for (const artifactId of artifactIds) {
+      const retention: RetentionRecord = {
+        schema: RETENTION_SCHEMA,
+        retentionId: protectionId("use-retention", record.bindingId, artifactId),
+        ownerType: "artifact_use_binding",
+        ownerId: record.bindingId,
+        artifactId,
+        retainUntil: retentionUntil,
+      };
+      await this.serializeIo(() => writeJson(this.retentionPath(retention.retentionId), retention));
+    }
+    const available: UseBindingRecord = { ...record, retentionUntil, state: "available" };
     await this.writeUseBinding(available);
     await this.fault("use_binding_available_persisted");
     return useBindingOutcome(available);
@@ -1412,13 +1424,16 @@ class FileArtifactStore implements ArtifactStore {
       .filter((artifactId) => request.afterArtifactId === undefined || artifactId > request.afterArtifactId)
       .sort();
     const scanned = artifactIds.slice(0, request.scanBudget);
-    const remainingArtifactIds = artifactIds.slice(request.scanBudget);
+    let remainingArtifactIds = artifactIds.slice(request.scanBudget);
     const deletedArtifactIds: string[] = [];
-    for (const artifactId of scanned) {
+    let lastProcessedArtifactId = request.afterArtifactId;
+    for (let index = 0; index < scanned.length; index += 1) {
+      const artifactId = scanned[index]!;
       if (deletedArtifactIds.length >= request.deletionBudget) {
-        remainingArtifactIds.push(artifactId);
-        continue;
+        remainingArtifactIds = [...scanned.slice(index), ...remainingArtifactIds];
+        break;
       }
+      lastProcessedArtifactId = artifactId;
       const record = await this.readArtifactRecord(artifactId);
       if (record === undefined || record.lifecycle === "deleted") continue;
       if (record.lifecycle === "deletion_pending") {
@@ -1433,9 +1448,13 @@ class FileArtifactStore implements ArtifactStore {
           return gcFailed("storage_inspection_unavailable", false);
         }
         deletedArtifactIds.push(record.artifactId);
+        lastProcessedArtifactId = artifactId;
         continue;
       }
-      if (!(await this.isDeletionEligible(record.artifactId, record.unusedRetentionUntil))) continue;
+      if (!(await this.isDeletionEligible(record.artifactId, record.unusedRetentionUntil))) {
+        lastProcessedArtifactId = artifactId;
+        continue;
+      }
       await this.fault("gc_eligibility_checked");
       const pending: ArtifactRecord = {
         ...record,
@@ -1451,6 +1470,7 @@ class FileArtifactStore implements ArtifactStore {
         return gcFailed("storage_inspection_unavailable", false);
       }
       deletedArtifactIds.push(record.artifactId);
+      lastProcessedArtifactId = artifactId;
     }
     if (remainingArtifactIds.length > 0) {
       return {
@@ -1458,7 +1478,7 @@ class FileArtifactStore implements ArtifactStore {
         reason: "gc_unprocessed",
         deletedArtifactIds,
         remainingArtifactIds,
-        nextCursor: scanned.at(-1) ?? request.afterArtifactId ?? "",
+        nextCursor: lastProcessedArtifactId ?? request.afterArtifactId ?? "",
       };
     }
     return { kind: "completed", deletedArtifactIds };

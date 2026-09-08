@@ -525,22 +525,23 @@ test("garbage collection continuation advances beyond retained earlier artifacts
     register(artifacts, "registration-3", "third"),
   ]);
   now = new Date("2026-09-07T10:01:00.000Z");
-  let cursor: string | undefined;
-  const deleted: string[] = [];
-  for (let index = 0; index < 3; index += 1) {
-    const outcome = await artifacts.collectGarbage("credential", {
-      collectionId: `gc-${index}`,
-      scanBudget: 1,
-      deletionBudget: 1,
-      recoveryBudget: 2,
-      ...(cursor === undefined ? {} : { afterArtifactId: cursor }),
-    });
-    if (outcome.kind === "failed") throw new Error(outcome.reason);
-    deleted.push(...outcome.deletedArtifactIds);
-    cursor = outcome.kind === "continuable" ? outcome.nextCursor : undefined;
-  }
+  const first = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-1",
+    scanBudget: 3,
+    deletionBudget: 1,
+    recoveryBudget: 2,
+  });
+  if (first.kind !== "continuable") throw new Error("expected unprocessed artifacts");
+  const second = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-2",
+    scanBudget: 3,
+    deletionBudget: 3,
+    recoveryBudget: 2,
+    afterArtifactId: first.nextCursor,
+  });
+  if (second.kind === "failed") throw new Error(second.reason);
 
-  assert.equal(deleted.length === 3 && registrations.every((result) => result.kind === "registered"), true);
+  assert.equal(first.deletedArtifactIds.length + second.deletedArtifactIds.length === 3 && registrations.every((result) => result.kind === "registered"), true);
 });
 
 test("garbage collection reports processing failure even when diagnostic persistence also fails", async (context) => {
