@@ -1,21 +1,20 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import { Schema } from "effect";
 
 import type {
   EffectiveWorkerConfig,
   ObservedWorkerConfig,
-  Result,
   WorkerConfigurationFailureReason,
+  WorkerProducedResult,
 } from "../public.js";
 import type { AgentRunEvidence } from "./services.js";
-import { resultDigest } from "./result-digest.js";
 import {
   EffectiveWorkerConfigSchema,
   ObservedWorkerConfigSchema,
 } from "./worker-configuration.js";
 
-export const WORKER_PROTOCOL_VERSION = 7 as const;
+export const WORKER_PROTOCOL_VERSION = 8 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -25,17 +24,17 @@ export interface ProtocolAuthority {
 export interface ProtocolLimits {
   readonly firstFrameBytes: number;
   readonly frameBytes: number;
-  readonly resultBytes: number;
-  readonly sessionResultBytes: number;
-  readonly resultDeliveries: number;
+  readonly artifactBytes: number;
+  readonly sessionArtifactBytes: number;
+  readonly artifacts: number;
 }
 
 export const DEFAULT_PROTOCOL_LIMITS: ProtocolLimits = Object.freeze({
   firstFrameBytes: 4 * 1024,
   frameBytes: 1024 * 1024,
-  resultBytes: 1024 * 1024,
-  sessionResultBytes: 1024 * 1024,
-  resultDeliveries: 16,
+  artifactBytes: 1024 * 1024,
+  sessionArtifactBytes: 1024 * 1024,
+  artifacts: 16,
 });
 
 export type ProtocolViolationReason =
@@ -44,9 +43,9 @@ export type ProtocolViolationReason =
   | "authority_mismatch"
   | "sequence_mismatch"
   | "frame_too_large"
-  | "result_too_large"
-  | "session_result_too_large"
-  | "too_many_results"
+  | "artifact_too_large"
+  | "session_artifact_too_large"
+  | "too_many_artifacts"
   | "digest_mismatch"
   | "invalid_transition"
   | "unexpected_acknowledgement"
@@ -99,12 +98,32 @@ const ConfigurationFailedSchema = Schema.Struct({
     "tool_policy_violation",
   ),
 });
-const ResultSchema = Schema.Struct({
+const ArtifactBeginSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
-  type: Schema.Literal("result"),
-  body: Schema.String,
-  digest: DigestSchema,
-  deliverySequenceNumber: Schema.Number,
+  type: Schema.Literal("artifact_begin"),
+  acceptanceRequestId: Schema.NonEmptyString,
+  slot: Schema.Literal("body", "work_product"),
+  key: Schema.optional(Schema.String),
+  index: Schema.optional(Schema.Number),
+  formatId: Schema.NonEmptyString,
+  normalizationId: Schema.NonEmptyString,
+  expectedByteCount: Schema.Number,
+  expectedDigest: DigestSchema,
+});
+const ArtifactChunkSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("artifact_chunk"),
+  payload: Schema.String,
+});
+const ArtifactCommitSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("artifact_commit"),
+  expectedDigest: DigestSchema,
+});
+const ResultManifestSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("result_manifest"),
+  acceptanceRequestId: Schema.NonEmptyString,
 });
 const UsageSchema = Schema.Struct({
   input: Schema.Number,
@@ -139,8 +158,9 @@ const CancelledSchema = Schema.Struct({
 const AcknowledgementSchema = Schema.Struct({
   protocolVersion: Schema.Number,
   operationId: Schema.NonEmptyString,
-  digest: DigestSchema,
-  deliverySequenceNumber: Schema.Number,
+  acceptanceId: Schema.String.pipe(Schema.pattern(/^pions\.result-acceptance\.v1:[0-9a-f]{64}$/u)),
+  manifestDigest: DigestSchema,
+  eventSequenceNumber: Schema.Number,
   type: Schema.Literal("ack"),
 });
 const BeginRequestSchema = Schema.Struct({
@@ -169,40 +189,14 @@ export interface WorkerConfig {
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
 }
 
-export interface ResultDelivery {
-  readonly operationId: string;
-  readonly body: string;
-  readonly digest: Result["digest"];
-  readonly sequenceNumber: number;
-}
-
-export function resultDeliveryViolation(
-  operationId: string,
-  delivery: Readonly<ResultDelivery>,
-): "authority_mismatch" | "invalid_frame" | "digest_mismatch" | undefined {
-  if (delivery.operationId !== operationId) return "authority_mismatch";
-  if (
-    typeof delivery.body !== "string" ||
-    !Number.isSafeInteger(delivery.sequenceNumber) ||
-    delivery.sequenceNumber <= 0
-  ) return "invalid_frame";
-  if (delivery.digest !== resultDigest(Buffer.from(delivery.body, "utf8"))) {
-    return "digest_mismatch";
-  }
-  return undefined;
-}
-
 declare const resultAcceptanceProof: unique symbol;
 
 export interface ResultAcceptanceProof {
   readonly operationId: string;
-  readonly digest: Result["digest"];
-  readonly sequenceNumber: number;
+  readonly acceptanceId: `pions.result-acceptance.v1:${string}`;
+  readonly manifestDigest: `sha256:${string}`;
+  readonly eventSequenceNumber: number;
   readonly [resultAcceptanceProof]: true;
-}
-
-export interface ResultReception {
-  readonly deliveries: ReadonlyArray<ResultDelivery>;
 }
 
 export interface WorkerProtocolReception {
@@ -225,8 +219,8 @@ export type HostProtocolEvent =
       readonly reason: WorkerConfigurationFailureReason;
     }
   | {
-      readonly type: "results_received";
-      readonly reception: ResultReception;
+      readonly type: "result_received";
+      readonly result: Readonly<WorkerProducedResult>;
       readonly evidence: Readonly<AgentRunEvidence>;
     }
   | {
@@ -253,9 +247,8 @@ export type WorkerProtocolEvent =
       readonly reason: WorkerConfigurationFailureReason;
     }
   | {
-      readonly type: "result";
-      readonly body: string;
-      readonly deliverySequenceNumber: number;
+      readonly type: "artifacts";
+      readonly result: Readonly<WorkerProducedResult>;
     }
   | ({ readonly type: "done" } & Readonly<AgentRunEvidence>)
   | ({ readonly type: "failed"; readonly errorMessage: string } & Readonly<AgentRunEvidence>)
@@ -310,13 +303,6 @@ function encode(value: unknown): Buffer {
   return Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
 }
 
-function deliveryKey(delivery: {
-  readonly digest: Result["digest"];
-  readonly sequenceNumber: number;
-}): string {
-  return `${delivery.sequenceNumber}:${delivery.digest}`;
-}
-
 function sameSecret(expectedValue: string, actualValue: string): boolean {
   const expected = Buffer.from(expectedValue, "utf8");
   const actual = Buffer.from(actualValue, "utf8");
@@ -333,22 +319,21 @@ function completeLimits(overrides?: Partial<ProtocolLimits>): ProtocolLimits {
   return Object.freeze(limits);
 }
 
-class ResultBudget {
+class ArtifactBudget {
   private bytes = 0;
   private deliveries = 0;
 
   constructor(private readonly limits: ProtocolLimits) {}
 
-  check(body: string): number {
-    const bodyBytes = Buffer.byteLength(body, "utf8");
-    if (bodyBytes > this.limits.resultBytes) {
-      throw violation("result_too_large", "Result exceeds its size limit");
+  check(bodyBytes: number): number {
+    if (bodyBytes > this.limits.artifactBytes) {
+      throw violation("artifact_too_large", "Artifact exceeds its size limit");
     }
-    if (this.bytes + bodyBytes > this.limits.sessionResultBytes) {
-      throw violation("session_result_too_large", "Result delivery exceeds its session size limit");
+    if (this.bytes + bodyBytes > this.limits.sessionArtifactBytes) {
+      throw violation("session_artifact_too_large", "Artifact transfer exceeds its session size limit");
     }
-    if (this.deliveries + 1 > this.limits.resultDeliveries) {
-      throw violation("too_many_results", "Result delivery exceeds its count limit");
+    if (this.deliveries + 1 > this.limits.artifacts) {
+      throw violation("too_many_artifacts", "Artifact transfer exceeds its count limit");
     }
     return bodyBytes;
   }
@@ -358,8 +343,8 @@ class ResultBudget {
     this.deliveries += 1;
   }
 
-  accept(body: string): void {
-    this.commit(this.check(body));
+  accept(bodyBytes: number): void {
+    this.commit(this.check(bodyBytes));
   }
 }
 
@@ -429,9 +414,24 @@ export class HostProtocolPeer extends FramedPeer {
   private processId = 0;
   private processInstanceId = "";
   private processStartToken = "";
-  private readonly resultBudget: ResultBudget;
-  private readonly deliveries: Array<ResultDelivery> = [];
-  private readonly pendingAcknowledgements = new Map<string, number>();
+  private readonly artifactBudget: ArtifactBudget;
+  private bodyArtifact?: WorkerProducedResult["body"];
+  private readonly workProducts: Array<WorkerProducedResult["workProducts"][number]> = [];
+  private currentArtifact: {
+    readonly acceptanceRequestId: string;
+    readonly slot: "body" | "work_product";
+    readonly key?: string;
+    readonly index?: number;
+    readonly formatId: string;
+    readonly normalizationId: string;
+    readonly expectedByteCount: number;
+    readonly expectedDigest: `sha256:${string}`;
+    readonly chunks: Array<Buffer>;
+    receivedByteCount: number;
+  } | undefined;
+  private acceptanceRequestId?: string;
+  private acknowledgementPending = false;
+  private acknowledgedProof?: Readonly<ResultAcceptanceProof>;
 
   constructor(
     private readonly authority: Readonly<ProtocolAuthority>,
@@ -439,7 +439,7 @@ export class HostProtocolPeer extends FramedPeer {
   ) {
     const resolvedLimits = completeLimits(limits);
     super(resolvedLimits);
-    this.resultBudget = new ResultBudget(resolvedLimits);
+    this.artifactBudget = new ArtifactBudget(resolvedLimits);
   }
 
   receive(bytes: Buffer): ReadonlyArray<HostProtocolEvent> {
@@ -501,9 +501,11 @@ export class HostProtocolPeer extends FramedPeer {
     if (acceptance.operationId !== this.authority.operationId) {
       throw violation("unexpected_acknowledgement", "Result acceptance belongs to another Operation");
     }
-    const key = deliveryKey(acceptance);
-    const pending = this.pendingAcknowledgements.get(key) ?? 0;
-    if (pending === 0) {
+    if (!this.acknowledgementPending && (
+      this.acknowledgedProof?.acceptanceId !== acceptance.acceptanceId ||
+      this.acknowledgedProof.manifestDigest !== acceptance.manifestDigest ||
+      this.acknowledgedProof.eventSequenceNumber !== acceptance.eventSequenceNumber
+    )) {
       throw violation(
         "unexpected_acknowledgement",
         "Result acknowledgement does not match a received delivery",
@@ -512,16 +514,14 @@ export class HostProtocolPeer extends FramedPeer {
     const bytes = this.encodeFrame({
       protocolVersion: WORKER_PROTOCOL_VERSION,
       operationId: this.authority.operationId,
-      digest: acceptance.digest,
-      deliverySequenceNumber: acceptance.sequenceNumber,
+      acceptanceId: acceptance.acceptanceId,
+      manifestDigest: acceptance.manifestDigest,
+      eventSequenceNumber: acceptance.eventSequenceNumber,
       type: "ack",
     });
-    if (pending === 1) this.pendingAcknowledgements.delete(key);
-    else this.pendingAcknowledgements.set(key, pending - 1);
-    return {
-      bytes,
-      complete: this.pendingAcknowledgements.size === 0,
-    };
+    this.acknowledgementPending = false;
+    this.acknowledgedProof = acceptance;
+    return { bytes, complete: true };
   }
 
   private encodeHostFrame(type: "begin" | "cancel"): Buffer {
@@ -604,36 +604,91 @@ export class HostProtocolPeer extends FramedPeer {
       this.state = "done";
       return { type: "worker_cancelled" };
     }
-    if (object.type === "result") {
-      const result = decodeShape(
-        ResultSchema,
-        value,
-        "Worker protocol frame has an invalid shape",
-      );
-      this.validateCommon(result);
-      if (this.state !== "receiving_results") {
-        throw violation("invalid_transition", "Result arrived before started notification");
+    if (object.type === "artifact_begin") {
+      const begin = decodeShape(ArtifactBeginSchema, value, "Artifact begin frame has an invalid shape");
+      this.validateCommon(begin);
+      if (this.state !== "receiving_results" || this.currentArtifact !== undefined) {
+        throw violation("invalid_transition", "Artifact began outside result reception");
       }
-      const delivery: ResultDelivery = {
-        operationId: this.authority.operationId,
-        body: result.body,
-        digest: result.digest as Result["digest"],
-        sequenceNumber: result.deliverySequenceNumber,
+      if (!Number.isSafeInteger(begin.expectedByteCount) || begin.expectedByteCount < 0 ||
+          begin.slot === "body" && (begin.key !== undefined || begin.index !== undefined) ||
+          begin.slot === "work_product" && (
+            begin.key === undefined || begin.key.length === 0 ||
+            !Number.isSafeInteger(begin.index) || begin.index !== this.workProducts.length
+          )) {
+        throw violation("invalid_frame", "Artifact slot is invalid");
+      }
+      if (this.acceptanceRequestId !== undefined && this.acceptanceRequestId !== begin.acceptanceRequestId) {
+        throw violation("invalid_transition", "Acceptance request changed during transfer");
+      }
+      this.artifactBudget.check(begin.expectedByteCount);
+      this.acceptanceRequestId = begin.acceptanceRequestId;
+      this.currentArtifact = {
+        acceptanceRequestId: begin.acceptanceRequestId,
+        slot: begin.slot,
+        ...(begin.key === undefined ? {} : { key: begin.key }),
+        ...(begin.index === undefined ? {} : { index: begin.index }),
+        formatId: begin.formatId,
+        normalizationId: begin.normalizationId,
+        expectedByteCount: begin.expectedByteCount,
+        expectedDigest: begin.expectedDigest as `sha256:${string}`,
+        chunks: [],
+        receivedByteCount: 0,
       };
-      const deliveryViolation = resultDeliveryViolation(
-        this.authority.operationId,
-        delivery,
-      );
-      if (deliveryViolation !== undefined) {
-        throw violation(deliveryViolation, "Result delivery is invalid");
+      return undefined;
+    }
+    if (object.type === "artifact_chunk") {
+      const chunk = decodeShape(ArtifactChunkSchema, value, "Artifact chunk frame has an invalid shape");
+      this.validateCommon(chunk);
+      if (this.state !== "receiving_results" || this.currentArtifact === undefined ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(chunk.payload)) {
+        throw violation("invalid_transition", "Artifact chunk arrived without an active artifact");
       }
-      this.resultBudget.accept(delivery.body);
-      this.deliveries.push(delivery);
-      const key = deliveryKey(delivery);
-      this.pendingAcknowledgements.set(
-        key,
-        (this.pendingAcknowledgements.get(key) ?? 0) + 1,
-      );
+      const chunkBytes = Buffer.from(chunk.payload, "base64");
+      this.currentArtifact.receivedByteCount += chunkBytes.byteLength;
+      if (this.currentArtifact.receivedByteCount > this.currentArtifact.expectedByteCount) {
+        throw violation("artifact_too_large", "Artifact chunks exceed the declared size");
+      }
+      this.currentArtifact.chunks.push(chunkBytes);
+      return undefined;
+    }
+    if (object.type === "artifact_commit") {
+      const commit = decodeShape(ArtifactCommitSchema, value, "Artifact commit frame has an invalid shape");
+      this.validateCommon(commit);
+      const artifact = this.currentArtifact;
+      if (this.state !== "receiving_results" || artifact === undefined || commit.expectedDigest !== artifact.expectedDigest) {
+        throw violation("invalid_transition", "Artifact commit does not match an active artifact");
+      }
+      const bytes = Buffer.concat(artifact.chunks);
+      const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+      if (bytes.byteLength !== artifact.expectedByteCount || digest !== artifact.expectedDigest) {
+        throw violation("digest_mismatch", "Artifact bytes do not match their declaration");
+      }
+      this.artifactBudget.accept(bytes.byteLength);
+      const produced = {
+        formatId: artifact.formatId,
+        normalizationId: artifact.normalizationId,
+        expectedByteCount: artifact.expectedByteCount,
+        expectedDigest: artifact.expectedDigest,
+        bytes,
+      };
+      if (artifact.slot === "body") {
+        if (this.bodyArtifact !== undefined) throw violation("invalid_transition", "Result body was sent more than once");
+        this.bodyArtifact = produced;
+      } else {
+        this.workProducts.push({ ...produced, key: artifact.key! });
+      }
+      this.currentArtifact = undefined;
+      return undefined;
+    }
+    if (object.type === "result_manifest") {
+      const manifest = decodeShape(ResultManifestSchema, value, "Result manifest frame has an invalid shape");
+      this.validateCommon(manifest);
+      if (this.state !== "receiving_results" || this.currentArtifact !== undefined || this.bodyArtifact === undefined ||
+          manifest.acceptanceRequestId !== this.acceptanceRequestId) {
+        throw violation("invalid_transition", "Result manifest arrived before all artifacts");
+      }
+      this.acknowledgementPending = true;
       return undefined;
     }
     if (object.type === "failed") {
@@ -643,7 +698,7 @@ export class HostProtocolPeer extends FramedPeer {
         "Worker protocol frame has an invalid shape",
       );
       this.validateCommon(failed);
-      if (this.state !== "receiving_results" || this.deliveries.length !== 0) {
+      if (this.state !== "receiving_results" || this.bodyArtifact !== undefined) {
         throw violation("invalid_transition", "Worker failure arrived outside an active Pi run");
       }
       this.state = "done";
@@ -663,13 +718,18 @@ export class HostProtocolPeer extends FramedPeer {
         "Worker protocol frame has an invalid shape",
       );
       this.validateCommon(done);
-      if (this.state !== "receiving_results" || this.deliveries.length === 0) {
-        throw violation("invalid_transition", "Worker finished without a Result");
+      if (this.state !== "receiving_results" || this.bodyArtifact === undefined ||
+          this.acceptanceRequestId === undefined || !this.acknowledgementPending) {
+        throw violation("invalid_transition", "Worker finished without a Result manifest");
       }
       this.state = "done";
       return {
-        type: "results_received",
-        reception: { deliveries: [...this.deliveries] },
+        type: "result_received",
+        result: {
+          acceptanceRequestId: this.acceptanceRequestId,
+          body: this.bodyArtifact,
+          workProducts: [...this.workProducts],
+        },
         evidence: {
           usage: { ...done.usage },
           toolUses: done.toolUses.map((toolUse) => ({ ...toolUse })),
@@ -725,8 +785,13 @@ export class WorkerProtocolPeer extends FramedPeer {
     | "failed" = "new";
   private sequenceNumber = 1;
   private lastHostSequenceNumber = 0;
-  private readonly resultBudget: ResultBudget;
-  private readonly pendingAcknowledgements = new Map<string, number>();
+  private readonly artifactBudget: ArtifactBudget;
+  private acknowledgementPending = false;
+  private acknowledgedEvidence?: {
+    readonly acceptanceId: string;
+    readonly manifestDigest: string;
+    readonly eventSequenceNumber: number;
+  };
 
   constructor(
     private readonly authority: Readonly<ProtocolAuthority>,
@@ -734,7 +799,7 @@ export class WorkerProtocolPeer extends FramedPeer {
   ) {
     const resolvedLimits = completeLimits(limits);
     super(resolvedLimits);
-    this.resultBudget = new ResultBudget(resolvedLimits);
+    this.artifactBudget = new ArtifactBudget(resolvedLimits);
   }
 
   send(event: WorkerProtocolEvent): Buffer {
@@ -781,30 +846,53 @@ export class WorkerProtocolPeer extends FramedPeer {
         this.state = "done";
         return bytes;
       }
-      case "result": {
-        if (this.state !== "running" && this.state !== "delivering") {
-          return this.invalidSend(event.type);
+      case "artifacts": {
+        if (this.state !== "running") return this.invalidSend(event.type);
+        if (Symbol.asyncIterator in Object(event.result.body.bytes) ||
+            event.result.workProducts.some((entry) => Symbol.asyncIterator in Object(entry.bytes))) {
+          throw violation("invalid_frame", "Worker protocol artifacts must be finite byte arrays");
         }
-        validateSafePositiveInteger(event.deliverySequenceNumber, "deliverySequenceNumber");
-        const bodyBytes = this.resultBudget.check(event.body);
-        const digest = resultDigest(Buffer.from(event.body, "utf8"));
-        const bytes = this.encodeWorkerFrame({
-          type: "result",
-          body: event.body,
-          digest,
-          deliverySequenceNumber: event.deliverySequenceNumber,
-        });
-        this.resultBudget.commit(bodyBytes);
+        const frames: Array<Buffer> = [];
+        const append = (
+          artifact: WorkerProducedResult["body"],
+          slot: "body" | "work_product",
+          key?: string,
+          index?: number,
+        ) => {
+          const bytes = Buffer.from(artifact.bytes as Uint8Array);
+          this.artifactBudget.accept(bytes.byteLength);
+          frames.push(this.encodeWorkerFrame({
+            type: "artifact_begin",
+            acceptanceRequestId: event.result.acceptanceRequestId,
+            slot,
+            ...(key === undefined ? {} : { key }),
+            ...(index === undefined ? {} : { index }),
+            formatId: artifact.formatId,
+            normalizationId: artifact.normalizationId,
+            expectedByteCount: artifact.expectedByteCount,
+            expectedDigest: artifact.expectedDigest,
+          }));
+          const maxChunk = Math.max(1, Math.floor(this.limits.frameBytes / 2));
+          for (let offset = 0; offset < bytes.byteLength; offset += maxChunk) {
+            frames.push(this.encodeWorkerFrame({
+              type: "artifact_chunk",
+              payload: bytes.subarray(offset, offset + maxChunk).toString("base64"),
+            }));
+          }
+          frames.push(this.encodeWorkerFrame({
+            type: "artifact_commit",
+            expectedDigest: artifact.expectedDigest,
+          }));
+        };
+        append(event.result.body, "body");
+        event.result.workProducts.forEach((artifact, index) => append(artifact, "work_product", artifact.key, index));
+        frames.push(this.encodeWorkerFrame({
+          type: "result_manifest",
+          acceptanceRequestId: event.result.acceptanceRequestId,
+        }));
+        this.acknowledgementPending = true;
         this.state = "delivering";
-        const key = deliveryKey({
-          digest,
-          sequenceNumber: event.deliverySequenceNumber,
-        });
-        this.pendingAcknowledgements.set(
-          key,
-          (this.pendingAcknowledgements.get(key) ?? 0) + 1,
-        );
-        return bytes;
+        return Buffer.concat(frames);
       }
       case "failed": {
         if (this.state !== "running") return this.invalidSend(event.type);
@@ -876,7 +964,7 @@ export class WorkerProtocolPeer extends FramedPeer {
           cancellationRequested = true;
           return;
         }
-        if (this.state !== "done") {
+        if (this.state !== "done" && this.state !== "acknowledged") {
           throw violation("invalid_transition", "Acknowledgement arrived outside the completed delivery state");
         }
         const acknowledgement = decodeShape(
@@ -888,22 +976,23 @@ export class WorkerProtocolPeer extends FramedPeer {
           throw violation("authority_mismatch", "Acknowledgement operation does not match");
         }
         validateSafePositiveInteger(
-          acknowledgement.deliverySequenceNumber,
-          "deliverySequenceNumber",
+          acknowledgement.eventSequenceNumber,
+          "eventSequenceNumber",
         );
-        const key = deliveryKey({
-          digest: acknowledgement.digest as Result["digest"],
-          sequenceNumber: acknowledgement.deliverySequenceNumber,
-        });
-        const pending = this.pendingAcknowledgements.get(key) ?? 0;
-        if (pending === 0) {
+        if (!this.acknowledgementPending) {
+          if (
+            this.acknowledgedEvidence?.acceptanceId === acknowledgement.acceptanceId &&
+            this.acknowledgedEvidence.manifestDigest === acknowledgement.manifestDigest &&
+            this.acknowledgedEvidence.eventSequenceNumber === acknowledgement.eventSequenceNumber
+          ) return;
           throw violation("unexpected_acknowledgement", "Acknowledgement does not match a Result delivery");
         }
-        if (pending === 1) this.pendingAcknowledgements.delete(key);
-        else this.pendingAcknowledgements.set(key, pending - 1);
+        this.acknowledgementPending = false;
+        this.acknowledgedEvidence = acknowledgement;
       });
-      const acknowledgementsComplete = this.state === "done" && this.pendingAcknowledgements.size === 0;
-      if (acknowledgementsComplete) {
+      const acknowledgementsComplete =
+        this.state === "acknowledged" || this.state === "done" && !this.acknowledgementPending;
+      if (this.state === "done" && acknowledgementsComplete) {
         this.requireFrameBoundary();
         this.state = "acknowledged";
       }

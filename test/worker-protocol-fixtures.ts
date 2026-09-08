@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type {
-  ResultAcceptanceProof,
-  ResultDelivery,
-} from "../src/internal/worker-protocol.js";
+import type { ResultAcceptanceProof } from "../src/internal/worker-protocol.js";
 import type {
   EffectiveWorkerConfig,
   ObservedWorkerConfig,
@@ -13,6 +10,8 @@ import type {
 } from "../src/public.js";
 import type { AgentRunEvidence } from "../src/internal/services.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
+import { resolveWorkProductRequirements } from "../src/internal/result-acceptance-manifest.js";
+import { resultAcceptanceRetentionPolicy } from "../src/internal/result-acceptance-transaction.js";
 
 export const requestedConfig: RequestedWorkerConfig = {};
 export const effectiveConfig: EffectiveWorkerConfig = {
@@ -40,7 +39,11 @@ export const profilePolicy: WorkerProfilePolicy = {
   tools: ["read", "bash", "edit", "write"],
   resources: { resourceProofPolicy: "disabled" },
   workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+  acceptedArtifactRetentionMs: 86_400_000,
 };
+export const workProductRequirements = resolveWorkProductRequirements(profilePolicy);
+export const retentionPolicy = (operationId: string) =>
+  resultAcceptanceRetentionPolicy(operationId, profilePolicy.acceptedArtifactRetentionMs);
 
 export const piSessionId = "pi-session-1";
 export const agentRunEvidence: AgentRunEvidence = {
@@ -61,18 +64,13 @@ export function resultDigest(body: string): Result["digest"] {
 
 export function resultAcceptanceProof(
   operationId: string,
-  body = "finished",
-  sequenceNumber = 1,
+  _body = "finished",
+  eventSequenceNumber = 1,
 ): ResultAcceptanceProof {
-  const delivery: ResultDelivery = {
-    operationId,
-    body,
-    digest: resultDigest(body),
-    sequenceNumber,
-  };
   return {
     operationId,
-    digest: delivery.digest,
-    sequenceNumber: delivery.sequenceNumber,
-  } as ResultAcceptanceProof;
+    acceptanceId: `pions.result-acceptance.v1:${"a".repeat(64)}`,
+    manifestDigest: resultDigest("manifest"),
+    eventSequenceNumber,
+  } as unknown as ResultAcceptanceProof;
 }

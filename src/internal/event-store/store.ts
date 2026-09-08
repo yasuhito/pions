@@ -9,7 +9,6 @@ import type {
   EventInput,
   Operation,
   OperationEvent,
-  ResultReference,
 } from "./model.js";
 import { reduceOperation, replayOperation, TransitionError } from "./reducer.js";
 import { decodeRecord, RecordDecodingError } from "./codec.js";
@@ -23,10 +22,8 @@ import type {
   StoreError,
   StoreErrorCode,
 } from "./index.js";
-import { ResultConflictError } from "../../public.js";
 import type {
   AcceptedResult,
-  Result,
   ResultAcceptanceEventEvidence,
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceReservation,
@@ -34,11 +31,6 @@ import type {
   ResultAcceptanceTransactionOutcome,
   StartupReceipt,
 } from "../../public.js";
-import type {
-  ResultAcceptanceProof,
-  ResultDelivery,
-} from "../worker-protocol.js";
-import { resultDigest } from "../result-digest.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
 import {
   preparationEvidenceMatchesReservation,
@@ -50,8 +42,6 @@ export type { StoredOperationRecord } from "./codec.js";
 interface LoadedRecord {
   readonly record: StoredOperationRecord;
   readonly operation: Operation;
-  readonly result?: Result;
-  readonly resultReference?: ResultReference;
 }
 
 class StoreFailure extends Error {
@@ -76,17 +66,6 @@ function asStoreError(error: unknown, fallback: StoreErrorCode): StoreError {
     code: fallback,
     message: error instanceof Error ? error.message : String(error),
   };
-}
-
-function acceptedDeliveryProof(
-  operationId: string,
-  delivery: Readonly<ResultDelivery>,
-): ResultAcceptanceProof {
-  return Object.freeze({
-    operationId,
-    digest: delivery.digest,
-    sequenceNumber: delivery.sequenceNumber,
-  }) as ResultAcceptanceProof;
 }
 
 function terminalResultAcceptanceFailure(
@@ -130,10 +109,7 @@ export abstract class ValidatedEventStore implements EventStore {
     operationId: string,
     record: StoredOperationRecord,
   ): Promise<void>;
-  protected abstract readResultBytes(operationId: string): Promise<Buffer | undefined>;
-  protected abstract writeResultBytes(operationId: string, bytes: Buffer): Promise<void>;
   protected abstract listOperationIds(): Promise<ReadonlyArray<string>>;
-  protected didPersistResultBytes(_operationId: string): void {}
   protected willAppend(_event: OperationEvent): void {}
   protected didAppend(_event: OperationEvent): void {}
 
@@ -149,14 +125,8 @@ export abstract class ValidatedEventStore implements EventStore {
   }
 
   private async load(operationId: string, required: boolean): Promise<LoadedRecord | undefined> {
-    const [recordValue, resultBytes] = await Promise.all([
-      this.readRecord(operationId),
-      this.readResultBytes(operationId),
-    ]);
+    const recordValue = await this.readRecord(operationId);
     if (recordValue === undefined) {
-      if (resultBytes !== undefined) {
-        throw failure("incomplete_record", "Result exists without its event record");
-      }
       if (required) throw failure("not_found", `Operation not found: ${operationId}`);
       return undefined;
     }
@@ -171,26 +141,7 @@ export abstract class ValidatedEventStore implements EventStore {
       throw failure("corrupt_record", error instanceof Error ? error.message : String(error));
     }
     if (operation === undefined) throw failure("corrupt_record", "Operation record has no events");
-    const persisted = record.events.filter((event) => event.type === "result_persisted");
-    if (persisted.length > 1) throw failure("corrupt_record", "Conflicting Result events");
-    const resultReference = persisted[0]?.type === "result_persisted" ? persisted[0].result : undefined;
-    if (resultReference === undefined) {
-      if (resultBytes !== undefined) throw failure("incomplete_record", "Result exists without result_persisted");
-      return { record, operation };
-    }
-    if (resultReference.location !== "result.utf8" || resultBytes === undefined) {
-      throw failure("corrupt_record", "Persisted Result is missing");
-    }
-    const digest = resultDigest(resultBytes);
-    if (resultBytes.byteLength !== resultReference.byteCount || digest !== resultReference.digest) {
-      throw failure("corrupt_record", "Persisted Result integrity check failed");
-    }
-    return {
-      record,
-      operation,
-      resultReference,
-      result: Object.freeze({ body: resultBytes.toString("utf8"), byteCount: resultBytes.byteLength, digest }),
-    };
+    return { record, operation };
   }
 
   create(request: OperationRequest): Effect.Effect<OperationSnapshot, StoreError> {
@@ -217,6 +168,8 @@ export abstract class ValidatedEventStore implements EventStore {
         task: request.task,
         requestedConfig: request.requestedConfig,
         effectiveConfig: request.effectiveConfig,
+        workProductRequirements: request.workProductRequirements,
+        resultRetentionPolicy: request.resultRetentionPolicy,
         lineage: request.lineage,
         startAuthorizationTiming: {
           createdAt,
@@ -230,17 +183,7 @@ export abstract class ValidatedEventStore implements EventStore {
   advance(
     operationId: string,
     intent: OperationIntent,
-  ): Effect.Effect<OperationSnapshot, StoreError | ResultConflictError> {
-    if (intent.type === "accept_result") {
-      return this.acceptResult(operationId, intent.delivery).pipe(
-        Effect.map(({ version, operation, result, resultAcceptanceProof }) => ({
-          version,
-          operation,
-          result,
-          resultAcceptanceProof,
-        })),
-      );
-    }
+  ): Effect.Effect<OperationSnapshot, StoreError> {
     if (intent.type === "startup_receipt_recorded") {
       return Effect.flatMap(this.read(operationId), (snapshot) => {
         const observedConfig = snapshot.operation.observedConfig;
@@ -323,6 +266,12 @@ export abstract class ValidatedEventStore implements EventStore {
           request.acceptanceRequestId.length === 0 ||
           request.manifest.value.requirementSetId !== request.requirements.requirementSetId ||
           request.manifest.value.requirementSetDigest !== request.requirements.digest
+        ) {
+          return terminalResultAcceptanceFailure("request_mismatch");
+        }
+        if (
+          request.requirements.requirementSetId !== loaded.operation.workProductRequirements.requirementSetId ||
+          request.requirements.digest !== loaded.operation.workProductRequirements.digest
         ) {
           return terminalResultAcceptanceFailure("request_mismatch");
         }
@@ -427,6 +376,7 @@ export abstract class ValidatedEventStore implements EventStore {
           operationId: reservation.operationId,
           acceptanceRequestId: reservation.acceptanceRequestId,
           acceptedAt,
+          eventSequenceNumber: loaded.operation.stateSeq + 1,
           manifestFormatId: reservation.manifest.formatId,
           manifestDigest: reservation.manifestDigest,
           requirementSetId: reservation.requirementSetId,
@@ -502,7 +452,6 @@ export abstract class ValidatedEventStore implements EventStore {
         return {
           version: { sequenceNumber: lastEvent.seq, recordedAt: lastEvent.timestamp },
           operation: loaded.operation,
-          ...(loaded.result === undefined ? {} : { result: loaded.result }),
         };
       }),
       catch: (error) => asStoreError(error, "corrupt_record"),
@@ -561,160 +510,9 @@ export abstract class ValidatedEventStore implements EventStore {
             recordedAt: persistedEvent.timestamp,
           },
           operation,
-          ...(loaded?.result === undefined ? {} : { result: loaded.result }),
         };
       }),
       catch: (error) => asStoreError(error, "corrupt_record"),
-    });
-  }
-
-  private acceptResult(operationId: string, delivery: ResultDelivery): Effect.Effect<
-    {
-      readonly version: Readonly<{ readonly sequenceNumber: number; readonly recordedAt: string }>;
-      readonly operation: Operation;
-      readonly result: Result;
-      readonly resultAcceptanceProof: ResultAcceptanceProof;
-    },
-    StoreError | ResultConflictError
-  > {
-    return Effect.tryPromise({
-      try: () => this.serialize(operationId, async () => {
-        const loaded = await this.load(operationId, true);
-        if (loaded === undefined) throw failure("not_found", `Operation not found: ${operationId}`);
-        const bytes = Buffer.from(delivery.body, "utf8");
-        const digest = resultDigest(bytes);
-        if (delivery.digest !== digest) {
-          throw failure("corrupt_record", "Result digest does not match body");
-        }
-        if (loaded.result !== undefined && loaded.resultReference !== undefined) {
-          if (loaded.result.digest === delivery.digest) {
-            const lastEvent = loaded.record.events.at(-1);
-            if (lastEvent === undefined) throw failure("corrupt_record", "Operation record has no events");
-            return {
-              version: { sequenceNumber: lastEvent.seq, recordedAt: lastEvent.timestamp },
-              operation: loaded.operation,
-              result: loaded.result,
-              resultAcceptanceProof: acceptedDeliveryProof(operationId, delivery),
-            };
-          }
-          if (loaded.operation.resultConflict !== undefined) {
-            throw new ResultConflictError(
-              operationId,
-              loaded.operation.resultConflict.acceptedDigest,
-              loaded.operation.resultConflict.conflictingDigest,
-            );
-          }
-          const conflict = {
-            acceptedDigest: loaded.result.digest,
-            conflictingDigest: delivery.digest,
-            deliverySequenceNumber: delivery.sequenceNumber,
-          } as const;
-          const seq = loaded.operation.stateSeq + 1;
-          const eventWithoutTimestamp = {
-            type: "result_conflict_recorded",
-            conflict,
-            actorId: RUNTIME_ACTOR_ID,
-            authority: OPERATION_AUTHORITY,
-            eventId: `${operationId}:${seq}`,
-            operationId,
-            schemaVersion: EVENT_SCHEMA_VERSION,
-            seq,
-          } as const;
-          try {
-            reduceOperation(loaded.operation, {
-              ...eventWithoutTimestamp,
-              timestamp: loaded.record.events.at(-1)!.timestamp,
-            });
-          } catch (error) {
-            throw failure(
-              "corrupt_record",
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-          try {
-            const timestamp = await Effect.runPromise(this.clock.now());
-            if (!Number.isFinite(Date.parse(timestamp))) {
-              throw failure("corrupt_record", "Operation event timestamp is not absolute");
-            }
-            const event = {
-              ...eventWithoutTimestamp,
-              timestamp,
-            } satisfies OperationEvent;
-            await this.writeRecord(operationId, {
-              ...loaded.record,
-              events: [...loaded.record.events, event],
-            });
-            this.didAppend(event);
-          } catch (error) {
-            throw failure(
-              "write_failed",
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-          throw new ResultConflictError(
-            operationId,
-            conflict.acceptedDigest,
-            conflict.conflictingDigest,
-          );
-        }
-        const result: Result = Object.freeze({ body: delivery.body, byteCount: bytes.byteLength, digest });
-        const reference: ResultReference = Object.freeze({
-          location: "result.utf8",
-          byteCount: result.byteCount,
-          digest,
-          deliverySequenceNumber: delivery.sequenceNumber,
-        });
-        const seq = loaded.operation.stateSeq + 1;
-        const eventWithoutTimestamp = {
-          type: "result_persisted",
-          result: reference,
-          actorId: RUNTIME_ACTOR_ID,
-          authority: OPERATION_AUTHORITY,
-          eventId: `${operationId}:${seq}`,
-          operationId,
-          schemaVersion: EVENT_SCHEMA_VERSION,
-          seq,
-        } as const;
-        let operation: Operation;
-        try {
-          operation = reduceOperation(loaded.operation, {
-            ...eventWithoutTimestamp,
-            timestamp: loaded.record.events.at(-1)!.timestamp,
-          });
-        } catch (error) {
-          throw failure(
-            "corrupt_record",
-            error instanceof Error ? error.message : String(error),
-          );
-        }
-        try {
-          await this.writeResultBytes(operationId, bytes);
-          this.didPersistResultBytes(operationId);
-          const timestamp = await Effect.runPromise(this.clock.now());
-          if (!Number.isFinite(Date.parse(timestamp))) {
-            throw failure("corrupt_record", "Operation event timestamp is not absolute");
-          }
-          const event = {
-            ...eventWithoutTimestamp,
-            timestamp,
-          } satisfies OperationEvent;
-          operation = reduceOperation(loaded.operation, event);
-          await this.writeRecord(operationId, {
-            ...loaded.record,
-            events: [...loaded.record.events, event],
-          });
-          this.didAppend(event);
-          return {
-            version: { sequenceNumber: event.seq, recordedAt: event.timestamp },
-            operation,
-            result,
-            resultAcceptanceProof: acceptedDeliveryProof(operationId, delivery),
-          };
-        } catch (error) {
-          throw failure("write_failed", error instanceof Error ? error.message : String(error));
-        }
-      }),
-      catch: (error) => error instanceof ResultConflictError ? error : asStoreError(error, "corrupt_record"),
     });
   }
 

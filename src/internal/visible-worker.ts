@@ -11,7 +11,6 @@ import {
 } from "./worker-protocol.js";
 import type {
   ResultAcceptanceProof,
-  ResultDelivery,
   WorkerConfig,
 } from "./worker-protocol.js";
 import type { Operation } from "./event-store/index.js";
@@ -31,9 +30,9 @@ import type {
 } from "./services.js";
 import type {
   OperationPersistenceError,
-  ResultConflictError,
   ResourceProofRejectedError,
   WorkerConfigurationFailureReason,
+  WorkerProducedResult,
 } from "../public.js";
 import { configurationMismatch } from "./worker-configuration.js";
 import type { CommandExecutor } from "./herdr-presentation.js";
@@ -89,8 +88,8 @@ type WorkerStartReception =
 
 type WorkerCompletionReception =
   | {
-      readonly state: "results_received";
-      readonly deliveries: ReadonlyArray<ResultDelivery>;
+      readonly state: "result_received";
+      readonly result: Readonly<WorkerProducedResult>;
       readonly evidence: Readonly<AgentRunEvidence>;
     }
   | {
@@ -254,7 +253,7 @@ export class VisibleWorker implements WorkerAdapter {
     cancellation: WorkerCancellation,
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResultConflictError | ResourceProofRejectedError
+    OperationPersistenceError | ResourceProofRejectedError
   > {
     let session: Session | undefined;
     return Effect.gen(this, function* () {
@@ -308,17 +307,17 @@ export class VisibleWorker implements WorkerAdapter {
           if (!backendInspected) return { state: "liveness-unproven" } as const;
           return { state: reception.state, evidence: reception.evidence } as WorkerRunOutcome;
         }
-        if (reception.state !== "results_received") {
+        if (reception.state !== "result_received") {
           return {
             state: reception.state === "cancelled"
               ? "worker_protocol_failed"
               : reception.state,
           } as WorkerRunOutcome;
         }
-        const acceptance = yield* hooks.acceptResults(reception.deliveries);
+        const acceptance = yield* hooks.acceptResult(reception.result);
         if (
           acceptance.state === "accepted" &&
-          acceptance.proofs.some((proof) => proof.operationId !== operation.operationId)
+          acceptance.proof.operationId !== operation.operationId
         ) {
           return { state: "worker_protocol_failed" } as const;
         }
@@ -364,7 +363,7 @@ export class VisibleWorker implements WorkerAdapter {
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
-    const configPath = join(directory, "worker.v7.json");
+    const configPath = join(directory, "worker.v8.json");
     await mkdir(this.options.socketDirectory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(this.options.socketDirectory, DIRECTORY_MODE);
     const socketPath = join(this.options.socketDirectory, `${operationDirectoryKey(operation.operationId)}.sock`);
@@ -522,8 +521,8 @@ export class VisibleWorker implements WorkerAdapter {
                     evidence: event.evidence,
                   }
                 : {
-                    state: "results_received",
-                    deliveries: event.reception.deliveries,
+                    state: "result_received",
+                    result: event.result,
                     evidence: event.evidence,
                   });
             }

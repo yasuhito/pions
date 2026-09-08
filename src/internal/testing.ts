@@ -25,7 +25,6 @@ import type {
   OperationPersistenceError,
   ResourceProofRejectedError,
   Result,
-  ResultConflictError,
 } from "../public.js";
 import { resultDigest } from "./result-digest.js";
 
@@ -83,7 +82,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
     hooks: Readonly<WorkerRunHooks>,
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResultConflictError | ResourceProofRejectedError
+    OperationPersistenceError | ResourceProofRejectedError
   > {
     return Effect.gen(this, function* () {
       this.startCount += 1;
@@ -140,12 +139,20 @@ export class FakeWorkerAdapter implements WorkerAdapter {
         } as const;
       }
       this.trace.push("worker-protocol:receive-result");
-      const acceptance = yield* hooks.acceptResults(this.messages.map((message) => ({
-        operationId: operation.operationId,
-        body: message.body,
-        digest: message.digest ?? resultDigest(Buffer.from(message.body, "utf8")),
-        sequenceNumber: message.sequenceNumber ?? 1,
-      })));
+      const message = this.messages[0];
+      if (message === undefined) return { state: "worker_protocol_failed" } as const;
+      const bytes = Buffer.from(message.body, "utf8");
+      const acceptance = yield* hooks.acceptResult({
+        acceptanceRequestId: `request-${message.sequenceNumber ?? 1}`,
+        body: {
+          formatId: "pions.result-body.v1",
+          normalizationId: "identity.v1",
+          expectedByteCount: bytes.byteLength,
+          expectedDigest: message.digest ?? resultDigest(bytes),
+          bytes,
+        },
+        workProducts: [],
+      });
       const acknowledged = yield* acknowledgeResultAcceptance(
         acceptance,
         {
@@ -170,7 +177,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
   }
 
   protected acknowledge(acceptance: Readonly<ResultAcceptanceProof>): void {
-    this.trace.push(`worker-protocol:ack:${acceptance.sequenceNumber}`);
+    this.trace.push(`worker-protocol:ack:${acceptance.eventSequenceNumber}`);
   }
 
   protected cancel(

@@ -117,6 +117,7 @@ export interface WorkerProfilePolicy {
   readonly tools: ReadonlyArray<string>;
   readonly resources: Readonly<WorkerResourcePolicy>;
   readonly workProductRequirements: Readonly<WorkProductRequirementsPolicy>;
+  readonly acceptedArtifactRetentionMs: number;
 }
 
 export type WorkProductRequirementsFailureReason =
@@ -130,6 +131,24 @@ export class WorkProductRequirementsError extends Error {
   constructor(readonly reason: WorkProductRequirementsFailureReason, message: string) {
     super(message);
   }
+}
+
+export interface WorkerProducedArtifact {
+  readonly formatId: string;
+  readonly normalizationId: string;
+  readonly expectedByteCount: number;
+  readonly expectedDigest: ArtifactDigest;
+  readonly bytes: Uint8Array | AsyncIterable<Uint8Array>;
+}
+
+export interface WorkerProducedWorkProduct extends WorkerProducedArtifact {
+  readonly key: string;
+}
+
+export interface WorkerProducedResult {
+  readonly acceptanceRequestId: string;
+  readonly body: Readonly<WorkerProducedArtifact>;
+  readonly workProducts: ReadonlyArray<Readonly<WorkerProducedWorkProduct>>;
 }
 
 export interface ResultAcceptanceManifestWorkProduct {
@@ -351,9 +370,9 @@ export interface StartInstructionAcceptanceEvidence extends StartInstructionRefe
 
 export interface ResultAcceptanceEvidence {
   readonly acceptedAt: string;
-  readonly deliverySequenceNumber: number;
-  readonly byteCount: number;
-  readonly digest: Result["digest"];
+  readonly acceptanceId: `pions.result-acceptance.v1:${string}`;
+  readonly manifestDigest: ArtifactDigest;
+  readonly eventSequenceNumber: number;
 }
 
 export interface StopConfirmationEvidence {
@@ -724,15 +743,14 @@ export class OperationPersistenceError extends Error {
   }
 }
 
-export class ResultConflictError extends Error {
-  override readonly name = "ResultConflictError";
+export class ResultRetrievalError extends Error {
+  override readonly name = "ResultRetrievalError";
 
   constructor(
     readonly operationId: string,
-    readonly acceptedDigest: Result["digest"],
-    readonly conflictingDigest: Result["digest"],
+    readonly reason: ArtifactFailureReason,
   ) {
-    super(`Conflicting Result for Operation ${operationId}`);
+    super(`Result retrieval failed for Operation ${operationId}: ${reason}`);
   }
 }
 
@@ -786,6 +804,11 @@ export interface ArtifactRegistrationSnapshot {
   readonly registrationId: string;
   readonly artifactId: string;
   readonly state: "receiving" | "prepared";
+  readonly expectedByteCount: number;
+  readonly expectedDigest: ArtifactDigest;
+  readonly formatId: string;
+  readonly normalizationId: string;
+  readonly dependencies: ReadonlyArray<string>;
 }
 
 export type ArtifactFailureReason =
@@ -865,6 +888,7 @@ export interface AcceptedResult {
   readonly operationId: string;
   readonly acceptanceRequestId: string;
   readonly acceptedAt: string;
+  readonly eventSequenceNumber: number;
   readonly manifestFormatId: ResultAcceptanceManifest["formatId"];
   readonly manifestDigest: ArtifactDigest;
   readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];

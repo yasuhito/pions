@@ -7,7 +7,6 @@ import type {
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
 import type { PersistedResourceRecord } from "../resource-controller.js";
-import type { ResultDelivery } from "../worker-protocol.js";
 
 export interface CreatedPresentation {
   readonly kind: "herdr_pane";
@@ -81,7 +80,6 @@ export type OperationIntent =
     }
   | { readonly type: "operation_blocked" }
   | { readonly type: "operation_unblocked" }
-  | { readonly type: "accept_result"; readonly delivery: ResultDelivery }
   | { readonly type: "self_settled"; readonly outcome: "succeeded" }
   | {
       readonly type: "self_settled";
@@ -123,7 +121,6 @@ export type OperationIntent =
 export type PersistableOperationIntent =
   | Exclude<
       OperationIntent,
-      | { readonly type: "accept_result" }
       | { readonly type: "startup_receipt_recorded" }
       | { readonly type: "start_authorization_decided" }
     >

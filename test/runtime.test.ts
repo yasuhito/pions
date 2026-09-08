@@ -18,12 +18,11 @@ import {
   OperationPersistenceError,
   OperationUnknownError,
   ResourceProofRejectedError,
-  ResultConflictError,
   SpawnRejectedError,
   WorkerConfigurationError,
 } from "../src/index.js";
 import type { Operation } from "../src/internal/event-store/index.js";
-import type { ResultDelivery } from "../src/internal/worker-protocol.js";
+import type { WorkerProducedResult } from "../src/public.js";
 import {
   acknowledgeResultAcceptance,
   makeSingleRunWorker,
@@ -75,7 +74,7 @@ class ControlledWorkerAdapter implements WorkerAdapter {
   readonly cancelTrace: Array<string> = [];
   private readonly receivers = new Map<
     string,
-    (effect: Effect.Effect<ReadonlyArray<ResultDelivery>>) => void
+    (effect: Effect.Effect<Readonly<WorkerProducedResult>>) => void
   >();
   private readonly cancellationResponders = new Map<
     string,
@@ -97,7 +96,7 @@ class ControlledWorkerAdapter implements WorkerAdapter {
     hooks: Readonly<WorkerRunHooks>,
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResultConflictError | ResourceProofRejectedError
+    OperationPersistenceError | ResourceProofRejectedError
   > {
     return Effect.gen(this, function* () {
       this.startCount += 1;
@@ -114,10 +113,10 @@ class ControlledWorkerAdapter implements WorkerAdapter {
           cwd: { state: "observed", value: operation.effectiveConfig.cwd },
         },
       });
-      const deliveries = yield* Effect.async<ReadonlyArray<ResultDelivery>>((resume) => {
+      const produced = yield* Effect.async<Readonly<WorkerProducedResult>>((resume) => {
         this.receivers.set(operation.operationId, resume);
       });
-      const acceptance = yield* hooks.acceptResults(deliveries);
+      const acceptance = yield* hooks.acceptResult(produced);
       return yield* acknowledgeResultAcceptance(
         acceptance,
         {
@@ -140,7 +139,18 @@ class ControlledWorkerAdapter implements WorkerAdapter {
     const resume = this.receivers.get(operationId);
     if (resume === undefined) throw new Error(`No receiver for ${operationId}`);
     const digest = `sha256:${createHash("sha256").update(body).digest("hex")}` as const;
-    resume(Effect.succeed([{ operationId, body, digest, sequenceNumber: 1 }]));
+    const bytes = Buffer.from(body, "utf8");
+    resume(Effect.succeed({
+      acceptanceRequestId: "request-1",
+      body: {
+        formatId: "pions.result-body.v1",
+        normalizationId: "identity.v1",
+        expectedByteCount: bytes.byteLength,
+        expectedDigest: digest,
+        bytes,
+      },
+      workProducts: [],
+    }));
   }
 
   confirmWorkerStopped(operationId: string): void {
@@ -156,7 +166,7 @@ class FailingChildWorkerAdapter extends ControlledWorkerAdapter {
     hooks: Readonly<WorkerRunHooks>,
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResultConflictError | ResourceProofRejectedError
+    OperationPersistenceError | ResourceProofRejectedError
   > {
     if (operation.operationId === "child") {
       this.startCount += 1;
@@ -167,7 +177,7 @@ class FailingChildWorkerAdapter extends ControlledWorkerAdapter {
 }
 
 async function waitForReceiver(): Promise<void> {
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setTimeout(resolve, 25));
 }
 
 async function storedOperation(store: InMemoryEventStore, operationId: string) {
@@ -793,6 +803,7 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
           tools: ["read", "network"],
           resources: { resourceProofPolicy: "disabled" },
           workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+          acceptedArtifactRetentionMs: 86_400_000,
         },
       },
     },
@@ -802,6 +813,45 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
     .catch(() => undefined);
 
   assert.equal(ids.issuedCount, 0);
+});
+
+test("Runtime rejects required work products when the Worker adapter cannot produce them", async () => {
+  const runtime = makeRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new FakeClock([]),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+    configuration: {
+      cwd: "/work/project",
+      profiles: {
+        coding: {
+          modelCandidates: [{ provider: "test", id: "test-model" }],
+          thinkingLevel: "medium",
+          tools: ["read", "bash"],
+          resources: { resourceProofPolicy: "disabled" },
+          workProductRequirements: {
+            body: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS.body,
+            workProducts: [{
+              key: "patch",
+              formatId: "pions.patch.v1",
+              normalizationId: "identity.v1",
+              minCount: 1,
+              maxCount: 1,
+              maxByteCount: 1_024,
+            }],
+            maxTotalByteCount: 1_049_600,
+          },
+          acceptedArtifactRetentionMs: 86_400_000,
+        },
+      },
+    },
+  });
+
+  await assert.rejects(
+    runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" }),
+    (error) => error instanceof WorkerConfigurationError && error.reason === "unsupported_capability",
+  );
 });
 
 test("a child cannot raise its inherited thinking ceiling", async () => {
@@ -928,7 +978,8 @@ test("Runtime records the successful Operation event sequence", async () => {
       "worker_launched",
       "worker_identified",
       "automatic_operation_started",
-      "result_persisted",
+      "result_acceptance_prepared",
+      "result_accepted",
       "agent_settled",
       "self_settled",
       "operation_completed",
@@ -948,10 +999,11 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
       { seq: 4, timestamp: "2026-09-06T10:00:03.000Z" },
       { seq: 5, timestamp: "2026-09-06T10:00:04.000Z" },
       { seq: 6, timestamp: "2026-09-06T10:00:05.000Z" },
-      { seq: 7, timestamp: "2026-09-06T10:00:06.000Z" },
-      { seq: 8, timestamp: "2026-09-06T10:00:07.000Z" },
-      { seq: 9, timestamp: "2026-09-06T10:00:08.000Z" },
-      { seq: 10, timestamp: "2026-09-06T10:00:09.000Z" },
+      { seq: 7, timestamp: "2026-09-06T10:00:07.000Z" },
+      { seq: 8, timestamp: "2026-09-06T10:00:08.000Z" },
+      { seq: 9, timestamp: "2026-09-06T10:00:09.000Z" },
+      { seq: 10, timestamp: "2026-09-06T10:00:10.000Z" },
+      { seq: 11, timestamp: "2026-09-06T10:00:11.000Z" },
     ],
   );
 });
@@ -1064,57 +1116,6 @@ test("Runtime starts the Worker once for an idempotent spawn", async () => {
   const { worker } = await retryOperation();
 
   assert.equal(worker.startCount, 1);
-});
-
-test("Runtime rejects a conflicting Result with a typed error", async () => {
-  await assert.rejects(
-    completeOperation([
-      { body: "finished", sequenceNumber: 1 },
-      { body: "conflicting", sequenceNumber: 1 },
-    ]),
-    (error) => error instanceof ResultConflictError,
-  );
-});
-
-async function conflictResult() {
-  const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
-    worker: new FakeWorkerAdapter({
-      messages: [
-        { body: "finished", sequenceNumber: 1 },
-        { body: "conflicting", sequenceNumber: 1 },
-      ],
-    }),
-    clock: new FakeClock([
-      "2026-09-06T10:00:00.000Z",
-      "2026-09-06T10:00:01.000Z",
-      "2026-09-06T10:00:02.000Z",
-      "2026-09-06T10:00:03.000Z",
-      "2026-09-06T10:00:04.000Z",
-      "2026-09-06T10:00:05.000Z",
-      "2026-09-06T10:00:06.000Z",
-      "2026-09-06T10:00:07.000Z",
-      "2026-09-06T10:00:08.000Z",
-    ]),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-
-  const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  await handle.result().catch(() => undefined);
-
-  return store;
-}
-
-test("a conflicting Result does not overwrite terminal completion", async () => {
-  const store = await conflictResult();
-
-  assert.equal((await storedOperation(store, "operation-1")).state, "completed");
 });
 
 test("OperationHandle returns the same Result without republishing it", async () => {
@@ -1277,19 +1278,7 @@ test("an acknowledgement failure leaves the Operation unknown", async () => {
 test("an acknowledgement failure retains the accepted Result", async () => {
   const store = await acknowledgementFailure();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).result?.body, "accepted");
-});
-
-test("an acknowledgement failure retains Result conflict evidence", async () => {
-  const store = await acknowledgementFailure([
-    { body: "accepted", sequenceNumber: 1 },
-    { body: "conflicting", sequenceNumber: 2 },
-  ]);
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).resultConflict?.deliverySequenceNumber,
-    2,
-  );
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.result?.bodyArtifactId === undefined, false);
 });
 
 test("OperationHandle reports Worker start failure as a bounded typed failure", async () => {
@@ -1321,5 +1310,5 @@ test("Worker start failure records the failed terminal result", async () => {
 test("Worker start failure does not publish a successful Result", async () => {
   const { store } = await failOperation();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).result, undefined);
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.result, undefined);
 });

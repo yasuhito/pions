@@ -1,4 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { Cause, Effect, Exit, Schema } from "effect";
 
@@ -10,7 +13,10 @@ import type {
   StoreError,
 } from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
+import { resolveWorkProductRequirements } from "./result-acceptance-manifest.js";
+import { resultAcceptanceRetentionPolicy } from "./result-acceptance-transaction.js";
 import { validateWorkspaceScope } from "./resource-proof.js";
+import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
   RequestedWorkerConfigSchema,
@@ -30,8 +36,9 @@ import {
   OperationUnknownError,
   StartAuthorizationAuthenticationError,
   ResourceProofRejectedError,
-  ResultConflictError,
+  ResultRetrievalError,
   SpawnRejectedError,
+  WorkerConfigurationError,
 } from "../public.js";
 import type {
   CancellationResult,
@@ -73,7 +80,6 @@ interface OperationRecord {
   readonly rejectTerminal: (error: unknown) => void;
   pendingAdmissions: number;
   finalizing?: Promise<void>;
-  resultDeliveryError?: ResultConflictError;
   successfulExitConfirmed?: true;
   executionRejected?: true;
   worker?: Worker;
@@ -99,8 +105,21 @@ function isTerminal(operation: Operation): boolean {
 }
 
 export function makeRuntime(services: RuntimeServices): Runtime {
+  const artifactServices = services.artifacts === undefined || services.artifactCredential === undefined
+    ? runtimeArtifactStore(join(tmpdir(), `pions-runtime-${randomUUID()}`), services.store)
+    : {
+        artifacts: services.artifacts,
+        credential: services.artifactCredential,
+        synchronizeClock: undefined,
+      };
   const resultAcceptance = makeResultAcceptance({
     store: services.store,
+    artifacts: artifactServices.artifacts,
+    artifactCredential: artifactServices.credential,
+    clock: services.clock,
+    ...(artifactServices.synchronizeClock === undefined
+      ? {}
+      : { synchronizeArtifactClock: artifactServices.synchronizeClock }),
   });
   const records = new Map<string, OperationRecord>();
   const spawnsByParent = new Map<
@@ -139,29 +158,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const advanceOperation = (
     operationId: string,
     intent: OperationIntent,
-  ): Effect.Effect<Operation, OperationPersistenceError | ResultConflictError> =>
+  ): Effect.Effect<Operation, OperationPersistenceError> =>
     services.store.advance(operationId, intent).pipe(
       Effect.map((snapshot) => snapshot.operation),
-      Effect.mapError((error) =>
-        error instanceof ResultConflictError
-          ? error
-          : persistenceError(operationId, error),
-      ),
+      Effect.mapError((error) => persistenceError(operationId, error)),
     );
 
   const publicSnapshot = (
     stored: Readonly<StoredOperationSnapshot>,
   ): Readonly<PublicOperationSnapshot> => {
     const operation = stored.operation;
-    const resultAcceptance = operation.legacyResult === undefined ||
-        operation.resultAcceptedAt === undefined ||
-        stored.result === undefined
+    const resultAcceptance = operation.result === undefined
       ? undefined
       : {
-          acceptedAt: operation.resultAcceptedAt,
-          deliverySequenceNumber: operation.legacyResult.deliverySequenceNumber,
-          byteCount: stored.result.byteCount,
-          digest: stored.result.digest,
+          acceptedAt: operation.result.acceptedAt,
+          acceptanceId: operation.result.acceptanceId,
+          manifestDigest: operation.result.manifestDigest,
+          eventSequenceNumber: operation.result.eventSequenceNumber,
         };
     return Object.freeze({
       operationId: operation.operationId,
@@ -218,15 +231,34 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const project = (operation: Operation): Effect.Effect<void> =>
     Effect.catchAllCause(services.presentation.project(operation), () => Effect.void);
 
-  const readResult = (operationId: string) =>
-    services.store.read(operationId).pipe(
-      Effect.mapError((error) => persistenceError(operationId, error)),
-      Effect.flatMap((snapshot) =>
-        snapshot.result === undefined
-          ? Effect.fail(new OperationPersistenceError(operationId, "incomplete_record"))
-          : Effect.succeed(snapshot.result),
-      ),
-    );
+  const readResult = (
+    operationId: string,
+  ): Effect.Effect<Result, OperationPersistenceError | ResultRetrievalError> =>
+    Effect.gen(function* () {
+      const snapshot = yield* services.store.read(operationId).pipe(
+        Effect.mapError((error) => persistenceError(operationId, error)),
+      );
+      const accepted = snapshot.operation.result;
+      if (accepted === undefined) {
+        return yield* Effect.fail(new OperationPersistenceError(operationId, "incomplete_record"));
+      }
+      const retrieved = yield* Effect.tryPromise({
+        try: () => artifactServices.artifacts.retrieve(
+          artifactServices.credential,
+          accepted.bodyArtifactId,
+        ),
+        catch: () => new ResultRetrievalError(operationId, "storage_inspection_unavailable"),
+      });
+      if (retrieved.kind !== "retrieved") {
+        return yield* Effect.fail(new ResultRetrievalError(operationId, retrieved.reason));
+      }
+      const bytes = Buffer.from(retrieved.bytes);
+      return {
+        body: bytes.toString("utf8"),
+        byteCount: bytes.byteLength,
+        digest: retrieved.artifact.digest,
+      } as Result;
+    });
 
   const runEffect = async <Value>(effect: Effect.Effect<Value, unknown>): Promise<Value> => {
     const exit = await Effect.runPromiseExit(effect);
@@ -260,11 +292,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         }
       }
       const result = await runEffect(readResult(record.operationId));
-      if (record.resultDeliveryError === undefined) {
-        record.resolveTerminal(result);
-      } else {
-        record.rejectTerminal(record.resultDeliveryError);
-      }
+      record.resolveTerminal(result);
     } else if (operation.state === "cancelled") {
       record.rejectTerminal(new OperationCancelledError(record.operationId));
     } else if (operation.state === "unknown") {
@@ -432,10 +460,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           Effect.tap((started) => project(started)),
           Effect.asVoid,
         ),
-        acceptResults: (deliveries) => resultAcceptance.accept(
-          record.operationId,
-          deliveries,
-        ),
+        acceptResult: (result) => resultAcceptance.accept(record.operationId, result),
       }));
       if (workerOutcome.state !== "result_acknowledged") {
         const current = await runEffect(getOperation(record.operationId));
@@ -486,11 +511,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         await runEffect(project(operation));
         await tryFinalize(record);
         return;
-      }
-      if (workerOutcome.resultDeliveryError === undefined) {
-        delete record.resultDeliveryError;
-      } else {
-        record.resultDeliveryError = workerOutcome.resultDeliveryError;
       }
       if (workerOutcome.successfulExitConfirmed === true) {
         record.successfulExitConfirmed = true;
@@ -557,7 +577,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         return;
       }
       record.rejectTerminal(
-        error instanceof ResultConflictError ||
         error instanceof OperationPersistenceError
           ? error
           : new RuntimeError(
@@ -679,6 +698,18 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       }
     }
 
+    const workProductRequirements = resolveWorkProductRequirements(configuredProfile!);
+    if (
+      services.worker.producesWorkProducts !== true &&
+      workProductRequirements.workProducts.some(({ minCount }) => minCount > 0)
+    ) {
+      if (parent !== undefined) parent.pendingAdmissions -= 1;
+      throw new WorkerConfigurationError(
+        "unsupported_capability",
+        "The Worker adapter cannot produce required work products",
+      );
+    }
+
     const resourcePolicy = configuredProfile?.resources;
     const resourceAdmissionRejected = resourceConfigurationRejected ||
       resourcePolicy?.resourceProofPolicy === "required" && services.resourceProofController === undefined;
@@ -730,6 +761,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         task,
         requestedConfig,
         effectiveConfig,
+        workProductRequirements,
+        resultRetentionPolicy: resultAcceptanceRetentionPolicy(
+          operationId,
+          configuredProfile!.acceptedArtifactRetentionMs,
+        ),
         lineage,
       }).pipe(
         Effect.map((snapshot) => snapshot.operation),

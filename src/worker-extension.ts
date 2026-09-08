@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 
@@ -180,7 +180,21 @@ class PiWorkerBridge {
       return;
     }
     this.completionSent = true;
-    this.send({ type: "result", body, deliverySequenceNumber: 1 });
+    const bytes = Buffer.from(body, "utf8");
+    this.send({
+      type: "artifacts",
+      result: {
+        acceptanceRequestId: "result-1",
+        body: {
+          formatId: "pions.result-body.v1",
+          normalizationId: "identity.v1",
+          expectedByteCount: bytes.byteLength,
+          expectedDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          bytes,
+        },
+        workProducts: [],
+      },
+    });
     this.send({ type: "done", usage: this.usage, toolUses: this.toolUses });
   }
 

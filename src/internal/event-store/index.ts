@@ -4,11 +4,11 @@ import type {
   EffectiveWorkerConfig,
   OperationState,
   RequestedWorkerConfig,
-  Result,
+  ResolvedWorkProductRequirements,
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceReservationRequest,
+  ResultAcceptanceRetentionPolicyEvidence,
   ResultAcceptanceTransactionOutcome,
-  ResultConflictError,
   TaskSpec,
 } from "../../public.js";
 import type {
@@ -18,7 +18,6 @@ import type {
 import type {
   OperationIntent,
 } from "./intent.js";
-import type { ResultAcceptanceProof } from "../worker-protocol.js";
 
 export type {
   CreatedPresentation,
@@ -29,8 +28,6 @@ export type {
 export type {
   Operation,
   OperationLineage,
-  ResultConflictEvidence,
-  ResultReference,
 } from "./model.js";
 
 export type StoreErrorCode =
@@ -51,6 +48,8 @@ export interface OperationRequest {
   readonly task: Readonly<TaskSpec>;
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
+  readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
+  readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
   readonly lineage: Readonly<OperationLineage>;
   readonly authorizationWindowMs?: number;
 }
@@ -58,8 +57,6 @@ export interface OperationRequest {
 export interface OperationSnapshot {
   readonly version: Readonly<{ readonly sequenceNumber: number; readonly recordedAt: string }>;
   readonly operation: Operation;
-  readonly result?: Result;
-  readonly resultAcceptanceProof?: ResultAcceptanceProof;
 }
 
 export interface EventStore {
@@ -67,7 +64,7 @@ export interface EventStore {
   advance(
     operationId: string,
     intent: OperationIntent,
-  ): Effect.Effect<OperationSnapshot, StoreError | ResultConflictError>;
+  ): Effect.Effect<OperationSnapshot, StoreError>;
   prepareResultAcceptance(
     request: Readonly<ResultAcceptanceReservationRequest>,
   ): Effect.Effect<ResultAcceptanceTransactionOutcome>;

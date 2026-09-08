@@ -25,7 +25,7 @@ export {
   ProjectConfigurationError,
   ResourceProofRejectedError,
   ResultAcceptanceManifestError,
-  ResultConflictError,
+  ResultRetrievalError,
   SpawnRejectedError,
   StartAuthorizationAuthenticationError,
   WorkerConfigurationError,

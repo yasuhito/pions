@@ -89,11 +89,32 @@ const AgentRunEvidence = Schema.Struct({
   usage: Usage,
   toolUses: Schema.Array(ToolUse),
 });
-const ResultReference = Schema.Struct({
-  location: Schema.String,
-  byteCount: SafeInteger,
+const ArtifactContentRequirement = Schema.Struct({
+  formatId: Schema.String,
+  normalizationId: Schema.String,
+  maxByteCount: NonNegativeSafeInteger,
+});
+const WorkProductRequirement = Schema.Struct({
+  key: Schema.String,
+  formatId: Schema.String,
+  normalizationId: Schema.String,
+  maxByteCount: NonNegativeSafeInteger,
+  minCount: NonNegativeSafeInteger,
+  maxCount: NonNegativeSafeInteger,
+});
+const ResolvedWorkProductRequirements = Schema.Struct({
+  requirementSetId: Schema.String,
   digest: Digest,
-  deliverySequenceNumber: SafeInteger,
+  canonicalJson: Schema.String,
+  body: ArtifactContentRequirement,
+  workProducts: Schema.Array(WorkProductRequirement),
+  maxTotalByteCount: NonNegativeSafeInteger,
+});
+const ResultAcceptanceRetentionPolicy = Schema.Struct({
+  formatId: Schema.Literal("pions.result-acceptance-retention-policy.v1"),
+  operationId: Schema.String,
+  acceptedArtifactRetentionMs: NonNegativeSafeInteger,
+  digest: Digest,
 });
 const ResultAcceptanceManifestWorkProduct = Schema.Struct({
   key: Schema.String,
@@ -141,6 +162,7 @@ const AcceptedResult = Schema.Struct({
   operationId: Schema.String,
   acceptanceRequestId: Schema.String,
   acceptedAt: Schema.String,
+  eventSequenceNumber: SafeInteger,
   manifestFormatId: Schema.Literal("pions.result-acceptance-manifest.v1"),
   manifestDigest: Digest,
   requirementSetId: Schema.String,
@@ -215,11 +237,6 @@ const StartAuthorizationDecision = Schema.Struct({
   actorId: Schema.String,
   receiptDigest: Digest,
   decidedAt: Schema.String,
-});
-const ResultConflict = Schema.Struct({
-  acceptedDigest: Digest,
-  conflictingDigest: Digest,
-  deliverySequenceNumber: SafeInteger,
 });
 const FailureReason = Schema.Literal(
   "worker_start_failed",
@@ -357,6 +374,8 @@ const OperationEventSchema = Schema.Union(
     task: Task,
     requestedConfig: RequestedWorkerConfigSchema,
     effectiveConfig: EffectiveWorkerConfigSchema,
+    workProductRequirements: ResolvedWorkProductRequirements,
+    resultRetentionPolicy: ResultAcceptanceRetentionPolicy,
     lineage: Lineage,
     startAuthorizationTiming: StartAuthorizationTiming,
   }),
@@ -445,16 +464,6 @@ const OperationEventSchema = Schema.Union(
     type: Schema.Literal("result_accepted"),
     acceptance: AcceptedResult,
     preparationEvidence: ResultAcceptancePreparationEvidence,
-  }),
-  Schema.Struct({
-    ...EventMetadataFields,
-    type: Schema.Literal("result_persisted"),
-    result: ResultReference,
-  }),
-  Schema.Struct({
-    ...EventMetadataFields,
-    type: Schema.Literal("result_conflict_recorded"),
-    conflict: ResultConflict,
   }),
   Schema.Struct({
     ...EventMetadataFields,

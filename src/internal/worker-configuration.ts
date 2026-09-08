@@ -90,6 +90,7 @@ export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
   tools: Object.freeze(["read", "bash", "edit", "write"]),
   resources: Object.freeze({ resourceProofPolicy: "disabled" }),
   workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+  acceptedArtifactRetentionMs: 86_400_000,
 });
 
 export function validateWorkerResourcePolicy(profile: Readonly<WorkerProfilePolicy>): void {

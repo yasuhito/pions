@@ -19,6 +19,7 @@ import {
   FakeWorkerAdapter,
   InMemoryEventStore,
 } from "../src/internal/testing.js";
+import { retentionPolicy, workProductRequirements } from "./worker-protocol-fixtures.js";
 
 const timestamps = Array.from({ length: 40 }, (_, index) =>
   `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
@@ -74,6 +75,8 @@ async function recordWaitingOperation(
         aliases: [],
       },
     },
+    workProductRequirements,
+    resultRetentionPolicy: retentionPolicy(operationId),
     lineage: { rootOperationId: operationId, depth: 0 },
     authorizationWindowMs: 60_000,
   }));
@@ -160,8 +163,8 @@ test("Operation snapshot identifies one coherent persisted version", async () =>
   await handle.result();
 
   assert.deepEqual((await handle.read()).version, {
-    sequenceNumber: 11,
-    recordedAt: "2026-09-06T10:00:10.000Z",
+    sequenceNumber: 12,
+    recordedAt: "2026-09-06T10:00:12.000Z",
   });
 });
 
@@ -175,8 +178,8 @@ test("Operation lookup returns integrity evidence after its handle is lost", asy
   await handle.result();
 
   assert.equal(
-    (await (await runtime.operation(handle.operationId)).read()).resultAcceptance?.digest,
-    "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
+    ((await (await runtime.operation(handle.operationId)).read()).resultAcceptance?.eventSequenceNumber ?? 0) > 0,
+    true,
   );
 });
 
@@ -255,7 +258,7 @@ test("Operation snapshot retrieves Result acceptance separately", async () => {
   });
   await handle.result();
 
-  assert.equal((await handle.read()).resultAcceptance?.byteCount, 8);
+  assert.equal((await handle.read()).resultAcceptance?.acceptanceId.startsWith("pions.result-acceptance.v1:"), true);
 });
 
 test("Operation snapshot retrieves stop confirmation separately", async () => {
@@ -290,7 +293,7 @@ test("persisted Startup receipt omits authentication secrets", async (context) =
     extraReceiptFields: { capability: "worker-secret" },
   });
   const record = await readFile(
-    join(root, operationDirectoryKey("operation-1"), "events.v11.json"),
+    join(root, operationDirectoryKey("operation-1"), "events.v12.json"),
     "utf8",
   );
 

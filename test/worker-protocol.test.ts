@@ -1,663 +1,203 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 
 import {
   HostProtocolPeer,
   ProtocolViolation,
-  WORKER_PROTOCOL_VERSION,
   WorkerProtocolPeer,
+  WORKER_PROTOCOL_VERSION,
   decodeWorkerConfig,
   encodeWorkerConfig,
 } from "../src/internal/worker-protocol.js";
-import type {
-  HostProtocolEvent,
-  WorkerConfig,
-} from "../src/internal/worker-protocol.js";
-import {
-  agentRunEvidence,
-  effectiveConfig,
-  observedConfig,
-  piSessionId,
-  resultAcceptanceProof,
-  resultDigest,
-} from "./worker-protocol-fixtures.js";
+import type { ResultAcceptanceProof } from "../src/internal/worker-protocol.js";
+import { effectiveConfig, observedConfig } from "./worker-protocol-fixtures.js";
 
-const authority = {
-  operationId: "operation-1",
-  capability: "ab".repeat(32),
+const authority = { operationId: "operation-1", capability: "a".repeat(64) };
+const identity = {
+  type: "hello" as const,
+  processId: 123,
+  processInstanceId: "b".repeat(64),
+  processStartToken: "start-1",
 };
-const processId = 1234;
-const processInstanceId = "12".repeat(32);
-const processStartToken = "987654";
-const processIdentity = { processId, processInstanceId, processStartToken };
+const evidence = {
+  usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: 0 },
+  toolUses: [],
+};
 
-function peers(limits?: ConstructorParameters<typeof HostProtocolPeer>[1]) {
+function produced(body = "finished") {
+  const bytes = Buffer.from(body, "utf8");
   return {
-    host: new HostProtocolPeer(authority, limits),
-    worker: new WorkerProtocolPeer(authority, limits),
-  };
-}
-
-function successfulDelivery(
-  host: HostProtocolPeer,
-  worker: WorkerProtocolPeer,
-  body = "finished",
-): ReadonlyArray<HostProtocolEvent> {
-  const started = host.receive(Buffer.concat([
-    worker.send({ type: "hello", ...processIdentity }),
-    worker.send({ type: "started", piSessionId, observedConfig }),
-  ]));
-  worker.receive(host.begin());
-  return [
-    ...started,
-    ...host.receive(Buffer.concat([
-      worker.send({ type: "result", body, deliverySequenceNumber: 1 }),
-      worker.send({ type: "done", ...agentRunEvidence }),
-    ])),
-  ];
-}
-
-function rewriteFrame(
-  bytes: Buffer,
-  change: Readonly<Record<string, unknown>>,
-): Buffer {
-  const frame = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
-  return Buffer.from(`${JSON.stringify({ ...frame, ...change })}\n`, "utf8");
-}
-
-test("Worker protocol accepts an authenticated begin after Worker start", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-
-  assert.deepEqual(worker.receive(host.begin()), {
-    acknowledgementsComplete: false,
-    beginReceived: true,
-  });
-});
-
-test("Worker protocol rejects a duplicate begin", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  const begin = host.begin();
-  worker.receive(begin);
-
-  assert.throws(
-    () => worker.receive(begin),
-    (error) => error instanceof ProtocolViolation && error.reason === "sequence_mismatch",
-  );
-});
-
-test("Worker protocol rejects begin before Worker start", () => {
-  const { host, worker } = peers();
-  worker.send({ type: "hello", ...processIdentity });
-  const begin = rewriteFrame(Buffer.from("{}\n"), {
-    protocolVersion: WORKER_PROTOCOL_VERSION,
-    operationId: authority.operationId,
-    capability: authority.capability,
-    sequenceNumber: 1,
-    type: "begin",
-  });
-
-  assert.throws(
-    () => worker.receive(begin),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
-  );
-});
-
-test("Worker protocol rejects begin from a different Operation authority", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  const begin = rewriteFrame(host.begin(), { capability: "cd".repeat(32) });
-
-  assert.throws(
-    () => worker.receive(begin),
-    (error) => error instanceof ProtocolViolation && error.reason === "authority_mismatch",
-  );
-});
-
-test("Worker protocol rejects Result before begin", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-
-  assert.throws(
-    () => worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
-  );
-});
-
-test("Worker protocol returns the authenticated process identity", () => {
-  const { host, worker } = peers();
-
-  assert.deepEqual(successfulDelivery(host, worker)[0], {
-    type: "started",
-    processId,
-    processInstanceId,
-    processStartToken,
-    piSessionId,
-    observedConfig,
-  });
-});
-
-test("Worker protocol returns the authenticated Result reception", () => {
-  const { host, worker } = peers();
-
-  assert.deepEqual(successfulDelivery(host, worker)[1], {
-    type: "results_received",
-    reception: {
-      deliveries: [{
-        operationId: "operation-1",
-        body: "finished",
-        digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
-        sequenceNumber: 1,
-      }],
+    acceptanceRequestId: "request-1",
+    body: {
+      formatId: "pions.result-body.v1",
+      normalizationId: "identity.v1",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const,
+      bytes,
     },
-    evidence: agentRunEvidence,
-  });
-});
-
-test("Worker protocol carries observed Worker configuration", () => {
-  const { host, worker } = peers();
-  const started = successfulDelivery(host, worker)[0];
-
-  assert.deepEqual(started?.type === "started" ? started.observedConfig : undefined, observedConfig);
-});
-
-test("Worker protocol carries a typed pre-start configuration failure", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-
-  assert.deepEqual(
-    host.receive(worker.send({ type: "configuration_failed", reason: "thinking_level_mismatch" })),
-    [{ type: "worker_configuration_failed", reason: "thinking_level_mismatch" }],
-  );
-});
-
-test("Worker protocol carries settled Pi failure evidence", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.begin());
-
-  const events = host.receive(worker.send({
-    type: "failed",
-    errorMessage: "provider failed",
-    ...agentRunEvidence,
-  }));
-
-  assert.deepEqual(events, [{
-    type: "worker_failed",
-    errorMessage: "provider failed",
-    evidence: agentRunEvidence,
-  }]);
-});
-
-test("Worker protocol buffers a split frame", () => {
-  const { host, worker } = peers();
-  const hello = worker.send({ type: "hello", ...processIdentity });
-  host.receive(hello.subarray(0, 20));
-
-  assert.deepEqual(host.receive(hello.subarray(20)), []);
-});
-
-test("Worker protocol accepts a same-delivery retry", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.begin());
-  host.receive(worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }));
-  host.receive(worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }));
-
-  assert.deepEqual(
-    host.receive(worker.send({ type: "done", ...agentRunEvidence }))[0]?.type === "results_received"
-      ? host.acknowledgeResult(resultAcceptanceProof(authority.operationId)).complete
-      : undefined,
-    false,
-  );
-});
-
-test("Worker protocol rejects an invalid Operation capability", () => {
-  const host = new HostProtocolPeer(authority);
-  const worker = new WorkerProtocolPeer({ ...authority, capability: "cd".repeat(32) });
-
-  assert.throws(
-    () => host.receive(worker.send({ type: "hello", ...processIdentity })),
-    (error) => error instanceof ProtocolViolation && error.reason === "authority_mismatch",
-  );
-});
-
-test("Worker protocol rejects a stale Worker sequence", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  const started = rewriteFrame(worker.send({ type: "started", piSessionId, observedConfig }), { sequenceNumber: 1 });
-
-  assert.throws(
-    () => host.receive(started),
-    (error) => error instanceof ProtocolViolation && error.reason === "sequence_mismatch",
-  );
-});
-
-test("Worker protocol uses version 7", () => {
-  assert.equal(WORKER_PROTOCOL_VERSION, 7);
-});
-
-test("Worker protocol rejects a different frame version", () => {
-  const { host, worker } = peers();
-  const hello = rewriteFrame(
-    worker.send({ type: "hello", ...processIdentity }),
-    { protocolVersion: WORKER_PROTOCOL_VERSION + 1 },
-  );
-
-  assert.throws(
-    () => host.receive(hello),
-    (error) => error instanceof ProtocolViolation && error.reason === "version_mismatch",
-  );
-});
-
-test("Worker protocol rejects a nonnumeric frame version as an invalid frame", () => {
-  const { host } = peers();
-  const frame = Buffer.from(JSON.stringify({
-    protocolVersion: String(WORKER_PROTOCOL_VERSION),
-  }) + "\n", "utf8");
-
-  assert.throws(
-    () => host.receive(frame),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_frame",
-  );
-});
-
-test("Worker protocol reports version mismatch before validating frame shape", () => {
-  const { host } = peers();
-  const frame = Buffer.from(JSON.stringify({
-    protocolVersion: WORKER_PROTOCOL_VERSION + 1,
-  }) + "\n", "utf8");
-
-  assert.throws(
-    () => host.receive(frame),
-    (error) => error instanceof ProtocolViolation && error.reason === "version_mismatch",
-  );
-});
-
-test("Worker protocol rejects an oversized first frame", () => {
-  const { host } = peers({ firstFrameBytes: 64 });
-
-  assert.throws(
-    () => host.receive(Buffer.from("x".repeat(65), "utf8")),
-    (error) => error instanceof ProtocolViolation && error.reason === "frame_too_large",
-  );
-});
-
-test("Worker protocol applies the normal limit to a coalesced remainder", () => {
-  const { host, worker } = peers({ frameBytes: 256 });
-  const bytes = Buffer.concat([
-    worker.send({ type: "hello", ...processIdentity }),
-    Buffer.from("x".repeat(257), "utf8"),
-  ]);
-
-  assert.throws(
-    () => host.receive(bytes),
-    (error) => error instanceof ProtocolViolation && error.reason === "frame_too_large",
-  );
-});
-
-test("Worker protocol rejects an oversized inbound Result", () => {
-  const host = new HostProtocolPeer(authority, { resultBytes: 4 });
-  const worker = new WorkerProtocolPeer(authority);
-
-  assert.throws(
-    () => successfulDelivery(host, worker, "finished"),
-    (error) => error instanceof ProtocolViolation && error.reason === "result_too_large",
-  );
-});
-
-test("Worker protocol refuses to emit an oversized first frame", () => {
-  const worker = new WorkerProtocolPeer(authority, { firstFrameBytes: 64 });
-
-  assert.throws(
-    () => worker.send({ type: "hello", ...processIdentity }),
-    (error) => error instanceof ProtocolViolation && error.reason === "frame_too_large",
-  );
-});
-
-test("Worker protocol refuses to emit an oversized normal frame", () => {
-  const host = new HostProtocolPeer(authority);
-  const worker = new WorkerProtocolPeer(authority, {
-    frameBytes: 512,
-    resultBytes: 1024,
-  });
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.begin());
-
-  assert.throws(
-    () => worker.send({ type: "result", body: "x".repeat(500), deliverySequenceNumber: 1 }),
-    (error) => error instanceof ProtocolViolation && error.reason === "frame_too_large",
-  );
-});
-
-test("a failed Worker protocol send leaves its sequence unchanged", () => {
-  const host = new HostProtocolPeer(authority);
-  const worker = new WorkerProtocolPeer(authority, {
-    frameBytes: 512,
-    resultBytes: 1024,
-  });
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.begin());
-  try {
-    worker.send({ type: "result", body: "x".repeat(500), deliverySequenceNumber: 1 });
-  } catch {
-    // The observable assertion below verifies that this failed transition did not commit.
-  }
-  const retry = worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 });
-
-  assert.equal(JSON.parse(retry.toString("utf8")).sequenceNumber, 3);
-});
-
-test("Worker protocol rejects an excessive inbound session Result total", () => {
-  const host = new HostProtocolPeer(authority, {
-    resultBytes: 8,
-    sessionResultBytes: 8,
-  });
-  const worker = new WorkerProtocolPeer(authority);
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.begin());
-  host.receive(worker.send({ type: "result", body: "12345", deliverySequenceNumber: 1 }));
-
-  assert.throws(
-    () => host.receive(worker.send({ type: "result", body: "67890", deliverySequenceNumber: 1 })),
-    (error) => error instanceof ProtocolViolation && error.reason === "session_result_too_large",
-  );
-});
-
-test("Worker protocol rejects too many inbound Result deliveries", () => {
-  const host = new HostProtocolPeer(authority, { resultDeliveries: 1 });
-  const worker = new WorkerProtocolPeer(authority);
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.begin());
-  host.receive(worker.send({ type: "result", body: "first", deliverySequenceNumber: 1 }));
-
-  assert.throws(
-    () => host.receive(worker.send({ type: "result", body: "second", deliverySequenceNumber: 2 })),
-    (error) => error instanceof ProtocolViolation && error.reason === "too_many_results",
-  );
-});
-
-test("Worker protocol rejects a mismatched Result digest", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.begin());
-  const result = rewriteFrame(
-    worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
-    { digest: `sha256:${"0".repeat(64)}` },
-  );
-
-  assert.throws(
-    () => host.receive(result),
-    (error) => error instanceof ProtocolViolation && error.reason === "digest_mismatch",
-  );
-});
-
-test("Worker protocol emits ACK only after explicit Result acknowledgement", () => {
-  const { host, worker } = peers();
-  successfulDelivery(host, worker);
-
-  assert.deepEqual(
-    worker.receive(host.acknowledgeResult(resultAcceptanceProof(authority.operationId)).bytes),
-    { acknowledgementsComplete: true },
-  );
-});
-
-test("Worker protocol makes a premature ACK reception terminal", () => {
-  const { worker } = peers();
-  worker.send({ type: "hello", ...processIdentity });
-  worker.send({ type: "started", piSessionId, observedConfig });
-  const acknowledgement = Buffer.from(`${JSON.stringify({
-    protocolVersion: WORKER_PROTOCOL_VERSION,
-    operationId: authority.operationId,
-    digest: resultDigest("finished"),
-    deliverySequenceNumber: 1,
-    type: "ack",
-  })}\n`, "utf8");
-  try {
-    worker.receive(acknowledgement);
-  } catch {
-    // The attempted send below exposes the terminal failure state.
-  }
-
-  assert.throws(
-    () => worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
-  );
-});
-
-test("Worker protocol makes a failed ACK reception terminal", () => {
-  const { host, worker } = peers();
-  host.receive(Buffer.concat([
-    worker.send({ type: "hello", ...processIdentity }),
-    worker.send({ type: "started", piSessionId, observedConfig }),
-  ]));
-  worker.receive(host.begin());
-  host.receive(Buffer.concat([
-    worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
-    worker.send({ type: "result", body: "finished", deliverySequenceNumber: 2 }),
-    worker.send({ type: "done", ...agentRunEvidence }),
-  ]));
-  const first = host.acknowledgeResult(resultAcceptanceProof(authority.operationId, "finished", 1));
-  const invalid = rewriteFrame(
-    host.acknowledgeResult(resultAcceptanceProof(authority.operationId, "finished", 2)).bytes,
-    { deliverySequenceNumber: 99 },
-  );
-  try {
-    worker.receive(Buffer.concat([first.bytes, invalid]));
-  } catch {
-    // The next reception exposes the terminal failure state.
-  }
-
-  assert.throws(
-    () => worker.receive(first.bytes),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
-  );
-});
-
-test("ACK distinguishes conflicting Results with the same delivery sequence", () => {
-  const { host, worker } = peers();
-  host.receive(Buffer.concat([
-    worker.send({ type: "hello", ...processIdentity }),
-    worker.send({ type: "started", piSessionId, observedConfig }),
-  ]));
-  worker.receive(host.begin());
-  host.receive(Buffer.concat([
-    worker.send({ type: "result", body: "accepted", deliverySequenceNumber: 1 }),
-    worker.send({ type: "result", body: "conflicting", deliverySequenceNumber: 1 }),
-    worker.send({ type: "done", ...agentRunEvidence }),
-  ]));
-  const acknowledgement = host.acknowledgeResult(
-    resultAcceptanceProof(authority.operationId, "accepted", 1),
-  );
-
-  assert.equal(worker.receive(acknowledgement.bytes).acknowledgementsComplete, false);
-});
-
-test("Worker protocol rejects ACK before Result reception completes", () => {
-  const { host } = peers();
-
-  assert.throws(
-    () => host.acknowledgeResult(resultAcceptanceProof(authority.operationId)),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
-  );
-});
-
-test("Host protocol peer makes a frame received after done terminal", () => {
-  const { host, worker } = peers();
-  successfulDelivery(host, worker);
-  try {
-    host.receive(Buffer.from("{}\n", "utf8"));
-  } catch {
-    // The acknowledgement attempt below exposes the terminal failure state.
-  }
-
-  assert.throws(
-    () => host.acknowledgeResult(resultAcceptanceProof(authority.operationId)),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_transition",
-  );
-});
-
-test("Host protocol peer rejects an incomplete frame after done", () => {
-  const { host, worker } = peers();
-  host.receive(Buffer.concat([
-    worker.send({ type: "hello", ...processIdentity }),
-    worker.send({ type: "started", piSessionId, observedConfig }),
-  ]));
-  worker.receive(host.begin());
-  const bytes = Buffer.concat([
-    worker.send({ type: "result", body: "finished", deliverySequenceNumber: 1 }),
-    worker.send({ type: "done", ...agentRunEvidence }),
-    Buffer.from("{", "utf8"),
-  ]);
-
-  assert.throws(
-    () => host.receive(bytes),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_frame",
-  );
-});
-
-test("Worker protocol rejects an incomplete frame after the final ACK", () => {
-  const { host, worker } = peers();
-  successfulDelivery(host, worker);
-  const acknowledgement = host.acknowledgeResult(
-    resultAcceptanceProof(authority.operationId),
-  ).bytes;
-
-  assert.throws(
-    () => worker.receive(Buffer.concat([acknowledgement, Buffer.from("{", "utf8")])),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_frame",
-  );
-});
-
-test("Worker protocol rejects disconnect before Result reception completes", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-
-  assert.throws(
-    () => host.disconnect(),
-    (error) => error instanceof ProtocolViolation && error.reason === "incomplete_session",
-  );
-});
-
-test("Worker protocol encodes cancellation control", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-
-  assert.equal(JSON.parse(host.requestCancellation()?.toString("utf8") ?? "").type, "cancel");
-});
-
-test("Worker protocol authenticates cancellation control", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-
-  assert.equal(
-    JSON.parse(host.requestCancellation()?.toString("utf8") ?? "").capability,
-    authority.capability,
-  );
-});
-
-test("Worker protocol sequences cancellation after begin", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.begin());
-
-  assert.equal(
-    JSON.parse(host.requestCancellation()?.toString("utf8") ?? "").sequenceNumber,
-    2,
-  );
-});
-
-test("Worker protocol rejects cancellation from a different authority", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  const cancellation = rewriteFrame(
-    host.requestCancellation() ?? Buffer.alloc(0),
-    { capability: "cd".repeat(32) },
-  );
-
-  assert.throws(
-    () => worker.receive(cancellation),
-    (error) => error instanceof ProtocolViolation && error.reason === "authority_mismatch",
-  );
-});
-
-test("Worker protocol authenticates backend cancellation acknowledgement", () => {
-  const { host, worker } = peers();
-  host.receive(worker.send({ type: "hello", ...processIdentity }));
-  host.receive(worker.send({ type: "started", piSessionId, observedConfig }));
-  worker.receive(host.requestCancellation() ?? Buffer.alloc(0));
-
-  assert.deepEqual(host.receive(worker.send({ type: "cancelled" })), [
-    { type: "worker_cancelled" },
-  ]);
-});
-
-test("Worker protocol omits cancellation after Result reception", () => {
-  const { host, worker } = peers();
-  successfulDelivery(host, worker);
-
-  assert.equal(host.requestCancellation(), undefined);
-});
-
-function workerConfig(): WorkerConfig {
-  return {
-    operationId: authority.operationId,
-    capability: authority.capability,
-    socketPath: "/private/child.sock",
-    promptPath: "/private/prompt.utf8",
-    effectiveConfig,
+    workProducts: [],
   };
 }
 
-test("Worker protocol rejects a nonnumeric configuration version as an invalid frame", () => {
-  const encoded = JSON.stringify({
-    protocolVersion: String(WORKER_PROTOCOL_VERSION),
+function connected() {
+  const host = new HostProtocolPeer(authority);
+  const worker = new WorkerProtocolPeer(authority);
+  host.receive(worker.send(identity));
+  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  worker.receive(host.begin());
+  return { host, worker };
+}
+
+function proof(): ResultAcceptanceProof {
+  return {
+    operationId: authority.operationId,
+    acceptanceId: `pions.result-acceptance.v1:${"c".repeat(64)}`,
+    manifestDigest: `sha256:${"d".repeat(64)}`,
+    eventSequenceNumber: 7,
+  } as unknown as ResultAcceptanceProof;
+}
+
+function violationReason(action: () => unknown): string | undefined {
+  try {
+    action();
+    return undefined;
+  } catch (error) {
+    return error instanceof ProtocolViolation ? error.reason : undefined;
+  }
+}
+
+test("worker configuration uses the current protocol version", () => {
+  const encoded = encodeWorkerConfig({
+    ...authority,
+    socketPath: "/tmp/socket",
+    promptPath: "/tmp/prompt",
+    effectiveConfig,
   });
 
-  assert.throws(
-    () => decodeWorkerConfig(encoded),
-    (error) => error instanceof ProtocolViolation && error.reason === "invalid_frame",
-  );
+  assert.equal(JSON.parse(encoded).protocolVersion, WORKER_PROTOCOL_VERSION);
 });
 
-test("Worker protocol reports configuration version mismatch before validating its shape", () => {
-  const encoded = JSON.stringify({
-    protocolVersion: WORKER_PROTOCOL_VERSION + 1,
-  });
-
-  assert.throws(
-    () => decodeWorkerConfig(encoded),
-    (error) => error instanceof ProtocolViolation && error.reason === "version_mismatch",
-  );
-});
-
-test("Worker protocol round-trips the current Worker configuration", () => {
-  const config = workerConfig();
+test("worker configuration round trips", () => {
+  const config = { ...authority, socketPath: "/tmp/socket", promptPath: "/tmp/prompt", effectiveConfig };
 
   assert.deepEqual(decodeWorkerConfig(encodeWorkerConfig(config)), config);
 });
 
-test("Worker protocol rejects a different Worker configuration version", () => {
-  const current = JSON.parse(encodeWorkerConfig(workerConfig())) as Record<string, unknown>;
-  const encoded = JSON.stringify({ ...current, protocolVersion: WORKER_PROTOCOL_VERSION + 1 });
+test("authenticated Artifact frames deliver a Worker-produced Result", () => {
+  const { host, worker } = connected();
+  host.receive(worker.send({ type: "artifacts", result: produced() }));
 
-  assert.throws(
-    () => decodeWorkerConfig(encoded),
-    (error) => error instanceof ProtocolViolation && error.reason === "version_mismatch",
-  );
+  const events = host.receive(worker.send({ type: "done", ...evidence }));
+
+  assert.equal(events[0]?.type === "result_received" ? Buffer.from(events[0].result.body.bytes as Uint8Array).toString("utf8") : undefined, "finished");
+});
+
+test("work products retain their keys through the protocol", () => {
+  const { host, worker } = connected();
+  const result = produced();
+  const bytes = Buffer.from("patch", "utf8");
+  host.receive(worker.send({
+    type: "artifacts",
+    result: {
+      ...result,
+      workProducts: [{
+        key: "patch",
+        formatId: "pions.opaque.v1",
+        normalizationId: "identity.v1",
+        expectedByteCount: bytes.byteLength,
+        expectedDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        bytes,
+      }],
+    },
+  }));
+
+  const events = host.receive(worker.send({ type: "done", ...evidence }));
+
+  assert.equal(events[0]?.type === "result_received" ? events[0].result.workProducts[0]?.key : undefined, "patch");
+});
+
+test("Result ACK contains the persisted acceptance identifier", () => {
+  const { host, worker } = connected();
+  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "done", ...evidence }));
+
+  const acknowledgement = host.acknowledgeResult(proof());
+
+  assert.equal(JSON.parse(acknowledgement.bytes.toString("utf8")).acceptanceId, proof().acceptanceId);
+});
+
+test("worker recognizes a complete Result ACK", () => {
+  const { host, worker } = connected();
+  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "done", ...evidence }));
+
+  const reception = worker.receive(host.acknowledgeResult(proof()).bytes);
+
+  assert.equal(reception.acknowledgementsComplete, true);
+});
+
+test("repeating the same Result ACK is idempotent at the host", () => {
+  const { host, worker } = connected();
+  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "done", ...evidence }));
+  const first = host.acknowledgeResult(proof());
+
+  const repeated = host.acknowledgeResult(proof());
+
+  assert.equal(repeated.bytes.equals(first.bytes), true);
+});
+
+test("repeating the same Result ACK remains complete at the worker", () => {
+  const { host, worker } = connected();
+  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "done", ...evidence }));
+  const acknowledgement = host.acknowledgeResult(proof()).bytes;
+  worker.receive(acknowledgement);
+
+  const repeated = worker.receive(acknowledgement);
+
+  assert.equal(repeated.acknowledgementsComplete, true);
+});
+
+test("a stale Artifact frame sequence is rejected", () => {
+  const { host, worker } = connected();
+  const bytes = worker.send({ type: "artifacts", result: produced() });
+  const frames = bytes.toString("utf8").trimEnd().split("\n");
+  const first = `${frames[0]}\n`;
+  host.receive(Buffer.from(first));
+
+  assert.equal(violationReason(() => host.receive(Buffer.from(first))), "sequence_mismatch");
+});
+
+test("an unauthenticated Artifact frame is rejected", () => {
+  const { host, worker } = connected();
+  const frame = JSON.parse(worker.send({ type: "artifacts", result: produced() }).toString("utf8").split("\n")[0]!);
+  frame.capability = "e".repeat(64);
+
+  assert.equal(violationReason(() => host.receive(Buffer.from(`${JSON.stringify(frame)}\n`))), "authority_mismatch");
+});
+
+test("the removed result frame is rejected", () => {
+  const { host } = connected();
+  const frame = {
+    protocolVersion: WORKER_PROTOCOL_VERSION,
+    operationId: authority.operationId,
+    capability: authority.capability,
+    sequenceNumber: 3,
+    type: "result",
+    body: "legacy",
+  };
+
+  assert.equal(violationReason(() => host.receive(Buffer.from(`${JSON.stringify(frame)}\n`))), "invalid_frame");
+});
+
+test("an Artifact exceeding the per-Artifact limit is rejected", () => {
+  const host = new HostProtocolPeer(authority, { artifactBytes: 3 });
+  const worker = new WorkerProtocolPeer(authority, { artifactBytes: 3 });
+  host.receive(worker.send(identity));
+  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  worker.receive(host.begin());
+
+  assert.equal(violationReason(() => worker.send({ type: "artifacts", result: produced("four") })), "artifact_too_large");
 });

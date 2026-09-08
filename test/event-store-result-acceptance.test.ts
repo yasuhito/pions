@@ -15,7 +15,7 @@ import type { EventStore } from "../src/internal/event-store/index.js";
 import { operationDirectoryKey, PrivateFileEventStore } from "../src/internal/event-store/index.js";
 import type { OperationEvent } from "../src/internal/event-store/model.js";
 import { FakeClock, InMemoryEventStore } from "../src/internal/testing.js";
-import { effectiveConfig, requestedConfig } from "./worker-protocol-fixtures.js";
+import { effectiveConfig, requestedConfig, retentionPolicy, workProductRequirements } from "./worker-protocol-fixtures.js";
 
 const digest = (value: string) =>
   `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}` as const;
@@ -33,8 +33,8 @@ function reservation(
     formatId: "pions.result-acceptance-manifest.v1" as const,
     normalizationId: "pions.canonical-json.v1" as const,
     bodyArtifactId: "body-1",
-    requirementSetId: "pions.work-product-requirements.v1:default" as const,
-    requirementSetDigest: digest("requirements"),
+    requirementSetId: workProductRequirements.requirementSetId,
+    requirementSetDigest: workProductRequirements.digest,
     workProducts: [],
   };
   const manifestJson = JSON.stringify(manifestValue);
@@ -51,14 +51,7 @@ function reservation(
       totalByteCount: 8,
       artifactIds: ["body-1", "dependency-1"],
     },
-    requirements: {
-      requirementSetId: "pions.work-product-requirements.v1:default",
-      digest: digest("requirements"),
-      canonicalJson: "{}",
-      body: { formatId: "pions.result-body.utf8.v1", normalizationId: "none", maxByteCount: 100 },
-      workProducts: [],
-      maxTotalByteCount: 100,
-    },
+    requirements: workProductRequirements,
     ...overrides,
   };
 }
@@ -92,6 +85,8 @@ async function makeRunning(store: EventStore): Promise<void> {
     task: { promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" },
     requestedConfig,
     effectiveConfig,
+    workProductRequirements,
+    resultRetentionPolicy: retentionPolicy("operation-1"),
     lineage: { rootOperationId: "operation-1", depth: 0 },
   }));
   await Effect.runPromise(store.advance("operation-1", { type: "operation_starting" }));
@@ -268,7 +263,7 @@ test("a corrupt prepared reservation is not reconstructed as unaccepted", async 
   const store = new PrivateFileEventStore(root, clock());
   await makeRunning(store);
   await Effect.runPromise(store.prepareResultAcceptance(reservation()));
-  const path = join(root, operationDirectoryKey("operation-1"), "events.v11.json");
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v12.json");
   const record = JSON.parse(await readFile(path, "utf8")) as {
     events: Array<{ type: string; reservation?: { manifestCanonicalJson: string } }>;
   };
@@ -286,7 +281,7 @@ test("an old Event Store root is rejected instead of initialized as the current 
   const store = new PrivateFileEventStore(root, clock());
   await makeRunning(store);
   const directory = join(root, operationDirectoryKey("operation-1"));
-  await rename(join(directory, "events.v11.json"), join(directory, "events.v10.json"));
+  await rename(join(directory, "events.v12.json"), join(directory, "events.v10.json"));
 
   const failure = await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"));
 

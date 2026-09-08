@@ -437,6 +437,7 @@ export function installPionsExtension(
         tools: REVIEW_TOOLS,
         resources: { resourceProofPolicy: "disabled" },
         workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+        acceptedArtifactRetentionMs: 86_400_000,
       };
       const configKey = `${normalizedRoot}\0${model.provider}\0${model.id}\0${thinkingLevel}\0${claudeBridge?.sourceDigest ?? "builtin"}`;
       let runtime = options.runtime;

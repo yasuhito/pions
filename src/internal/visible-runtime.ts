@@ -9,6 +9,7 @@ import { PrivateFileEventStore } from "./event-store/index.js";
 import { EventStoreResourceEvidenceRepository } from "./event-store-resource-evidence.js";
 import { makeResourceProofController } from "./resource-controller.js";
 import { makeRuntime } from "./runtime.js";
+import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
 import {
@@ -74,12 +75,15 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     providerExtension,
   });
   const store = new PrivateFileEventStore(options.stateDirectory, systemClock);
+  const artifactServices = runtimeArtifactStore(options.stateDirectory, store, () => new Date());
   return makeRuntime({
     worker,
     clock: systemClock,
     ids: { nextOperationId: () => Effect.sync(() => randomUUID()) },
     presentation,
     store,
+    artifacts: artifactServices.artifacts,
+    artifactCredential: artifactServices.credential,
     ...(options.startAuthorizationAuthenticator === undefined
       ? {}
       : { startAuthorizationAuthenticator: options.startAuthorizationAuthenticator }),

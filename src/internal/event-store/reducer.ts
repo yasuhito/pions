@@ -67,6 +67,8 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.effectiveConfig.modelPolicy);
   Object.freeze(operation.effectiveConfig.tools);
   Object.freeze(operation.effectiveConfig);
+  deepFreeze(operation.workProductRequirements);
+  deepFreeze(operation.resultRetentionPolicy);
   if (operation.observedConfig !== undefined) {
     if (operation.observedConfig.model.state === "observed") Object.freeze(operation.observedConfig.model.value);
     if (operation.observedConfig.tools.state === "observed") Object.freeze(operation.observedConfig.tools.value);
@@ -103,8 +105,6 @@ function immutable(operation: Operation): Operation {
   if (operation.resultAcceptanceReservation !== undefined) {
     deepFreeze(operation.resultAcceptanceReservation);
   }
-  if (operation.legacyResult !== undefined) Object.freeze(operation.legacyResult);
-  if (operation.resultConflict !== undefined) Object.freeze(operation.resultConflict);
   return Object.freeze(operation);
 }
 
@@ -254,7 +254,13 @@ export function reduceOperation(
       throw new TransitionError("operation_required");
     }
     if (event.seq !== 1) throw new TransitionError("unexpected_sequence");
-    if (!validInitialConfiguration(event) || !validStartAuthorizationTiming(event)) {
+    if (
+      !validInitialConfiguration(event) ||
+      !validStartAuthorizationTiming(event) ||
+      event.resultRetentionPolicy.operationId !== event.operationId ||
+      !Number.isSafeInteger(event.resultRetentionPolicy.acceptedArtifactRetentionMs) ||
+      event.resultRetentionPolicy.acceptedArtifactRetentionMs <= 0
+    ) {
       throw new TransitionError("illegal_transition");
     }
 
@@ -282,6 +288,8 @@ export function reduceOperation(
         },
       },
       startAuthorizationTiming: { ...event.startAuthorizationTiming },
+      workProductRequirements: structuredClone(event.workProductRequirements),
+      resultRetentionPolicy: structuredClone(event.resultRetentionPolicy),
       startGate: "not_required",
       childOperationIds: [],
       settledChildOperationIds: [],
@@ -301,7 +309,6 @@ export function reduceOperation(
     throw new TransitionError("unexpected_sequence");
   }
   if (
-    event.type !== "result_conflict_recorded" &&
     event.type !== "presentation_cleanup_failed" &&
     event.type !== "resource_evidence_recorded" &&
     (current.state === "completed" ||
@@ -505,7 +512,7 @@ export function reduceOperation(
     case "worker_stop_confirmed":
       if (
         !current.workerLaunched ||
-        current.result === undefined && current.legacyResult === undefined ||
+        current.result === undefined ||
         current.state !== "running" && current.state !== "blocked" ||
         current.workerStopConfirmedAt !== undefined ||
         event.proof !== "worker-stop"
@@ -614,7 +621,6 @@ export function reduceOperation(
         current.state !== "running" && current.state !== "blocked" ||
         current.resultAcceptanceReservation !== undefined ||
         current.result !== undefined ||
-        current.legacyResult !== undefined ||
         event.reservation.operationId !== current.operationId ||
         event.reservation.preparedAt !== event.timestamp ||
         event.reservation.preparationId.length === 0 ||
@@ -637,6 +643,7 @@ export function reduceOperation(
         reservation === undefined ||
         current.result !== undefined ||
         event.acceptance.acceptedAt !== event.timestamp ||
+        event.acceptance.eventSequenceNumber !== event.seq ||
         event.acceptance.operationId !== current.operationId ||
         event.acceptance.preparationId !== reservation.preparationId ||
         event.acceptance.acceptanceRequestId !== reservation.acceptanceRequestId ||
@@ -661,36 +668,6 @@ export function reduceOperation(
       });
     }
 
-    case "result_persisted":
-      if (
-        current.state !== "running" && current.state !== "blocked" ||
-        current.resultAcceptanceReservation !== undefined ||
-        current.result !== undefined
-      ) {
-        throw new TransitionError("illegal_transition");
-      }
-      return immutable({
-        ...current,
-        legacyResult: { ...event.result },
-        resultAcceptedAt: event.timestamp,
-        stateSeq: event.seq,
-      });
-
-    case "result_conflict_recorded":
-      if (
-        current.legacyResult === undefined ||
-        current.resultConflict !== undefined ||
-        event.conflict.acceptedDigest !== current.legacyResult.digest ||
-        event.conflict.conflictingDigest === current.legacyResult.digest
-      ) {
-        throw new TransitionError("illegal_transition");
-      }
-      return immutable({
-        ...current,
-        resultConflict: { ...event.conflict },
-        stateSeq: event.seq,
-      });
-
     case "self_settled":
       if (
         current.state !== "starting" &&
@@ -703,7 +680,7 @@ export function reduceOperation(
         if (current.state === "starting") {
           throw new TransitionError("illegal_transition");
         }
-        if (current.result === undefined && current.legacyResult === undefined) {
+        if (current.result === undefined) {
           throw new TransitionError("result_required_before_self_settlement");
         }
         return immutable({
@@ -802,7 +779,7 @@ export function reduceOperation(
       if (current.descendantFailure) {
         throw new TransitionError("descendant_failure_prevents_completion");
       }
-      if (current.result === undefined && current.legacyResult === undefined) {
+      if (current.result === undefined) {
         throw new TransitionError("result_required_before_self_settlement");
       }
       return immutable({ ...current, state: "completed", stateSeq: event.seq });

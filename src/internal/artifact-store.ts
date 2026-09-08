@@ -333,6 +333,11 @@ function registrationSnapshot(record: RegistrationRecord): ArtifactRegistrationS
     registrationId: record.request.registrationId,
     artifactId: record.artifactId,
     state: record.state === "prepared" ? "prepared" : "receiving",
+    expectedByteCount: record.request.expectedByteCount,
+    expectedDigest: record.request.expectedDigest,
+    formatId: record.request.formatId,
+    normalizationId: record.request.normalizationId,
+    dependencies: [...record.request.dependencies],
   };
 }
 

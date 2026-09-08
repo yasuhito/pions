@@ -5,9 +5,10 @@ import type {
   OperationFailureReason,
   OperationState,
   RequestedWorkerConfig,
-  Result,
+  ResolvedWorkProductRequirements,
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceReservation,
+  ResultAcceptanceRetentionPolicyEvidence,
   StartAuthorizationDecisionRecord,
   StartAuthorizationTiming,
   StartGateState,
@@ -46,6 +47,8 @@ export interface Operation {
   readonly presentationCleanupFailure?: "pane_close_failed";
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
+  readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
+  readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
   readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
   readonly startGate: StartGateState;
   readonly startupReceipt?: Readonly<StartupReceipt>;
@@ -67,27 +70,12 @@ export interface Operation {
   readonly cancellationEpoch: number;
   readonly result?: Readonly<AcceptedResult>;
   readonly resultAcceptanceReservation?: Readonly<ResultAcceptanceReservation>;
-  readonly legacyResult?: Readonly<ResultReference>;
-  readonly resultConflict?: Readonly<ResultConflictEvidence>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
   readonly terminalReason?: OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export interface ResultReference {
-  readonly location: "result.utf8";
-  readonly byteCount: number;
-  readonly digest: Result["digest"];
-  readonly deliverySequenceNumber: number;
-}
-
-export interface ResultConflictEvidence {
-  readonly acceptedDigest: Result["digest"];
-  readonly conflictingDigest: Result["digest"];
-  readonly deliverySequenceNumber: number;
-}
-
-export const EVENT_SCHEMA_VERSION = 11 as const;
+export const EVENT_SCHEMA_VERSION = 12 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -108,6 +96,8 @@ export type OperationEvent = EventMetadata &
         readonly task: Readonly<TaskSpec>;
         readonly requestedConfig: Readonly<RequestedWorkerConfig>;
         readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
+        readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
+        readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
         readonly lineage: Readonly<OperationLineage>;
         readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
       }
@@ -145,14 +135,6 @@ export type OperationEvent = EventMetadata &
         readonly type: "result_accepted";
         readonly acceptance: Readonly<AcceptedResult>;
         readonly preparationEvidence: Readonly<ResultAcceptancePreparationEvidence>;
-      }
-    | {
-        readonly type: "result_persisted";
-        readonly result: Readonly<ResultReference>;
-      }
-    | {
-        readonly type: "result_conflict_recorded";
-        readonly conflict: Readonly<ResultConflictEvidence>;
       }
   );
 

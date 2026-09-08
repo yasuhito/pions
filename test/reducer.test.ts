@@ -16,7 +16,12 @@ import {
   replayOperation,
   TransitionError,
 } from "../src/internal/event-store/reducer.js";
-import { effectiveConfig, requestedConfig } from "./worker-protocol-fixtures.js";
+import {
+  effectiveConfig,
+  requestedConfig,
+  retentionPolicy,
+  workProductRequirements,
+} from "./worker-protocol-fixtures.js";
 
 const metadata = {
   operationId: "operation-1",
@@ -30,7 +35,12 @@ type TestEventInput =
   | Exclude<EventInput, { readonly type: "operation_requested" }>
   | Omit<
       Extract<EventInput, { readonly type: "operation_requested" }>,
-      "lineage" | "requestedConfig" | "effectiveConfig" | "startAuthorizationTiming"
+      | "lineage"
+      | "requestedConfig"
+      | "effectiveConfig"
+      | "workProductRequirements"
+      | "resultRetentionPolicy"
+      | "startAuthorizationTiming"
     >;
 
 function event(seq: number, value: TestEventInput): OperationEvent {
@@ -41,6 +51,8 @@ function event(seq: number, value: TestEventInput): OperationEvent {
           lineage: { rootOperationId: metadata.operationId, depth: 0 },
           requestedConfig,
           effectiveConfig,
+          workProductRequirements,
+          resultRetentionPolicy: retentionPolicy(metadata.operationId),
           startAuthorizationTiming: {
             createdAt: metadata.timestamp,
             windowMs: 0,

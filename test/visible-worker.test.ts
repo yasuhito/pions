@@ -35,7 +35,7 @@ import {
   InMemoryEventStore,
 } from "../src/internal/testing.js";
 import { WORKER_PROTOCOL_VERSION } from "../src/internal/worker-protocol.js";
-import type { ResultDelivery } from "../src/internal/worker-protocol.js";
+import type { WorkerProducedResult } from "../src/public.js";
 import {
   agentRunEvidence,
   effectiveConfig,
@@ -43,8 +43,10 @@ import {
   piSessionId,
   profilePolicy,
   requestedConfig,
+  retentionPolicy,
   resultAcceptanceProof,
   resultDigest,
+  workProductRequirements,
 } from "./worker-protocol-fixtures.js";
 import { HerdrPreconditionError, makeVisibleRuntime } from "../src/index.js";
 
@@ -179,6 +181,8 @@ function operation(
     task: { promptRef: "secret prompt reference", profile: "coding", idempotencyKey: operationId },
     requestedConfig,
     effectiveConfig: { ...effectiveConfig, model },
+    workProductRequirements,
+    resultRetentionPolicy: retentionPolicy(operationId),
     startAuthorizationTiming: {
       createdAt: "2026-09-06T10:00:00.000Z",
       windowMs: 0,
@@ -194,13 +198,13 @@ function operation(
 }
 
 function workerHooks(
-  acceptResults: WorkerRunHooks["acceptResults"] = () =>
-    Effect.succeed({ state: "protocol_failed" }),
+  acceptResult: WorkerRunHooks["acceptResult"] = () =>
+    Effect.succeed({ state: "failed", terminal: true, reason: "invalid_manifest" }),
 ): WorkerRunHooks {
   return {
     workerLaunched: () => Effect.void,
     workerIdentified: () => Effect.void,
-    acceptResults,
+    acceptResult,
   };
 }
 
@@ -243,7 +247,7 @@ async function fixture(options: {
     },
   });
   const current = operation("operation-1", "opaque:pane", options.operationModel ?? effectiveConfig.model);
-  const deliveries: Array<ResultDelivery> = [];
+  const deliveries: Array<Readonly<WorkerProducedResult>> = [];
   const identities: Array<string> = [];
   const piSessionIds: Array<string> = [];
   const hooks: WorkerRunHooks = {
@@ -252,17 +256,11 @@ async function fixture(options: {
       identities.push(identity.processInstanceId);
       piSessionIds.push(identity.piSessionId);
     }).pipe(Effect.andThen(options.workerIdentified?.(identity) ?? Effect.void)),
-    acceptResults: (received) => Effect.sync(() => {
-      deliveries.push(...received);
-      const first = received[0];
-      if (first === undefined) return { state: "protocol_failed" } as const;
+    acceptResult: (received) => Effect.sync(() => {
+      deliveries.push(received);
       return {
         state: "accepted",
-        proofs: received.map((item) => resultAcceptanceProof(
-          current.operationId,
-          item.body,
-          item.sequenceNumber,
-        )),
+        proof: resultAcceptanceProof(current.operationId),
       } as const;
     }),
   };
@@ -272,7 +270,7 @@ async function fixture(options: {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const directory = join(root, operationDirectoryKey(current.operationId));
-  const config = JSON.parse(await readFile(join(directory, "worker.v7.json"), "utf8")) as {
+  const config = JSON.parse(await readFile(join(directory, "worker.v8.json"), "utf8")) as {
     readonly socketPath: string;
   };
   const protocolSession = {
@@ -367,12 +365,25 @@ async function sendResultDelivery(
   send(client, withOperation(frame(options.capability, 2, "started", { piSessionId, observedConfig })));
   const receivedBegin = await begin;
   const acknowledgement = receiveFrame(client);
-  send(client, withOperation(frame(options.capability, 3, "result", {
-    body: options.body,
-    digest: resultDigest(options.body),
-    deliverySequenceNumber: 1,
+  const bytes = Buffer.from(options.body, "utf8");
+  send(client, withOperation(frame(options.capability, 3, "artifact_begin", {
+    acceptanceRequestId: "request-1",
+    slot: "body",
+    formatId: "pions.result-body.v1",
+    normalizationId: "identity.v1",
+    expectedByteCount: bytes.byteLength,
+    expectedDigest: resultDigest(options.body),
   })));
-  send(client, withOperation(frame(options.capability, 4, "done", { ...agentRunEvidence })));
+  send(client, withOperation(frame(options.capability, 4, "artifact_chunk", {
+    payload: bytes.toString("base64"),
+  })));
+  send(client, withOperation(frame(options.capability, 5, "artifact_commit", {
+    expectedDigest: resultDigest(options.body),
+  })));
+  send(client, withOperation(frame(options.capability, 6, "result_manifest", {
+    acceptanceRequestId: "request-1",
+  })));
+  send(client, withOperation(frame(options.capability, 7, "done", { ...agentRunEvidence })));
   return { acknowledgement, begin: receivedBegin };
 }
 
@@ -398,6 +409,7 @@ test("public visible Runtime composes the production path", async (context) => {
     runtime.spawn({ promptRef: "/private/prompt", profile: "coding", idempotencyKey: "task-1" }),
     (error) => error instanceof HerdrPreconditionError,
   );
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
 });
 
 test("public visible Runtime rejects unsafe Claude bridge configuration", async (context) => {
@@ -450,7 +462,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   while (executor.invocations.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v7.json");
+  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v8.json");
   const config = JSON.parse(await readFile(configPath, "utf8")) as { readonly socketPath: string };
   const client = await socket(config.socketPath);
   await sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
@@ -509,7 +521,7 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--no-prompt-templates",
     "--no-themes",
     "--approve",
-    "--pions-worker-config", join(value.directory, "worker.v7.json"),
+    "--pions-worker-config", join(value.directory, "worker.v8.json"),
   ]);
 });
 
@@ -557,7 +569,7 @@ test("visible Worker configuration uses private permissions", async (context) =>
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal(await mode(join(value.directory, "worker.v7.json")), 0o600);
+  assert.equal(await mode(join(value.directory, "worker.v8.json")), 0o600);
 });
 
 test("invalid Worker configuration reports a Worker start failure", async (context) => {
@@ -797,14 +809,10 @@ test("authenticated Result is observed through the Worker interface", async (con
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await deliver(value);
 
-  assert.deepEqual(value.deliveries, [
-    {
-      operationId: "operation-1",
-      body: "finished",
-      digest: resultDigest("finished"),
-      sequenceNumber: 1,
-    },
-  ]);
+  assert.equal(
+    Buffer.from(value.deliveries[0]?.body.bytes as Uint8Array).toString("utf8"),
+    "finished",
+  );
 });
 
 test("authenticated Worker identity is observed before Result delivery", async (context) => {
@@ -1456,7 +1464,7 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   const firstOutcome = Effect.runPromise(firstWorker.run(workerHooks(() =>
     Effect.succeed({
       state: "accepted",
-      proofs: [resultAcceptanceProof(second.operationId, "second")],
+      proof: resultAcceptanceProof(second.operationId, "second"),
     }))));
   void Effect.runPromise(secondWorker.run(workerHooks(() =>
     Effect.async(() => {
@@ -1467,8 +1475,8 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   }
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
-  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v7.json"), "utf8")) as { readonly socketPath: string };
-  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v7.json"), "utf8")) as { readonly socketPath: string };
+  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v8.json"), "utf8")) as { readonly socketPath: string };
+  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v8.json"), "utf8")) as { readonly socketPath: string };
   const secondClient = await socket(secondConfig.socketPath);
   await sendResultDelivery(secondClient, {
     capability: "cd".repeat(32),

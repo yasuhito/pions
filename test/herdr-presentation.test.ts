@@ -17,7 +17,7 @@ import {
   InMemoryEventStore,
 } from "../src/internal/testing.js";
 import { HerdrPreconditionError } from "../src/index.js";
-import { effectiveConfig, requestedConfig } from "./worker-protocol-fixtures.js";
+import { effectiveConfig, requestedConfig, retentionPolicy, workProductRequirements } from "./worker-protocol-fixtures.js";
 
 class OwnershipFailingStore extends InMemoryEventStore {
   override advance(operationId: string, input: OperationIntent) {
@@ -73,6 +73,8 @@ function operation(paneId?: string): Operation {
     task: { promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" },
     requestedConfig,
     effectiveConfig,
+    workProductRequirements,
+    resultRetentionPolicy: retentionPolicy("operation-1"),
     startAuthorizationTiming: {
       createdAt: "2026-09-06T10:00:00.000Z",
       windowMs: 0,

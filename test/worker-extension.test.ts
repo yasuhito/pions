@@ -49,7 +49,7 @@ async function extensionResult() {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-extension-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v7.json");
+  const configPath = join(root, "worker.v8.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",
@@ -110,15 +110,11 @@ async function extensionResult() {
     socket.on("data", (chunk: Buffer) => {
       for (const event of peer.receive(chunk)) {
         if (event.type === "started") resolveStarted();
-        if (event.type === "results_received") {
-          const delivery = event.reception.deliveries[0];
-          if (delivery === undefined) continue;
+        if (event.type === "result_received") {
           shutdownCountBeforeAcknowledgement = shutdownCount;
-          resolveResult(delivery);
+          resolveResult(event.result);
           accepted.write(peer.acknowledgeResult(resultAcceptanceProof(
             config.operationId,
-            delivery.body,
-            delivery.sequenceNumber,
           )).bytes);
         }
       }
@@ -148,12 +144,11 @@ async function extensionResult() {
 }
 
 test("Pi Worker extension returns the final settled assistant message", async () => {
-  assert.deepEqual((await extensionResult()).delivery, {
-    operationId: "operation-1",
-    body: "review finished",
-    digest: resultDigest("review finished"),
-    sequenceNumber: 1,
-  });
+  const delivery = await extensionResult();
+  assert.equal(
+    Buffer.from((delivery.delivery as { body: { bytes: Uint8Array } }).body.bytes).toString("utf8"),
+    "review finished",
+  );
 });
 
 test("Pi Worker extension does not request shutdown before Result acknowledgement", async () => {
@@ -168,7 +163,7 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-cancellation-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v7.json");
+  const configPath = join(root, "worker.v8.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",

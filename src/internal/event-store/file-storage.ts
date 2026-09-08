@@ -18,8 +18,7 @@ import type { RuntimeClock } from "../services.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
-const RECORD_FILE = "events.v11.json";
-const RESULT_FILE = "result.utf8";
+const RECORD_FILE = "events.v12.json";
 
 function hasCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
@@ -170,12 +169,6 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     );
   }
 
-  protected async readResultBytes(operationId: string): Promise<Buffer | undefined> {
-    const directory = await this.operationDirectory(operationId, false);
-    if (directory === undefined) return undefined;
-    return this.readPrivateFile(join(directory, RESULT_FILE));
-  }
-
   protected async listOperationIds(): Promise<ReadonlyArray<string>> {
     if (!(await validateDirectory(this.rootDirectory))) return [];
     const operationIds: Array<string> = [];
@@ -195,13 +188,4 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     return operationIds.sort();
   }
 
-  protected async writeResultBytes(operationId: string, bytes: Buffer): Promise<void> {
-    const directory = await this.operationDirectory(operationId, true);
-    if (directory === undefined) throw new Error("Unable to create Operation directory");
-    const path = join(directory, RESULT_FILE);
-    if (await validateRegularFile(path)) {
-      throw new Error("Result file already exists without accepted Result evidence");
-    }
-    await this.atomicWrite(path, bytes);
-  }
 }

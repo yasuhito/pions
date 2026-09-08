@@ -12,7 +12,6 @@ const systemClock: RuntimeClock = {
 
 export class InMemoryEventStore extends ValidatedEventStore {
   private readonly records = new Map<string, StoredOperationRecord>();
-  private readonly resultBytes = new Map<string, Buffer>();
 
   constructor(
     private readonly trace: Array<string> = [],
@@ -30,22 +29,8 @@ export class InMemoryEventStore extends ValidatedEventStore {
     return Promise.resolve();
   }
 
-  protected readResultBytes(operationId: string): Promise<Buffer | undefined> {
-    const bytes = this.resultBytes.get(operationId);
-    return Promise.resolve(bytes === undefined ? undefined : Buffer.from(bytes));
-  }
-
   protected listOperationIds(): Promise<ReadonlyArray<string>> {
     return Promise.resolve([...this.records.keys()].sort());
-  }
-
-  protected writeResultBytes(operationId: string, bytes: Buffer): Promise<void> {
-    this.resultBytes.set(operationId, Buffer.from(bytes));
-    return Promise.resolve();
-  }
-
-  protected override didPersistResultBytes(): void {
-    this.trace.push("result:bytes-persisted");
   }
 
   protected override didAppend(event: OperationEvent): void {

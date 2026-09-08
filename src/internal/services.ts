@@ -7,16 +7,14 @@ import type {
 } from "./event-store/index.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
 import type { InternalResourceProofController } from "./resource-controller.js";
+import type { ResultAcceptanceProof } from "./worker-protocol.js";
 import type {
-  ResultAcceptanceProof,
-  ResultDelivery,
-} from "./worker-protocol.js";
-import type {
+  ArtifactStore,
   ObservedWorkerConfig,
   OperationPersistenceError,
   StartAuthorizationAuthenticator,
-  ResultConflictError,
   ResourceProofRejectedError,
+  WorkerProducedResult,
   WorkerProfilePolicy,
 } from "../public.js";
 
@@ -53,20 +51,19 @@ export interface WorkerCancellationEvidence {
 }
 
 export interface WorkerRunHooks {
-  workerLaunched(): Effect.Effect<void, OperationPersistenceError | ResultConflictError>;
+  workerLaunched(): Effect.Effect<void, OperationPersistenceError>;
   workerIdentified(
     identity: Readonly<WorkerProcessIdentity>,
-  ): Effect.Effect<void, OperationPersistenceError | ResultConflictError | ResourceProofRejectedError>;
-  acceptResults(
-    deliveries: ReadonlyArray<ResultDelivery>,
-  ): Effect.Effect<ResultAcceptanceOutcome, OperationPersistenceError>;
+  ): Effect.Effect<void, OperationPersistenceError | ResourceProofRejectedError>;
+  acceptResult(
+    result: Readonly<WorkerProducedResult>,
+  ): Effect.Effect<ResultAcceptanceOutcome>;
 }
 
 export type WorkerRunOutcome =
   | {
       readonly state: "result_acknowledged";
       readonly evidence: Readonly<AgentRunEvidence>;
-      readonly resultDeliveryError?: ResultConflictError;
       readonly successfulExitConfirmed?: true;
     }
   | { readonly state: "worker_start_failed" }
@@ -87,7 +84,7 @@ export type WorkerRunOutcome =
 export interface Worker {
   run(
     hooks: Readonly<WorkerRunHooks>,
-  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError | ResultConflictError | ResourceProofRejectedError>;
+  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError | ResourceProofRejectedError>;
   cancel(
     cancellationEpoch: number,
     timeoutMs: number,
@@ -117,23 +114,21 @@ export function acknowledgeResultAcceptance(
     proof: Readonly<ResultAcceptanceProof>,
   ) => Effect.Effect<void, unknown>,
 ): Effect.Effect<WorkerRunOutcome> {
-  if (acceptance.state === "protocol_failed") {
+  if (acceptance.state !== "accepted") {
     return Effect.succeed({ state: "worker_protocol_failed" } as const);
   }
   const outcome: WorkerRunOutcome = {
     state: "result_acknowledged",
     evidence,
-    ...(acceptance.resultDeliveryError === undefined
-      ? {}
-      : { resultDeliveryError: acceptance.resultDeliveryError }),
   };
-  return Effect.forEach(acceptance.proofs, acknowledge, { discard: true }).pipe(
+  return acknowledge(acceptance.proof).pipe(
     Effect.as(outcome),
     Effect.catchAll(() => Effect.succeed({ state: "liveness-unproven" } as const)),
   );
 }
 
 export interface WorkerAdapter {
+  readonly producesWorkProducts?: boolean;
   open(operation: Operation): Worker;
 }
 
@@ -161,6 +156,8 @@ export interface RuntimeServices {
   readonly ids: IdGenerator;
   readonly presentation: Presentation;
   readonly store: EventStore;
+  readonly artifacts?: ArtifactStore;
+  readonly artifactCredential?: string;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
   readonly resourceProofController?: InternalResourceProofController;
   readonly configuration?: Readonly<{

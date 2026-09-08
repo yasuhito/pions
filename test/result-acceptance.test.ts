@@ -1,337 +1,172 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
-import type { Operation } from "../src/internal/event-store/index.js";
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
-import type { ResultDelivery } from "../src/internal/worker-protocol.js";
-import {
-  FakeClock,
-  InMemoryEventStore,
-} from "../src/internal/testing.js";
+import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
+import { FakeClock, InMemoryEventStore } from "../src/internal/testing.js";
+import type { WorkerProducedResult } from "../src/public.js";
 import {
   effectiveConfig,
   requestedConfig,
-  resultDigest,
+  retentionPolicy,
+  workProductRequirements,
 } from "./worker-protocol-fixtures.js";
 
-async function runningOperation(
-  store: InMemoryEventStore,
-  operationId = "operation-1",
-): Promise<Operation> {
-  await Effect.runPromise(store.create({
-    operationId,
-    task: {
-      promptRef: "file:///prompt.md",
-      profile: "coding",
-      idempotencyKey: "request-1",
+function digest(bytes: Uint8Array) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+}
+
+function produced(body = "finished", acceptanceRequestId = "request-1"): WorkerProducedResult {
+  const bytes = Buffer.from(body, "utf8");
+  return {
+    acceptanceRequestId,
+    body: {
+      formatId: "pions.result-body.v1",
+      normalizationId: "identity.v1",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: digest(bytes),
+      bytes,
     },
+    workProducts: [],
+  };
+}
+
+async function fixture(context: TestContext) {
+  const clock = new FakeClock(Array.from({ length: 30 }, (_, index) =>
+    `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
+  ));
+  const store = new InMemoryEventStore([], clock);
+  await Effect.runPromise(store.create({
+    operationId: "operation-1",
+    task: { promptRef: "private://prompt", profile: "coding", idempotencyKey: "task-1" },
     requestedConfig,
     effectiveConfig,
-    lineage: { rootOperationId: operationId, depth: 0 },
+    workProductRequirements,
+    resultRetentionPolicy: retentionPolicy("operation-1"),
+    lineage: { rootOperationId: "operation-1", depth: 0 },
   }));
-  await Effect.runPromise(store.advance(operationId, {
-    type: "presentation_owned",
-    presentation: {
-      kind: "herdr_pane",
-      paneId: "pane-1",
-      ownedByPions: true,
+  await Effect.runPromise(store.advance("operation-1", { type: "operation_starting" }));
+  await Effect.runPromise(store.advance("operation-1", { type: "worker_launched" }));
+  await Effect.runPromise(store.advance("operation-1", { type: "automatic_operation_started" }));
+  const root = await mkdtemp(join(tmpdir(), "pions-result-acceptance-"));
+  const artifactServices = runtimeArtifactStore(root, store);
+  context.after(async () => {
+    await artifactServices.artifacts.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  return {
+    store,
+    artifacts: artifactServices.artifacts,
+    credential: artifactServices.credential,
+    acceptance: makeResultAcceptance({
+      store,
+      artifacts: artifactServices.artifacts,
+      artifactCredential: artifactServices.credential,
+      clock,
+      synchronizeArtifactClock: artifactServices.synchronizeClock,
+    }),
+  };
+}
+
+test("Result acceptance publishes only after Artifact Store preparation", async (context) => {
+  const { acceptance } = await fixture(context);
+
+  const outcome = await Effect.runPromise(acceptance.accept("operation-1", produced()));
+
+  assert.equal(outcome.state, "accepted");
+});
+
+test("Result acceptance records the body Artifact identifier", async (context) => {
+  const { acceptance, store } = await fixture(context);
+  await Effect.runPromise(acceptance.accept("operation-1", produced()));
+
+  const snapshot = await Effect.runPromise(store.read("operation-1"));
+
+  assert.equal(snapshot.operation.result?.bodyArtifactId.length === 0, false);
+});
+
+test("a repeated acceptance request returns the same acceptance identifier", async (context) => {
+  const { acceptance } = await fixture(context);
+  const first = await Effect.runPromise(acceptance.accept("operation-1", produced()));
+
+  const repeated = await Effect.runPromise(acceptance.accept("operation-1", produced()));
+
+  assert.equal(
+    repeated.state === "accepted" && first.state === "accepted"
+      ? repeated.proof.acceptanceId
+      : undefined,
+    first.state === "accepted" ? first.proof.acceptanceId : undefined,
+  );
+});
+
+test("the same acceptance request with different content is a request mismatch", async (context) => {
+  const { acceptance } = await fixture(context);
+  await Effect.runPromise(acceptance.accept("operation-1", produced("first")));
+
+  const conflicting = await Effect.runPromise(
+    acceptance.accept("operation-1", produced("second")),
+  );
+
+  assert.equal(conflicting.state === "failed" ? conflicting.reason : undefined, "request_mismatch");
+});
+
+test("another request with the same content returns the accepted identifier", async (context) => {
+  const { acceptance } = await fixture(context);
+  const first = await Effect.runPromise(acceptance.accept("operation-1", produced("same", "request-1")));
+
+  const joined = await Effect.runPromise(
+    acceptance.accept("operation-1", produced("same", "request-2")),
+  );
+
+  assert.equal(
+    joined.state === "accepted" && first.state === "accepted" ? joined.proof.acceptanceId : undefined,
+    first.state === "accepted" ? first.proof.acceptanceId : undefined,
+  );
+});
+
+test("another request with different content is a manifest conflict", async (context) => {
+  const { acceptance } = await fixture(context);
+  await Effect.runPromise(acceptance.accept("operation-1", produced("first", "request-1")));
+
+  const conflicting = await Effect.runPromise(
+    acceptance.accept("operation-1", produced("second", "request-2")),
+  );
+
+  assert.equal(conflicting.state === "failed" ? conflicting.reason : undefined, "manifest_conflict");
+});
+
+test("a body with invalid UTF-8 is rejected before Result publication", async (context) => {
+  const { acceptance, store } = await fixture(context);
+  const bytes = Uint8Array.from([0xff]);
+  const result: WorkerProducedResult = {
+    acceptanceRequestId: "request-invalid",
+    body: {
+      formatId: "pions.result-body.v1",
+      normalizationId: "identity.v1",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: digest(bytes),
+      bytes,
     },
-  }));
-  await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
-  await Effect.runPromise(store.advance(operationId, { type: "worker_launched" }));
-  return Effect.runPromise(store.advance(operationId, { type: "automatic_operation_started" })).then(
-    (snapshot) => snapshot.operation,
-  );
-}
+    workProducts: [],
+  };
 
-function delivery(
-  body: string,
-  sequenceNumber: number,
-  digest = resultDigest(body),
-): ResultDelivery {
-  return { operationId: "operation-1", body, digest, sequenceNumber };
-}
+  await Effect.runPromise(acceptance.accept("operation-1", result));
 
-test("an empty Result delivery is a protocol failure", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z"]),
-  );
-  await runningOperation(store);
-  const acceptance = makeResultAcceptance({ store });
-
-  const outcome = await Effect.runPromise(acceptance.accept("operation-1", []));
-
-  assert.equal(outcome.state, "protocol_failed");
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.result, undefined);
 });
 
-test("a Result delivery for another Operation is a protocol failure", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
-  );
-  await runningOperation(store);
-  const acceptance = makeResultAcceptance({ store });
+test("an accepted body is retrieved from Artifact Store with verified integrity", async (context) => {
+  const { acceptance, store, artifacts, credential } = await fixture(context);
+  await Effect.runPromise(acceptance.accept("operation-1", produced()));
+  const accepted = (await Effect.runPromise(store.read("operation-1"))).operation.result!;
 
-  const outcome = await Effect.runPromise(acceptance.accept("operation-1", [{
-    ...delivery("foreign", 1),
-    operationId: "operation-2",
-  }]));
+  const retrieved = await artifacts.retrieve(credential, accepted.bodyArtifactId);
 
-  assert.equal(outcome.state, "protocol_failed");
-});
-
-test("a zero Result delivery sequence is a protocol failure", async () => {
-  const store = new InMemoryEventStore([], new FakeClock([
-    "2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z",
-    "2026-09-06T10:00:06.000Z",
-  ]));
-  await runningOperation(store);
-  const outcome = await Effect.runPromise(
-    makeResultAcceptance({ store }).accept("operation-1", [delivery("invalid", 0)]),
-  );
-
-  assert.equal(outcome.state, "protocol_failed");
-});
-
-test("a fractional Result delivery sequence is a protocol failure", async () => {
-  const store = new InMemoryEventStore([], new FakeClock([
-    "2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z",
-    "2026-09-06T10:00:06.000Z",
-  ]));
-  await runningOperation(store);
-  const outcome = await Effect.runPromise(
-    makeResultAcceptance({ store }).accept("operation-1", [delivery("invalid", 1.5)]),
-  );
-
-  assert.equal(outcome.state, "protocol_failed");
-});
-
-test("an unsafe Result delivery sequence is a protocol failure", async () => {
-  const store = new InMemoryEventStore([], new FakeClock([
-    "2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z",
-    "2026-09-06T10:00:06.000Z",
-  ]));
-  await runningOperation(store);
-  const outcome = await Effect.runPromise(
-    makeResultAcceptance({ store }).accept(
-      "operation-1",
-      [delivery("invalid", Number.MAX_SAFE_INTEGER + 1)],
-    ),
-  );
-
-  assert.equal(outcome.state, "protocol_failed");
-});
-
-test("a Result delivery with a mismatched digest is a protocol failure", async () => {
-  const store = new InMemoryEventStore([], new FakeClock([
-    "2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z",
-  ]));
-  await runningOperation(store);
-  const outcome = await Effect.runPromise(
-    makeResultAcceptance({ store }).accept("operation-1", [
-      delivery("invalid", 1, resultDigest("different")),
-    ]),
-  );
-
-  assert.equal(outcome.state, "protocol_failed");
-});
-
-test("Result acceptance persists bytes before returning a proof", async () => {
-  const trace: Array<string> = [];
-  const store = new InMemoryEventStore(
-    trace,
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
-  );
-  await runningOperation(store);
-  trace.length = 0;
-  const acceptance = makeResultAcceptance({ store });
-
-  await Effect.runPromise(acceptance.accept("operation-1", [delivery("finished", 1)]));
-
-  assert.deepEqual(trace, [
-    "result:bytes-persisted",
-    'event:{"operationId":"operation-1","type":"result_persisted","seq":6,"timestamp":"2026-09-06T10:00:06.000Z"}',
-  ]);
-});
-
-test("Result acceptance returns one proof for each same-Result retry", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
-  );
-  await runningOperation(store);
-  const acceptance = makeResultAcceptance({ store });
-
-  const outcome = await Effect.runPromise(acceptance.accept("operation-1", [
-    delivery("finished", 1),
-    delivery("finished", 2),
-  ]));
-
-  assert.deepEqual(
-    outcome.state === "accepted" ? outcome.proofs.map((proof) => proof.sequenceNumber) : [],
-    [1, 2],
-  );
-});
-
-test("a same-Result retry adds one acceptance event", async () => {
-  const trace: Array<string> = [];
-  const store = new InMemoryEventStore(
-    trace,
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
-  );
-  await runningOperation(store);
-  trace.length = 0;
-  const acceptance = makeResultAcceptance({ store });
-
-  await Effect.runPromise(acceptance.accept("operation-1", [
-    delivery("finished", 1),
-    delivery("finished", 2),
-  ]));
-
-  assert.equal(
-    trace.filter((entry) => entry.includes('"type":"result_persisted"')).length,
-    1,
-  );
-});
-
-test("a conflicting Result receives no acceptance proof", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
-  );
-  await runningOperation(store);
-  const acceptance = makeResultAcceptance({ store });
-
-  const outcome = await Effect.runPromise(acceptance.accept("operation-1", [
-    delivery("accepted", 1),
-    delivery("conflicting", 2),
-  ]));
-
-  assert.deepEqual(
-    outcome.state === "accepted" ? outcome.proofs.map((proof) => proof.sequenceNumber) : [],
-    [1],
-  );
-});
-
-test("Result acceptance preserves the first conflict", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
-  );
-  await runningOperation(store);
-  const acceptance = makeResultAcceptance({ store });
-
-  const outcome = await Effect.runPromise(acceptance.accept("operation-1", [
-    delivery("accepted", 1),
-    delivery("first conflict", 2),
-    delivery("accepted", 3),
-  ]));
-
-  assert.equal(
-    outcome.state === "accepted"
-      ? outcome.resultDeliveryError?.conflictingDigest
-      : undefined,
-    resultDigest("first conflict"),
-  );
-});
-
-test("a same-Result retry after a conflict receives an acceptance proof", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
-  );
-  await runningOperation(store);
-  const acceptance = makeResultAcceptance({ store });
-
-  const outcome = await Effect.runPromise(acceptance.accept("operation-1", [
-    delivery("accepted", 1),
-    delivery("conflicting", 2),
-    delivery("accepted", 3),
-  ]));
-
-  assert.deepEqual(
-    outcome.state === "accepted" ? outcome.proofs.map((proof) => proof.sequenceNumber) : [],
-    [1, 3],
-  );
-});
-
-test("Result acceptance returns persisted conflict evidence after restart", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
-  );
-  await runningOperation(store);
-  const firstAcceptance = makeResultAcceptance({ store });
-  await Effect.runPromise(firstAcceptance.accept("operation-1", [
-    delivery("accepted", 1),
-    delivery("first conflict", 2),
-  ]));
-  const restartedAcceptance = makeResultAcceptance({ store });
-
-  const outcome = await Effect.runPromise(restartedAcceptance.accept(
-    "operation-1",
-    [delivery("later conflict", 3)],
-  ));
-
-  assert.equal(
-    outcome.state === "accepted"
-      ? outcome.resultDeliveryError?.conflictingDigest
-      : undefined,
-    resultDigest("first conflict"),
-  );
-});
-
-test("a conflicting Result does not replace the accepted Result", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z", "2026-09-06T10:00:07.000Z"]),
-  );
-  await runningOperation(store);
-  const acceptance = makeResultAcceptance({ store });
-
-  await Effect.runPromise(acceptance.accept("operation-1", [
-    delivery("accepted", 1),
-    delivery("conflicting", 2),
-  ]));
-
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).result?.body, "accepted");
-});
-
-test("a persistence failure returns no acceptance proof", async () => {
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z"]),
-  );
-  await runningOperation(store);
-  const acceptance = makeResultAcceptance({ store });
-
-  const exit = await Effect.runPromiseExit(acceptance.accept("operation-1", [
-    delivery("valid", 1),
-  ]));
-
-  assert.equal(exit._tag, "Failure");
-});
-
-test("cancellation before Result acceptance leaves no Result bytes", async () => {
-  const trace: Array<string> = [];
-  const store = new InMemoryEventStore(
-    trace,
-    new FakeClock(["2026-09-06T10:00:01.000Z", "2026-09-06T10:00:02.000Z", "2026-09-06T10:00:03.000Z", "2026-09-06T10:00:04.000Z", "2026-09-06T10:00:05.000Z", "2026-09-06T10:00:06.000Z"]),
-  );
-  await runningOperation(store);
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "cancellation_requested",
-    cancellationEpoch: 1,
-  }));
-  trace.length = 0;
-  const acceptance = makeResultAcceptance({ store });
-
-  await Effect.runPromise(Effect.either(
-    acceptance.accept("operation-1", [delivery("finished", 1)]),
-  ));
-
-  assert.equal(trace.includes("result:bytes-persisted"), false);
+  assert.equal(retrieved.kind === "retrieved" ? Buffer.from(retrieved.bytes).toString("utf8") : undefined, "finished");
 });

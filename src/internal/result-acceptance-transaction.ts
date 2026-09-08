@@ -5,6 +5,7 @@ import type {
   AcceptedResult,
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceReservation,
+  ResultAcceptanceRetentionPolicyEvidence,
 } from "../public.js";
 
 export function manifestReservationIsConsistent(
@@ -60,6 +61,21 @@ export function preparationEvidenceMatchesReservation(
     evidence.digest === preparationEvidenceDigest(evidence) &&
     Number.isSafeInteger(evidence.acceptedArtifactRetentionMs) &&
     evidence.acceptedArtifactRetentionMs >= 0;
+}
+
+export function resultAcceptanceRetentionPolicy(
+  operationId: string,
+  acceptedArtifactRetentionMs: number,
+): ResultAcceptanceRetentionPolicyEvidence {
+  const value = {
+    formatId: "pions.result-acceptance-retention-policy.v1" as const,
+    operationId,
+    acceptedArtifactRetentionMs,
+  };
+  return {
+    ...value,
+    digest: `sha256:${createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")}`,
+  };
 }
 
 export function resultAcceptanceIdentifier(
