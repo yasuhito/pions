@@ -109,7 +109,7 @@ interface ArtifactRecord extends ArtifactMetadata {
   readonly schema: typeof ARTIFACT_SCHEMA;
   readonly dataFile: string;
   readonly lifecycle: "available" | "deletion_pending" | "deleted";
-  readonly storageStatus: "verified" | "corrupt" | "unknown";
+  readonly storageStatus: "verified" | "corrupt" | "uninspectable";
   readonly registeredAt: string;
   readonly unusedRetentionUntil: string;
   readonly deletionRecoveryAttempts: number;
@@ -612,7 +612,7 @@ class FileArtifactStore implements ArtifactStore {
       if (value.schema !== ARTIFACT_SCHEMA || value.artifactId !== artifactId ||
         value.dataFile !== `${artifactId}.bin` ||
         (value.lifecycle !== "available" && value.lifecycle !== "deletion_pending" && value.lifecycle !== "deleted") ||
-        (value.storageStatus !== "verified" && value.storageStatus !== "corrupt" && value.storageStatus !== "unknown") ||
+        (value.storageStatus !== "verified" && value.storageStatus !== "corrupt" && value.storageStatus !== "uninspectable") ||
         !Number.isSafeInteger(value.byteCount) || (value.byteCount ?? -1) < 0 ||
         typeof value.digest !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(value.digest) ||
         typeof value.formatId !== "string" || typeof value.normalizationId !== "string" ||
@@ -961,6 +961,7 @@ class FileArtifactStore implements ArtifactStore {
     if (bytes.byteLength !== record.request.expectedByteCount || sha256(bytes) !== record.request.expectedDigest) {
       throw new Error("Prepared Artifact bytes do not match their fixed integrity metadata");
     }
+    const registeredAt = this.now();
     let artifact: ArtifactRecord = {
       schema: ARTIFACT_SCHEMA,
       artifactId: record.artifactId,
@@ -972,8 +973,8 @@ class FileArtifactStore implements ArtifactStore {
       dataFile,
       lifecycle: "available",
       storageStatus: "verified",
-      registeredAt: this.now().toISOString(),
-      unusedRetentionUntil: new Date(this.now().getTime() + record.effectivePolicy.unusedArtifactRetentionMs).toISOString(),
+      registeredAt: registeredAt.toISOString(),
+      unusedRetentionUntil: new Date(registeredAt.getTime() + record.effectivePolicy.unusedArtifactRetentionMs).toISOString(),
       deletionRecoveryAttempts: 0,
     };
     const artifactPath = this.artifactPath(record.artifactId);
@@ -1034,7 +1035,7 @@ class FileArtifactStore implements ArtifactStore {
       bytes = await readFile(path);
     } catch (error) {
       const reason = hasCode(error, "ENOENT") ? "stored_artifact_corrupt" : "storage_inspection_unavailable";
-      await this.recordStorageStatus(record, reason === "stored_artifact_corrupt" ? "corrupt" : "unknown").catch(() => undefined);
+      await this.recordStorageStatus(record, reason === "stored_artifact_corrupt" ? "corrupt" : "uninspectable").catch(() => undefined);
       return reason;
     }
     if (bytes.byteLength !== record.byteCount || sha256(bytes) !== record.digest) {
@@ -1527,7 +1528,7 @@ class FileArtifactStore implements ArtifactStore {
       await syncDirectory(this.artifactDirectory);
     } catch (error) {
       if (!hasCode(error, "ENOENT")) {
-        await this.serializeIo(() => writeJson(this.artifactPath(record.artifactId), { ...record, storageStatus: "unknown" }));
+        await this.serializeIo(() => writeJson(this.artifactPath(record.artifactId), { ...record, storageStatus: "uninspectable" }));
         throw error;
       }
     }

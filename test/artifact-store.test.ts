@@ -524,6 +524,7 @@ test("garbage collection continuation advances beyond retained earlier artifacts
     register(artifacts, "registration-2", "second"),
     register(artifacts, "registration-3", "third"),
   ]);
+  if (registrations.some((result) => result.kind !== "registered")) throw new Error("registration failed");
   now = new Date("2026-09-07T10:01:00.000Z");
   const first = await artifacts.collectGarbage("credential", {
     collectionId: "gc-1",
@@ -541,7 +542,7 @@ test("garbage collection continuation advances beyond retained earlier artifacts
   });
   if (second.kind === "failed") throw new Error(second.reason);
 
-  assert.equal(first.deletedArtifactIds.length + second.deletedArtifactIds.length === 3 && registrations.every((result) => result.kind === "registered"), true);
+  assert.equal(first.deletedArtifactIds.length + second.deletedArtifactIds.length, 3);
 });
 
 test("garbage collection reports processing failure even when diagnostic persistence also fails", async (context) => {
