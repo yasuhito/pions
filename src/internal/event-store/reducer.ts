@@ -8,6 +8,10 @@ import {
 import type { StartInstructionReference, StartupReceipt } from "../../public.js";
 import type { Operation, OperationEvent } from "./model.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
+import {
+  manifestReservationIsConsistent,
+  preparationEvidenceMatchesReservation,
+} from "../result-acceptance-transaction.js";
 
 export type TransitionErrorCode =
   | "operation_required"
@@ -95,7 +99,11 @@ function immutable(operation: Operation): Operation {
   }
   Object.freeze(operation.childOperationIds);
   Object.freeze(operation.settledChildOperationIds);
-  if (operation.result !== undefined) Object.freeze(operation.result);
+  if (operation.result !== undefined) deepFreeze(operation.result);
+  if (operation.resultAcceptanceReservation !== undefined) {
+    deepFreeze(operation.resultAcceptanceReservation);
+  }
+  if (operation.legacyResult !== undefined) Object.freeze(operation.legacyResult);
   if (operation.resultConflict !== undefined) Object.freeze(operation.resultConflict);
   return Object.freeze(operation);
 }
@@ -497,7 +505,7 @@ export function reduceOperation(
     case "worker_stop_confirmed":
       if (
         !current.workerLaunched ||
-        current.result === undefined ||
+        current.result === undefined && current.legacyResult === undefined ||
         current.state !== "running" && current.state !== "blocked" ||
         current.workerStopConfirmedAt !== undefined ||
         event.proof !== "worker-stop"
@@ -601,23 +609,79 @@ export function reduceOperation(
       }
       return immutable({ ...current, state: "running", stateSeq: event.seq });
 
-    case "result_persisted":
-      if (current.state !== "running" && current.state !== "blocked") {
+    case "result_acceptance_prepared":
+      if (
+        current.state !== "running" && current.state !== "blocked" ||
+        current.resultAcceptanceReservation !== undefined ||
+        current.result !== undefined ||
+        current.legacyResult !== undefined ||
+        event.reservation.operationId !== current.operationId ||
+        event.reservation.preparedAt !== event.timestamp ||
+        event.reservation.preparationId.length === 0 ||
+        event.reservation.acceptanceRequestId.length === 0 ||
+        !manifestReservationIsConsistent(event.reservation)
+      ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({
         ...current,
-        result: { ...event.result },
+        resultAcceptanceReservation: structuredClone(event.reservation),
+        stateSeq: event.seq,
+      });
+
+    case "result_accepted": {
+      const reservation = current.resultAcceptanceReservation;
+      const evidence = event.preparationEvidence;
+      if (
+        current.state !== "running" && current.state !== "blocked" ||
+        reservation === undefined ||
+        current.result !== undefined ||
+        event.acceptance.acceptedAt !== event.timestamp ||
+        event.acceptance.operationId !== current.operationId ||
+        event.acceptance.preparationId !== reservation.preparationId ||
+        event.acceptance.acceptanceRequestId !== reservation.acceptanceRequestId ||
+        event.acceptance.manifestDigest !== reservation.manifestDigest ||
+        event.acceptance.requirementSetId !== reservation.requirementSetId ||
+        event.acceptance.requirementsDigest !== reservation.requirementsDigest ||
+        event.acceptance.bodyArtifactId !== reservation.manifest.bodyArtifactId ||
+        !isDeepStrictEqual(event.acceptance.workProducts, reservation.manifest.workProducts) ||
+        !isDeepStrictEqual(event.acceptance.artifactIds, reservation.artifactIds) ||
+        !isDeepStrictEqual(event.acceptance.preparationEvidence, evidence) ||
+        event.acceptance.acceptedArtifactRetentionMs !== evidence.acceptedArtifactRetentionMs ||
+        event.acceptance.retentionPolicyDigest !== evidence.retentionPolicyDigest ||
+        !preparationEvidenceMatchesReservation(evidence, reservation)
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        result: structuredClone(event.acceptance),
+        resultAcceptedAt: event.timestamp,
+        stateSeq: event.seq,
+      });
+    }
+
+    case "result_persisted":
+      if (
+        current.state !== "running" && current.state !== "blocked" ||
+        current.resultAcceptanceReservation !== undefined ||
+        current.result !== undefined
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        legacyResult: { ...event.result },
         resultAcceptedAt: event.timestamp,
         stateSeq: event.seq,
       });
 
     case "result_conflict_recorded":
       if (
-        current.result === undefined ||
+        current.legacyResult === undefined ||
         current.resultConflict !== undefined ||
-        event.conflict.acceptedDigest !== current.result.digest ||
-        event.conflict.conflictingDigest === current.result.digest
+        event.conflict.acceptedDigest !== current.legacyResult.digest ||
+        event.conflict.conflictingDigest === current.legacyResult.digest
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -639,7 +703,7 @@ export function reduceOperation(
         if (current.state === "starting") {
           throw new TransitionError("illegal_transition");
         }
-        if (current.result === undefined) {
+        if (current.result === undefined && current.legacyResult === undefined) {
           throw new TransitionError("result_required_before_self_settlement");
         }
         return immutable({
@@ -738,7 +802,7 @@ export function reduceOperation(
       if (current.descendantFailure) {
         throw new TransitionError("descendant_failure_prevents_completion");
       }
-      if (current.result === undefined) {
+      if (current.result === undefined && current.legacyResult === undefined) {
         throw new TransitionError("result_required_before_self_settlement");
       }
       return immutable({ ...current, state: "completed", stateSeq: event.seq });

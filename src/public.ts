@@ -837,6 +837,73 @@ export type ArtifactRetrievalOutcome =
 
 export type ArtifactAuthorityDecision = "allowed" | "denied" | "revoked" | "unknown";
 
+export interface ResultAcceptanceReservationRequest {
+  readonly preparationId: string;
+  readonly operationId: string;
+  readonly acceptanceRequestId: string;
+  readonly manifest: Readonly<ValidatedResultAcceptanceManifest>;
+  readonly requirements: Readonly<ResolvedWorkProductRequirements>;
+}
+
+export interface ResultAcceptanceReservation {
+  readonly preparationId: string;
+  readonly operationId: string;
+  readonly acceptanceRequestId: string;
+  readonly manifest: Readonly<ResultAcceptanceManifest>;
+  readonly manifestCanonicalJson: string;
+  readonly manifestDigest: ArtifactDigest;
+  readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
+  readonly requirementsDigest: ArtifactDigest;
+  readonly artifactIds: ReadonlyArray<string>;
+  readonly totalByteCount: number;
+  readonly preparedAt: string;
+}
+
+export interface AcceptedResult {
+  readonly acceptanceId: `pions.result-acceptance.v1:${string}`;
+  readonly preparationId: string;
+  readonly operationId: string;
+  readonly acceptanceRequestId: string;
+  readonly acceptedAt: string;
+  readonly manifestFormatId: ResultAcceptanceManifest["formatId"];
+  readonly manifestDigest: ArtifactDigest;
+  readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
+  readonly requirementsDigest: ArtifactDigest;
+  readonly bodyArtifactId: string;
+  readonly workProducts: ReadonlyArray<Readonly<ResultAcceptanceManifestWorkProduct>>;
+  readonly artifactIds: ReadonlyArray<string>;
+  readonly preparationEvidence: Readonly<ResultAcceptancePreparationEvidence>;
+  readonly acceptedArtifactRetentionMs: number;
+  readonly retentionPolicyDigest: ArtifactDigest;
+}
+
+export type ResultAcceptanceTransactionFailureReason =
+  | "operation_not_found"
+  | "request_mismatch"
+  | "manifest_conflict"
+  | "preparation_mismatch"
+  | "invalid_operation_state"
+  | "corrupt_record"
+  | "unsupported_schema";
+
+export type ResultAcceptanceTransactionOutcome =
+  | { readonly kind: "prepared"; readonly reservation: Readonly<ResultAcceptanceReservation> }
+  | {
+      readonly kind: "accepted";
+      readonly acceptance: Readonly<AcceptedResult>;
+      readonly eventEvidence: Readonly<ResultAcceptanceEventEvidence>;
+    }
+  | {
+      readonly kind: "continuable";
+      readonly reason: "write_failed";
+      readonly reservation?: Readonly<ResultAcceptanceReservation>;
+    }
+  | {
+      readonly kind: "failed";
+      readonly terminal: true;
+      readonly reason: ResultAcceptanceTransactionFailureReason;
+    };
+
 export interface ResultAcceptancePreparationRequest {
   readonly preparationId: string;
   readonly operationId: string;

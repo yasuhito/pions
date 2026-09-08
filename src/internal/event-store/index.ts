@@ -5,6 +5,9 @@ import type {
   OperationState,
   RequestedWorkerConfig,
   Result,
+  ResultAcceptancePreparationEvidence,
+  ResultAcceptanceReservationRequest,
+  ResultAcceptanceTransactionOutcome,
   ResultConflictError,
   TaskSpec,
 } from "../../public.js";
@@ -65,6 +68,12 @@ export interface EventStore {
     operationId: string,
     intent: OperationIntent,
   ): Effect.Effect<OperationSnapshot, StoreError | ResultConflictError>;
+  prepareResultAcceptance(
+    request: Readonly<ResultAcceptanceReservationRequest>,
+  ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
+  publishResultAcceptance(
+    evidence: Readonly<ResultAcceptancePreparationEvidence>,
+  ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError>;
   listWaitingStartAuthorizations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
 }

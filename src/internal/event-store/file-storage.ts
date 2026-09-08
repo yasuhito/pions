@@ -13,11 +13,12 @@ import { dirname, join } from "node:path";
 
 import { ValidatedEventStore } from "./store.js";
 import type { StoredOperationRecord } from "./store.js";
+import { RecordDecodingError } from "./codec.js";
 import type { RuntimeClock } from "../services.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
-const RECORD_FILE = "events.v10.json";
+const RECORD_FILE = "events.v11.json";
 const RESULT_FILE = "result.utf8";
 
 function hasCode(error: unknown, code: string): boolean {
@@ -142,7 +143,14 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     const directory = await this.operationDirectory(operationId, false);
     if (directory === undefined) return undefined;
     const bytes = await this.readPrivateFile(join(directory, RECORD_FILE));
-    if (bytes === undefined) return undefined;
+    if (bytes === undefined) {
+      const hasUnsupportedRecord = (await readdir(directory))
+        .some((entry) => /^events\.v\d+\.json$/u.test(entry));
+      if (hasUnsupportedRecord) {
+        throw new RecordDecodingError("unsupported_schema", "Unsupported Event Store record schema");
+      }
+      return undefined;
+    }
     try {
       return JSON.parse(bytes.toString("utf8")) as unknown;
     } catch (error) {

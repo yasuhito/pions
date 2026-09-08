@@ -153,13 +153,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     stored: Readonly<StoredOperationSnapshot>,
   ): Readonly<PublicOperationSnapshot> => {
     const operation = stored.operation;
-    const resultAcceptance = operation.result === undefined ||
+    const resultAcceptance = operation.legacyResult === undefined ||
         operation.resultAcceptedAt === undefined ||
         stored.result === undefined
       ? undefined
       : {
           acceptedAt: operation.resultAcceptedAt,
-          deliverySequenceNumber: operation.result.deliverySequenceNumber,
+          deliverySequenceNumber: operation.legacyResult.deliverySequenceNumber,
           byteCount: stored.result.byteCount,
           digest: stored.result.digest,
         };

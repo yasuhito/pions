@@ -24,13 +24,26 @@ import type {
   StoreErrorCode,
 } from "./index.js";
 import { ResultConflictError } from "../../public.js";
-import type { Result, StartupReceipt } from "../../public.js";
+import type {
+  AcceptedResult,
+  Result,
+  ResultAcceptanceEventEvidence,
+  ResultAcceptancePreparationEvidence,
+  ResultAcceptanceReservation,
+  ResultAcceptanceReservationRequest,
+  ResultAcceptanceTransactionOutcome,
+  StartupReceipt,
+} from "../../public.js";
 import type {
   ResultAcceptanceProof,
   ResultDelivery,
 } from "../worker-protocol.js";
 import { resultDigest } from "../result-digest.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
+import {
+  preparationEvidenceMatchesReservation,
+  resultAcceptanceIdentifier,
+} from "../result-acceptance-transaction.js";
 
 export type { StoredOperationRecord } from "./codec.js";
 
@@ -76,6 +89,37 @@ function acceptedDeliveryProof(
   }) as ResultAcceptanceProof;
 }
 
+function terminalResultAcceptanceFailure(
+  reason: Extract<ResultAcceptanceTransactionOutcome, { readonly kind: "failed" }>["reason"],
+): ResultAcceptanceTransactionOutcome {
+  return { kind: "failed", terminal: true, reason };
+}
+
+function acceptedResultOutcome(
+  acceptance: Readonly<AcceptedResult>,
+): ResultAcceptanceTransactionOutcome {
+  const eventEvidence: ResultAcceptanceEventEvidence = {
+    preparationId: acceptance.preparationId,
+    operationId: acceptance.operationId,
+    acceptanceRequestId: acceptance.acceptanceRequestId,
+    manifestDigest: acceptance.manifestDigest,
+    evidenceDigest: acceptance.preparationEvidence.digest,
+    state: "accepted",
+    observedAt: acceptance.acceptedAt,
+    acceptedAt: acceptance.acceptedAt,
+  };
+  return { kind: "accepted", acceptance, eventEvidence };
+}
+
+function resultAcceptanceFailure(error: unknown): ResultAcceptanceTransactionOutcome {
+  if (error instanceof StoreFailure || error instanceof RecordDecodingError) {
+    if (error.code === "write_failed") return { kind: "continuable", reason: "write_failed" };
+    if (error.code === "not_found") return terminalResultAcceptanceFailure("operation_not_found");
+    if (error.code === "unsupported_schema") return terminalResultAcceptanceFailure("unsupported_schema");
+  }
+  return terminalResultAcceptanceFailure("corrupt_record");
+}
+
 export abstract class ValidatedEventStore implements EventStore {
   private readonly mutationTails = new Map<string, Promise<void>>();
 
@@ -90,6 +134,7 @@ export abstract class ValidatedEventStore implements EventStore {
   protected abstract writeResultBytes(operationId: string, bytes: Buffer): Promise<void>;
   protected abstract listOperationIds(): Promise<ReadonlyArray<string>>;
   protected didPersistResultBytes(_operationId: string): void {}
+  protected willAppend(_event: OperationEvent): void {}
   protected didAppend(_event: OperationEvent): void {}
 
   private serialize<Value>(operationId: string, action: () => Promise<Value>): Promise<Value> {
@@ -266,6 +311,187 @@ export abstract class ValidatedEventStore implements EventStore {
     return this.appendEvent(operationId, intent);
   }
 
+  prepareResultAcceptance(
+    request: Readonly<ResultAcceptanceReservationRequest>,
+  ): Effect.Effect<ResultAcceptanceTransactionOutcome> {
+    return Effect.promise(() => this.serialize(request.operationId, async () => {
+      try {
+        const loaded = await this.load(request.operationId, true);
+        if (loaded === undefined) return terminalResultAcceptanceFailure("operation_not_found");
+        if (
+          request.preparationId.length === 0 ||
+          request.acceptanceRequestId.length === 0 ||
+          request.manifest.value.requirementSetId !== request.requirements.requirementSetId ||
+          request.manifest.value.requirementSetDigest !== request.requirements.digest
+        ) {
+          return terminalResultAcceptanceFailure("request_mismatch");
+        }
+        const existing = loaded.operation.resultAcceptanceReservation;
+        if (existing !== undefined) {
+          if (existing.manifestDigest !== request.manifest.digest) {
+            return terminalResultAcceptanceFailure(
+              existing.acceptanceRequestId === request.acceptanceRequestId
+                ? "request_mismatch"
+                : "manifest_conflict",
+            );
+          }
+          return loaded.operation.result === undefined
+            ? { kind: "prepared", reservation: existing }
+            : acceptedResultOutcome(loaded.operation.result);
+        }
+        if (loaded.operation.state !== "running" && loaded.operation.state !== "blocked") {
+          return terminalResultAcceptanceFailure("invalid_operation_state");
+        }
+        const timestamp = await Effect.runPromise(this.clock.now());
+        const reservation: ResultAcceptanceReservation = {
+          preparationId: request.preparationId,
+          operationId: request.operationId,
+          acceptanceRequestId: request.acceptanceRequestId,
+          manifest: structuredClone(request.manifest.value),
+          manifestCanonicalJson: request.manifest.json,
+          manifestDigest: request.manifest.digest,
+          requirementSetId: request.requirements.requirementSetId,
+          requirementsDigest: request.requirements.digest,
+          artifactIds: [...request.manifest.artifactIds],
+          totalByteCount: request.manifest.totalByteCount,
+          preparedAt: timestamp,
+        };
+        const event = this.makeEvent(request.operationId, loaded.operation.stateSeq, {
+          type: "result_acceptance_prepared",
+          reservation,
+        }, timestamp);
+        const record = decodeRecord({
+          ...loaded.record,
+          events: [...loaded.record.events, event],
+        }, request.operationId);
+        const persistedEvent = record.events.at(-1);
+        if (persistedEvent === undefined) {
+          return terminalResultAcceptanceFailure("corrupt_record");
+        }
+        const operation = reduceOperation(loaded.operation, persistedEvent);
+        try {
+          this.willAppend(persistedEvent);
+          await this.writeRecord(request.operationId, record);
+        } catch {
+          return { kind: "continuable", reason: "write_failed" };
+        }
+        this.didAppend(persistedEvent);
+        if (operation.resultAcceptanceReservation === undefined) {
+          return terminalResultAcceptanceFailure("corrupt_record");
+        }
+        return { kind: "prepared", reservation: operation.resultAcceptanceReservation };
+      } catch (error) {
+        return resultAcceptanceFailure(error);
+      }
+    }));
+  }
+
+  publishResultAcceptance(
+    evidence: Readonly<ResultAcceptancePreparationEvidence>,
+  ): Effect.Effect<ResultAcceptanceTransactionOutcome> {
+    return Effect.promise(() => this.serialize(evidence.operationId, async () => {
+      try {
+        const loaded = await this.load(evidence.operationId, true);
+        if (loaded === undefined) return terminalResultAcceptanceFailure("operation_not_found");
+        const reservation = loaded.operation.resultAcceptanceReservation;
+        if (reservation === undefined) {
+          return terminalResultAcceptanceFailure("preparation_mismatch");
+        }
+        if (loaded.operation.result !== undefined) {
+          const accepted = loaded.operation.result;
+          if (evidence.manifestDigest !== accepted.manifestDigest) {
+            return terminalResultAcceptanceFailure(
+              evidence.acceptanceRequestId === accepted.acceptanceRequestId
+                ? "request_mismatch"
+                : "manifest_conflict",
+            );
+          }
+          if (
+            evidence.acceptanceRequestId === accepted.acceptanceRequestId &&
+            !preparationEvidenceMatchesReservation(evidence, reservation)
+          ) {
+            return terminalResultAcceptanceFailure("preparation_mismatch");
+          }
+          return acceptedResultOutcome(accepted);
+        }
+        if (!preparationEvidenceMatchesReservation(evidence, reservation)) {
+          return terminalResultAcceptanceFailure("preparation_mismatch");
+        }
+        if (loaded.operation.state !== "running" && loaded.operation.state !== "blocked") {
+          return terminalResultAcceptanceFailure("invalid_operation_state");
+        }
+        const acceptedAt = await Effect.runPromise(this.clock.now());
+        const acceptance: AcceptedResult = {
+          acceptanceId: resultAcceptanceIdentifier(reservation),
+          preparationId: reservation.preparationId,
+          operationId: reservation.operationId,
+          acceptanceRequestId: reservation.acceptanceRequestId,
+          acceptedAt,
+          manifestFormatId: reservation.manifest.formatId,
+          manifestDigest: reservation.manifestDigest,
+          requirementSetId: reservation.requirementSetId,
+          requirementsDigest: reservation.requirementsDigest,
+          bodyArtifactId: reservation.manifest.bodyArtifactId,
+          workProducts: structuredClone(reservation.manifest.workProducts),
+          artifactIds: [...reservation.artifactIds],
+          preparationEvidence: structuredClone(evidence),
+          acceptedArtifactRetentionMs: evidence.acceptedArtifactRetentionMs,
+          retentionPolicyDigest: evidence.retentionPolicyDigest,
+        };
+        const event = this.makeEvent(evidence.operationId, loaded.operation.stateSeq, {
+          type: "result_accepted",
+          acceptance,
+          preparationEvidence: structuredClone(evidence),
+        }, acceptedAt);
+        const record = decodeRecord({
+          ...loaded.record,
+          events: [...loaded.record.events, event],
+        }, evidence.operationId);
+        const persistedEvent = record.events.at(-1);
+        if (persistedEvent === undefined) {
+          return terminalResultAcceptanceFailure("corrupt_record");
+        }
+        reduceOperation(loaded.operation, persistedEvent);
+        try {
+          this.willAppend(persistedEvent);
+          await this.writeRecord(evidence.operationId, record);
+        } catch {
+          return { kind: "continuable", reason: "write_failed", reservation };
+        }
+        this.didAppend(persistedEvent);
+        const persisted = await this.load(evidence.operationId, true);
+        if (persisted?.operation.result === undefined) {
+          return terminalResultAcceptanceFailure("corrupt_record");
+        }
+        return acceptedResultOutcome(persisted.operation.result);
+      } catch (error) {
+        return resultAcceptanceFailure(error);
+      }
+    }));
+  }
+
+  private makeEvent(
+    operationId: string,
+    stateSeq: number,
+    input: EventInput,
+    timestamp: string,
+  ): OperationEvent {
+    if (!Number.isFinite(Date.parse(timestamp))) {
+      throw failure("corrupt_record", "Operation event timestamp is not absolute");
+    }
+    const seq = stateSeq + 1;
+    return {
+      ...input,
+      actorId: RUNTIME_ACTOR_ID,
+      authority: OPERATION_AUTHORITY,
+      eventId: `${operationId}:${seq}`,
+      operationId,
+      schemaVersion: EVENT_SCHEMA_VERSION,
+      seq,
+      timestamp,
+    } as OperationEvent;
+  }
+
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError> {
     return Effect.tryPromise({
       try: () => this.serialize(operationId, async () => {
@@ -307,20 +533,12 @@ export abstract class ValidatedEventStore implements EventStore {
     return Effect.tryPromise({
       try: () => this.serialize(operationId, async () => {
         const loaded = await this.load(operationId, input.type !== "operation_requested");
-        const seq = (loaded?.operation.stateSeq ?? 0) + 1;
-        const event = {
-          ...input,
-          actorId: RUNTIME_ACTOR_ID,
-          authority: OPERATION_AUTHORITY,
-          eventId: `${operationId}:${seq}`,
+        const event = this.makeEvent(
           operationId,
-          schemaVersion: EVENT_SCHEMA_VERSION,
-          seq,
-          timestamp: fixedTimestamp ?? await Effect.runPromise(this.clock.now()),
-        } as OperationEvent;
-        if (!Number.isFinite(Date.parse(event.timestamp))) {
-          throw failure("corrupt_record", "Operation event timestamp is not absolute");
-        }
+          loaded?.operation.stateSeq ?? 0,
+          input,
+          fixedTimestamp ?? await Effect.runPromise(this.clock.now()),
+        );
         const record = decodeRecord({
           schemaVersion: EVENT_SCHEMA_VERSION,
           operationId,

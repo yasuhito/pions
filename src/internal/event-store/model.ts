@@ -1,10 +1,13 @@
 import type {
+  AcceptedResult,
   EffectiveWorkerConfig,
   ObservedWorkerConfig,
   OperationFailureReason,
   OperationState,
   RequestedWorkerConfig,
   Result,
+  ResultAcceptancePreparationEvidence,
+  ResultAcceptanceReservation,
   StartAuthorizationDecisionRecord,
   StartAuthorizationTiming,
   StartGateState,
@@ -62,7 +65,9 @@ export interface Operation {
   readonly descendantFailure: boolean;
   readonly spawnFrozen: boolean;
   readonly cancellationEpoch: number;
-  readonly result?: Readonly<ResultReference>;
+  readonly result?: Readonly<AcceptedResult>;
+  readonly resultAcceptanceReservation?: Readonly<ResultAcceptanceReservation>;
+  readonly legacyResult?: Readonly<ResultReference>;
   readonly resultConflict?: Readonly<ResultConflictEvidence>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
@@ -82,7 +87,7 @@ export interface ResultConflictEvidence {
   readonly deliverySequenceNumber: number;
 }
 
-export const EVENT_SCHEMA_VERSION = 10 as const;
+export const EVENT_SCHEMA_VERSION = 11 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -132,6 +137,15 @@ export type OperationEvent = EventMetadata &
     | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
     | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
     | PersistableOperationIntent
+    | {
+        readonly type: "result_acceptance_prepared";
+        readonly reservation: Readonly<ResultAcceptanceReservation>;
+      }
+    | {
+        readonly type: "result_accepted";
+        readonly acceptance: Readonly<AcceptedResult>;
+        readonly preparationEvidence: Readonly<ResultAcceptancePreparationEvidence>;
+      }
     | {
         readonly type: "result_persisted";
         readonly result: Readonly<ResultReference>;
