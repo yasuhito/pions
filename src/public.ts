@@ -837,6 +837,83 @@ export type ArtifactRetrievalOutcome =
 
 export type ArtifactAuthorityDecision = "allowed" | "denied" | "revoked" | "unknown";
 
+export interface ResultAcceptancePreparationRequest {
+  readonly preparationId: string;
+  readonly operationId: string;
+  readonly acceptanceRequestId: string;
+  readonly manifestDigest: ArtifactDigest;
+  readonly requirementsDigest: ArtifactDigest;
+  readonly retentionPolicyDigest: ArtifactDigest;
+  readonly manifest: Readonly<ResultAcceptanceManifest>;
+}
+
+export interface ResultAcceptancePreparationEvidence {
+  readonly formatId: "pions.result-acceptance-preparation.v1";
+  readonly preparationId: string;
+  readonly operationId: string;
+  readonly acceptanceRequestId: string;
+  readonly manifestDigest: ArtifactDigest;
+  readonly requirementsDigest: ArtifactDigest;
+  readonly bodyArtifactId: string;
+  readonly workProducts: ReadonlyArray<Readonly<ResultAcceptanceManifestWorkProduct>>;
+  readonly artifactIds: ReadonlyArray<string>;
+  readonly totalByteCount: number;
+  readonly acceptedArtifactRetentionMs: number;
+  readonly retentionPolicyDigest: ArtifactDigest;
+  readonly digest: ArtifactDigest;
+}
+
+export interface ResultAcceptanceRetentionPolicyEvidence {
+  readonly formatId: "pions.result-acceptance-retention-policy.v1";
+  readonly operationId: string;
+  readonly acceptedArtifactRetentionMs: number;
+  readonly digest: ArtifactDigest;
+}
+
+export interface ResultAcceptanceRetentionPolicySource {
+  read(operationId: string): Promise<Readonly<ResultAcceptanceRetentionPolicyEvidence> | "unknown">;
+}
+
+export interface ResultAcceptanceRequirementsSource {
+  read(operationId: string): Promise<Readonly<ResolvedWorkProductRequirements> | "unknown">;
+}
+
+export interface ResultAcceptanceEventEvidence {
+  readonly preparationId: string;
+  readonly operationId: string;
+  readonly acceptanceRequestId: string;
+  readonly manifestDigest: ArtifactDigest;
+  readonly evidenceDigest: ArtifactDigest;
+  readonly state: "accepted" | "not_accepted";
+  readonly observedAt: string;
+  readonly acceptedAt?: string;
+}
+
+export interface ResultAcceptanceEventEvidenceVerifier {
+  verify(evidence: Readonly<ResultAcceptanceEventEvidence>): Promise<"trusted" | "untrusted" | "unknown">;
+}
+
+export interface ResultAcceptancePreparationSnapshot {
+  readonly evidence?: Readonly<ResultAcceptancePreparationEvidence>;
+  readonly state: "preparing" | "prepared" | "accepted" | "aborted" | "unresolved";
+  readonly retentionUntil?: string;
+}
+
+export type PublishedResultAcceptancePreparationSnapshot = ResultAcceptancePreparationSnapshot & {
+  readonly evidence: Readonly<ResultAcceptancePreparationEvidence>;
+};
+
+export type ResultAcceptancePreparationOutcome =
+  | { readonly kind: "prepared"; readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot> }
+  | { readonly kind: "accepted"; readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot> }
+  | { readonly kind: "aborted"; readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot> }
+  | { readonly kind: "continuable"; readonly preparation: Readonly<ResultAcceptancePreparationSnapshot> }
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason | ResultAcceptanceManifestFailureReason;
+    };
+
 export interface ArtifactUseBindingRequest {
   readonly bindingId: string;
   readonly operationId: string;
@@ -904,6 +981,14 @@ export interface ArtifactPrincipal {
   canRetrieve(artifactId: string): Promise<ArtifactAuthorityDecision>;
   canBindArtifactUse(request: Readonly<ArtifactUseBindingRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
   canPinArtifact(request: Readonly<ArtifactRetentionPinRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
+  canPrepareResultAcceptance(
+    request: Readonly<ResultAcceptancePreparationRequest>,
+    artifactId: string,
+  ): Promise<ArtifactAuthorityDecision>;
+  canReconcileResultAcceptance(
+    preparationId: string,
+    evidence: Readonly<ResultAcceptanceEventEvidence>,
+  ): Promise<ArtifactAuthorityDecision>;
   canGarbageCollect(request: Readonly<ArtifactGarbageCollectionRequest>): Promise<ArtifactAuthorityDecision>;
 }
 
@@ -923,7 +1008,6 @@ export interface ArtifactStorePolicy {
   readonly maxRecoveryAttempts: number;
   readonly unusedArtifactRetentionMs: number;
   readonly reviewInputRetentionMs: number;
-  readonly acceptedArtifactRetentionMs: number;
   readonly maxGarbageCollectionScan: number;
   readonly maxGarbageCollectionDeletes: number;
   readonly maxGarbageCollectionRecoveryAttempts: number;
@@ -933,6 +1017,9 @@ export interface OpenArtifactStoreOptions {
   readonly rootDirectory: string;
   readonly policy: Readonly<ArtifactStorePolicy>;
   readonly authenticator: ArtifactAuthenticator;
+  readonly resultAcceptanceRetentionPolicySource?: ResultAcceptanceRetentionPolicySource;
+  readonly resultAcceptanceRequirementsSource?: ResultAcceptanceRequirementsSource;
+  readonly resultAcceptanceEventEvidenceVerifier?: ResultAcceptanceEventEvidenceVerifier;
   readonly now?: () => Date;
   readonly idGenerator?: () => string;
 }
@@ -961,6 +1048,22 @@ export interface ArtifactStore {
     request: Readonly<ArtifactRetentionPinRequest>,
   ): Promise<ArtifactRetentionPinOutcome>;
   releaseRetentionPin(credential: string, pinId: string): Promise<ArtifactRetentionPinOutcome>;
+  prepareResultAcceptance(
+    credential: string,
+    request: Readonly<ResultAcceptancePreparationRequest>,
+  ): Promise<ResultAcceptancePreparationOutcome>;
+  resultAcceptancePreparationStatus(
+    credential: string,
+    preparationId: string,
+  ): Promise<ResultAcceptancePreparationOutcome>;
+  finalizeResultAcceptance(
+    credential: string,
+    evidence: Readonly<ResultAcceptanceEventEvidence>,
+  ): Promise<ResultAcceptancePreparationOutcome>;
+  abortResultAcceptance(
+    credential: string,
+    evidence: Readonly<ResultAcceptanceEventEvidence>,
+  ): Promise<ResultAcceptancePreparationOutcome>;
   collectGarbage(
     credential: string,
     request: Readonly<ArtifactGarbageCollectionRequest>,

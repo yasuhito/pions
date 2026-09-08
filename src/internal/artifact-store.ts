@@ -15,6 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 
 import {
   ArtifactStoreOpenError,
+  ResultAcceptanceManifestError,
   type ArtifactAuthorityDecision,
   type ArtifactFailureReason,
   type ArtifactGarbageCollectionOutcome,
@@ -33,7 +34,18 @@ import {
   type ArtifactUseBindingRequest,
   type ArtifactUseBindingSnapshot,
   type OpenArtifactStoreOptions,
+  type ResultAcceptanceEventEvidence,
+  type ResultAcceptancePreparationEvidence,
+  type ResultAcceptancePreparationOutcome,
+  type ResultAcceptancePreparationRequest,
+  type ResultAcceptancePreparationSnapshot,
+  type ResultAcceptanceRetentionPolicyEvidence,
+  type ResolvedWorkProductRequirements,
 } from "../public.js";
+import {
+  resultAcceptanceManifestDocument,
+  validateResultAcceptanceManifest,
+} from "./result-acceptance-manifest.js";
 
 export type ArtifactStoreFaultPoint =
   | "temporary_bytes_persisted"
@@ -53,6 +65,15 @@ export type ArtifactStoreFaultPoint =
   | "use_binding_rejection_persisted"
   | "before_use_binding_pins_released"
   | "before_explicit_pin_records_released"
+  | "result_acceptance_record_persisted"
+  | "before_result_acceptance_first_pin_persisted"
+  | "result_acceptance_pin_persisted"
+  | "before_result_acceptance_retention_persisted"
+  | "result_acceptance_retention_persisted"
+  | "result_acceptance_prepared_persisted"
+  | "result_acceptance_active_retention_persisted"
+  | "result_acceptance_accepted_persisted"
+  | "before_result_acceptance_pins_released"
   | "gc_eligibility_checked"
   | "deletion_pending_persisted"
   | "before_gc_diagnostic_persisted"
@@ -77,7 +98,7 @@ class ArtifactStoreInjectedFault extends Error {
   override readonly name = "ArtifactStoreInjectedFault";
 }
 
-const ROOT_SCHEMA = "pions-artifacts.v2";
+const ROOT_SCHEMA = "pions-artifacts.v3";
 const RECORD_SCHEMA = "pions-artifact-registration.v2";
 const ARTIFACT_SCHEMA = "pions-artifact.v2";
 const USE_SCHEMA = "pions-artifact-use-binding.v1";
@@ -85,6 +106,8 @@ const PIN_SCHEMA = "pions-artifact-pin.v1";
 const RETENTION_SCHEMA = "pions-artifact-retention.v1";
 const EXPLICIT_PIN_SCHEMA = "pions-artifact-explicit-pin.v1";
 const GC_DIAGNOSTIC_SCHEMA = "pions-artifact-gc-diagnostic.v1";
+const RESULT_ACCEPTANCE_PREPARATION_SCHEMA = "pions-result-acceptance-preparation.v1";
+const RESULT_ACCEPTANCE_RETENTION_SCHEMA = "pions-result-acceptance-retention.v1";
 const ROOT_FILE = "root.json";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
 
@@ -126,7 +149,7 @@ interface UseBindingRecord extends ArtifactUseBindingSnapshot {
 interface PinRecord {
   readonly schema: typeof PIN_SCHEMA;
   readonly pinId: string;
-  readonly ownerType: "artifact_use_binding" | "principal";
+  readonly ownerType: "artifact_use_binding" | "principal" | "result_acceptance_preparation";
   readonly ownerId: string;
   readonly purpose: string;
   readonly artifactId: string;
@@ -145,6 +168,33 @@ interface RetentionRecord {
   readonly ownerId: string;
   readonly artifactId: string;
   readonly retainUntil: string;
+}
+
+interface ResultAcceptancePreparationRecord {
+  readonly schema: typeof RESULT_ACCEPTANCE_PREPARATION_SCHEMA;
+  readonly request: ResultAcceptancePreparationRequest;
+  readonly requestDigest: `sha256:${string}`;
+  readonly subjectId: string;
+  readonly evidence: ResultAcceptancePreparationEvidence;
+  readonly requirements: ResolvedWorkProductRequirements;
+  readonly state: ResultAcceptancePreparationSnapshot["state"];
+  readonly effectiveAcceptedRetentionMs: number;
+  readonly retentionPolicy: ResultAcceptanceRetentionPolicyEvidence;
+  readonly retentionUntil?: string;
+  readonly eventEvidence?: ResultAcceptanceEventEvidence;
+  readonly failureReason?: ArtifactFailureReason;
+}
+
+interface ResultAcceptanceRetentionRecord {
+  readonly schema: typeof RESULT_ACCEPTANCE_RETENTION_SCHEMA;
+  readonly preparationId: string;
+  readonly operationId: string;
+  readonly acceptanceRequestId: string;
+  readonly artifactIds: ReadonlyArray<string>;
+  readonly retentionMs: number;
+  readonly state: "pending" | "active" | "cancelled";
+  readonly retainUntil?: string;
+  readonly eventEvidence?: ResultAcceptanceEventEvidence;
 }
 
 function hasCode(error: unknown, code: string): boolean {
@@ -204,6 +254,50 @@ function useBindingRequestDigest(request: Readonly<ArtifactUseBindingRequest>): 
 
 function pinRequestDigest(request: Readonly<ArtifactRetentionPinRequest>): `sha256:${string}` {
   return sha256(JSON.stringify(request));
+}
+
+function resultAcceptanceRequestDigest(request: Readonly<ResultAcceptancePreparationRequest>): `sha256:${string}` {
+  return sha256(JSON.stringify({
+    preparationId: request.preparationId,
+    operationId: request.operationId,
+    acceptanceRequestId: request.acceptanceRequestId,
+    manifestDigest: request.manifestDigest,
+    requirementsDigest: request.requirementsDigest,
+    retentionPolicyDigest: request.retentionPolicyDigest,
+    manifest: resultAcceptanceManifestDocument(request.manifest).value,
+  }));
+}
+
+function resultAcceptanceEvidenceDigest(
+  evidence: Omit<ResultAcceptancePreparationEvidence, "digest">,
+): `sha256:${string}` {
+  return sha256(JSON.stringify(evidence));
+}
+
+function retentionPolicyDigest(
+  policy: Omit<ResultAcceptanceRetentionPolicyEvidence, "digest">,
+): `sha256:${string}` {
+  return sha256(JSON.stringify(policy));
+}
+
+function resultAcceptanceOutcome(record: ResultAcceptancePreparationRecord): ResultAcceptancePreparationOutcome {
+  const preparation: ResultAcceptancePreparationSnapshot = {
+    ...(record.state === "preparing" || record.state === "unresolved" ? {} : { evidence: record.evidence }),
+    state: record.state,
+    ...(record.retentionUntil === undefined ? {} : { retentionUntil: record.retentionUntil }),
+  };
+  if (record.state === "prepared") return { kind: "prepared", preparation: { ...preparation, evidence: record.evidence } };
+  if (record.state === "accepted") return { kind: "accepted", preparation: { ...preparation, evidence: record.evidence } };
+  if (record.state === "aborted") return { kind: "aborted", preparation: { ...preparation, evidence: record.evidence } };
+  if (record.state === "preparing") return { kind: "continuable", preparation };
+  return { kind: "failed", terminal: false, reason: record.failureReason ?? "storage_inspection_unavailable" };
+}
+
+function resultAcceptanceFailed(
+  reason: ArtifactFailureReason | ResultAcceptanceManifestError["reason"],
+  terminal = true,
+): ResultAcceptancePreparationOutcome {
+  return { kind: "failed", terminal, reason };
 }
 
 function pinOutcome(record: ExplicitPinRecord): ArtifactRetentionPinOutcome {
@@ -294,7 +388,6 @@ function policyIsValid(value: unknown): value is OpenArtifactStoreOptions["polic
     policy.maxRecoveryAttempts,
     policy.unusedArtifactRetentionMs,
     policy.reviewInputRetentionMs,
-    policy.acceptedArtifactRetentionMs,
     policy.maxGarbageCollectionScan,
     policy.maxGarbageCollectionDeletes,
     policy.maxGarbageCollectionRecoveryAttempts,
@@ -364,6 +457,8 @@ class FileArtifactStore implements ArtifactStore {
   private readonly pinDirectory: string;
   private readonly retentionDirectory: string;
   private readonly explicitPinDirectory: string;
+  private readonly resultAcceptancePreparationDirectory: string;
+  private readonly resultAcceptanceRetentionDirectory: string;
   private readonly garbageCollectionDiagnosticDirectory: string;
   private readonly formats = new Map<string, Readonly<ArtifactFormat>>();
   private readonly transferTokens = new Map<string, symbol>();
@@ -387,6 +482,8 @@ class FileArtifactStore implements ArtifactStore {
     this.pinDirectory = join(options.rootDirectory, "pins");
     this.retentionDirectory = join(options.rootDirectory, "retentions");
     this.explicitPinDirectory = join(options.rootDirectory, "explicit-pins");
+    this.resultAcceptancePreparationDirectory = join(options.rootDirectory, "result-acceptance-preparations");
+    this.resultAcceptanceRetentionDirectory = join(options.rootDirectory, "result-acceptance-retentions");
     this.garbageCollectionDiagnosticDirectory = join(options.rootDirectory, "gc-diagnostics");
     for (const format of configuredFormats()) {
       this.formats.set(`${format.formatId}\0${format.normalizationId}`, format);
@@ -451,6 +548,74 @@ class FileArtifactStore implements ArtifactStore {
 
   private explicitPinPath(pinId: string): string {
     return join(this.explicitPinDirectory, `${pinId}.json`);
+  }
+
+  private resultAcceptancePreparationPath(preparationId: string): string {
+    return join(this.resultAcceptancePreparationDirectory, `${preparationId}.json`);
+  }
+
+  private resultAcceptanceRetentionPath(preparationId: string): string {
+    return join(this.resultAcceptanceRetentionDirectory, `${preparationId}.json`);
+  }
+
+  private async readResultAcceptancePreparation(
+    preparationId: string,
+  ): Promise<ResultAcceptancePreparationRecord | undefined> {
+    if (!IDENTIFIER.test(preparationId)) return undefined;
+    try {
+      const value = await readJson(this.resultAcceptancePreparationPath(preparationId)) as Partial<ResultAcceptancePreparationRecord>;
+      if (value.schema !== RESULT_ACCEPTANCE_PREPARATION_SCHEMA || value.request?.preparationId !== preparationId ||
+        value.requestDigest !== resultAcceptanceRequestDigest(value.request) || typeof value.subjectId !== "string" ||
+        value.evidence?.preparationId !== preparationId || value.evidence.digest !== resultAcceptanceEvidenceDigest({
+          formatId: value.evidence.formatId,
+          preparationId: value.evidence.preparationId,
+          operationId: value.evidence.operationId,
+          acceptanceRequestId: value.evidence.acceptanceRequestId,
+          manifestDigest: value.evidence.manifestDigest,
+          requirementsDigest: value.evidence.requirementsDigest,
+          bodyArtifactId: value.evidence.bodyArtifactId,
+          workProducts: value.evidence.workProducts,
+          artifactIds: value.evidence.artifactIds,
+          totalByteCount: value.evidence.totalByteCount,
+          acceptedArtifactRetentionMs: value.evidence.acceptedArtifactRetentionMs,
+          retentionPolicyDigest: value.evidence.retentionPolicyDigest,
+        }) || value.retentionPolicy?.formatId !== "pions.result-acceptance-retention-policy.v1" ||
+        value.retentionPolicy.operationId !== value.request.operationId ||
+        value.retentionPolicy.digest !== value.request.retentionPolicyDigest ||
+        value.retentionPolicy.digest !== retentionPolicyDigest({
+          formatId: value.retentionPolicy.formatId,
+          operationId: value.retentionPolicy.operationId,
+          acceptedArtifactRetentionMs: value.retentionPolicy.acceptedArtifactRetentionMs,
+        }) || value.retentionPolicy.acceptedArtifactRetentionMs !== value.effectiveAcceptedRetentionMs ||
+        value.requirements?.digest !== value.request.requirementsDigest ||
+        !["preparing", "prepared", "accepted", "aborted", "unresolved"].includes(value.state ?? "") ||
+        !Number.isSafeInteger(value.effectiveAcceptedRetentionMs) || (value.effectiveAcceptedRetentionMs ?? 0) <= 0) {
+        throw new Error("Invalid Result acceptance preparation record");
+      }
+      return value as ResultAcceptancePreparationRecord;
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) return undefined;
+      throw error;
+    }
+  }
+
+  private async readResultAcceptanceRetention(preparationId: string): Promise<ResultAcceptanceRetentionRecord | undefined> {
+    try {
+      const value = await readJson(this.resultAcceptanceRetentionPath(preparationId)) as Partial<ResultAcceptanceRetentionRecord>;
+      if (value.schema !== RESULT_ACCEPTANCE_RETENTION_SCHEMA || value.preparationId !== preparationId ||
+        !IDENTIFIER.test(value.operationId ?? "") || !IDENTIFIER.test(value.acceptanceRequestId ?? "") ||
+        !Array.isArray(value.artifactIds) || !value.artifactIds.every((id) => typeof id === "string" && IDENTIFIER.test(id)) ||
+        !Number.isSafeInteger(value.retentionMs) || (value.retentionMs ?? 0) <= 0 ||
+        !["pending", "active", "cancelled"].includes(value.state ?? "") ||
+        (value.state === "active" && (!Number.isFinite(Date.parse(value.retainUntil ?? "")) ||
+          value.eventEvidence?.state !== "accepted" || value.eventEvidence.preparationId !== preparationId))) {
+        throw new Error("Invalid Result acceptance retention record");
+      }
+      return value as ResultAcceptanceRetentionRecord;
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) return undefined;
+      throw error;
+    }
   }
 
   private async readExplicitPin(pinId: string): Promise<ExplicitPinRecord | undefined> {
@@ -1376,6 +1541,454 @@ class FileArtifactStore implements ArtifactStore {
     }
   }
 
+  async prepareResultAcceptance(
+    credential: string,
+    request: Readonly<ResultAcceptancePreparationRequest>,
+  ): Promise<ResultAcceptancePreparationOutcome> {
+    try {
+      return await this.serialize(() => this.prepareResultAcceptanceUnserialized(credential, request));
+    } catch (error) {
+      if (error instanceof ArtifactStoreInjectedFault) throw error;
+      if (error instanceof ResultAcceptanceManifestError) return resultAcceptanceFailed(error.reason);
+      return resultAcceptanceFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  private validResultAcceptanceRequest(request: Readonly<ResultAcceptancePreparationRequest>): boolean {
+    return IDENTIFIER.test(request.preparationId) && IDENTIFIER.test(request.operationId) &&
+      IDENTIFIER.test(request.acceptanceRequestId) && /^sha256:[a-f0-9]{64}$/u.test(request.manifestDigest) &&
+      /^sha256:[a-f0-9]{64}$/u.test(request.requirementsDigest) &&
+      /^sha256:[a-f0-9]{64}$/u.test(request.retentionPolicyDigest);
+  }
+
+  private async resultAcceptanceAuthority(
+    principal: Readonly<ArtifactPrincipal>,
+    request: Readonly<ResultAcceptancePreparationRequest>,
+    artifactIds: ReadonlyArray<string>,
+  ): Promise<ArtifactFailureReason | undefined> {
+    for (const artifactId of artifactIds) {
+      try {
+        const reason = authorityFailure(await principal.canPrepareResultAcceptance(request, artifactId));
+        if (reason !== undefined) return reason;
+      } catch {
+        return "authority_unavailable";
+      }
+    }
+    return undefined;
+  }
+
+  private async resultAcceptanceArtifacts(
+    request: Readonly<ResultAcceptancePreparationRequest>,
+    principal: Readonly<ArtifactPrincipal>,
+  ): Promise<ReadonlyArray<ArtifactRecord> | ResultAcceptancePreparationOutcome> {
+    const roots = [request.manifest.bodyArtifactId, ...request.manifest.workProducts.flatMap(({ artifactIds }) => artifactIds)];
+    const records = new Map<string, ArtifactRecord>();
+    const closure = await this.dependencyClosure(
+      roots,
+      this.options.policy,
+      (artifactId) => principal.canPrepareResultAcceptance(request, artifactId),
+    );
+    if (closure.reason !== undefined) {
+      const mapped = closure.reason === "dependency_not_found" ? "artifact_not_found" : closure.reason;
+      return resultAcceptanceFailed(mapped as ArtifactFailureReason | ResultAcceptanceManifestError["reason"], mapped !== "authority_unavailable");
+    }
+    for (const record of closure.records) records.set(record.artifactId, record);
+    for (const artifactId of roots) {
+      const record = await this.readArtifactRecord(artifactId);
+      if (record === undefined) return resultAcceptanceFailed("artifact_not_found");
+      if (record.lifecycle === "deletion_pending") return resultAcceptanceFailed("artifact_deletion_pending");
+      if (record.lifecycle === "deleted") return resultAcceptanceFailed("artifact_deleted");
+      records.set(record.artifactId, record);
+    }
+    const ordered = [...records.values()].sort((left, right) => left.artifactId.localeCompare(right.artifactId));
+    for (const record of ordered) {
+      const bytes = await this.verifiedBytes(record);
+      if (typeof bytes === "string") return resultAcceptanceFailed(bytes, bytes !== "storage_inspection_unavailable");
+      const format = this.formats.get(`${record.formatId}\0${record.normalizationId}`);
+      if (format === undefined || !(await format.validate(bytes))) return resultAcceptanceFailed("invalid_format");
+    }
+    return ordered;
+  }
+
+  private async prepareResultAcceptanceUnserialized(
+    credential: string,
+    request: Readonly<ResultAcceptancePreparationRequest>,
+  ): Promise<ResultAcceptancePreparationOutcome> {
+    if (this.closed || !this.validResultAcceptanceRequest(request)) return resultAcceptanceFailed("limit_exceeded");
+    const principal = await this.authenticate(credential);
+    if (principal === undefined) return resultAcceptanceFailed("unauthorized");
+    const existing = await this.readResultAcceptancePreparation(request.preparationId);
+    if (existing !== undefined) {
+      if (existing.subjectId !== principal.subjectId) return resultAcceptanceFailed("unauthorized");
+      if (existing.requestDigest !== resultAcceptanceRequestDigest(request)) return resultAcceptanceFailed("conflict");
+      if (existing.state === "preparing") {
+        if (!(await this.preparationSourcesRemainTrusted(existing))) {
+          return resultAcceptanceFailed("authority_unavailable", false);
+        }
+        return this.finishPreparingResultAcceptance(existing, principal);
+      }
+      const currentAuthority = await this.resultAcceptanceAuthority(principal, existing.request, existing.evidence.artifactIds);
+      if (currentAuthority !== undefined) {
+        return resultAcceptanceFailed(currentAuthority, currentAuthority !== "authority_unavailable");
+      }
+      if (existing.state === "prepared") {
+        await this.ensureResultAcceptanceProtections(existing);
+        await this.validateResultAcceptanceProtections(existing);
+        const artifacts = await this.resultAcceptanceArtifacts(existing.request, principal);
+        if ("kind" in artifacts) return artifacts;
+        const authority = await this.resultAcceptanceAuthority(principal, existing.request, existing.evidence.artifactIds);
+        if (authority !== undefined) return resultAcceptanceFailed(authority, authority !== "authority_unavailable");
+      }
+      return resultAcceptanceOutcome(existing);
+    }
+    const document = resultAcceptanceManifestDocument(request.manifest);
+    if (document.digest !== request.manifestDigest) return resultAcceptanceFailed("request_mismatch");
+    let requirements: Readonly<ResolvedWorkProductRequirements> | "unknown";
+    try {
+      requirements = await this.options.resultAcceptanceRequirementsSource?.read(request.operationId) ?? "unknown";
+    } catch {
+      requirements = "unknown";
+    }
+    if (requirements === "unknown") return resultAcceptanceFailed("authority_unavailable", false);
+    if (requirements.digest !== request.requirementsDigest) return resultAcceptanceFailed("conflict");
+    for (const entry of await readdir(this.resultAcceptancePreparationDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const other = await this.readResultAcceptancePreparation(entry.slice(0, -5));
+      if (other?.request.operationId === request.operationId) return resultAcceptanceFailed("conflict");
+    }
+    for (const entry of await readdir(this.resultAcceptanceRetentionDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const other = await this.readResultAcceptanceRetention(entry.slice(0, -5));
+      if (other?.operationId === request.operationId) return resultAcceptanceFailed("conflict");
+    }
+    let retentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence> | "unknown";
+    try {
+      retentionPolicy = await this.options.resultAcceptanceRetentionPolicySource?.read(request.operationId) ?? "unknown";
+    } catch {
+      retentionPolicy = "unknown";
+    }
+    if (retentionPolicy === "unknown") return resultAcceptanceFailed("authority_unavailable", false);
+    if (retentionPolicy.formatId !== "pions.result-acceptance-retention-policy.v1" ||
+      retentionPolicy.operationId !== request.operationId || retentionPolicy.digest !== request.retentionPolicyDigest ||
+      !Number.isSafeInteger(retentionPolicy.acceptedArtifactRetentionMs) || retentionPolicy.acceptedArtifactRetentionMs <= 0 ||
+      retentionPolicy.digest !== retentionPolicyDigest({
+        formatId: retentionPolicy.formatId,
+        operationId: retentionPolicy.operationId,
+        acceptedArtifactRetentionMs: retentionPolicy.acceptedArtifactRetentionMs,
+      })) return resultAcceptanceFailed("conflict");
+    const artifacts = await this.resultAcceptanceArtifacts(request, principal);
+    if ("kind" in artifacts) return artifacts;
+    const validated = validateResultAcceptanceManifest(request.manifest, requirements, artifacts);
+    const authority = await this.resultAcceptanceAuthority(principal, request, validated.artifactIds);
+    if (authority !== undefined) return resultAcceptanceFailed(authority, authority !== "authority_unavailable");
+    const unsignedEvidence = {
+      formatId: "pions.result-acceptance-preparation.v1",
+      preparationId: request.preparationId,
+      operationId: request.operationId,
+      acceptanceRequestId: request.acceptanceRequestId,
+      manifestDigest: request.manifestDigest,
+      requirementsDigest: request.requirementsDigest,
+      bodyArtifactId: validated.value.bodyArtifactId,
+      workProducts: validated.value.workProducts,
+      artifactIds: validated.artifactIds,
+      totalByteCount: validated.totalByteCount,
+      acceptedArtifactRetentionMs: retentionPolicy.acceptedArtifactRetentionMs,
+      retentionPolicyDigest: retentionPolicy.digest,
+    } as const;
+    const evidence: ResultAcceptancePreparationEvidence = {
+      ...unsignedEvidence,
+      digest: resultAcceptanceEvidenceDigest(unsignedEvidence),
+    };
+    const record: ResultAcceptancePreparationRecord = {
+      schema: RESULT_ACCEPTANCE_PREPARATION_SCHEMA,
+      request: {
+        ...request,
+        manifest: validated.value,
+      },
+      requirements,
+      requestDigest: resultAcceptanceRequestDigest(request),
+      subjectId: principal.subjectId,
+      evidence,
+      state: "preparing",
+      effectiveAcceptedRetentionMs: retentionPolicy.acceptedArtifactRetentionMs,
+      retentionPolicy,
+    };
+    await this.serializeIo(() => writeJson(this.resultAcceptancePreparationPath(request.preparationId), record));
+    await this.fault("result_acceptance_record_persisted");
+    return this.finishPreparingResultAcceptance(record, principal);
+  }
+
+  private async ensureResultAcceptanceProtections(record: ResultAcceptancePreparationRecord): Promise<void> {
+    await this.fault("before_result_acceptance_first_pin_persisted");
+    for (const artifactId of record.evidence.artifactIds) {
+      const pin: PinRecord = {
+        schema: PIN_SCHEMA,
+        pinId: protectionId("result-acceptance-pin", record.request.preparationId, artifactId),
+        ownerType: "result_acceptance_preparation",
+        ownerId: record.request.preparationId,
+        purpose: "result_acceptance_preparation",
+        artifactId,
+        state: "held",
+      };
+      await this.serializeIo(() => writeJson(this.pinPath(pin.pinId), pin));
+      await this.fault("result_acceptance_pin_persisted");
+    }
+    await this.fault("before_result_acceptance_retention_persisted");
+    const retention: ResultAcceptanceRetentionRecord = {
+      schema: RESULT_ACCEPTANCE_RETENTION_SCHEMA,
+      preparationId: record.request.preparationId,
+      operationId: record.request.operationId,
+      acceptanceRequestId: record.request.acceptanceRequestId,
+      artifactIds: record.evidence.artifactIds,
+      retentionMs: record.effectiveAcceptedRetentionMs,
+      state: "pending",
+    };
+    const existing = await this.readResultAcceptanceRetention(record.request.preparationId);
+    if (existing === undefined) {
+      await this.serializeIo(() => writeJson(this.resultAcceptanceRetentionPath(record.request.preparationId), retention));
+    } else if (existing.state !== "pending" || existing.retentionMs !== retention.retentionMs ||
+      JSON.stringify(existing.artifactIds) !== JSON.stringify(retention.artifactIds)) {
+      throw new Error("Result acceptance retention conflicts with its preparation");
+    }
+    await this.fault("result_acceptance_retention_persisted");
+  }
+
+  private async validateResultAcceptanceProtections(record: ResultAcceptancePreparationRecord): Promise<void> {
+    const retention = await this.readResultAcceptanceRetention(record.request.preparationId);
+    if (retention === undefined || retention.state !== "pending" ||
+      retention.operationId !== record.request.operationId ||
+      retention.acceptanceRequestId !== record.request.acceptanceRequestId ||
+      retention.retentionMs !== record.effectiveAcceptedRetentionMs ||
+      JSON.stringify(retention.artifactIds) !== JSON.stringify(record.evidence.artifactIds)) {
+      throw new Error("Result acceptance pending retention is unavailable");
+    }
+    for (const artifactId of record.evidence.artifactIds) {
+      const pinId = protectionId("result-acceptance-pin", record.request.preparationId, artifactId);
+      const pin = await readJson(this.pinPath(pinId)) as Partial<PinRecord>;
+      if (pin.schema !== PIN_SCHEMA || pin.pinId !== pinId || pin.ownerType !== "result_acceptance_preparation" ||
+        pin.ownerId !== record.request.preparationId || pin.artifactId !== artifactId || pin.state !== "held") {
+        throw new Error("Result acceptance preparation pin is unavailable");
+      }
+    }
+  }
+
+  private async finishPreparingResultAcceptance(
+    record: ResultAcceptancePreparationRecord,
+    principal: Readonly<ArtifactPrincipal>,
+  ): Promise<ResultAcceptancePreparationOutcome> {
+    await this.ensureResultAcceptanceProtections(record);
+    await this.validateResultAcceptanceProtections(record);
+    const artifacts = await this.resultAcceptanceArtifacts(record.request, principal);
+    if ("kind" in artifacts) return artifacts;
+    const validated = validateResultAcceptanceManifest(record.request.manifest, record.requirements, artifacts);
+    if (validated.digest !== record.evidence.manifestDigest ||
+      JSON.stringify(validated.artifactIds) !== JSON.stringify(record.evidence.artifactIds) ||
+      validated.totalByteCount !== record.evidence.totalByteCount) {
+      return resultAcceptanceFailed("conflict");
+    }
+    const authority = await this.resultAcceptanceAuthority(principal, record.request, record.evidence.artifactIds);
+    if (authority !== undefined) return resultAcceptanceFailed(authority, authority !== "authority_unavailable");
+    const prepared: ResultAcceptancePreparationRecord = { ...record, state: "prepared" };
+    await this.serializeIo(() => writeJson(this.resultAcceptancePreparationPath(record.request.preparationId), prepared));
+    await this.fault("result_acceptance_prepared_persisted");
+    return resultAcceptanceOutcome(prepared);
+  }
+
+  async resultAcceptancePreparationStatus(
+    credential: string,
+    preparationId: string,
+  ): Promise<ResultAcceptancePreparationOutcome> {
+    try {
+      return await this.serialize(async () => {
+        const principal = await this.authenticate(credential);
+        if (principal === undefined) return resultAcceptanceFailed("unauthorized");
+        const record = await this.readResultAcceptancePreparation(preparationId);
+        if (record === undefined || record.subjectId !== principal.subjectId) return resultAcceptanceFailed("unauthorized");
+        const currentAuthority = await this.resultAcceptanceAuthority(principal, record.request, record.evidence.artifactIds);
+        if (currentAuthority !== undefined) {
+          return resultAcceptanceFailed(currentAuthority, currentAuthority !== "authority_unavailable");
+        }
+        if (record.state === "prepared") {
+          await this.validateResultAcceptanceProtections(record);
+          const artifacts = await this.resultAcceptanceArtifacts(record.request, principal);
+          if ("kind" in artifacts) return artifacts;
+          const authority = await this.resultAcceptanceAuthority(principal, record.request, record.evidence.artifactIds);
+          if (authority !== undefined) return resultAcceptanceFailed(authority, authority !== "authority_unavailable");
+        }
+        return resultAcceptanceOutcome(record);
+      });
+    } catch {
+      return resultAcceptanceFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  private validEventEvidence(evidence: Readonly<ResultAcceptanceEventEvidence>, state: ResultAcceptanceEventEvidence["state"]): boolean {
+    return IDENTIFIER.test(evidence.preparationId) && IDENTIFIER.test(evidence.operationId) &&
+      IDENTIFIER.test(evidence.acceptanceRequestId) && evidence.state === state &&
+      /^sha256:[a-f0-9]{64}$/u.test(evidence.manifestDigest) && /^sha256:[a-f0-9]{64}$/u.test(evidence.evidenceDigest) &&
+      Number.isFinite(Date.parse(evidence.observedAt)) &&
+      (state === "not_accepted" ? evidence.acceptedAt === undefined : Number.isFinite(Date.parse(evidence.acceptedAt ?? "")));
+  }
+
+  private eventEvidenceMatches(
+    left: Readonly<ResultAcceptanceEventEvidence> | undefined,
+    right: Readonly<ResultAcceptanceEventEvidence>,
+  ): boolean {
+    return left?.preparationId === right.preparationId && left.operationId === right.operationId &&
+      left.acceptanceRequestId === right.acceptanceRequestId && left.manifestDigest === right.manifestDigest &&
+      left.evidenceDigest === right.evidenceDigest && left.state === right.state &&
+      left.observedAt === right.observedAt && left.acceptedAt === right.acceptedAt;
+  }
+
+  private eventEvidenceMatchesPreparation(
+    record: ResultAcceptancePreparationRecord,
+    evidence: Readonly<ResultAcceptanceEventEvidence>,
+  ): boolean {
+    return record.request.operationId === evidence.operationId &&
+      record.request.acceptanceRequestId === evidence.acceptanceRequestId &&
+      record.request.manifestDigest === evidence.manifestDigest &&
+      record.evidence.digest === evidence.evidenceDigest;
+  }
+
+  private async reconciliationAuthority(
+    principal: Readonly<ArtifactPrincipal>,
+    evidence: Readonly<ResultAcceptanceEventEvidence>,
+  ): Promise<ArtifactFailureReason | undefined> {
+    try {
+      const trust = await this.options.resultAcceptanceEventEvidenceVerifier?.verify(evidence) ?? "unknown";
+      if (trust === "unknown") return "authority_unavailable";
+      if (trust === "untrusted") return "conflict";
+      return authorityFailure(await principal.canReconcileResultAcceptance(evidence.preparationId, evidence));
+    } catch {
+      return "authority_unavailable";
+    }
+  }
+
+  async finalizeResultAcceptance(
+    credential: string,
+    evidence: Readonly<ResultAcceptanceEventEvidence>,
+  ): Promise<ResultAcceptancePreparationOutcome> {
+    try {
+      return await this.serialize(async () => {
+        if (!this.validEventEvidence(evidence, "accepted")) return resultAcceptanceFailed("conflict");
+        const principal = await this.authenticate(credential);
+        if (principal === undefined) return resultAcceptanceFailed("unauthorized");
+        const record = await this.readResultAcceptancePreparation(evidence.preparationId);
+        if (record === undefined || record.subjectId !== principal.subjectId) return resultAcceptanceFailed("unauthorized");
+        if (!this.eventEvidenceMatchesPreparation(record, evidence) || record.state === "aborted") {
+          return resultAcceptanceFailed("conflict");
+        }
+        const authority = await this.reconciliationAuthority(principal, evidence);
+        if (authority !== undefined) return resultAcceptanceFailed(authority, authority !== "authority_unavailable");
+        const retention = await this.readResultAcceptanceRetention(evidence.preparationId);
+        if (record.state === "accepted") {
+          if (!this.eventEvidenceMatches(record.eventEvidence, evidence) || retention?.state !== "active" ||
+            retention.retainUntil !== record.retentionUntil ||
+            JSON.stringify(retention.artifactIds) !== JSON.stringify(record.evidence.artifactIds)) {
+            return resultAcceptanceFailed("conflict");
+          }
+          await this.releaseResultAcceptancePins(evidence.preparationId);
+          return resultAcceptanceOutcome(record);
+        }
+        if (record.state !== "prepared") return resultAcceptanceFailed("conflict");
+        if (retention === undefined || retention.operationId !== record.request.operationId ||
+          retention.acceptanceRequestId !== record.request.acceptanceRequestId ||
+          retention.retentionMs !== record.effectiveAcceptedRetentionMs ||
+          JSON.stringify(retention.artifactIds) !== JSON.stringify(record.evidence.artifactIds)) {
+          return resultAcceptanceFailed("storage_inspection_unavailable", false);
+        }
+        const retentionUntil = new Date(Date.parse(evidence.acceptedAt!) + record.effectiveAcceptedRetentionMs).toISOString();
+        if (retention.state === "active" && (!this.eventEvidenceMatches(retention.eventEvidence, evidence) ||
+          retention.retainUntil !== retentionUntil)) return resultAcceptanceFailed("conflict");
+        if (retention.state === "cancelled") return resultAcceptanceFailed("conflict");
+        const active: ResultAcceptanceRetentionRecord = {
+          ...retention,
+          state: "active",
+          retainUntil: retentionUntil,
+          eventEvidence: evidence,
+        };
+        if (retention.state === "pending") {
+          await this.serializeIo(() => writeJson(this.resultAcceptanceRetentionPath(evidence.preparationId), active));
+          await this.fault("result_acceptance_active_retention_persisted");
+        }
+        const accepted: ResultAcceptancePreparationRecord = {
+          ...record,
+          state: "accepted",
+          retentionUntil,
+          eventEvidence: evidence,
+        };
+        await this.serializeIo(() => writeJson(this.resultAcceptancePreparationPath(evidence.preparationId), accepted));
+        await this.fault("result_acceptance_accepted_persisted");
+        await this.releaseResultAcceptancePins(evidence.preparationId);
+        return resultAcceptanceOutcome(accepted);
+      });
+    } catch (error) {
+      if (error instanceof ArtifactStoreInjectedFault) throw error;
+      return resultAcceptanceFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  async abortResultAcceptance(
+    credential: string,
+    evidence: Readonly<ResultAcceptanceEventEvidence>,
+  ): Promise<ResultAcceptancePreparationOutcome> {
+    try {
+      return await this.serialize(async () => {
+        if (!this.validEventEvidence(evidence, "not_accepted")) return resultAcceptanceFailed("conflict");
+        const principal = await this.authenticate(credential);
+        if (principal === undefined) return resultAcceptanceFailed("unauthorized");
+        const record = await this.readResultAcceptancePreparation(evidence.preparationId);
+        if (record === undefined || record.subjectId !== principal.subjectId) return resultAcceptanceFailed("unauthorized");
+        if (!this.eventEvidenceMatchesPreparation(record, evidence) || record.state === "accepted") {
+          return resultAcceptanceFailed("conflict");
+        }
+        const authority = await this.reconciliationAuthority(principal, evidence);
+        if (authority !== undefined) return resultAcceptanceFailed(authority, authority !== "authority_unavailable");
+        const currentRetention = await this.readResultAcceptanceRetention(evidence.preparationId);
+        if (currentRetention?.state === "active") return resultAcceptanceFailed("conflict");
+        if (record.state === "aborted") {
+          if (!this.eventEvidenceMatches(record.eventEvidence, evidence)) return resultAcceptanceFailed("conflict");
+          const retention = currentRetention;
+          if (retention !== undefined && retention.state !== "cancelled") {
+            await this.serializeIo(() => writeJson(this.resultAcceptanceRetentionPath(evidence.preparationId), {
+              ...retention,
+              state: "cancelled",
+            }));
+          }
+          await this.releaseResultAcceptancePins(evidence.preparationId);
+          return resultAcceptanceOutcome(record);
+        }
+        const aborted: ResultAcceptancePreparationRecord = { ...record, state: "aborted", eventEvidence: evidence };
+        await this.serializeIo(() => writeJson(this.resultAcceptancePreparationPath(evidence.preparationId), aborted));
+        const retention = currentRetention;
+        if (retention !== undefined) {
+          await this.serializeIo(() => writeJson(this.resultAcceptanceRetentionPath(evidence.preparationId), {
+            ...retention,
+            state: "cancelled",
+          }));
+        }
+        await this.releaseResultAcceptancePins(evidence.preparationId);
+        return resultAcceptanceOutcome(aborted);
+      });
+    } catch (error) {
+      if (error instanceof ArtifactStoreInjectedFault) throw error;
+      return resultAcceptanceFailed("storage_inspection_unavailable", false);
+    }
+  }
+
+  private async releaseResultAcceptancePins(preparationId: string): Promise<void> {
+    await this.fault("before_result_acceptance_pins_released");
+    for (const entry of await readdir(this.pinDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const path = join(this.pinDirectory, entry);
+      const pin = await readJson(path) as Partial<PinRecord>;
+      if (pin.schema === PIN_SCHEMA && pin.ownerType === "result_acceptance_preparation" &&
+        pin.ownerId === preparationId && pin.state === "held") {
+        await this.serializeIo(() => writeJson(path, { ...pin, state: "released" }));
+      }
+    }
+  }
+
   async collectGarbage(
     credential: string,
     request: Readonly<ArtifactGarbageCollectionRequest>,
@@ -1507,6 +2120,36 @@ class FileArtifactStore implements ArtifactStore {
       if (pin !== undefined && pin.state === "held" &&
         (pin.artifactId === artifactId || pin.dependencyClosure.includes(artifactId))) return false;
     }
+    for (const entry of await readdir(this.resultAcceptancePreparationDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const preparation = await this.readResultAcceptancePreparation(entry.slice(0, -5));
+      if (preparation === undefined || !preparation.evidence.artifactIds.includes(artifactId) || preparation.state === "aborted") continue;
+      if (preparation.state !== "accepted") return false;
+      const retention = await this.readResultAcceptanceRetention(preparation.request.preparationId);
+      if (retention === undefined || retention.state !== "active" ||
+        retention.retentionMs !== preparation.effectiveAcceptedRetentionMs ||
+        retention.retainUntil !== preparation.retentionUntil ||
+        JSON.stringify(retention.artifactIds) !== JSON.stringify(preparation.evidence.artifactIds)) {
+        throw new Error("Published Result acceptance retention is unavailable");
+      }
+      if (Date.parse(retention.retainUntil!) > this.now().getTime()) return false;
+    }
+    for (const entry of await readdir(this.resultAcceptanceRetentionDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const retention = await this.readResultAcceptanceRetention(entry.slice(0, -5));
+      if (retention === undefined || !retention.artifactIds.includes(artifactId) || retention.state === "cancelled") continue;
+      if (retention.state === "active") {
+        const preparation = await this.readResultAcceptancePreparation(retention.preparationId);
+        if (preparation?.state !== "accepted" || preparation.request.operationId !== retention.operationId ||
+          preparation.request.acceptanceRequestId !== retention.acceptanceRequestId ||
+          preparation.retentionUntil !== retention.retainUntil ||
+          !this.eventEvidenceMatches(preparation.eventEvidence, retention.eventEvidence!) ||
+          JSON.stringify(preparation.evidence.artifactIds) !== JSON.stringify(retention.artifactIds)) {
+          throw new Error("Published Result acceptance preparation is unavailable");
+        }
+      }
+      if (retention.state === "pending" || Date.parse(retention.retainUntil!) > this.now().getTime()) return false;
+    }
     for (const entry of await readdir(this.pinDirectory)) {
       if (!entry.endsWith(".json")) continue;
       const pin = await readJson(join(this.pinDirectory, entry)) as Partial<PinRecord>;
@@ -1538,7 +2181,93 @@ class FileArtifactStore implements ArtifactStore {
     await this.fault("deletion_committed");
   }
 
+  private async preparationSourcesRemainTrusted(record: ResultAcceptancePreparationRecord): Promise<boolean> {
+    try {
+      const requirements = await this.options.resultAcceptanceRequirementsSource?.read(record.request.operationId) ?? "unknown";
+      const retentionPolicy = await this.options.resultAcceptanceRetentionPolicySource?.read(record.request.operationId) ?? "unknown";
+      return requirements !== "unknown" && retentionPolicy !== "unknown" &&
+        requirements.digest === record.requirements.digest &&
+        requirements.canonicalJson === record.requirements.canonicalJson &&
+        retentionPolicy.digest === record.retentionPolicy.digest &&
+        retentionPolicy.operationId === record.request.operationId &&
+        retentionPolicy.acceptedArtifactRetentionMs === record.effectiveAcceptedRetentionMs;
+    } catch {
+      return false;
+    }
+  }
+
   private async recoverUseBindingsPinsAndDeletions(): Promise<void> {
+    for (const entry of await readdir(this.resultAcceptancePreparationDirectory)) {
+      if (!entry.endsWith(".json")) continue;
+      const record = await this.readResultAcceptancePreparation(entry.slice(0, -5));
+      if (record === undefined) continue;
+      if (record.state === "preparing") {
+        try {
+          if (!(await this.preparationSourcesRemainTrusted(record))) continue;
+          await this.ensureResultAcceptanceProtections(record);
+          const principal = await this.options.authenticator.restore(record.subjectId);
+          await this.finishPreparingResultAcceptance(record, principal);
+        } catch (error) {
+          if (error instanceof ArtifactStoreInjectedFault) throw error;
+        }
+      } else if (record.state === "prepared") {
+        try {
+          const retention = await this.readResultAcceptanceRetention(record.request.preparationId);
+          const evidenceTrust = retention?.eventEvidence === undefined
+            ? "unknown"
+            : await this.options.resultAcceptanceEventEvidenceVerifier?.verify(retention.eventEvidence) ?? "unknown";
+          if (evidenceTrust === "trusted" && retention?.state === "active" && retention.eventEvidence !== undefined &&
+            retention.retainUntil !== undefined && this.validEventEvidence(retention.eventEvidence, "accepted") &&
+            this.eventEvidenceMatchesPreparation(record, retention.eventEvidence) &&
+            retention.retainUntil === new Date(
+              Date.parse(retention.eventEvidence.acceptedAt!) + record.effectiveAcceptedRetentionMs,
+            ).toISOString() && retention.retentionMs === record.effectiveAcceptedRetentionMs &&
+            JSON.stringify(retention.artifactIds) === JSON.stringify(record.evidence.artifactIds)) {
+            const accepted: ResultAcceptancePreparationRecord = {
+              ...record,
+              state: "accepted",
+              retentionUntil: retention.retainUntil,
+              eventEvidence: retention.eventEvidence,
+            };
+            await writeJson(this.resultAcceptancePreparationPath(record.request.preparationId), accepted);
+            await this.releaseResultAcceptancePins(record.request.preparationId);
+          }
+        } catch (error) {
+          if (error instanceof ArtifactStoreInjectedFault) throw error;
+        }
+      } else if (record.state === "accepted") {
+        try {
+          const retention = await this.readResultAcceptanceRetention(record.request.preparationId);
+          const evidenceTrust = record.eventEvidence === undefined
+            ? "unknown"
+            : await this.options.resultAcceptanceEventEvidenceVerifier?.verify(record.eventEvidence) ?? "unknown";
+          if (evidenceTrust === "trusted" && retention !== undefined && retention.state === "active" &&
+            record.eventEvidence !== undefined && this.validEventEvidence(record.eventEvidence, "accepted") &&
+            this.eventEvidenceMatchesPreparation(record, record.eventEvidence) &&
+            this.eventEvidenceMatches(record.eventEvidence, retention.eventEvidence!) &&
+            retention.retainUntil === record.retentionUntil &&
+            JSON.stringify(retention.artifactIds) === JSON.stringify(record.evidence.artifactIds)) {
+            await this.releaseResultAcceptancePins(record.request.preparationId);
+          }
+        } catch (error) {
+          if (error instanceof ArtifactStoreInjectedFault) throw error;
+        }
+      } else if (record.state === "aborted" && record.eventEvidence !== undefined) {
+        let evidenceTrust: "trusted" | "untrusted" | "unknown" = "unknown";
+        try {
+          evidenceTrust = await this.options.resultAcceptanceEventEvidenceVerifier?.verify(record.eventEvidence) ?? "unknown";
+        } catch {
+          evidenceTrust = "unknown";
+        }
+        if (evidenceTrust !== "trusted" || !this.validEventEvidence(record.eventEvidence, "not_accepted") ||
+          !this.eventEvidenceMatchesPreparation(record, record.eventEvidence)) continue;
+        const retention = await this.readResultAcceptanceRetention(record.request.preparationId);
+        if (retention !== undefined && retention.state !== "cancelled") {
+          await writeJson(this.resultAcceptanceRetentionPath(record.request.preparationId), { ...retention, state: "cancelled" });
+        }
+        await this.releaseResultAcceptancePins(record.request.preparationId);
+      }
+    }
     for (const entry of await readdir(this.explicitPinDirectory)) {
       if (!entry.endsWith(".json")) continue;
       const pin = await this.readExplicitPin(entry.slice(0, -5));
@@ -1748,6 +2477,8 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
     await mkdir(join(rootDirectory, "pins"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "retentions"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "explicit-pins"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "result-acceptance-preparations"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "result-acceptance-retentions"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "gc-diagnostics"), { mode: 0o700 });
     await syncDirectory(rootDirectory);
     return;
@@ -1762,6 +2493,8 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
     await mkdir(join(rootDirectory, "pins"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "retentions"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "explicit-pins"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "result-acceptance-preparations"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "result-acceptance-retentions"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "gc-diagnostics"), { mode: 0o700 });
     await syncDirectory(rootDirectory);
     return;
@@ -1777,6 +2510,8 @@ async function initializeRoot(rootDirectory: string, formats: ReadonlyArray<Stor
     join(rootDirectory, "pins"),
     join(rootDirectory, "retentions"),
     join(rootDirectory, "explicit-pins"),
+    join(rootDirectory, "result-acceptance-preparations"),
+    join(rootDirectory, "result-acceptance-retentions"),
     join(rootDirectory, "gc-diagnostics"),
   ]) {
     const status = await lstat(directory);
