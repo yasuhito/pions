@@ -836,6 +836,22 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
   });
 }
 
+test("a tool call after session shutdown does not create a Runtime", async (context) => {
+  let runtimeCreations = 0;
+  const value = await fixture(new FakeRuntime(), {
+    runtimeFactory: () => {
+      runtimeCreations += 1;
+      return new FakeRuntime();
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.shutdown("reload");
+
+  await value.execute().catch(() => undefined);
+
+  assert.equal(runtimeCreations, 0);
+});
+
 for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
   test(`session shutdown caused by ${reason} closes the Runtime`, async (context) => {
     const value = await fixture();

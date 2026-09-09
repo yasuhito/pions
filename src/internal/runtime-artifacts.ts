@@ -91,7 +91,9 @@ export function runtimeArtifactStore(
     now: now ?? (() => synchronizedNow),
   };
   let opened: Promise<ArtifactStore> | undefined;
+  let closed = false;
   const open = (): Promise<ArtifactStore> => {
+    if (closed) return Promise.reject(new Error("Runtime Artifact Store is closed"));
     opened ??= fault === undefined
       ? openArtifactStore(options)
       : openArtifactStoreWithFaultInjection(options, fault);
@@ -116,7 +118,10 @@ export function runtimeArtifactStore(
       finalizeResultAcceptance: (...args) => open().then((value) => value.finalizeResultAcceptance(...args)),
       abortResultAcceptance: (...args) => open().then((value) => value.abortResultAcceptance(...args)),
       collectGarbage: (...args) => open().then((value) => value.collectGarbage(...args)),
-      close: () => opened?.then((value) => value.close()) ?? Promise.resolve(),
+      close: () => {
+        closed = true;
+        return opened?.then((value) => value.close()) ?? Promise.resolve();
+      },
     },
   };
 }

@@ -375,8 +375,10 @@ export function installPionsExtension(
   const runtimesByConfig = new Map<string, Runtime>();
   const runtimesByCall = new Map<string, Runtime>();
   const operationLifetime = new OperationLifetime();
+  let shuttingDown = false;
 
   pi.on("session_shutdown", async () => {
+    shuttingDown = true;
     const failures: Array<unknown> = [];
     try {
       await operationLifetime.cancelAll();
@@ -408,6 +410,7 @@ export function installPionsExtension(
     ],
     parameters: DelegateParameters,
     async execute(toolCallId, parameters, signal, _onUpdate, context) {
+      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
       if (!context.isProjectTrusted()) {
         throw new Error("pions_delegate requires a trusted project");
       }
@@ -455,6 +458,7 @@ export function installPionsExtension(
         acceptedArtifactRetentionMs: 86_400_000,
       };
       const configKey = `${normalizedRoot}\0${model.provider}\0${model.id}\0${thinkingLevel}\0${claudeBridge?.sourceDigest ?? "builtin"}`;
+      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
       let runtime = options.runtime;
       if (runtime === undefined) {
         const extensionEntryPath = resolveWorkerExtensionEntryPath({
