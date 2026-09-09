@@ -35,6 +35,7 @@ import type {
 class FakeRuntime implements Runtime {
   readonly tasks: Array<TaskSpec> = [];
   spawnCount = 0;
+  closeCount = 0;
 
   constructor(
     private readonly outcome: Result | Error = {
@@ -68,6 +69,10 @@ class FakeRuntime implements Runtime {
   resourceProofs(): never {
     throw new Error("unused");
   }
+
+  async close(): Promise<void> {
+    this.closeCount += 1;
+  }
 }
 
 function deferred<Value>() {
@@ -88,6 +93,7 @@ async function waitForOperation(runtime: PendingRuntime, operationId = "operatio
 class PendingRuntime implements Runtime {
   readonly cancellations: Array<{ readonly operationId: string; readonly scope: "subtree" }> = [];
   readonly results = new Map<string, ReturnType<typeof deferred<Result>>>();
+  closeCount = 0;
   cancellationResponse: Promise<CancellationResult> = Promise.resolve({
     cancellationEpoch: 1,
     state: "cancelled",
@@ -127,6 +133,10 @@ class PendingRuntime implements Runtime {
 
   resourceProofs(): never {
     throw new Error("unused");
+  }
+
+  async close(): Promise<void> {
+    this.closeCount += 1;
   }
 }
 
@@ -825,6 +835,53 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
     ]);
   });
 }
+
+for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
+  test(`session shutdown caused by ${reason} closes the Runtime`, async (context) => {
+    const value = await fixture();
+    context.after(() => rm(value.root, { recursive: true, force: true }));
+    await value.execute();
+
+    await value.shutdown(reason);
+
+    assert.equal(value.runtime.closeCount, 1);
+  });
+}
+
+test("session shutdown closes every Runtime used by the extension instance", async (context) => {
+  const runtimes = [new FakeRuntime(), new FakeRuntime()];
+  let nextRuntime = 0;
+  const value = await fixture(runtimes[0], {
+    runtimeFactory: () => runtimes[nextRuntime++]!,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute("first-call");
+  (value.context as unknown as { model: { provider: string; id: string } }).model = {
+    provider: "openai",
+    id: "gpt-5.6-codex",
+  };
+  await value.execute("second-call");
+
+  await value.shutdown("reload");
+
+  assert.equal(runtimes.reduce((count, runtime) => count + runtime.closeCount, 0), 2);
+});
+
+test("session shutdown closes the Runtime when cancellation classification fails", async (context) => {
+  const runtime = new PendingRuntime();
+  const classification = deferred<CancellationResult>();
+  runtime.cancellationResponse = classification.promise;
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  void value.execute("failed-shutdown-call").catch(() => undefined);
+  await waitForOperation(runtime);
+  const shutdown = value.shutdown("reload").catch(() => undefined);
+
+  classification.reject(new Error("cancellation dispatch failed"));
+  await shutdown;
+
+  assert.equal(runtime.closeCount, 1);
+});
 
 test("session shutdown waits for cancellation classification", async (context) => {
   const runtime = new PendingRuntime();

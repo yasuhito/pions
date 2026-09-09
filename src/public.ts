@@ -859,6 +859,7 @@ export interface Runtime {
   operation(operationId: string): Promise<OperationReader>;
   startAuthorizationInbox(credential: string): Promise<StartAuthorizationInbox>;
   resourceProofs(): ResourceProofController;
+  close(): Promise<void>;
 }
 
 export type ArtifactDigest = `sha256:${string}`;

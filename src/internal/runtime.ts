@@ -1295,6 +1295,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   };
 
   return {
+    close(): Promise<void> {
+      return artifactServices.artifacts.close();
+    },
+
     spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
       const parentOperationId = options?.parentOperationId;
       let spawnsByKey = spawnsByParent.get(parentOperationId);

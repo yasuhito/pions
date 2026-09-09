@@ -377,7 +377,21 @@ export function installPionsExtension(
   const operationLifetime = new OperationLifetime();
 
   pi.on("session_shutdown", async () => {
-    await operationLifetime.cancelAll();
+    const failures: Array<unknown> = [];
+    try {
+      await operationLifetime.cancelAll();
+    } catch (error) {
+      failures.push(error);
+    }
+    const closeOutcomes = await Promise.allSettled(
+      [...new Set(runtimesByCall.values())].map((runtime) => runtime.close()),
+    );
+    failures.push(...closeOutcomes.flatMap((outcome) =>
+      outcome.status === "rejected" ? [outcome.reason] : []
+    ));
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Failed to shut down the Pions Runtime");
+    }
   });
 
   pi.registerTool({
