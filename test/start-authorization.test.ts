@@ -67,6 +67,31 @@ class PausedWorkerAdapter extends FakeWorkerAdapter {
   }
 }
 
+class AdjustableWallClock extends FakeClock {
+  expired = false;
+
+  override now(): Effect.Effect<string> {
+    return this.expired
+      ? Effect.succeed("2026-09-06T11:00:00.000Z")
+      : super.now();
+  }
+}
+
+class UnreliableRecoveryClock extends FakeClock {
+  override recoveredElapsedTimeIsReliable(): boolean {
+    return false;
+  }
+}
+
+class FailingReadStore extends InMemoryEventStore {
+  failReads = false;
+
+  protected override readRecord(operationId: string): Promise<unknown | undefined> {
+    if (this.failReads) return Promise.reject(new Error("read failed"));
+    return super.readRecord(operationId);
+  }
+}
+
 class UnprovenStopWorkerAdapter extends FakeWorkerAdapter {
   protected override cancel(
     _operation: Operation,
@@ -90,11 +115,13 @@ function profile(policy: WorkerProfilePolicy["startAuthorization"]): WorkerProfi
 
 async function fixture(options: {
   readonly policy?: WorkerProfilePolicy["startAuthorization"];
-  readonly currentAuthority?: CurrentStartAuthorization;
+  readonly currentAuthority?: CurrentStartAuthorization | ((callNumber: number) => CurrentStartAuthorization);
   readonly beforeCurrentAuthorization?: (callNumber: number, clock: FakeClock) => void;
   readonly authenticationFails?: boolean;
   readonly worker?: FakeWorkerAdapter;
   readonly beforeReceipt?: () => void;
+  readonly store?: InMemoryEventStore;
+  readonly clock?: FakeClock;
 } = {}): Promise<{
   readonly runtime: Runtime;
   readonly inbox: StartAuthorizationInbox;
@@ -102,7 +129,7 @@ async function fixture(options: {
   readonly handle: Awaited<ReturnType<Runtime["spawn"]>>;
   readonly trace: ReadonlyArray<string>;
 }> {
-  const clock = new FakeClock(timestamps);
+  const clock = options.clock ?? new FakeClock(timestamps);
   const trace: Array<string> = [];
   let authorizationChecks = 0;
   const runtime = makeTestRuntime({
@@ -110,7 +137,7 @@ async function fixture(options: {
     clock,
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
-    store: new InMemoryEventStore(trace, clock),
+    store: options.store ?? new InMemoryEventStore(trace, clock),
     startAuthorizationAuthenticator: {
       authenticate: async () => {
         if (options.authenticationFails === true) throw new Error("credential rejected");
@@ -119,7 +146,9 @@ async function fixture(options: {
           currentAuthorization: async () => {
             authorizationChecks += 1;
             options.beforeCurrentAuthorization?.(authorizationChecks, clock);
-            return options.currentAuthority ?? "authorized";
+            return typeof options.currentAuthority === "function"
+              ? options.currentAuthority(authorizationChecks)
+              : options.currentAuthority ?? "authorized";
           },
         };
       },
@@ -368,6 +397,45 @@ test("a subject outside the fixed authorization scope is rejected", async () => 
   assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "fixed_scope_denied");
 });
 
+test("an out-of-scope inbox cannot expire another subject's Operation", async () => {
+  const clock = new AdjustableWallClock(timestamps);
+  const { inbox, handle } = await fixture({
+    clock,
+    policy: {
+      policy: "required",
+      windowMs: 60_000,
+      authorizedSubjectIds: ["reviewer-2"],
+      receipt,
+    },
+  });
+  clock.expired = true;
+
+  await inbox.listWaiting();
+
+  assert.equal((await handle.read()).state, "starting");
+});
+
+test("a rejected out-of-scope attempt does not append authorization audit events", async () => {
+  const { runtime, inbox, handle } = await fixture({
+    policy: {
+      policy: "required",
+      windowMs: 60_000,
+      authorizedSubjectIds: ["reviewer-2"],
+      receipt,
+    },
+  });
+  const startupReceipt = await handle.waitForStartupReceipt();
+  await inbox.decide({
+    operationId: "operation-1",
+    decisionId: "decision-1",
+    kind: "authorize",
+    receiptDigest: startupReceipt!.digest,
+  });
+
+  const snapshot = await (await runtime.operation("operation-1")).read();
+  assert.equal(snapshot.startAuthorization.rejectedDecisions.length, 0);
+});
+
 test("a subject without current authority is rejected", async () => {
   const { inbox, handle } = await fixture({ currentAuthority: "denied" });
   const startupReceipt = await handle.waitForStartupReceipt();
@@ -472,6 +540,49 @@ test("the same decision ID with different content is a conflict", async () => {
   assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "decision_id_conflict");
 });
 
+test("a decision read failure is not reported as a missing Operation", async () => {
+  const store = new FailingReadStore();
+  const { inbox } = await fixture({ store });
+  store.failReads = true;
+
+  await assert.rejects(inbox.decide({
+    operationId: "operation-1",
+    decisionId: "decision-1",
+    kind: "authorize",
+    receiptDigest: "sha256:receipt",
+  }), /persistence failed/u);
+});
+
+test("another decision ID with an old receipt is rejected distinctly", async () => {
+  const { inbox } = await fixture();
+  await authorize(inbox);
+
+  const outcome = await inbox.decide({
+    operationId: "operation-1",
+    decisionId: "decision-2",
+    kind: "authorize",
+    receiptDigest: "sha256:old-receipt",
+  });
+
+  assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "receipt_mismatch");
+});
+
+test("repeating the same conflicting attempt appends one authorization audit event", async () => {
+  const { inbox, handle } = await fixture();
+  await authorize(inbox);
+  const conflict = {
+    operationId: handle.operationId,
+    decisionId: "decision-1",
+    kind: "reject" as const,
+    receiptDigest: "sha256:different" as const,
+  };
+
+  await inbox.decide(conflict);
+  await inbox.decide(conflict);
+
+  assert.equal((await handle.read()).startAuthorization.rejectedDecisions.length, 1);
+});
+
 test("a conflicting decision is retained in the authorization audit", async () => {
   const { inbox, handle } = await fixture();
   const startupReceipt = await handle.waitForStartupReceipt();
@@ -489,6 +600,40 @@ test("a conflicting decision is retained in the authorization audit", async () =
   });
 
   assert.equal((await handle.read()).startAuthorization.rejectedDecisions[0]?.reason, "decision_id_conflict");
+});
+
+test("authorization audit entries are immutable", async () => {
+  const { inbox, handle } = await fixture();
+  await authorize(inbox);
+  await inbox.decide({
+    operationId: handle.operationId,
+    decisionId: "decision-1",
+    kind: "reject",
+    receiptDigest: "sha256:different",
+  });
+
+  assert.equal(Object.isFrozen((await handle.read()).startAuthorization.rejectedDecisions[0]), true);
+});
+
+test("authority loss during pre-begin revalidation invalidates the Operation", async () => {
+  const { inbox, handle } = await fixture({
+    currentAuthority: (callNumber) => callNumber < 4 ? "authorized" : "denied",
+  });
+
+  await authorize(inbox);
+
+  assert.equal((await handle.read()).failureReason, "start_authorization_invalidated");
+});
+
+test("unproven stop after authorization invalidation retains the failure reason", async () => {
+  const { inbox, handle } = await fixture({
+    worker: new UnprovenStopWorkerAdapter(),
+    currentAuthority: (callNumber) => callNumber < 4 ? "authorized" : "denied",
+  });
+
+  await authorize(inbox);
+
+  assert.equal((await handle.read()).failureReason, "start_authorization_invalidated");
 });
 
 test("a rejected Start decision fails with the fixed reason after Worker stop", async () => {
@@ -524,6 +669,75 @@ test("cancellation remains available while authorization is waiting", async () =
   await handle.cancel({ scope: "subtree" });
 
   assert.equal((await handle.read()).state, "cancelled");
+});
+
+test("a recovered authorization decision without a Worker leaves the Operation unknown", async () => {
+  const store = new InMemoryEventStore();
+  const { handle } = await fixture({ store });
+  const startupReceipt = await handle.waitForStartupReceipt();
+  const recovered = makeTestRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new FakeClock(timestamps),
+    ids: new FakeIdGenerator(["unused-operation"]),
+    presentation: new FakePresentation(),
+    store,
+    startAuthorizationAuthenticator: {
+      authenticate: async () => ({
+        subjectId: "reviewer-1",
+        currentAuthorization: async () => "authorized",
+      }),
+    },
+    configuration: {
+      cwd: "/test/workspace",
+      profiles: { review: profile({ policy: "required", windowMs: 60_000, authorizedSubjectIds: ["reviewer-1"], receipt }) },
+    },
+  });
+  const inbox = await recovered.startAuthorizationInbox("credential");
+
+  await inbox.decide({
+    operationId: handle.operationId,
+    decisionId: "decision-1",
+    kind: "authorize",
+    receiptDigest: startupReceipt!.digest,
+  });
+
+  assert.equal((await (await recovered.operation(handle.operationId)).read()).state, "unknown");
+});
+
+test("recovery with an unreliable elapsed-time source expires the authorization", async () => {
+  const store = new InMemoryEventStore();
+  await fixture({ store });
+  const recovered = makeTestRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new UnreliableRecoveryClock(timestamps),
+    ids: new FakeIdGenerator(["unused-operation"]),
+    presentation: new FakePresentation(),
+    store,
+    startAuthorizationAuthenticator: {
+      authenticate: async () => ({
+        subjectId: "reviewer-1",
+        currentAuthorization: async () => "authorized",
+      }),
+    },
+    configuration: {
+      cwd: "/test/workspace",
+      profiles: { review: profile({ policy: "required", windowMs: 60_000, authorizedSubjectIds: ["reviewer-1"], receipt }) },
+    },
+  });
+  const inbox = await recovered.startAuthorizationInbox("credential");
+
+  await inbox.listWaiting();
+
+  assert.equal((await (await recovered.operation("operation-1")).read()).state, "unknown");
+});
+
+test("an unproven stop after authorization timeout leaves the Operation unknown", async () => {
+  const { clock, handle } = await fixture({ worker: new UnprovenStopWorkerAdapter() });
+  clock.advanceBy(60_000);
+
+  await handle.result().catch(() => undefined);
+
+  assert.equal((await handle.read()).state, "unknown");
 });
 
 test("an elapsed authorization deadline fails with the fixed reason", async () => {

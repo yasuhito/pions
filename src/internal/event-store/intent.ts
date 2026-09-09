@@ -118,7 +118,7 @@ export type OperationIntent =
   | {
       readonly type: "operation_unknown";
       readonly reason: "liveness-unproven";
-      readonly failureReason?: "start_rejected" | "start_authorization_timed_out";
+      readonly failureReason?: "start_rejected" | "start_authorization_timed_out" | "start_authorization_invalidated";
     }
   | {
       readonly type: "operation_failed";

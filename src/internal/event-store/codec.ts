@@ -540,7 +540,11 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("operation_unknown"),
     reason: Schema.Literal("liveness-unproven"),
-    failureReason: Schema.optional(Schema.Literal("start_rejected", "start_authorization_timed_out")),
+    failureReason: Schema.optional(Schema.Literal(
+      "start_rejected",
+      "start_authorization_timed_out",
+      "start_authorization_invalidated",
+    )),
   }),
   Schema.Struct({
     ...EventMetadataFields,

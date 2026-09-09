@@ -482,7 +482,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const unknown = await runEffect(advanceOperation(record.operationId, {
         type: "operation_unknown",
         reason: "liveness-unproven",
-        ...(reason === "start_rejected" || reason === "start_authorization_timed_out"
+        ...(reason === "start_rejected" || reason === "start_authorization_timed_out" ||
+            reason === "start_authorization_invalidated"
           ? { failureReason: reason }
           : {}),
       }));
@@ -504,6 +505,37 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     await runEffect(project(operation));
     await tryFinalize(record);
     waiter?.reject(new Error(reason));
+  };
+
+  const authorizationDeadlineElapsed = (
+    operationId: string,
+    deadline: string,
+    observedAt: string,
+  ): boolean => {
+    if (Date.parse(observedAt) >= Date.parse(deadline)) return true;
+    if (!records.has(operationId)) return false;
+    const monotonicDeadline = authorizationMonotonicDeadlines.get(operationId);
+    return monotonicDeadline === undefined ||
+      services.clock.monotonicMilliseconds() >= monotonicDeadline;
+  };
+
+  const expireStartAuthorization = async (operationId: string): Promise<void> => {
+    const current = await runEffect(getOperation(operationId));
+    if (
+      current.state !== "starting" ||
+      (current.startGate !== "waiting" && current.startGate !== "authorized")
+    ) return;
+    await runEffect(advanceOperation(operationId, { type: "start_gate_closed", gate: "expired" }));
+    const record = records.get(operationId);
+    if (record !== undefined) {
+      await terminateBeforeStart(record, "start_authorization_timed_out");
+      return;
+    }
+    await runEffect(advanceOperation(operationId, {
+      type: "operation_unknown",
+      reason: "liveness-unproven",
+      failureReason: "start_authorization_timed_out",
+    }));
   };
 
   const verifyReviewSubject = async (
@@ -614,12 +646,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         services.clock.monotonicMilliseconds();
       const remaining = Math.min(wallRemaining, monotonicRemaining);
       if (remaining > 0) await runEffect(services.clock.sleep(remaining));
-      await serializeAuthorizationMutation(record.operationId, async () => {
-        const current = await runEffect(getOperation(record.operationId));
-        if (current.state !== "starting" || current.startGate !== "waiting") return;
-        await runEffect(advanceOperation(record.operationId, { type: "start_gate_closed", gate: "expired" }));
-        await terminateBeforeStart(record, "start_authorization_timed_out");
-      });
+      await serializeAuthorizationMutation(record.operationId, () =>
+        expireStartAuthorization(record.operationId)
+      );
     })().catch((error) => startGateWaiters.get(record.operationId)?.reject(error));
     return gate;
   };
@@ -1373,6 +1402,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           ? error
           : new StartAuthorizationAuthenticationError("Start authorization authentication failed");
       });
+      const currentAuthorization = (operationId: string) =>
+        principal.currentAuthorization(operationId).catch(() => "unknown" as const);
       return {
         listWaiting: async () => {
           const stored = await runEffect(services.store.listWaitingStartAuthorizations().pipe(
@@ -1381,29 +1412,24 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           const allowed = [];
           for (const snapshot of stored) {
             const operationId = snapshot.operation.operationId;
+            if (!snapshot.operation.startAuthorizationTiming.authorizedSubjectIds.includes(principal.subjectId)) continue;
+            if (await currentAuthorization(operationId) !== "authorized") continue;
             const observedAt = await runEffect(services.clock.now());
             const recoveryTimeUnreliable = !records.has(operationId) &&
               !services.clock.recoveredElapsedTimeIsReliable();
-            if (recoveryTimeUnreliable || Date.parse(observedAt) >= Date.parse(snapshot.operation.startAuthorizationTiming.deadline)) {
-              await serializeAuthorizationMutation(operationId, async () => {
-                const current = await runEffect(getOperation(operationId));
-                if (current.startGate !== "waiting") return;
-                await runEffect(advanceOperation(operationId, { type: "start_gate_closed", gate: "expired" }));
-                const record = records.get(operationId);
-                if (record === undefined) {
-                  await runEffect(advanceOperation(operationId, {
-                    type: "operation_unknown",
-                    reason: "liveness-unproven",
-                    failureReason: "start_authorization_timed_out",
-                  }));
-                } else {
-                  await terminateBeforeStart(record, "start_authorization_timed_out");
-                }
-              });
+            if (
+              recoveryTimeUnreliable ||
+              authorizationDeadlineElapsed(
+                operationId,
+                snapshot.operation.startAuthorizationTiming.deadline,
+                observedAt,
+              )
+            ) {
+              await serializeAuthorizationMutation(operationId, () =>
+                expireStartAuthorization(operationId)
+              );
               continue;
             }
-            if (!snapshot.operation.startAuthorizationTiming.authorizedSubjectIds.includes(principal.subjectId)) continue;
-            if (await principal.currentAuthorization(snapshot.operation.operationId).catch(() => "unknown" as const) !== "authorized") continue;
             const receipt = snapshot.operation.startupReceipt;
             if (receipt === undefined) continue;
             allowed.push(Object.freeze({
@@ -1417,35 +1443,52 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         },
         decide: (request: Readonly<StartAuthorizationDecisionRequest>): Promise<Readonly<StartAuthorizationDecisionOutcome>> =>
           serializeAuthorizationMutation(request.operationId, async () => {
-            const stored = await readStoredSnapshot(request.operationId).catch(() => undefined);
-            if (stored === undefined) return { status: "rejected", reason: "operation_not_found" };
+            const storedRead = await runEffect(Effect.either(services.store.read(request.operationId)));
+            if (storedRead._tag === "Left") {
+              if (storedRead.left.code === "not_found") {
+                return { status: "rejected", reason: "operation_not_found" };
+              }
+              throw persistenceError(request.operationId, storedRead.left);
+            }
+            const stored = storedRead.right;
             const operation = stored.operation;
             const rejectDecision = async (
               reason: Exclude<StartAuthorizationDecisionRejectionReason, "operation_not_found">,
             ): Promise<Readonly<StartAuthorizationDecisionOutcome>> => {
-              await runEffect(advanceOperation(request.operationId, {
-                type: "start_authorization_decision_rejected",
-                attempt: {
-                  decisionId: request.decisionId,
-                  kind: request.kind,
-                  actorId: principal.subjectId,
-                  receiptDigest: request.receiptDigest,
-                  reason,
-                },
-              }));
+              const alreadyRecorded = operation.rejectedStartAuthorizationDecisions.some((attempt) =>
+                attempt.decisionId === request.decisionId &&
+                attempt.kind === request.kind &&
+                attempt.actorId === principal.subjectId &&
+                attempt.receiptDigest === request.receiptDigest &&
+                attempt.reason === reason
+              );
+              if (!alreadyRecorded) {
+                await runEffect(advanceOperation(request.operationId, {
+                  type: "start_authorization_decision_rejected",
+                  attempt: {
+                    decisionId: request.decisionId,
+                    kind: request.kind,
+                    actorId: principal.subjectId,
+                    receiptDigest: request.receiptDigest,
+                    reason,
+                  },
+                }));
+              }
               return { status: "rejected", reason };
             };
             if (!operation.startAuthorizationTiming.authorizedSubjectIds.includes(principal.subjectId)) {
-              return rejectDecision("fixed_scope_denied");
+              return { status: "rejected", reason: "fixed_scope_denied" };
             }
-            const currentAuthorization = await principal.currentAuthorization(request.operationId)
-              .catch(() => "unknown" as const);
-            if (currentAuthorization !== "authorized") {
-              return rejectDecision(currentAuthorization === "revoked"
-                ? "authority_revoked"
-                : currentAuthorization === "unknown"
-                  ? "authority_unknown"
-                  : "current_authority_denied");
+            const authorization = await currentAuthorization(request.operationId);
+            if (authorization !== "authorized") {
+              return {
+                status: "rejected",
+                reason: authorization === "revoked"
+                  ? "authority_revoked"
+                  : authorization === "unknown"
+                    ? "authority_unknown"
+                    : "current_authority_denied",
+              };
             }
             const existing = operation.startAuthorizationDecision;
             if (existing !== undefined) {
@@ -1458,9 +1501,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                   gate: existing.kind === "authorize" ? "authorized" : "rejected",
                 };
               }
-              return rejectDecision(existing.decisionId === request.decisionId
-                ? "decision_id_conflict"
-                : "gate_closed");
+              if (existing.decisionId === request.decisionId) {
+                return rejectDecision("decision_id_conflict");
+              }
+              return rejectDecision(operation.startupReceipt?.digest === request.receiptDigest
+                ? "gate_closed"
+                : "receipt_mismatch");
             }
             if (operation.startupReceipt?.digest !== request.receiptDigest) {
               return rejectDecision("receipt_mismatch");
@@ -1471,22 +1517,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             const decidedAt = await runEffect(services.clock.now());
             const recoveryTimeUnreliable = !records.has(request.operationId) &&
               !services.clock.recoveredElapsedTimeIsReliable();
-            const monotonicDeadline = authorizationMonotonicDeadlines.get(request.operationId);
             if (
-              recoveryTimeUnreliable || Date.parse(decidedAt) >= Date.parse(operation.startAuthorizationTiming.deadline) ||
-              monotonicDeadline !== undefined && services.clock.monotonicMilliseconds() >= monotonicDeadline
+              recoveryTimeUnreliable ||
+              authorizationDeadlineElapsed(
+                request.operationId,
+                operation.startAuthorizationTiming.deadline,
+                decidedAt,
+              )
             ) {
-              await runEffect(advanceOperation(request.operationId, { type: "start_gate_closed", gate: "expired" }));
-              const record = records.get(request.operationId);
-              if (record !== undefined) {
-                await terminateBeforeStart(record, "start_authorization_timed_out");
-              } else {
-                await runEffect(advanceOperation(request.operationId, {
-                  type: "operation_unknown",
-                  reason: "liveness-unproven",
-                  failureReason: "start_authorization_timed_out",
-                }));
-              }
+              await expireStartAuthorization(request.operationId);
               return rejectDecision("deadline_elapsed");
             }
             const decided = await runEffect(advanceOperation(request.operationId, {
@@ -1507,7 +1546,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               gate: request.kind === "authorize" ? "authorized" as const : "rejected" as const,
             };
             const record = records.get(request.operationId);
-            if (record === undefined) return accepted;
+            if (record === undefined) {
+              await runEffect(advanceOperation(request.operationId, {
+                type: "operation_unknown",
+                reason: "liveness-unproven",
+                ...(request.kind === "reject" ? { failureReason: "start_rejected" as const } : {}),
+              }));
+              return accepted;
+            }
             if (request.kind === "reject") {
               await terminateBeforeStart(record, "start_rejected");
               return accepted;
@@ -1517,13 +1563,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             const targetMatches = latest.state === "starting" && latest.startGate === "authorized" &&
               latest.startupReceipt?.digest === request.receiptDigest &&
               latest.workerIdentity?.processInstanceId === latest.startupReceipt.workerIdentity.processInstanceId;
-            const deadlineStillOpen = Date.parse(await runEffect(services.clock.now())) <
-                Date.parse(latest.startAuthorizationTiming.deadline) &&
-              services.clock.monotonicMilliseconds() <
-                (authorizationMonotonicDeadlines.get(request.operationId) ?? -Infinity);
-            const currentlyAuthorized = await principal.currentAuthorization(request.operationId)
-              .then((authorization) => authorization === "authorized")
-              .catch(() => false);
+            const deadlineStillOpen = !authorizationDeadlineElapsed(
+              request.operationId,
+              latest.startAuthorizationTiming.deadline,
+              await runEffect(services.clock.now()),
+            );
+            const currentlyAuthorized = await currentAuthorization(request.operationId)
+              .then((authorization) => authorization === "authorized");
             try {
               if (!targetMatches) throw new StartRevalidationError("invalidated");
               if (!deadlineStillOpen) throw new StartRevalidationError("timed_out");
@@ -1538,20 +1584,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               await verifyReviewSubject(request.operationId, latest.startupReceiptPolicy, false);
               const revalidated = await runEffect(getOperation(request.operationId));
               const revalidatedAt = await runEffect(services.clock.now());
-              const authorityStillCurrent = await principal.currentAuthorization(request.operationId)
-                .then((authorization) => authorization === "authorized")
-                .catch(() => false);
+              const authorityStillCurrent = await currentAuthorization(request.operationId)
+                .then((authorization) => authorization === "authorized");
               if (
                 revalidated.state !== "starting" || revalidated.startGate !== "authorized" ||
                 revalidated.startupReceipt?.digest !== request.receiptDigest ||
-                Date.parse(revalidatedAt) >= Date.parse(revalidated.startAuthorizationTiming.deadline) ||
-                services.clock.monotonicMilliseconds() >=
-                  (authorizationMonotonicDeadlines.get(request.operationId) ?? -Infinity) ||
+                authorizationDeadlineElapsed(
+                  request.operationId,
+                  revalidated.startAuthorizationTiming.deadline,
+                  revalidatedAt,
+                ) ||
                 !authorityStillCurrent
               ) {
-                const timedOut = Date.parse(revalidatedAt) >= Date.parse(revalidated.startAuthorizationTiming.deadline) ||
-                  services.clock.monotonicMilliseconds() >=
-                    (authorizationMonotonicDeadlines.get(request.operationId) ?? -Infinity);
+                const timedOut = authorizationDeadlineElapsed(
+                  request.operationId,
+                  revalidated.startAuthorizationTiming.deadline,
+                  revalidatedAt,
+                );
                 throw new StartRevalidationError(timedOut ? "timed_out" : "invalidated");
               }
               const instruction = {
@@ -1562,13 +1611,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               };
               await runEffect(advanceOperation(request.operationId, { type: "start_instruction_dispatched", instruction }));
               const dispatchCheckedAt = await runEffect(services.clock.now());
-              if (
-                Date.parse(dispatchCheckedAt) >= Date.parse(revalidated.startAuthorizationTiming.deadline) ||
-                services.clock.monotonicMilliseconds() >=
-                  (authorizationMonotonicDeadlines.get(request.operationId) ?? -Infinity)
-              ) {
-                await runEffect(advanceOperation(request.operationId, { type: "start_gate_closed", gate: "expired" }));
-                await terminateBeforeStart(record, "start_authorization_timed_out");
+              if (authorizationDeadlineElapsed(
+                request.operationId,
+                revalidated.startAuthorizationTiming.deadline,
+                dispatchCheckedAt,
+              )) {
+                await expireStartAuthorization(request.operationId);
                 throw new Error("Start authorization expired before begin");
               }
               const started = await runEffect(advanceOperation(request.operationId, { type: "authorized_operation_started" }));

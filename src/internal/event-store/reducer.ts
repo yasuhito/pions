@@ -87,6 +87,7 @@ function immutable(operation: Operation): Operation {
   if (operation.startAuthorizationDecision !== undefined) {
     Object.freeze(operation.startAuthorizationDecision);
   }
+  deepFreeze(operation.rejectedStartAuthorizationDecisions);
   if (operation.startInstructionDelivery !== undefined) {
     Object.freeze(operation.startInstructionDelivery);
   }
