@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import type {
@@ -7,15 +6,14 @@ import type {
   ResultAcceptanceReservation,
   ResultAcceptanceRetentionPolicyEvidence,
 } from "../public.js";
+import { sha256Digest } from "./result-digest.js";
 
 export function manifestReservationIsConsistent(
   reservation: Readonly<ResultAcceptanceReservation>,
 ): boolean {
   try {
     const parsed = JSON.parse(reservation.manifestCanonicalJson) as unknown;
-    const digest = `sha256:${createHash("sha256")
-      .update(reservation.manifestCanonicalJson, "utf8")
-      .digest("hex")}`;
+    const digest = sha256Digest(reservation.manifestCanonicalJson);
     return digest === reservation.manifestDigest &&
       isDeepStrictEqual(parsed, reservation.manifest) &&
       reservation.requirementSetId === reservation.manifest.requirementSetId &&
@@ -28,7 +26,7 @@ export function manifestReservationIsConsistent(
 function preparationEvidenceDigest(
   evidence: Readonly<ResultAcceptancePreparationEvidence>,
 ): string {
-  return `sha256:${createHash("sha256").update(JSON.stringify({
+  return sha256Digest(JSON.stringify({
     formatId: evidence.formatId,
     preparationId: evidence.preparationId,
     operationId: evidence.operationId,
@@ -41,7 +39,7 @@ function preparationEvidenceDigest(
     totalByteCount: evidence.totalByteCount,
     acceptedArtifactRetentionMs: evidence.acceptedArtifactRetentionMs,
     retentionPolicyDigest: evidence.retentionPolicyDigest,
-  }), "utf8").digest("hex")}`;
+  }));
 }
 
 export function preparationEvidenceMatchesReservation(
@@ -74,15 +72,15 @@ export function resultAcceptanceRetentionPolicy(
   };
   return {
     ...value,
-    digest: `sha256:${createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")}`,
+    digest: sha256Digest(JSON.stringify(value)),
   };
 }
 
 export function resultAcceptanceIdentifier(
   reservation: Readonly<ResultAcceptanceReservation>,
 ): AcceptedResult["acceptanceId"] {
-  const value = createHash("sha256")
-    .update(`${reservation.operationId}\u0000${reservation.preparationId}\u0000${reservation.manifestDigest}`, "utf8")
-    .digest("hex");
-  return `pions.result-acceptance.v1:${value}`;
+  const digest = sha256Digest(
+    `${reservation.operationId}\u0000${reservation.preparationId}\u0000${reservation.manifestDigest}`,
+  );
+  return `pions.result-acceptance.v1:${digest.slice("sha256:".length)}`;
 }

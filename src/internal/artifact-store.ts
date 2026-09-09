@@ -42,6 +42,7 @@ import {
   type ResultAcceptanceRetentionPolicyEvidence,
   type ResolvedWorkProductRequirements,
 } from "../public.js";
+import { sha256Digest } from "./result-digest.js";
 import {
   resultAcceptanceManifestDocument,
   validateResultAcceptanceManifest,
@@ -213,7 +214,7 @@ async function exists(path: string): Promise<boolean> {
 }
 
 function sha256(bytes: Uint8Array | string): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  return sha256Digest(bytes);
 }
 
 function temporaryPrefix(registrationId: string): string {
@@ -2226,22 +2227,17 @@ class FileArtifactStore implements ArtifactStore {
               record.request.preparationId,
             );
           const evidence = sourcedEvidence === "unknown" ? undefined : sourcedEvidence;
-          const evidenceTrust = evidence === undefined
-            ? "unknown"
-            : await this.options.resultAcceptanceEventEvidenceVerifier?.verify(evidence) ?? "unknown";
-          const retentionUntil = evidence?.acceptedAt === undefined
-            ? undefined
-            : new Date(Date.parse(evidence.acceptedAt) + record.effectiveAcceptedRetentionMs).toISOString();
-          const principal = evidence === undefined
-            ? undefined
-            : await this.options.authenticator.restore(record.subjectId);
-          const authority = evidence === undefined || principal === undefined
-            ? "authority_unavailable"
-            : await this.reconciliationAuthority(principal, evidence);
+          if (evidence === undefined || evidence.acceptedAt === undefined) continue;
+          const evidenceTrust = await this.options.resultAcceptanceEventEvidenceVerifier?.verify(evidence) ?? "unknown";
+          const retentionUntil = new Date(
+            Date.parse(evidence.acceptedAt) + record.effectiveAcceptedRetentionMs,
+          ).toISOString();
+          const principal = await this.options.authenticator.restore(record.subjectId);
+          const authority = await this.reconciliationAuthority(principal, evidence);
           if (evidenceTrust === "trusted" && authority === undefined && retention !== undefined &&
             (retention.state === "pending" || retention.state === "active") &&
-            retentionUntil !== undefined && this.validEventEvidence(evidence!, "accepted") &&
-            this.eventEvidenceMatchesPreparation(record, evidence!) &&
+            this.validEventEvidence(evidence, "accepted") &&
+            this.eventEvidenceMatchesPreparation(record, evidence) &&
             retention.retentionMs === record.effectiveAcceptedRetentionMs &&
             JSON.stringify(retention.artifactIds) === JSON.stringify(record.evidence.artifactIds) &&
             (retention.state !== "active" || retention.retainUntil === retentionUntil)) {
@@ -2249,7 +2245,7 @@ class FileArtifactStore implements ArtifactStore {
               ...retention,
               state: "active",
               retainUntil: retentionUntil,
-              eventEvidence: evidence!,
+              eventEvidence: evidence,
             };
             if (retention.state === "pending") {
               await writeJson(this.resultAcceptanceRetentionPath(record.request.preparationId), active);
@@ -2258,7 +2254,7 @@ class FileArtifactStore implements ArtifactStore {
               ...record,
               state: "accepted",
               retentionUntil,
-              eventEvidence: evidence!,
+              eventEvidence: evidence,
             };
             await writeJson(this.resultAcceptancePreparationPath(record.request.preparationId), accepted);
             await this.releaseResultAcceptancePins(record.request.preparationId);
@@ -2273,9 +2269,10 @@ class FileArtifactStore implements ArtifactStore {
             ? "unknown"
             : await this.options.resultAcceptanceEventEvidenceVerifier?.verify(record.eventEvidence) ?? "unknown";
           if (evidenceTrust === "trusted" && retention !== undefined && retention.state === "active" &&
-            record.eventEvidence !== undefined && this.validEventEvidence(record.eventEvidence, "accepted") &&
+            retention.eventEvidence !== undefined && record.eventEvidence !== undefined &&
+            this.validEventEvidence(record.eventEvidence, "accepted") &&
             this.eventEvidenceMatchesPreparation(record, record.eventEvidence) &&
-            this.eventEvidenceMatches(record.eventEvidence, retention.eventEvidence!) &&
+            this.eventEvidenceMatches(record.eventEvidence, retention.eventEvidence) &&
             retention.retainUntil === record.retentionUntil &&
             JSON.stringify(retention.artifactIds) === JSON.stringify(record.evidence.artifactIds)) {
             await this.releaseResultAcceptancePins(record.request.preparationId);
