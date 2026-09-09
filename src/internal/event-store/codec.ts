@@ -237,6 +237,7 @@ const StartupReceipt = Schema.Struct({
   authorizationDeadline: Schema.String,
 });
 const StartInstructionReference = Schema.Struct({
+  dispatcherId: Schema.String,
   workerProcessInstanceId: Schema.String,
   receiptDigest: Digest,
   authorizationDecisionId: Schema.optional(Schema.String),

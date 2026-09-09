@@ -133,7 +133,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
       ) {
         return { state: this.failure } as const;
       }
-      yield* hooks.workerIdentified({
+      const startInstruction = yield* hooks.workerIdentified({
         processId: 1234,
         processInstanceId: "fake-process-instance",
         processStartToken: "fake-process-start",
@@ -145,6 +145,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
           cwd: { state: "observed", value: operation.effectiveConfig.cwd },
         },
       });
+      yield* hooks.startInstructionAccepted(startInstruction);
       if (
         this.failure === "process-exited-without-result" ||
         this.failure === "liveness-unproven"

@@ -196,6 +196,7 @@ function validStartInstructionReference(
   if (
     operation.workerIdentity === undefined ||
     operation.startupReceipt === undefined ||
+    instruction.dispatcherId.length === 0 ||
     instruction.deliveryGeneration < 1 ||
     instruction.workerProcessInstanceId !== operation.workerIdentity.processInstanceId ||
     instruction.receiptDigest !== operation.startupReceipt.digest

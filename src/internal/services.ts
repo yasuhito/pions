@@ -14,6 +14,7 @@ import type {
   OperationPersistenceError,
   StartAuthorizationAuthenticator,
   ResourceProofRejectedError,
+  StartInstructionReference,
   WorkerProducedResult,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -50,11 +51,18 @@ export interface WorkerCancellationEvidence {
   readonly proof: "worker-stop";
 }
 
+export interface WorkerStartInstruction extends StartInstructionReference {
+  readonly deadline: string;
+}
+
 export interface WorkerRunHooks {
   workerLaunched(): Effect.Effect<void, OperationPersistenceError>;
   workerIdentified(
     identity: Readonly<WorkerProcessIdentity>,
-  ): Effect.Effect<void, OperationPersistenceError | ResourceProofRejectedError>;
+  ): Effect.Effect<Readonly<WorkerStartInstruction>, OperationPersistenceError | ResourceProofRejectedError>;
+  startInstructionAccepted(
+    instruction: Readonly<WorkerStartInstruction>,
+  ): Effect.Effect<void, OperationPersistenceError>;
   acceptResult(
     result: Readonly<WorkerProducedResult>,
   ): Effect.Effect<ResultAcceptanceOutcome>;

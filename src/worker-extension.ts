@@ -1,6 +1,9 @@
 import { randomBytes } from "node:crypto";
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
+import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   CustomEditor,
@@ -16,11 +19,87 @@ import {
   decodeWorkerConfig,
 } from "./internal/worker-protocol.js";
 import type {
+  StartInstruction,
+  StartInstructionAcceptanceStore,
   WorkerConfig,
   WorkerProtocolEvent,
 } from "./internal/worker-protocol.js";
 
 const CONFIG_FLAG = "pions-worker-config";
+
+class FileStartInstructionAcceptanceStore implements StartInstructionAcceptanceStore {
+  constructor(private readonly path: string) {}
+
+  load(): Readonly<StartInstruction> | "none" | "unknown" {
+    try {
+      const value = JSON.parse(readFileSync(this.path, "utf8")) as unknown;
+      return typeof value === "object" && value !== null
+        ? value as StartInstruction
+        : "unknown";
+    } catch (error) {
+      return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+        ? "none"
+        : "unknown";
+    }
+  }
+
+  loadGeneration(): number | "unknown" {
+    try {
+      const value = JSON.parse(readFileSync(`${this.path}.generation`, "utf8")) as unknown;
+      return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : "unknown";
+    } catch (error) {
+      return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+        ? 1
+        : "unknown";
+    }
+  }
+
+  saveGeneration(deliveryGeneration: number): boolean {
+    const target = `${this.path}.generation`;
+    const temporary = `${target}.tmp`;
+    let descriptor: number | undefined;
+    try {
+      descriptor = openSync(temporary, "wx", 0o600);
+      writeFileSync(descriptor, `${JSON.stringify(deliveryGeneration)}\n`, "utf8");
+      fsyncSync(descriptor);
+      closeSync(descriptor);
+      descriptor = undefined;
+      renameSync(temporary, target);
+      const directory = openSync(dirname(this.path), "r");
+      try {
+        fsyncSync(directory);
+      } finally {
+        closeSync(directory);
+      }
+      return true;
+    } catch {
+      if (descriptor !== undefined) closeSync(descriptor);
+      return this.loadGeneration() === deliveryGeneration;
+    }
+  }
+
+  save(instruction: Readonly<StartInstruction>): boolean {
+    let descriptor: number | undefined;
+    try {
+      descriptor = openSync(this.path, "wx", 0o600);
+      writeFileSync(descriptor, `${JSON.stringify(instruction)}\n`, "utf8");
+      fsyncSync(descriptor);
+      closeSync(descriptor);
+      descriptor = undefined;
+      const directory = openSync(dirname(this.path), "r");
+      try {
+        fsyncSync(directory);
+      } finally {
+        closeSync(directory);
+      }
+      return true;
+    } catch {
+      if (descriptor !== undefined) closeSync(descriptor);
+      const stored = this.load();
+      return stored !== "none" && stored !== "unknown" && isDeepStrictEqual(stored, instruction);
+    }
+  }
+}
 
 class ObservationOnlyEditor extends CustomEditor {
   override handleInput(_data: string): void {
@@ -108,10 +187,18 @@ class PiWorkerBridge {
   async start(ctx: ExtensionContext): Promise<void> {
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
       new ObservationOnlyEditor(tui, theme, keybindings));
-    this.protocol = new WorkerProtocolPeer({
-      operationId: this.config.operationId,
-      capability: this.config.capability,
-    });
+    this.protocol = new WorkerProtocolPeer(
+      {
+        operationId: this.config.operationId,
+        capability: this.config.capability,
+      },
+      undefined,
+      undefined,
+      new FileStartInstructionAcceptanceStore(join(
+        dirname(this.config.promptPath),
+        "start-instruction.v9.json",
+      )),
+    );
     this.socket = connect(this.config.socketPath);
     await new Promise<void>((resolve, reject) => {
       this.socket!.once("connect", resolve);
@@ -206,12 +293,26 @@ class PiWorkerBridge {
   private receiveControl(chunk: Buffer, ctx: ExtensionContext): void {
     try {
       const reception = this.protocol!.receive(chunk);
+      if (reception.generationUpdate !== undefined) {
+        this.send({
+          type: "generation_updated",
+          deliveryGeneration: reception.generationUpdate.deliveryGeneration,
+          acceptanceState: reception.generationUpdate.acceptanceState,
+          ...(reception.generationUpdate.acceptedInstruction === undefined
+            ? {}
+            : { acceptedInstruction: reception.generationUpdate.acceptedInstruction }),
+        });
+      }
       if (reception.cancellationRequested && !this.cancelled) {
         this.cancelled = true;
         if (this.began) ctx.abort();
         else this.settle(ctx);
       }
-      if (reception.beginReceived && !this.cancelled && !this.began) {
+      const startInstruction = reception.startInstruction;
+      if (startInstruction?.status === "accepted" || startInstruction?.status === "duplicate") {
+        this.send({ type: "begin_ack", instruction: startInstruction.instruction });
+      }
+      if (startInstruction?.status === "accepted" && !this.cancelled && !this.began) {
         this.began = true;
         void this.begin(ctx).catch((error) => {
           if (this.completionSent) return;

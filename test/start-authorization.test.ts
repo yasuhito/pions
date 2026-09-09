@@ -67,6 +67,33 @@ class PausedWorkerAdapter extends FakeWorkerAdapter {
   }
 }
 
+class PausedStartAcceptanceWorker extends FakeWorkerAdapter {
+  cancellationCount = 0;
+  private release!: () => void;
+  private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+
+  acknowledgeStart(): void {
+    this.release();
+  }
+
+  protected override cancel(
+    operation: Operation,
+    cancellationEpoch: number,
+  ): Effect.Effect<WorkerCancellationEvidence | undefined> {
+    this.cancellationCount += 1;
+    return super.cancel(operation, cancellationEpoch);
+  }
+
+  protected override run(operation: Operation, hooks: Readonly<WorkerRunHooks>) {
+    return super.run(operation, {
+      ...hooks,
+      startInstructionAccepted: (instruction) => Effect.promise(() => this.gate).pipe(
+        Effect.andThen(hooks.startInstructionAccepted(instruction)),
+      ),
+    });
+  }
+}
+
 class AdjustableWallClock extends FakeClock {
   expired = false;
 
@@ -206,6 +233,34 @@ test("an authorized decision starts the waiting Operation", async () => {
   assert.equal((await handle.read()).state, "completed");
 });
 
+test("an Operation remains starting until the Worker acknowledges begin", async () => {
+  const worker = new PausedStartAcceptanceWorker();
+  const { inbox, handle } = await fixture({ worker });
+  await authorize(inbox);
+
+  assert.equal((await handle.read()).state, "starting");
+  worker.acknowledgeStart();
+});
+
+test("cancellation after begin dispatch stops the possibly started Worker", async () => {
+  const worker = new PausedStartAcceptanceWorker();
+  const { inbox, handle } = await fixture({ worker });
+  await authorize(inbox);
+
+  await handle.cancel({ scope: "subtree" });
+
+  assert.equal(worker.cancellationCount, 1);
+  worker.acknowledgeStart();
+});
+
+test("Worker begin acknowledgement is persisted as Start acceptance", async () => {
+  const { inbox, handle } = await fixture();
+  await authorize(inbox);
+  await handle.result();
+
+  assert.equal((await handle.read()).startInstructionAcceptance?.proof, "authenticated-worker-acknowledgement");
+});
+
 test("coordinator disconnection alone leaves the Start gate waiting", async () => {
   const { runtime, handle } = await fixture();
   await runtime.startAuthorizationInbox("credential");
@@ -214,8 +269,9 @@ test("coordinator disconnection alone leaves the Start gate waiting", async () =
 });
 
 test("the authorization decision is persisted before Worker execution begins", async () => {
-  const { inbox, trace } = await fixture();
+  const { inbox, handle, trace } = await fixture();
   await authorize(inbox);
+  await handle.result();
 
   assert.equal(
     trace.findIndex((entry) => entry.includes("start_authorization_decided")) <

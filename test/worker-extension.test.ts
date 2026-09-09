@@ -44,11 +44,11 @@ const assistant = {
   timestamp: 1,
 };
 
-async function extensionResult() {
+async function extensionResult(repeatBegin = false) {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-extension-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v8.json");
+  const configPath = join(root, "worker.v9.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",
@@ -101,6 +101,7 @@ async function extensionResult() {
   const peer = new HostProtocolPeer({ operationId: config.operationId, capability });
   let accepted!: Socket;
   let resolveStarted!: () => void;
+  let workerProcessInstanceId = "";
   const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
   let resolveResult!: (value: unknown) => void;
   const result = new Promise<unknown>((resolve) => { resolveResult = resolve; });
@@ -108,7 +109,10 @@ async function extensionResult() {
     accepted = socket;
     socket.on("data", (chunk: Buffer) => {
       for (const event of peer.receive(chunk)) {
-        if (event.type === "started") resolveStarted();
+        if (event.type === "started") {
+          workerProcessInstanceId = event.processInstanceId;
+          resolveStarted();
+        }
         if (event.type === "result_received") {
           shutdownCountBeforeAcknowledgement = shutdownCount;
           resolveResult(event.result);
@@ -127,13 +131,21 @@ async function extensionResult() {
   try {
     await handlers.session_start[0]?.({}, context);
     await started;
-    accepted.write(peer.begin());
+    const instruction = {
+      dispatcherId: "pions-runtime",
+      workerProcessInstanceId,
+      receiptDigest: `sha256:${"e".repeat(64)}` as const,
+      deliveryGeneration: 1,
+      deadline: "2099-01-01T00:00:00.000Z",
+    };
+    accepted.write(peer.begin(instruction));
+    if (repeatBegin) accepted.write(peer.begin(instruction));
     while (prompts.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
     handlers.message_end[0]?.({ message: assistant });
     handlers.agent_settled[0]?.({}, context);
     const delivery = await result;
     while (shutdownCount === 0) await new Promise<void>((resolve) => setImmediate(resolve));
-    return { delivery, shutdownCountBeforeAcknowledgement, shutdownCount };
+    return { delivery, promptCount: prompts.length, shutdownCountBeforeAcknowledgement, shutdownCount };
   } finally {
     accepted?.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -150,6 +162,10 @@ test("Pi Worker extension returns the final settled assistant message", async ()
   );
 });
 
+test("Pi Worker extension injects a repeated begin prompt only once", async () => {
+  assert.equal((await extensionResult(true)).promptCount, 1);
+});
+
 test("Pi Worker extension does not request shutdown before Result acknowledgement", async () => {
   assert.equal((await extensionResult()).shutdownCountBeforeAcknowledgement, 0);
 });
@@ -162,7 +178,7 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-cancellation-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v8.json");
+  const configPath = join(root, "worker.v9.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",
@@ -212,6 +228,7 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
   const peer = new HostProtocolPeer({ operationId: config.operationId, capability });
   let accepted!: Socket;
   let resolveStarted!: () => void;
+  let workerProcessInstanceId = "";
   const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
   let resolveCancelled!: () => void;
   const cancelled = new Promise<void>((resolve) => { resolveCancelled = resolve; });
@@ -219,7 +236,10 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
     accepted = socket;
     socket.on("data", (chunk: Buffer) => {
       for (const event of peer.receive(chunk)) {
-        if (event.type === "started") resolveStarted();
+        if (event.type === "started") {
+          workerProcessInstanceId = event.processInstanceId;
+          resolveStarted();
+        }
         if (event.type === "worker_cancelled") {
           cancellationCount += 1;
           resolveCancelled();
@@ -236,7 +256,13 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
     await handlers.session_start[0]?.({}, context);
     await started;
     if (phase === "during-run") {
-      accepted.write(peer.begin());
+      accepted.write(peer.begin({
+        dispatcherId: "pions-runtime",
+        workerProcessInstanceId,
+        receiptDigest: `sha256:${"e".repeat(64)}`,
+        deliveryGeneration: 1,
+        deadline: "2099-01-01T00:00:00.000Z",
+      }));
       while (prompts.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
     }
     accepted.write(peer.requestCancellation() ?? Buffer.alloc(0));

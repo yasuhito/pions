@@ -27,6 +27,7 @@ import type {
   WorkerProcessIdentity,
   WorkerRunHooks,
   WorkerRunOutcome,
+  WorkerStartInstruction,
 } from "./services.js";
 import type {
   OperationPersistenceError,
@@ -148,6 +149,9 @@ interface Session {
   rejectStarted(error: WorkerProtocolError): void;
   readonly cancellationReception: Promise<void>;
   resolveCancellation(): void;
+  readonly startInstructionAcceptance: Promise<boolean>;
+  resolveStartInstructionAcceptance(accepted: boolean): void;
+  rejectStartInstructionAcceptance(error: WorkerProtocolError): void;
   socket?: Socket;
   identity?: Readonly<WorkerProcessIdentity>;
   receptionCompleted: boolean;
@@ -287,17 +291,19 @@ export class VisibleWorker implements WorkerAdapter {
         }
         const mismatch = configurationMismatch(operation.effectiveConfig, started.identity.observedConfig);
         if (mismatch !== undefined) return { state: mismatch } as WorkerRunOutcome;
-        yield* hooks.workerIdentified(started.identity);
+        const instruction = yield* hooks.workerIdentified(started.identity);
         if (cancellation.requested) {
           if (cancellation.responsePending) {
             yield* receiveWorkerProtocol(session!.reception);
           }
           return { state: "worker_protocol_failed" } as const;
         }
-        yield* Effect.tryPromise({
-          try: () => this.sendBegin(session!),
+        const beginAccepted = yield* Effect.tryPromise({
+          try: () => this.sendBegin(session!, instruction),
           catch: (error) => protocolError(error instanceof Error ? error.message : String(error)),
         });
+        if (!beginAccepted) return { state: "liveness-unproven" } as const;
+        yield* hooks.startInstructionAccepted(instruction);
         const reception = yield* receiveWorkerProtocol(session!.reception);
         if (reception.state === "agent_failed" ||
             reception.state === "model_auth_unavailable" ||
@@ -363,7 +369,7 @@ export class VisibleWorker implements WorkerAdapter {
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
-    const configPath = join(directory, "worker.v8.json");
+    const configPath = join(directory, "worker.v9.json");
     await mkdir(this.options.socketDirectory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(this.options.socketDirectory, DIRECTORY_MODE);
     const socketPath = join(this.options.socketDirectory, `${operationDirectoryKey(operation.operationId)}.sock`);
@@ -455,8 +461,15 @@ export class VisibleWorker implements WorkerAdapter {
     const cancellationReception = new Promise<void>((resolve) => {
       resolveCancellation = resolve;
     });
+    let resolveStartInstructionAcceptance!: (accepted: boolean) => void;
+    let rejectStartInstructionAcceptance!: (error: WorkerProtocolError) => void;
+    const startInstructionAcceptance = new Promise<boolean>((resolve, reject) => {
+      resolveStartInstructionAcceptance = resolve;
+      rejectStartInstructionAcceptance = reject;
+    });
     void reception.catch(() => undefined);
     void startedReception.catch(() => undefined);
+    void startInstructionAcceptance.catch(() => undefined);
     const server = this.serverFactory();
     const session: Session = {
       operation,
@@ -470,6 +483,9 @@ export class VisibleWorker implements WorkerAdapter {
       rejectStarted,
       cancellationReception,
       resolveCancellation,
+      startInstructionAcceptance,
+      resolveStartInstructionAcceptance,
+      rejectStartInstructionAcceptance,
       receptionCompleted: false,
       backendProcesses: undefined,
       protocol: new HostProtocolPeer({
@@ -507,6 +523,10 @@ export class VisibleWorker implements WorkerAdapter {
           } else if (event.type === "worker_configuration_failed") {
             session.receptionCompleted = true;
             session.resolveStarted({ state: "configuration_failed", reason: event.reason });
+          } else if (event.type === "start_instruction_accepted") {
+            session.resolveStartInstructionAcceptance(true);
+          } else if (event.type === "delivery_generation_updated") {
+            // Generation handoff is recovered by the dispatcher before another begin.
           } else {
             session.receptionCompleted = true;
             if (event.type === "worker_cancelled") {
@@ -549,6 +569,7 @@ export class VisibleWorker implements WorkerAdapter {
       return;
     }
     session.resolveReception({ state: "liveness-unproven" });
+    session.resolveStartInstructionAcceptance(false);
     this.closeSession(session);
   }
 
@@ -709,11 +730,15 @@ export class VisibleWorker implements WorkerAdapter {
     });
   }
 
-  private async sendBegin(session: Session): Promise<void> {
+  private async sendBegin(
+    session: Session,
+    instruction: Readonly<WorkerStartInstruction>,
+  ): Promise<boolean> {
     if (session.socket === undefined) {
       throw protocolError("No Worker connection to begin execution");
     }
-    await writeSocket(session.socket, session.protocol.begin());
+    await writeSocket(session.socket, session.protocol.begin(instruction));
+    return session.startInstructionAcceptance;
   }
 
   private async sendAcknowledgement(
@@ -768,6 +793,7 @@ export class VisibleWorker implements WorkerAdapter {
     session.receptionCompleted = true;
     session.rejectStarted(protocolError(message));
     session.rejectReception(protocolError(message));
+    session.rejectStartInstructionAcceptance(protocolError(message));
     this.closeSession(session);
   }
 }

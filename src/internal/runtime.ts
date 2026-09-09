@@ -26,7 +26,9 @@ import type {
   WorkerCancellationEvidence,
   RuntimeServices,
   Worker,
+  WorkerStartInstruction,
 } from "./services.js";
+import { sha256Digest } from "./result-digest.js";
 import {
   CancellationRejectedError,
   OperationCancelledError,
@@ -137,7 +139,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const cancellations = new Map<string, Promise<CancellationResult>>();
   const cancellingSubtreeRoots = new Set<string>();
   const startGateWaiters = new Map<string, {
-    readonly resolve: () => void;
+    readonly resolve: (instruction: Readonly<WorkerStartInstruction>) => void;
     readonly reject: (error: unknown) => void;
   }>();
   const authorizationMutationTails = new Map<string, Promise<void>>();
@@ -574,12 +576,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const waitAtStartGate = async (
     record: OperationRecord,
     identified: Operation,
-  ): Promise<void> => {
+  ): Promise<Readonly<WorkerStartInstruction>> => {
     const authorization = identified.startAuthorizationTiming;
     if (authorization.policy === "disabled") {
-      const started = await runEffect(advanceOperation(record.operationId, { type: "automatic_operation_started" }));
-      await runEffect(project(started));
-      return;
+      return {
+        dispatcherId: "pions-runtime",
+        workerProcessInstanceId: identified.workerIdentity!.processInstanceId,
+        receiptDigest: sha256Digest(Buffer.from(`${identified.operationId}\0automatic-start`, "utf8")),
+        deliveryGeneration: 1,
+        deadline: new Date(8_640_000_000_000_000).toISOString(),
+      };
     }
     const receiptPolicy = identified.startupReceiptPolicy;
     if (receiptPolicy === undefined) {
@@ -636,7 +642,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       throw new Error("Start authorization expired before publication");
     }
 
-    const gate = new Promise<void>((resolve, reject) => {
+    const gate = new Promise<Readonly<WorkerStartInstruction>>((resolve, reject) => {
       startGateWaiters.set(record.operationId, { resolve, reject });
     });
     void (async () => {
@@ -724,6 +730,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               ? error
               : new OperationPersistenceError(record.operationId, "write_failed"),
           })),
+        ),
+        startInstructionAccepted: (instruction) => getOperation(record.operationId).pipe(
+          Effect.flatMap((current) => {
+            if (current.startAuthorizationTiming.policy === "disabled") {
+              return advanceOperation(record.operationId, { type: "automatic_operation_started" });
+            }
+            const { deadline: _deadline, ...reference } = instruction;
+            return advanceOperation(record.operationId, {
+              type: "start_instruction_accepted",
+              instruction: reference,
+              proof: "authenticated-worker-acknowledgement",
+            });
+          }),
+          Effect.tap((started) => project(started)),
           Effect.asVoid,
         ),
         acceptResult: (result) => resultAcceptance.accept(record.operationId, result),
@@ -1604,6 +1624,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 throw new StartRevalidationError(timedOut ? "timed_out" : "invalidated");
               }
               const instruction = {
+                dispatcherId: "pions-runtime",
                 workerProcessInstanceId: latest.workerIdentity!.processInstanceId,
                 receiptDigest: request.receiptDigest,
                 authorizationDecisionId: request.decisionId,
@@ -1619,9 +1640,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 await expireStartAuthorization(request.operationId);
                 throw new Error("Start authorization expired before begin");
               }
-              const started = await runEffect(advanceOperation(request.operationId, { type: "authorized_operation_started" }));
-              await runEffect(project(started));
-              startGateWaiters.get(request.operationId)?.resolve();
+              startGateWaiters.get(request.operationId)?.resolve({
+                ...instruction,
+                deadline: revalidated.startAuthorizationTiming.deadline,
+              });
               startGateWaiters.delete(request.operationId);
             } catch (error) {
               const current = await runEffect(getOperation(request.operationId));

@@ -259,6 +259,7 @@ test("Operation snapshot retrieves start instruction acceptance separately", asy
     },
   }));
   const instruction = {
+    dispatcherId: "pions-runtime",
     workerProcessInstanceId: "process:operation-1",
     receiptDigest,
     authorizationDecisionId: "decision-1",

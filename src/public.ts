@@ -401,6 +401,7 @@ export interface StartAuthorizationSnapshot {
 }
 
 export interface StartInstructionReference {
+  readonly dispatcherId: string;
   readonly workerProcessInstanceId: string;
   readonly receiptDigest: StartupReceipt["digest"];
   readonly authorizationDecisionId?: string;

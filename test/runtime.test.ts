@@ -109,7 +109,7 @@ class ControlledWorkerAdapter implements WorkerAdapter {
     return Effect.gen(this, function* () {
       this.startCount += 1;
       yield* hooks.workerLaunched();
-      yield* hooks.workerIdentified({
+      const startInstruction = yield* hooks.workerIdentified({
         processId: 1234,
         processInstanceId: `process:${operation.operationId}`,
         processStartToken: `start:${operation.operationId}`,
@@ -121,6 +121,7 @@ class ControlledWorkerAdapter implements WorkerAdapter {
           cwd: { state: "observed", value: operation.effectiveConfig.cwd },
         },
       });
+      yield* hooks.startInstructionAccepted(startInstruction);
       const produced = yield* Effect.async<Readonly<WorkerProducedResult>>((resume) => {
         this.receivers.set(operation.operationId, resume);
       });
