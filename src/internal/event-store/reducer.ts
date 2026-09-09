@@ -81,7 +81,8 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.lineage);
   if (operation.presentation !== undefined) Object.freeze(operation.presentation);
   if (operation.workerIdentity !== undefined) Object.freeze(operation.workerIdentity);
-  Object.freeze(operation.startAuthorizationTiming);
+  deepFreeze(operation.startAuthorizationTiming);
+  if (operation.startupReceiptPolicy !== undefined) deepFreeze(operation.startupReceiptPolicy);
   if (operation.startupReceipt !== undefined) deepFreeze(operation.startupReceipt);
   if (operation.startAuthorizationDecision !== undefined) {
     Object.freeze(operation.startAuthorizationDecision);
@@ -180,6 +181,7 @@ function sanitizedStartupReceipt(
       format: receipt.reviewSubject.format,
       normalization: receipt.reviewSubject.normalization,
     },
+    reviewSubjectVerification: receipt.reviewSubjectVerification,
     configuredAuthorizationPolicy: receipt.configuredAuthorizationPolicy,
     authorizationPolicy: receipt.authorizationPolicy,
     authorizationDeadline: receipt.authorizationDeadline,
@@ -219,7 +221,13 @@ function validStartAuthorizationTiming(
     Number.isSafeInteger(timing.windowMs) &&
     timing.windowMs >= 0 &&
     Number.isFinite(created) &&
-    timing.deadline === new Date(created + timing.windowMs).toISOString();
+    timing.deadline === new Date(created + timing.windowMs).toISOString() &&
+    (timing.configuredPolicy === "optional" || timing.configuredPolicy === timing.policy) &&
+    new Set(timing.authorizedSubjectIds).size === timing.authorizedSubjectIds.length &&
+    timing.authorizedSubjectIds.every((subjectId) => subjectId.length > 0) &&
+    (timing.policy === "disabled"
+      ? timing.windowMs === 0 && timing.authorizedSubjectIds.length === 0
+      : timing.windowMs > 0 && timing.authorizedSubjectIds.length > 0);
 }
 
 function validateEnvelope(event: OperationEvent): void {
@@ -257,6 +265,8 @@ export function reduceOperation(
     if (
       !validInitialConfiguration(event) ||
       !validStartAuthorizationTiming(event) ||
+      (event.startAuthorizationTiming.policy === "required") !==
+        (event.startupReceiptPolicy !== undefined) ||
       event.resultRetentionPolicy.operationId !== event.operationId ||
       !Number.isSafeInteger(event.resultRetentionPolicy.acceptedArtifactRetentionMs) ||
       event.resultRetentionPolicy.acceptedArtifactRetentionMs <= 0
@@ -288,9 +298,13 @@ export function reduceOperation(
         },
       },
       startAuthorizationTiming: { ...event.startAuthorizationTiming },
+      ...(event.startupReceiptPolicy === undefined
+        ? {}
+        : { startupReceiptPolicy: structuredClone(event.startupReceiptPolicy) }),
       workProductRequirements: structuredClone(event.workProductRequirements),
       resultRetentionPolicy: structuredClone(event.resultRetentionPolicy),
       startGate: "not_required",
+      rejectedStartAuthorizationDecisions: [],
       childOperationIds: [],
       settledChildOperationIds: [],
       descendantFailure: false,
@@ -311,6 +325,7 @@ export function reduceOperation(
   if (
     event.type !== "presentation_cleanup_failed" &&
     event.type !== "resource_evidence_recorded" &&
+    event.type !== "start_authorization_decision_rejected" &&
     (current.state === "completed" ||
       current.state === "failed" ||
       current.state === "cancelled" ||
@@ -393,6 +408,14 @@ export function reduceOperation(
       if (
         event.receipt.operationId !== current.operationId ||
         event.receipt.authorizationDeadline !== current.startAuthorizationTiming.deadline ||
+        event.receipt.configuredAuthorizationPolicy !== current.startAuthorizationTiming.configuredPolicy ||
+        event.receipt.authorizationPolicy !== current.startAuthorizationTiming.policy ||
+        (event.receipt.authorizationPolicy === "required" &&
+          (current.startupReceiptPolicy === undefined ||
+            !isDeepStrictEqual(event.receipt.workspace, current.startupReceiptPolicy.workspace) ||
+            !isDeepStrictEqual(event.receipt.permissionManifest, current.startupReceiptPolicy.permissionManifest) ||
+            !isDeepStrictEqual(event.receipt.reviewSubject, current.startupReceiptPolicy.reviewSubject) ||
+            event.receipt.reviewSubjectVerification !== current.startupReceiptPolicy.reviewSubjectVerification)) ||
         event.receipt.recordedAt !== event.timestamp ||
         !Number.isFinite(Date.parse(event.receipt.recordedAt)) ||
         event.receipt.workspace.workspaceId.length === 0 ||
@@ -405,7 +428,10 @@ export function reduceOperation(
         !isDeepStrictEqual(event.receipt.requestedConfig, current.requestedConfig) ||
         !isDeepStrictEqual(event.receipt.effectiveConfig, current.effectiveConfig) ||
         !isDeepStrictEqual(event.receipt.observedConfig, current.observedConfig) ||
-        (event.gate === "waiting") !== (event.receipt.authorizationPolicy === "required") ||
+        (event.gate === "waiting" || event.gate === "expired") !==
+          (event.receipt.authorizationPolicy === "required") ||
+        (event.gate === "waiting") !==
+          (Date.parse(event.receipt.recordedAt) < Date.parse(current.startAuthorizationTiming.deadline)) ||
         (event.receipt.configuredAuthorizationPolicy !== "optional" &&
           event.receipt.configuredAuthorizationPolicy !== event.receipt.authorizationPolicy) ||
         startupReceiptDigest((({ digest: _digest, ...receipt }) => receipt)(sanitizedReceipt)) !== event.receipt.digest
@@ -429,6 +455,7 @@ export function reduceOperation(
         event.decision.decisionId.length === 0 ||
         event.decision.actorId.length === 0 ||
         event.decision.decidedAt !== event.timestamp ||
+        Date.parse(event.decision.decidedAt) >= Date.parse(current.startAuthorizationTiming.deadline) ||
         event.decision.receiptDigest !== current.startupReceipt.digest ||
         (event.gate === "authorized") !== (event.decision.kind === "authorize")
       ) {
@@ -444,12 +471,28 @@ export function reduceOperation(
     case "start_gate_closed":
       if (
         current.state !== "starting" ||
-        (event.gate === "expired" && current.startGate !== "waiting") ||
+        (event.gate === "expired" && current.startGate !== "waiting" && current.startGate !== "authorized") ||
         (event.gate === "invalidated" && current.startGate !== "authorized")
       ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({ ...current, startGate: event.gate, stateSeq: event.seq });
+
+    case "start_authorization_decision_rejected":
+      if (
+        event.attempt.decisionId.length === 0 || event.attempt.actorId.length === 0 ||
+        event.attempt.attemptedAt !== event.timestamp
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        rejectedStartAuthorizationDecisions: [
+          ...current.rejectedStartAuthorizationDecisions,
+          { ...event.attempt },
+        ],
+        stateSeq: event.seq,
+      });
 
     case "start_instruction_dispatched":
       if (
@@ -457,6 +500,7 @@ export function reduceOperation(
         current.startupReceipt === undefined ||
         current.startGate !== "not_required" && current.startGate !== "authorized" ||
         current.startInstructionDelivery !== undefined ||
+        Date.parse(event.timestamp) >= Date.parse(current.startAuthorizationTiming.deadline) ||
         !validStartInstructionReference(current, event.instruction)
       ) {
         throw new TransitionError("illegal_transition");
@@ -512,8 +556,8 @@ export function reduceOperation(
     case "worker_stop_confirmed":
       if (
         !current.workerLaunched ||
-        current.result === undefined ||
-        current.state !== "running" && current.state !== "blocked" ||
+        (current.result === undefined && current.startGate !== "rejected" && current.startGate !== "expired" && current.startGate !== "invalidated") ||
+        current.state !== "starting" && current.state !== "running" && current.state !== "blocked" ||
         current.workerStopConfirmedAt !== undefined ||
         event.proof !== "worker-stop"
       ) {
@@ -538,7 +582,16 @@ export function reduceOperation(
       return immutable({ ...current, workerLaunched: true, stateSeq: event.seq });
 
     case "automatic_operation_started":
-      if (current.state !== "starting" || !current.workerLaunched) {
+      if (current.state !== "starting" || !current.workerLaunched || current.startGate !== "not_required") {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({ ...current, state: "running", stateSeq: event.seq });
+
+    case "authorized_operation_started":
+      if (
+        current.state !== "starting" || !current.workerLaunched ||
+        current.startGate !== "authorized" || current.startInstructionDelivery === undefined
+      ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({ ...current, state: "running", stateSeq: event.seq });
@@ -767,6 +820,9 @@ export function reduceOperation(
         state: "unknown",
         stateSeq: event.seq,
         terminalReason: event.reason,
+        ...(event.reason === "liveness-unproven" && event.failureReason !== undefined
+          ? { failureReason: event.failureReason }
+          : {}),
       });
 
     case "operation_completed":

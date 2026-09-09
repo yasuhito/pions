@@ -30,7 +30,7 @@ function fixture(options: {
   readonly authenticator?: {
     authenticate(credential: string): Promise<{
       readonly subjectId: string;
-      canAuthorize(operationId: string): Promise<boolean>;
+      currentAuthorization(operationId: string): Promise<"authorized" | "denied" | "revoked" | "unknown">;
     }>;
   };
 } = {}) {
@@ -78,7 +78,33 @@ async function recordWaitingOperation(
     workProductRequirements,
     resultRetentionPolicy: retentionPolicy(operationId),
     lineage: { rootOperationId: operationId, depth: 0 },
-    authorizationWindowMs: 60_000,
+    startAuthorization: {
+      configuredPolicy: "required",
+      policy: "required",
+      windowMs: 60_000,
+      authorizedSubjectIds: ["reviewer-1"],
+      receipt: {
+        workspace: {
+          workspaceId: `workspace:${operationId}`,
+          normalizedPath: `/work/${operationId}`,
+          baseRevision: "a".repeat(40),
+          owner: { state: "known", ownerId: "launcher-1" },
+          pionsMayDelete: false,
+        },
+        permissionManifest: {
+          manifestId: `manifest:${operationId}`,
+          digest: `sha256:${"cd".repeat(32)}`,
+        },
+        reviewSubject: {
+          artifactId: `artifact:${operationId}`,
+          byteCount: 10,
+          digest: `sha256:${"ef".repeat(32)}`,
+          format: "text/plain",
+          normalization: "utf8",
+        },
+        reviewSubjectVerification: "disabled",
+      },
+    },
   }));
   await Effect.runPromise(store.advance(operationId, {
     type: "presentation_owned",
@@ -127,6 +153,7 @@ async function recordWaitingOperation(
       format: "text/plain",
       normalization: "utf8",
     },
+    reviewSubjectVerification: "disabled" as const,
     configuredAuthorizationPolicy: "required" as const,
     authorizationPolicy: "required" as const,
     authorizationDeadline: created.operation.startAuthorizationTiming.deadline,
@@ -150,6 +177,9 @@ test("OperationHandle reads the fixed creation timing", async () => {
     createdAt: "2026-09-06T10:00:00.000Z",
     windowMs: 0,
     deadline: "2026-09-06T10:00:00.000Z",
+    configuredPolicy: "disabled",
+    policy: "disabled",
+    authorizedSubjectIds: [],
   });
 });
 
@@ -225,6 +255,7 @@ test("Operation snapshot retrieves start instruction acceptance separately", asy
       kind: "authorize",
       actorId: "reviewer-1",
       receiptDigest,
+      decidedAt: "2026-09-06T10:00:06.000Z",
     },
   }));
   const instruction = {
@@ -245,7 +276,7 @@ test("Operation snapshot retrieves start instruction acceptance separately", asy
 
   assert.equal(
     (await (await runtime.operation("operation-1")).read()).startInstructionAcceptance?.acceptedAt,
-    "2026-09-06T10:00:08.000Z",
+    "2026-09-06T10:00:07.000Z",
   );
 });
 
@@ -293,7 +324,7 @@ test("persisted Startup receipt omits authentication secrets", async (context) =
     extraReceiptFields: { capability: "worker-secret" },
   });
   const record = await readFile(
-    join(root, operationDirectoryKey("operation-1"), "events.v13.json"),
+    join(root, operationDirectoryKey("operation-1"), "events.v14.json"),
     "utf8",
   );
 
@@ -330,6 +361,7 @@ test("Operation lookup returns a persisted start authorization decision", async 
     kind: "authorize" as const,
     actorId: "reviewer-1",
     receiptDigest,
+    decidedAt: "2026-09-06T10:00:06.000Z",
   };
   await Effect.runPromise(store.advance("operation-1", {
     type: "start_authorization_decided",
@@ -348,7 +380,7 @@ test("an authenticated subject can recover its waiting Operations from persisten
     authenticator: {
       authenticate: async () => ({
         subjectId: "reviewer-1",
-        canAuthorize: async (operationId) => operationId === "allowed",
+        currentAuthorization: async (operationId) => operationId === "allowed" ? "authorized" : "denied",
       }),
     },
   });
@@ -359,12 +391,35 @@ test("an authenticated subject can recover its waiting Operations from persisten
   assert.deepEqual((await inbox.listWaiting()).map(({ operationId }) => operationId), ["allowed"]);
 });
 
+test("recovery expires the original deadline without extending it", async () => {
+  const storeClock = new FakeClock(timestamps);
+  const store = new InMemoryEventStore([], storeClock);
+  await recordWaitingOperation(store, "operation-1");
+  const recoveredClock = new FakeClock(["2026-09-06T10:02:00.000Z", "2026-09-06T10:02:01.000Z", "2026-09-06T10:02:02.000Z"]);
+  const recovered = makeTestRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: recoveredClock,
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+    startAuthorizationAuthenticator: {
+      authenticate: async () => ({
+        subjectId: "reviewer-1",
+        currentAuthorization: async () => "authorized",
+      }),
+    },
+  });
+  await (await recovered.startAuthorizationInbox("credential")).listWaiting();
+
+  assert.equal((await (await recovered.operation("operation-1")).read()).state, "unknown");
+});
+
 test("waiting Operation recovery returns its fixed deadline", async () => {
   const { runtime, store } = fixture({
     authenticator: {
       authenticate: async () => ({
         subjectId: "reviewer-1",
-        canAuthorize: async () => true,
+        currentAuthorization: async () => "authorized",
       }),
     },
   });

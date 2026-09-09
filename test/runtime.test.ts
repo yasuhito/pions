@@ -64,6 +64,14 @@ class ControlledTestClock implements RuntimeClock {
     );
   }
 
+  monotonicMilliseconds(): number {
+    return 0;
+  }
+
+  recoveredElapsedTimeIsReliable(): boolean {
+    return true;
+  }
+
   advanceBy(milliseconds: number): Promise<void> {
     return this.runtime.runPromise(TestClock.adjust(milliseconds));
   }
@@ -813,6 +821,7 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
           thinkingLevel: "medium",
           tools: ["read", "network"],
           resources: { resourceProofPolicy: "disabled" },
+          startAuthorization: { policy: "disabled" },
           workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
           acceptedArtifactRetentionMs: 86_400_000,
         },
@@ -841,6 +850,7 @@ test("Runtime rejects required work products when the Worker adapter cannot prod
           thinkingLevel: "medium",
           tools: ["read", "bash"],
           resources: { resourceProofPolicy: "disabled" },
+          startAuthorization: { policy: "disabled" },
           workProductRequirements: {
             body: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS.body,
             workProducts: [{

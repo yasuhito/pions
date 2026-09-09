@@ -241,6 +241,14 @@ export class FakeClock implements RuntimeClock {
     });
   }
 
+  monotonicMilliseconds(): number {
+    return this.elapsed;
+  }
+
+  recoveredElapsedTimeIsReliable(): boolean {
+    return true;
+  }
+
   advanceBy(milliseconds: number): void {
     this.elapsed += milliseconds;
     for (const sleeper of this.sleepers.splice(0)) {

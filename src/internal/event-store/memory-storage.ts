@@ -8,6 +8,8 @@ import type { StoredOperationRecord } from "./store.js";
 const systemClock: RuntimeClock = {
   now: () => Effect.sync(() => new Date().toISOString()),
   sleep: (milliseconds) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, milliseconds))),
+  monotonicMilliseconds: () => performance.now(),
+  recoveredElapsedTimeIsReliable: () => false,
 };
 
 export class InMemoryEventStore extends ValidatedEventStore {

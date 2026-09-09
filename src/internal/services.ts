@@ -135,6 +135,9 @@ export interface WorkerAdapter {
 export interface RuntimeClock {
   now(): Effect.Effect<string>;
   sleep(milliseconds: number): Effect.Effect<void>;
+  monotonicMilliseconds(): number;
+  /** 復旧をまたぐ経過時間を、保存済み壁時計とは独立して制限できるかを返す。 */
+  recoveredElapsedTimeIsReliable(): boolean;
 }
 
 export interface IdGenerator {

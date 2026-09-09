@@ -9,6 +9,7 @@ import type {
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceReservation,
   ResultAcceptanceRetentionPolicyEvidence,
+  StartAuthorizationDecisionAttemptRecord,
   StartAuthorizationDecisionRecord,
   StartAuthorizationTiming,
   StartGateState,
@@ -16,6 +17,7 @@ import type {
   StartInstructionDeliveryEvidence,
   StartInstructionReference,
   StartupReceipt,
+  StartupReceiptPolicy,
   TaskSpec,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
@@ -50,9 +52,11 @@ export interface Operation {
   readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
   readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
   readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
+  readonly startupReceiptPolicy?: Readonly<StartupReceiptPolicy>;
   readonly startGate: StartGateState;
   readonly startupReceipt?: Readonly<StartupReceipt>;
   readonly startAuthorizationDecision?: Readonly<StartAuthorizationDecisionRecord>;
+  readonly rejectedStartAuthorizationDecisions: ReadonlyArray<Readonly<StartAuthorizationDecisionAttemptRecord>>;
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
   readonly startInstructionAcceptance?: Readonly<StartInstructionAcceptanceEvidence>;
   readonly resultAcceptedAt?: string;
@@ -75,7 +79,7 @@ export interface Operation {
   readonly terminalReason?: OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 13 as const;
+export const EVENT_SCHEMA_VERSION = 14 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -100,11 +104,12 @@ export type OperationEvent = EventMetadata &
         readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
         readonly lineage: Readonly<OperationLineage>;
         readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
+        readonly startupReceiptPolicy?: Readonly<StartupReceiptPolicy>;
       }
     | {
         readonly type: "startup_receipt_recorded";
         readonly receipt: Readonly<StartupReceipt>;
-        readonly gate: "not_required" | "waiting";
+        readonly gate: "not_required" | "waiting" | "expired";
       }
     | {
         readonly type: "start_authorization_decided";
@@ -114,6 +119,10 @@ export type OperationEvent = EventMetadata &
     | {
         readonly type: "start_gate_closed";
         readonly gate: "expired" | "invalidated";
+      }
+    | {
+        readonly type: "start_authorization_decision_rejected";
+        readonly attempt: Readonly<StartAuthorizationDecisionAttemptRecord>;
       }
     | {
         readonly type: "start_instruction_dispatched";

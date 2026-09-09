@@ -88,6 +88,7 @@ async function makeRunning(store: EventStore): Promise<void> {
     workProductRequirements,
     resultRetentionPolicy: retentionPolicy("operation-1"),
     lineage: { rootOperationId: "operation-1", depth: 0 },
+    startAuthorization: { configuredPolicy: "disabled", policy: "disabled", windowMs: 0, authorizedSubjectIds: [] },
   }));
   await Effect.runPromise(store.advance("operation-1", { type: "operation_starting" }));
   await Effect.runPromise(store.advance("operation-1", { type: "worker_launched" }));
@@ -263,7 +264,7 @@ test("a corrupt prepared reservation is not reconstructed as unaccepted", async 
   const store = new PrivateFileEventStore(root, clock());
   await makeRunning(store);
   await Effect.runPromise(store.prepareResultAcceptance(reservation()));
-  const path = join(root, operationDirectoryKey("operation-1"), "events.v13.json");
+  const path = join(root, operationDirectoryKey("operation-1"), "events.v14.json");
   const record = JSON.parse(await readFile(path, "utf8")) as {
     events: Array<{ type: string; reservation?: { manifestCanonicalJson: string } }>;
   };
@@ -281,7 +282,7 @@ test("an old Event Store root is rejected instead of initialized as the current 
   const store = new PrivateFileEventStore(root, clock());
   await makeRunning(store);
   const directory = join(root, operationDirectoryKey("operation-1"));
-  await rename(join(directory, "events.v13.json"), join(directory, "events.v10.json"));
+  await rename(join(directory, "events.v14.json"), join(directory, "events.v10.json"));
 
   const failure = await storeFailure(new PrivateFileEventStore(root, clock()).read("operation-1"));
 

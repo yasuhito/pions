@@ -179,6 +179,9 @@ const StartAuthorizationTiming = Schema.Struct({
   createdAt: Schema.String,
   windowMs: NonNegativeSafeInteger,
   deadline: Schema.String,
+  configuredPolicy: Schema.Literal("disabled", "optional", "required"),
+  policy: Schema.Literal("disabled", "required"),
+  authorizedSubjectIds: Schema.Array(Schema.String),
 });
 const WorkspaceReceipt = Schema.Struct({
   workspaceId: Schema.String,
@@ -210,6 +213,12 @@ const ReviewSubjectReceipt = Schema.Struct({
   format: Schema.String,
   normalization: Schema.String,
 });
+const StartupReceiptPolicy = Schema.Struct({
+  workspace: WorkspaceReceipt,
+  permissionManifest: PermissionManifestReceipt,
+  reviewSubject: ReviewSubjectReceipt,
+  reviewSubjectVerification: Schema.Literal("disabled", "required"),
+});
 const StartupReceipt = Schema.Struct({
   operationId: Schema.String,
   digest: Digest,
@@ -222,6 +231,7 @@ const StartupReceipt = Schema.Struct({
   permissionManifest: PermissionManifestReceipt,
   resourceEvidence: Schema.optional(ResourceEvidenceReceipt),
   reviewSubject: ReviewSubjectReceipt,
+  reviewSubjectVerification: Schema.Literal("disabled", "required"),
   configuredAuthorizationPolicy: Schema.Literal("disabled", "optional", "required"),
   authorizationPolicy: Schema.Literal("disabled", "required"),
   authorizationDeadline: Schema.String,
@@ -239,6 +249,17 @@ const StartAuthorizationDecision = Schema.Struct({
   receiptDigest: Digest,
   decidedAt: Schema.String,
 });
+const StartAuthorizationDecisionAttempt = Schema.Struct({
+  decisionId: Schema.String,
+  kind: Schema.Literal("authorize", "reject"),
+  actorId: Schema.String,
+  receiptDigest: Digest,
+  reason: Schema.Literal(
+    "operation_not_found", "fixed_scope_denied", "current_authority_denied",
+    "authority_revoked", "authority_unknown", "receipt_mismatch", "deadline_elapsed", "decision_id_conflict", "gate_closed",
+  ),
+  attemptedAt: Schema.String,
+});
 const FailureReason = Schema.Literal(
   "worker_start_failed",
   "worker_protocol_failed",
@@ -251,6 +272,9 @@ const FailureReason = Schema.Literal(
   "unsupported_capability",
   "tool_policy_violation",
   "resource_proof_rejected",
+  "start_rejected",
+  "start_authorization_timed_out",
+  "start_authorization_invalidated",
   "descendant_failed",
 );
 const CancellationProof = Schema.Literal("worker-stop");
@@ -379,12 +403,13 @@ const OperationEventSchema = Schema.Union(
     resultRetentionPolicy: ResultAcceptanceRetentionPolicy,
     lineage: Lineage,
     startAuthorizationTiming: StartAuthorizationTiming,
+    startupReceiptPolicy: Schema.optional(StartupReceiptPolicy),
   }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("startup_receipt_recorded"),
     receipt: StartupReceipt,
-    gate: Schema.Literal("not_required", "waiting"),
+    gate: Schema.Literal("not_required", "waiting", "expired"),
   }),
   Schema.Struct({
     ...EventMetadataFields,
@@ -396,6 +421,11 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("start_gate_closed"),
     gate: Schema.Literal("expired", "invalidated"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_authorization_decision_rejected"),
+    attempt: StartAuthorizationDecisionAttempt,
   }),
   Schema.Struct({
     ...EventMetadataFields,
@@ -437,6 +467,7 @@ const OperationEventSchema = Schema.Union(
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_starting") }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("worker_launched") }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("automatic_operation_started") }),
+  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("authorized_operation_started") }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("worker_identified"),
@@ -509,6 +540,7 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("operation_unknown"),
     reason: Schema.Literal("liveness-unproven"),
+    failureReason: Schema.optional(Schema.Literal("start_rejected", "start_authorization_timed_out")),
   }),
   Schema.Struct({
     ...EventMetadataFields,

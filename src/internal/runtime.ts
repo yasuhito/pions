@@ -15,7 +15,7 @@ import {
   resultAcceptanceManifestDocument,
 } from "./result-acceptance-manifest.js";
 import { resultAcceptanceRetentionPolicy } from "./result-acceptance-transaction.js";
-import { validateWorkspaceScope } from "./resource-proof.js";
+import { permissionManifestDocument, validateWorkspaceScope } from "./resource-proof.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
   RequestedWorkerConfigSchema,
@@ -49,7 +49,12 @@ import type {
   Result,
   Runtime,
   SpawnOptions,
+  StartAuthorizationDecisionOutcome,
+  StartAuthorizationDecisionRejectionReason,
+  StartAuthorizationDecisionRequest,
+  StartupReceiptPolicy,
   TaskSpec,
+  WorkerProfilePolicy,
 } from "../public.js";
 
 const MAX_DEPTH = 2;
@@ -69,6 +74,12 @@ class RuntimeError extends Error {
 
   constructor(readonly code: "operation_failed", message: string) {
     super(message);
+  }
+}
+
+class StartRevalidationError extends Error {
+  constructor(readonly reason: "timed_out" | "invalidated") {
+    super(`Start authorization ${reason}`);
   }
 }
 
@@ -125,6 +136,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   >();
   const cancellations = new Map<string, Promise<CancellationResult>>();
   const cancellingSubtreeRoots = new Set<string>();
+  const startGateWaiters = new Map<string, {
+    readonly resolve: () => void;
+    readonly reject: (error: unknown) => void;
+  }>();
+  const authorizationMutationTails = new Map<string, Promise<void>>();
+  const authorizationMonotonicDeadlines = new Map<string, number>();
   let treeMutationTail = Promise.resolve();
 
   const serializeTreeMutation = async <Value>(
@@ -140,6 +157,25 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       return await mutation();
     } finally {
       release();
+    }
+  };
+
+  const serializeAuthorizationMutation = async <Value>(
+    operationId: string,
+    mutation: () => Promise<Value>,
+  ): Promise<Value> => {
+    const previous = authorizationMutationTails.get(operationId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    authorizationMutationTails.set(operationId, current);
+    await previous;
+    try {
+      return await mutation();
+    } finally {
+      release();
+      if (authorizationMutationTails.get(operationId) === current) {
+        authorizationMutationTails.delete(operationId);
+      }
     }
   };
 
@@ -181,12 +217,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         ? {}
         : { failureReason: operation.failureReason }),
       startAuthorization: Object.freeze({
-        timing: Object.freeze({ ...operation.startAuthorizationTiming }),
+        timing: Object.freeze({
+          ...operation.startAuthorizationTiming,
+          authorizedSubjectIds: Object.freeze([...operation.startAuthorizationTiming.authorizedSubjectIds]),
+        }),
         gate: operation.startGate,
         ...(operation.startupReceipt === undefined ? {} : { receipt: operation.startupReceipt }),
         ...(operation.startAuthorizationDecision === undefined
           ? {}
           : { decision: operation.startAuthorizationDecision }),
+        rejectedDecisions: Object.freeze(operation.rejectedStartAuthorizationDecisions),
       }),
       ...(operation.startInstructionDelivery === undefined
         ? {}
@@ -281,6 +321,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     operation: Operation,
   ): Promise<void> => {
     await runEffect(project(operation));
+    authorizationMonotonicDeadlines.delete(record.operationId);
 
     if (operation.state === "completed") {
       if (record.successfulExitConfirmed === true) {
@@ -325,6 +366,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         operation.terminalReason === "unsupported_capability" ||
         operation.terminalReason === "tool_policy_violation" ||
         operation.terminalReason === "resource_proof_rejected" ||
+        operation.terminalReason === "start_rejected" ||
+        operation.terminalReason === "start_authorization_timed_out" ||
+        operation.terminalReason === "start_authorization_invalidated" ||
         operation.terminalReason === "descendant_failed"
           ? operation.terminalReason
           : "descendant_failed";
@@ -397,6 +441,189 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   };
 
+  const resolvedStartAuthorization = (profile: Readonly<WorkerProfilePolicy>) => {
+    const configured = profile.startAuthorization;
+    if (configured.policy === "disabled") {
+      return {
+        configuredPolicy: "disabled" as const,
+        policy: "disabled" as const,
+        windowMs: 0,
+        authorizedSubjectIds: [],
+      };
+    }
+    if (configured.policy === "optional" && configured.resolution === "disabled") {
+      return {
+        configuredPolicy: "optional" as const,
+        policy: "disabled" as const,
+        windowMs: 0,
+        authorizedSubjectIds: [],
+      };
+    }
+    return {
+      configuredPolicy: configured.policy,
+      policy: "required" as const,
+      windowMs: configured.windowMs,
+      authorizedSubjectIds: [...configured.authorizedSubjectIds],
+      receipt: structuredClone(configured.receipt),
+    };
+  };
+
+  const terminateBeforeStart = async (
+    record: OperationRecord,
+    reason: OperationFailureReason,
+  ): Promise<void> => {
+    const current = await runEffect(getOperation(record.operationId));
+    const stopped = record.worker === undefined
+      ? undefined
+      : await runEffect(record.worker.cancel(current.cancellationEpoch + 1, 1_000)).catch(() => undefined);
+    const waiter = startGateWaiters.get(record.operationId);
+    startGateWaiters.delete(record.operationId);
+    if (stopped === undefined) {
+      const unknown = await runEffect(advanceOperation(record.operationId, {
+        type: "operation_unknown",
+        reason: "liveness-unproven",
+        ...(reason === "start_rejected" || reason === "start_authorization_timed_out"
+          ? { failureReason: reason }
+          : {}),
+      }));
+      await settleTerminal(record, unknown);
+      waiter?.reject(new Error(reason));
+      return;
+    }
+    let operation = await runEffect(advanceOperation(record.operationId, {
+      type: "worker_stop_confirmed",
+      proof: stopped.proof,
+    }));
+    await runEffect(project(operation));
+    await services.resourceProofController?.safetyCleanup(record.operationId).catch(() => undefined);
+    operation = await runEffect(advanceOperation(record.operationId, {
+      type: "self_settled",
+      outcome: "failed",
+      reason,
+    }));
+    await runEffect(project(operation));
+    await tryFinalize(record);
+    waiter?.reject(new Error(reason));
+  };
+
+  const verifyReviewSubject = async (
+    operationId: string,
+    policy: Readonly<StartupReceiptPolicy>,
+    prepare: boolean,
+  ): Promise<void> => {
+    if (policy.reviewSubjectVerification === "disabled") return;
+    const bindingId = `${operationId}.review-subject`;
+    if (prepare) {
+      const binding = await services.artifacts.prepareUseBinding(services.artifactCredential, {
+        bindingId,
+        operationId,
+        artifactId: policy.reviewSubject.artifactId,
+        purpose: "review_subject",
+        decisionId: `${operationId}.start-authorization`,
+        authorityBasis: "fixed-start-authorization-policy",
+      });
+      if (binding.kind !== "available") {
+        throw new ResourceProofRejectedError("binding_mismatch", "Review subject could not be retained");
+      }
+    }
+    const retrieval = await services.artifacts.retrieveForUseBinding(services.artifactCredential, bindingId);
+    const subject = policy.reviewSubject;
+    if (
+      retrieval.kind !== "retrieved" || retrieval.integrity !== "verified" ||
+      retrieval.artifact.artifactId !== subject.artifactId ||
+      retrieval.artifact.byteCount !== subject.byteCount || retrieval.artifact.digest !== subject.digest ||
+      retrieval.artifact.formatId !== subject.format ||
+      retrieval.artifact.normalizationId !== subject.normalization
+    ) {
+      throw new ResourceProofRejectedError("binding_mismatch", "Review subject integrity could not be verified");
+    }
+  };
+
+  const waitAtStartGate = async (
+    record: OperationRecord,
+    identified: Operation,
+  ): Promise<void> => {
+    const authorization = identified.startAuthorizationTiming;
+    if (authorization.policy === "disabled") {
+      const started = await runEffect(advanceOperation(record.operationId, { type: "automatic_operation_started" }));
+      await runEffect(project(started));
+      return;
+    }
+    const receiptPolicy = identified.startupReceiptPolicy;
+    if (receiptPolicy === undefined) {
+      throw new ResourceProofRejectedError("binding_mismatch", "Fixed Startup receipt policy is unavailable");
+    }
+    const latest = await runEffect(getOperation(record.operationId));
+    const resource = latest.resourceEvidenceRecord;
+    const resourceGeneration = resource?.snapshot.validations.at(-1)?.generation;
+    const resourceEvidence = resource?.snapshot.state === "held" &&
+        resource.snapshot.proof !== undefined && resource.snapshot.workspaceProof !== undefined
+      ? {
+          startAttemptId: resource.request.startAttemptId,
+          acquisitionId: resource.snapshot.acquisitionId,
+          requestDigest: resource.snapshot.requestDigest,
+          proofDigest: resource.snapshot.proof.digest,
+          workspaceProofDigest: resource.snapshot.workspaceProof.digest,
+          acquisitionState: "held" as const,
+          ...(resourceGeneration === undefined ? {} : { generation: resourceGeneration }),
+        }
+      : undefined;
+    if (resource !== undefined) {
+      const manifestDigest = permissionManifestDocument(resource.request.effectiveManifest).digest;
+      if (
+        resourceEvidence === undefined ||
+        !isDeepStrictEqual(receiptPolicy.workspace, resource.request.workspace) ||
+        receiptPolicy.permissionManifest.digest !== manifestDigest
+      ) {
+        throw new ResourceProofRejectedError("binding_mismatch", "Startup receipt differs from fixed resource evidence");
+      }
+    }
+    await verifyReviewSubject(record.operationId, receiptPolicy, true);
+    const waiting = await runEffect(advanceOperation(record.operationId, {
+      type: "startup_receipt_recorded",
+      gate: "waiting",
+      receipt: {
+        operationId: identified.operationId,
+        workerIdentity: latest.workerIdentity!,
+        requestedConfig: latest.requestedConfig,
+        effectiveConfig: latest.effectiveConfig,
+        observedConfig: latest.observedConfig!,
+        workspace: receiptPolicy.workspace,
+        permissionManifest: receiptPolicy.permissionManifest,
+        ...(resourceEvidence === undefined ? {} : { resourceEvidence }),
+        reviewSubject: receiptPolicy.reviewSubject,
+        reviewSubjectVerification: receiptPolicy.reviewSubjectVerification,
+        configuredAuthorizationPolicy: authorization.configuredPolicy,
+        authorizationPolicy: "required",
+        authorizationDeadline: latest.startAuthorizationTiming.deadline,
+      },
+    }));
+    await runEffect(project(waiting));
+    if (waiting.startGate === "expired") {
+      await terminateBeforeStart(record, "start_authorization_timed_out");
+      throw new Error("Start authorization expired before publication");
+    }
+
+    const gate = new Promise<void>((resolve, reject) => {
+      startGateWaiters.set(record.operationId, { resolve, reject });
+    });
+    void (async () => {
+      const observedAt = await runEffect(services.clock.now());
+      const wallRemaining = Date.parse(latest.startAuthorizationTiming.deadline) - Date.parse(observedAt);
+      const monotonicRemaining = (authorizationMonotonicDeadlines.get(record.operationId) ?? -Infinity) -
+        services.clock.monotonicMilliseconds();
+      const remaining = Math.min(wallRemaining, monotonicRemaining);
+      if (remaining > 0) await runEffect(services.clock.sleep(remaining));
+      await serializeAuthorizationMutation(record.operationId, async () => {
+        const current = await runEffect(getOperation(record.operationId));
+        if (current.state !== "starting" || current.startGate !== "waiting") return;
+        await runEffect(advanceOperation(record.operationId, { type: "start_gate_closed", gate: "expired" }));
+        await terminateBeforeStart(record, "start_authorization_timed_out");
+      });
+    })().catch((error) => startGateWaiters.get(record.operationId)?.reject(error));
+    return gate;
+  };
+
   const execute = async (record: OperationRecord): Promise<void> => {
     try {
       let operation = await runEffect(
@@ -427,7 +654,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           observedConfig: workerIdentity.observedConfig,
         }).pipe(
           Effect.tap((identified) => project(identified)),
-          Effect.flatMap((identified) => {
+          Effect.tap((identified) => {
             const runtimeConfiguration = services.configuration ?? {
               cwd: "/test/workspace",
               profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
@@ -462,10 +689,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                   ),
             });
           }),
-          Effect.flatMap(() => advanceOperation(record.operationId, {
-            type: "automatic_operation_started",
+          Effect.flatMap((identified) => Effect.tryPromise({
+            try: () => waitAtStartGate(record, identified),
+            catch: (error) => error instanceof OperationPersistenceError || error instanceof ResourceProofRejectedError
+              ? error
+              : new OperationPersistenceError(record.operationId, "write_failed"),
           })),
-          Effect.tap((started) => project(started)),
           Effect.asVoid,
         ),
         acceptResult: (result) => resultAcceptance.accept(record.operationId, result),
@@ -747,6 +976,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             depth: parentOperation.lineage.depth + 1,
           };
     const deferred = deferredResult();
+    const authorization = resolvedStartAuthorization(configuredProfile);
+    const authorizationMonotonicDeadline = services.clock.monotonicMilliseconds() + authorization.windowMs;
     const record: OperationRecord = {
       operationId,
       terminalPromise: deferred.promise,
@@ -767,6 +998,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
 
     records.set(operationId, record);
+    authorizationMonotonicDeadlines.set(operationId, authorizationMonotonicDeadline);
     let operation = await runEffect(
       services.store.create({
         operationId,
@@ -779,6 +1011,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           configuredProfile.acceptedArtifactRetentionMs,
         ),
         lineage,
+        startAuthorization: authorization,
       }).pipe(
         Effect.map((snapshot) => snapshot.operation),
         Effect.mapError((error) => persistenceError(operationId, error)),
@@ -908,6 +1141,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           }),
         );
         await runEffect(project(operation));
+        const startGateWaiter = startGateWaiters.get(record.operationId);
+        if (startGateWaiter !== undefined) {
+          startGateWaiters.delete(record.operationId);
+          startGateWaiter.reject(new OperationCancelledError(record.operationId));
+        }
       }
       return postOrder;
     }).then(async (postOrder) => {
@@ -1126,7 +1364,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (authenticator === undefined) {
         throw new StartAuthorizationAuthenticationError("Start authorization authentication is unavailable");
       }
-      const principal = await authenticator.authenticate(credential);
+      const principal = await authenticator.authenticate(credential).catch((error) => {
+        throw error instanceof StartAuthorizationAuthenticationError
+          ? error
+          : new StartAuthorizationAuthenticationError("Start authorization authentication failed");
+      });
       return {
         listWaiting: async () => {
           const stored = await runEffect(services.store.listWaitingStartAuthorizations().pipe(
@@ -1134,7 +1376,30 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           ));
           const allowed = [];
           for (const snapshot of stored) {
-            if (!(await principal.canAuthorize(snapshot.operation.operationId))) continue;
+            const operationId = snapshot.operation.operationId;
+            const observedAt = await runEffect(services.clock.now());
+            const recoveryTimeUnreliable = !records.has(operationId) &&
+              !services.clock.recoveredElapsedTimeIsReliable();
+            if (recoveryTimeUnreliable || Date.parse(observedAt) >= Date.parse(snapshot.operation.startAuthorizationTiming.deadline)) {
+              await serializeAuthorizationMutation(operationId, async () => {
+                const current = await runEffect(getOperation(operationId));
+                if (current.startGate !== "waiting") return;
+                await runEffect(advanceOperation(operationId, { type: "start_gate_closed", gate: "expired" }));
+                const record = records.get(operationId);
+                if (record === undefined) {
+                  await runEffect(advanceOperation(operationId, {
+                    type: "operation_unknown",
+                    reason: "liveness-unproven",
+                    failureReason: "start_authorization_timed_out",
+                  }));
+                } else {
+                  await terminateBeforeStart(record, "start_authorization_timed_out");
+                }
+              });
+              continue;
+            }
+            if (!snapshot.operation.startAuthorizationTiming.authorizedSubjectIds.includes(principal.subjectId)) continue;
+            if (await principal.currentAuthorization(snapshot.operation.operationId).catch(() => "unknown" as const) !== "authorized") continue;
             const receipt = snapshot.operation.startupReceipt;
             if (receipt === undefined) continue;
             allowed.push(Object.freeze({
@@ -1146,6 +1411,186 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           }
           return Object.freeze(allowed);
         },
+        decide: (request: Readonly<StartAuthorizationDecisionRequest>): Promise<Readonly<StartAuthorizationDecisionOutcome>> =>
+          serializeAuthorizationMutation(request.operationId, async () => {
+            const stored = await readStoredSnapshot(request.operationId).catch(() => undefined);
+            if (stored === undefined) return { status: "rejected", reason: "operation_not_found" };
+            const operation = stored.operation;
+            const rejectDecision = async (
+              reason: Exclude<StartAuthorizationDecisionRejectionReason, "operation_not_found">,
+            ): Promise<Readonly<StartAuthorizationDecisionOutcome>> => {
+              await runEffect(advanceOperation(request.operationId, {
+                type: "start_authorization_decision_rejected",
+                attempt: {
+                  decisionId: request.decisionId,
+                  kind: request.kind,
+                  actorId: principal.subjectId,
+                  receiptDigest: request.receiptDigest,
+                  reason,
+                },
+              }));
+              return { status: "rejected", reason };
+            };
+            if (!operation.startAuthorizationTiming.authorizedSubjectIds.includes(principal.subjectId)) {
+              return rejectDecision("fixed_scope_denied");
+            }
+            const currentAuthorization = await principal.currentAuthorization(request.operationId)
+              .catch(() => "unknown" as const);
+            if (currentAuthorization !== "authorized") {
+              return rejectDecision(currentAuthorization === "revoked"
+                ? "authority_revoked"
+                : currentAuthorization === "unknown"
+                  ? "authority_unknown"
+                  : "current_authority_denied");
+            }
+            const existing = operation.startAuthorizationDecision;
+            if (existing !== undefined) {
+              const sameContent = existing.kind === request.kind &&
+                existing.receiptDigest === request.receiptDigest && existing.actorId === principal.subjectId;
+              if (sameContent) {
+                return {
+                  status: existing.decisionId === request.decisionId ? "idempotent" : "duplicate",
+                  decision: existing,
+                  gate: existing.kind === "authorize" ? "authorized" : "rejected",
+                };
+              }
+              return rejectDecision(existing.decisionId === request.decisionId
+                ? "decision_id_conflict"
+                : "gate_closed");
+            }
+            if (operation.startupReceipt?.digest !== request.receiptDigest) {
+              return rejectDecision("receipt_mismatch");
+            }
+            if (operation.startGate !== "waiting") {
+              return rejectDecision("gate_closed");
+            }
+            const decidedAt = await runEffect(services.clock.now());
+            const recoveryTimeUnreliable = !records.has(request.operationId) &&
+              !services.clock.recoveredElapsedTimeIsReliable();
+            const monotonicDeadline = authorizationMonotonicDeadlines.get(request.operationId);
+            if (
+              recoveryTimeUnreliable || Date.parse(decidedAt) >= Date.parse(operation.startAuthorizationTiming.deadline) ||
+              monotonicDeadline !== undefined && services.clock.monotonicMilliseconds() >= monotonicDeadline
+            ) {
+              await runEffect(advanceOperation(request.operationId, { type: "start_gate_closed", gate: "expired" }));
+              const record = records.get(request.operationId);
+              if (record !== undefined) {
+                await terminateBeforeStart(record, "start_authorization_timed_out");
+              } else {
+                await runEffect(advanceOperation(request.operationId, {
+                  type: "operation_unknown",
+                  reason: "liveness-unproven",
+                  failureReason: "start_authorization_timed_out",
+                }));
+              }
+              return rejectDecision("deadline_elapsed");
+            }
+            const decided = await runEffect(advanceOperation(request.operationId, {
+              type: "start_authorization_decided",
+              gate: request.kind === "authorize" ? "authorized" : "rejected",
+              decision: {
+                decisionId: request.decisionId,
+                kind: request.kind,
+                actorId: principal.subjectId,
+                receiptDigest: request.receiptDigest,
+                decidedAt,
+              },
+            }));
+            const decision = decided.startAuthorizationDecision!;
+            const accepted = {
+              status: "accepted" as const,
+              decision,
+              gate: request.kind === "authorize" ? "authorized" as const : "rejected" as const,
+            };
+            const record = records.get(request.operationId);
+            if (record === undefined) return accepted;
+            if (request.kind === "reject") {
+              await terminateBeforeStart(record, "start_rejected");
+              return accepted;
+            }
+
+            const latest = await runEffect(getOperation(request.operationId));
+            const targetMatches = latest.state === "starting" && latest.startGate === "authorized" &&
+              latest.startupReceipt?.digest === request.receiptDigest &&
+              latest.workerIdentity?.processInstanceId === latest.startupReceipt.workerIdentity.processInstanceId;
+            const deadlineStillOpen = Date.parse(await runEffect(services.clock.now())) <
+                Date.parse(latest.startAuthorizationTiming.deadline) &&
+              services.clock.monotonicMilliseconds() <
+                (authorizationMonotonicDeadlines.get(request.operationId) ?? -Infinity);
+            const currentlyAuthorized = await principal.currentAuthorization(request.operationId)
+              .then((authorization) => authorization === "authorized")
+              .catch(() => false);
+            try {
+              if (!targetMatches) throw new StartRevalidationError("invalidated");
+              if (!deadlineStillOpen) throw new StartRevalidationError("timed_out");
+              if (!currentlyAuthorized) throw new StartRevalidationError("invalidated");
+              if (latest.resourceEvidenceRecord !== undefined) {
+                if (services.resourceProofController === undefined) throw new Error("Resource proof controller unavailable");
+                await services.resourceProofController.revalidate(request.operationId);
+              }
+              if (latest.startupReceiptPolicy === undefined) {
+                throw new Error("Fixed Startup receipt policy unavailable");
+              }
+              await verifyReviewSubject(request.operationId, latest.startupReceiptPolicy, false);
+              const revalidated = await runEffect(getOperation(request.operationId));
+              const revalidatedAt = await runEffect(services.clock.now());
+              const authorityStillCurrent = await principal.currentAuthorization(request.operationId)
+                .then((authorization) => authorization === "authorized")
+                .catch(() => false);
+              if (
+                revalidated.state !== "starting" || revalidated.startGate !== "authorized" ||
+                revalidated.startupReceipt?.digest !== request.receiptDigest ||
+                Date.parse(revalidatedAt) >= Date.parse(revalidated.startAuthorizationTiming.deadline) ||
+                services.clock.monotonicMilliseconds() >=
+                  (authorizationMonotonicDeadlines.get(request.operationId) ?? -Infinity) ||
+                !authorityStillCurrent
+              ) {
+                const timedOut = Date.parse(revalidatedAt) >= Date.parse(revalidated.startAuthorizationTiming.deadline) ||
+                  services.clock.monotonicMilliseconds() >=
+                    (authorizationMonotonicDeadlines.get(request.operationId) ?? -Infinity);
+                throw new StartRevalidationError(timedOut ? "timed_out" : "invalidated");
+              }
+              const instruction = {
+                workerProcessInstanceId: latest.workerIdentity!.processInstanceId,
+                receiptDigest: request.receiptDigest,
+                authorizationDecisionId: request.decisionId,
+                deliveryGeneration: 1,
+              };
+              await runEffect(advanceOperation(request.operationId, { type: "start_instruction_dispatched", instruction }));
+              const dispatchCheckedAt = await runEffect(services.clock.now());
+              if (
+                Date.parse(dispatchCheckedAt) >= Date.parse(revalidated.startAuthorizationTiming.deadline) ||
+                services.clock.monotonicMilliseconds() >=
+                  (authorizationMonotonicDeadlines.get(request.operationId) ?? -Infinity)
+              ) {
+                await runEffect(advanceOperation(request.operationId, { type: "start_gate_closed", gate: "expired" }));
+                await terminateBeforeStart(record, "start_authorization_timed_out");
+                throw new Error("Start authorization expired before begin");
+              }
+              const started = await runEffect(advanceOperation(request.operationId, { type: "authorized_operation_started" }));
+              await runEffect(project(started));
+              startGateWaiters.get(request.operationId)?.resolve();
+              startGateWaiters.delete(request.operationId);
+            } catch (error) {
+              const current = await runEffect(getOperation(request.operationId));
+              if (current.state === "starting" && current.startGate === "authorized") {
+                const timedOut = error instanceof StartRevalidationError && error.reason === "timed_out";
+                await runEffect(advanceOperation(request.operationId, {
+                  type: "start_gate_closed",
+                  gate: timedOut ? "expired" : "invalidated",
+                }));
+                await terminateBeforeStart(
+                  record,
+                  timedOut ? "start_authorization_timed_out" : "start_authorization_invalidated",
+                );
+              } else {
+                const waiter = startGateWaiters.get(request.operationId);
+                startGateWaiters.delete(request.operationId);
+                waiter?.reject(new Error("Start authorization superseded"));
+              }
+            }
+            return accepted;
+          }),
       };
     },
   };

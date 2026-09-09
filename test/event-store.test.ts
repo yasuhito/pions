@@ -37,6 +37,7 @@ async function create(store: EventStore, operationId = "operation-1") {
     workProductRequirements,
     resultRetentionPolicy: retentionPolicy(operationId),
     lineage: { rootOperationId: operationId, depth: 0 },
+    startAuthorization: { configuredPolicy: "disabled", policy: "disabled", windowMs: 0, authorizedSubjectIds: [] },
   }));
 }
 async function running(store: EventStore, operationId = "operation-1") {
@@ -64,13 +65,13 @@ test("file Event Store reconstructs a running Operation after restart", async (c
 test("Operation identifiers are not used as record paths", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()), "../private-operation");
-  assert.equal((await readFile(join(directory, operationDirectoryKey("../private-operation"), "events.v13.json"))).byteLength > 0, true);
+  assert.equal((await readFile(join(directory, operationDirectoryKey("../private-operation"), "events.v14.json"))).byteLength > 0, true);
 });
 
 test("an unsupported record schema is rejected", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()));
-  const path = join(directory, operationDirectoryKey("operation-1"), "events.v13.json");
+  const path = join(directory, operationDirectoryKey("operation-1"), "events.v14.json");
   const record = JSON.parse(await readFile(path, "utf8"));
   record.schemaVersion = 11;
   await writeFile(path, JSON.stringify(record));
@@ -80,7 +81,7 @@ test("an unsupported record schema is rejected", async (context) => {
 test("an unsupported event schema is rejected", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()));
-  const path = join(directory, operationDirectoryKey("operation-1"), "events.v13.json");
+  const path = join(directory, operationDirectoryKey("operation-1"), "events.v14.json");
   const record = JSON.parse(await readFile(path, "utf8"));
   record.events[0].schemaVersion = 11;
   await writeFile(path, JSON.stringify(record));

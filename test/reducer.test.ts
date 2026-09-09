@@ -57,6 +57,9 @@ function event(seq: number, value: TestEventInput): OperationEvent {
             createdAt: metadata.timestamp,
             windowMs: 0,
             deadline: metadata.timestamp,
+            configuredPolicy: "disabled",
+            policy: "disabled",
+            authorizedSubjectIds: [],
           },
         }
       : {}),

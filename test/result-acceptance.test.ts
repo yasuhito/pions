@@ -75,6 +75,7 @@ async function fixture(
     workProductRequirements: requirements,
     resultRetentionPolicy: retentionPolicy("operation-1"),
     lineage: { rootOperationId: "operation-1", depth: 0 },
+    startAuthorization: { configuredPolicy: "disabled", policy: "disabled", windowMs: 0, authorizedSubjectIds: [] },
   }));
   await Effect.runPromise(store.advance("operation-1", { type: "operation_starting" }));
   await Effect.runPromise(store.advance("operation-1", { type: "worker_launched" }));

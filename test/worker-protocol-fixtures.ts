@@ -38,6 +38,7 @@ export const profilePolicy: WorkerProfilePolicy = {
   thinkingLevel: "medium",
   tools: ["read", "bash", "edit", "write"],
   resources: { resourceProofPolicy: "disabled" },
+  startAuthorization: { policy: "disabled" },
   workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
   acceptedArtifactRetentionMs: 86_400_000,
 };

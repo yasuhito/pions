@@ -39,6 +39,8 @@ export interface VisibleRuntimeOptions {
 const systemClock: RuntimeClock = {
   now: () => Effect.sync(() => new Date().toISOString()),
   sleep: (milliseconds) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, milliseconds))),
+  monotonicMilliseconds: () => performance.now(),
+  recoveredElapsedTimeIsReliable: () => false,
 };
 
 /** Construct the caller-facing Runtime for one visible Herdr worker per Operation. */

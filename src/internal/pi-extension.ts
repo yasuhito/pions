@@ -436,6 +436,7 @@ export function installPionsExtension(
         thinkingLevel,
         tools: REVIEW_TOOLS,
         resources: { resourceProofPolicy: "disabled" },
+        startAuthorization: { policy: "disabled" },
         workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
         acceptedArtifactRetentionMs: 86_400_000,
       };

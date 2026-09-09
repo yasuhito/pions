@@ -89,6 +89,7 @@ export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
   thinkingLevel: "medium",
   tools: Object.freeze(["read", "bash", "edit", "write"]),
   resources: Object.freeze({ resourceProofPolicy: "disabled" }),
+  startAuthorization: Object.freeze({ policy: "disabled" }),
   workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
   acceptedArtifactRetentionMs: 86_400_000,
 });
@@ -119,6 +120,22 @@ export function validateWorkerResourcePolicy(profile: Readonly<WorkerProfilePoli
   const profileTools = [...new Set(profile.tools)].sort();
   if (manifest.tools.length !== profileTools.length || manifest.tools.some((tool, index) => tool !== profileTools[index])) {
     throw new ResourceProofRejectedError("permission_contradiction", "Profile tools and permission manifest tools differ");
+  }
+}
+
+function validateStartAuthorizationPolicy(profile: Readonly<WorkerProfilePolicy>): void {
+  const authorization = profile.startAuthorization;
+  if (
+    authorization.policy === "disabled" ||
+    authorization.policy === "optional" && authorization.resolution === "disabled"
+  ) return;
+  if (
+    !Number.isSafeInteger(authorization.windowMs) || authorization.windowMs <= 0 ||
+    new Set(authorization.authorizedSubjectIds).size !== authorization.authorizedSubjectIds.length ||
+    authorization.authorizedSubjectIds.some((subjectId) => subjectId.length === 0) ||
+    authorization.authorizedSubjectIds.length === 0
+  ) {
+    throw new WorkerConfigurationError("unsupported_capability", "Start authorization policy is incomplete");
   }
 }
 
@@ -163,6 +180,7 @@ export function resolveWorkerConfig(options: {
   if (profile === undefined) fail("unsupported_capability", "Unknown Worker profile");
   validateWorkerResourcePolicy(profile);
   resolveWorkProductRequirements(profile);
+  validateStartAuthorizationPolicy(profile);
   boundedString(options.runtimeCwd, "working directory");
   if (profile.modelCandidates.length !== 1) {
     fail("model_mismatch", "Exactly one model candidate is required because fallback is forbidden");

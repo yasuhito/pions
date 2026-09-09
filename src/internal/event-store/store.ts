@@ -148,7 +148,7 @@ export abstract class ValidatedEventStore implements EventStore {
 
   create(request: OperationRequest): Effect.Effect<OperationSnapshot, StoreError> {
     return Effect.flatMap(this.clock.now(), (createdAt) => {
-      const authorizationWindowMs = request.authorizationWindowMs ?? 0;
+      const authorizationWindowMs = request.startAuthorization.windowMs;
       if (!Number.isSafeInteger(authorizationWindowMs) || authorizationWindowMs < 0) {
         return Effect.fail({
           _tag: "StoreError" as const,
@@ -177,7 +177,13 @@ export abstract class ValidatedEventStore implements EventStore {
           createdAt,
           windowMs: authorizationWindowMs,
           deadline,
+          configuredPolicy: request.startAuthorization.configuredPolicy,
+          policy: request.startAuthorization.policy,
+          authorizedSubjectIds: [...request.startAuthorization.authorizedSubjectIds],
         },
+        ...(request.startAuthorization.receipt === undefined
+          ? {}
+          : { startupReceiptPolicy: structuredClone(request.startAuthorization.receipt) }),
       }, createdAt);
     });
   }
@@ -232,12 +238,17 @@ export abstract class ValidatedEventStore implements EventStore {
               format: receipt.reviewSubject.format,
               normalization: receipt.reviewSubject.normalization,
             },
+            reviewSubjectVerification: receipt.reviewSubjectVerification,
             configuredAuthorizationPolicy: receipt.configuredAuthorizationPolicy,
             authorizationPolicy: receipt.authorizationPolicy,
             authorizationDeadline: receipt.authorizationDeadline,
           };
           return this.appendEvent(operationId, {
             ...intent,
+            gate: intent.gate === "waiting" &&
+                Date.parse(recordedAt) >= Date.parse(snapshot.operation.startAuthorizationTiming.deadline)
+              ? "expired"
+              : intent.gate,
             receipt: {
               ...receiptWithoutDigest,
               digest: startupReceiptDigest(receiptWithoutDigest),
@@ -247,10 +258,13 @@ export abstract class ValidatedEventStore implements EventStore {
       });
     }
     if (intent.type === "start_authorization_decided") {
-      return Effect.flatMap(this.clock.now(), (decidedAt) => this.appendEvent(
+      return this.appendEvent(operationId, intent, intent.decision.decidedAt);
+    }
+    if (intent.type === "start_authorization_decision_rejected") {
+      return Effect.flatMap(this.clock.now(), (attemptedAt) => this.appendEvent(
         operationId,
-        { ...intent, decision: { ...intent.decision, decidedAt } },
-        decidedAt,
+        { ...intent, attempt: { ...intent.attempt, attemptedAt } },
+        attemptedAt,
       ));
     }
     return this.appendEvent(operationId, intent);

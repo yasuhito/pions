@@ -9,6 +9,7 @@ import type {
   ResultAcceptanceReservationRequest,
   ResultAcceptanceRetentionPolicyEvidence,
   ResultAcceptanceTransactionOutcome,
+  StartupReceiptPolicy,
   TaskSpec,
 } from "../../public.js";
 import type {
@@ -51,7 +52,13 @@ export interface OperationRequest {
   readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
   readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
   readonly lineage: Readonly<OperationLineage>;
-  readonly authorizationWindowMs?: number;
+  readonly startAuthorization: Readonly<{
+    readonly configuredPolicy: "disabled" | "optional" | "required";
+    readonly policy: "disabled" | "required";
+    readonly windowMs: number;
+    readonly authorizedSubjectIds: ReadonlyArray<string>;
+    readonly receipt?: Readonly<StartupReceiptPolicy>;
+  }>;
 }
 
 export interface OperationSnapshot {

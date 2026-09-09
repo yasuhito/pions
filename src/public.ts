@@ -111,11 +111,45 @@ export interface ResolvedWorkProductRequirements extends WorkProductRequirements
   readonly canonicalJson: string;
 }
 
+export interface StartupReceiptPolicy {
+  readonly workspace: Readonly<ResourceWorkspace>;
+  readonly permissionManifest: Readonly<{
+    readonly manifestId: string;
+    readonly digest: `sha256:${string}`;
+  }>;
+  readonly reviewSubjectVerification: "disabled" | "required";
+  readonly reviewSubject: Readonly<{
+    readonly artifactId: string;
+    readonly byteCount: number;
+    readonly digest: `sha256:${string}`;
+    readonly format: string;
+    readonly normalization: string;
+  }>;
+}
+
+export type WorkerStartAuthorizationPolicy =
+  | { readonly policy: "disabled" }
+  | {
+      readonly policy: "required";
+      readonly windowMs: number;
+      readonly authorizedSubjectIds: ReadonlyArray<string>;
+      readonly receipt: Readonly<StartupReceiptPolicy>;
+    }
+  | { readonly policy: "optional"; readonly resolution: "disabled" }
+  | {
+      readonly policy: "optional";
+      readonly resolution: "required";
+      readonly windowMs: number;
+      readonly authorizedSubjectIds: ReadonlyArray<string>;
+      readonly receipt: Readonly<StartupReceiptPolicy>;
+    };
+
 export interface WorkerProfilePolicy {
   readonly modelCandidates: ReadonlyArray<Readonly<ModelReference>>;
   readonly thinkingLevel: ThinkingLevel;
   readonly tools: ReadonlyArray<string>;
   readonly resources: Readonly<WorkerResourcePolicy>;
+  readonly startAuthorization: Readonly<WorkerStartAuthorizationPolicy>;
   readonly workProductRequirements: Readonly<WorkProductRequirementsPolicy>;
   readonly acceptedArtifactRetentionMs: number;
 }
@@ -281,6 +315,9 @@ export interface StartAuthorizationTiming {
   readonly createdAt: string;
   readonly windowMs: number;
   readonly deadline: string;
+  readonly configuredPolicy: "disabled" | "optional" | "required";
+  readonly policy: "disabled" | "required";
+  readonly authorizedSubjectIds: ReadonlyArray<string>;
 }
 
 export type StartGateState =
@@ -332,6 +369,7 @@ export interface StartupReceipt {
     readonly format: string;
     readonly normalization: string;
   }>;
+  readonly reviewSubjectVerification: "disabled" | "required";
   readonly configuredAuthorizationPolicy: "disabled" | "optional" | "required";
   readonly authorizationPolicy: "disabled" | "required";
   readonly authorizationDeadline: string;
@@ -345,11 +383,21 @@ export interface StartAuthorizationDecisionRecord {
   readonly decidedAt: string;
 }
 
+export interface StartAuthorizationDecisionAttemptRecord {
+  readonly decisionId: string;
+  readonly kind: "authorize" | "reject";
+  readonly actorId: string;
+  readonly receiptDigest: StartupReceipt["digest"];
+  readonly reason: StartAuthorizationDecisionRejectionReason;
+  readonly attemptedAt: string;
+}
+
 export interface StartAuthorizationSnapshot {
   readonly timing: Readonly<StartAuthorizationTiming>;
   readonly gate: StartGateState;
   readonly receipt?: Readonly<StartupReceipt>;
   readonly decision?: Readonly<StartAuthorizationDecisionRecord>;
+  readonly rejectedDecisions: ReadonlyArray<Readonly<StartAuthorizationDecisionAttemptRecord>>;
 }
 
 export interface StartInstructionReference {
@@ -625,13 +673,45 @@ export interface WaitingStartAuthorization {
   readonly receipt: Readonly<StartupReceipt>;
 }
 
+export interface StartAuthorizationDecisionRequest {
+  readonly operationId: string;
+  readonly decisionId: string;
+  readonly kind: "authorize" | "reject";
+  readonly receiptDigest: StartupReceipt["digest"];
+}
+
+export type StartAuthorizationDecisionRejectionReason =
+  | "operation_not_found"
+  | "fixed_scope_denied"
+  | "current_authority_denied"
+  | "authority_revoked"
+  | "authority_unknown"
+  | "receipt_mismatch"
+  | "deadline_elapsed"
+  | "decision_id_conflict"
+  | "gate_closed";
+
+export type StartAuthorizationDecisionOutcome =
+  | {
+      readonly status: "accepted" | "idempotent" | "duplicate";
+      readonly decision: Readonly<StartAuthorizationDecisionRecord>;
+      readonly gate: "authorized" | "rejected";
+    }
+  | {
+      readonly status: "rejected";
+      readonly reason: StartAuthorizationDecisionRejectionReason;
+    };
+
 export interface StartAuthorizationInbox {
   listWaiting(): Promise<ReadonlyArray<Readonly<WaitingStartAuthorization>>>;
+  decide(request: Readonly<StartAuthorizationDecisionRequest>): Promise<Readonly<StartAuthorizationDecisionOutcome>>;
 }
+
+export type CurrentStartAuthorization = "authorized" | "denied" | "revoked" | "unknown";
 
 export interface AuthenticatedStartAuthorizer {
   readonly subjectId: string;
-  canAuthorize(operationId: string): Promise<boolean>;
+  currentAuthorization(operationId: string): Promise<CurrentStartAuthorization>;
 }
 
 export interface StartAuthorizationAuthenticator {
@@ -654,7 +734,10 @@ export type OperationFailureReason =
   | "unsupported_capability"
   | "tool_policy_violation"
   | "descendant_failed"
-  | "resource_proof_rejected";
+  | "resource_proof_rejected"
+  | "start_rejected"
+  | "start_authorization_timed_out"
+  | "start_authorization_invalidated";
 
 export class HerdrPreconditionError extends Error {
   override readonly name = "HerdrPreconditionError";

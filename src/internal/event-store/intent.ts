@@ -1,6 +1,7 @@
 import type {
   ObservedWorkerConfig,
   OperationFailureReason,
+  StartAuthorizationDecisionAttemptRecord,
   StartAuthorizationDecisionRecord,
   StartInstructionReference,
   StartupReceipt,
@@ -46,11 +47,15 @@ export type OperationIntent =
   | {
       readonly type: "start_authorization_decided";
       readonly gate: "authorized" | "rejected";
-      readonly decision: Readonly<Omit<StartAuthorizationDecisionRecord, "decidedAt">>;
+      readonly decision: Readonly<StartAuthorizationDecisionRecord>;
     }
   | {
       readonly type: "start_gate_closed";
       readonly gate: "expired" | "invalidated";
+    }
+  | {
+      readonly type: "start_authorization_decision_rejected";
+      readonly attempt: Readonly<Omit<StartAuthorizationDecisionAttemptRecord, "attemptedAt">>;
     }
   | {
       readonly type: "start_instruction_dispatched";
@@ -65,6 +70,7 @@ export type OperationIntent =
   | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
   // Existing trusted profiles have no external gate or Startup receipt.
   | { readonly type: "automatic_operation_started" }
+  | { readonly type: "authorized_operation_started" }
   | {
       readonly type: "worker_identified";
       readonly workerIdentity: Readonly<WorkerIdentity>;
@@ -112,6 +118,7 @@ export type OperationIntent =
   | {
       readonly type: "operation_unknown";
       readonly reason: "liveness-unproven";
+      readonly failureReason?: "start_rejected" | "start_authorization_timed_out";
     }
   | {
       readonly type: "operation_failed";
@@ -123,14 +130,19 @@ export type PersistableOperationIntent =
       OperationIntent,
       | { readonly type: "startup_receipt_recorded" }
       | { readonly type: "start_authorization_decided" }
+      | { readonly type: "start_authorization_decision_rejected" }
     >
   | {
       readonly type: "startup_receipt_recorded";
       readonly receipt: Readonly<StartupReceipt>;
-      readonly gate: "not_required" | "waiting";
+      readonly gate: "not_required" | "waiting" | "expired";
     }
   | {
       readonly type: "start_authorization_decided";
       readonly gate: "authorized" | "rejected";
       readonly decision: Readonly<StartAuthorizationDecisionRecord>;
+    }
+  | {
+      readonly type: "start_authorization_decision_rejected";
+      readonly attempt: Readonly<StartAuthorizationDecisionAttemptRecord>;
     };
