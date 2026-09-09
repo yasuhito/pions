@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 
 import { Schema } from "effect";
 
@@ -8,6 +8,7 @@ import type {
   WorkerConfigurationFailureReason,
   WorkerProducedResult,
 } from "../public.js";
+import { sha256Digest } from "./result-digest.js";
 import type { AgentRunEvidence } from "./services.js";
 import {
   EffectiveWorkerConfigSchema,
@@ -660,8 +661,7 @@ export class HostProtocolPeer extends FramedPeer {
         throw violation("invalid_transition", "Artifact commit does not match an active artifact");
       }
       const bytes = Buffer.concat(artifact.chunks);
-      const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-      if (bytes.byteLength !== artifact.expectedByteCount || digest !== artifact.expectedDigest) {
+      if (bytes.byteLength !== artifact.expectedByteCount || sha256Digest(bytes) !== artifact.expectedDigest) {
         throw violation("digest_mismatch", "Artifact bytes do not match their declaration");
       }
       this.artifactBudget.accept(bytes.byteLength);

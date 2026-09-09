@@ -3,13 +3,17 @@ import { createHash } from "node:crypto";
 import { Effect } from "effect";
 
 import type { EventStore } from "./event-store/index.js";
+import { sha256Digest } from "./result-digest.js";
 import { validateResultAcceptanceManifest } from "./result-acceptance-manifest.js";
 import type { RuntimeClock } from "./services.js";
 import type { ResultAcceptanceProof } from "./worker-protocol.js";
 import type {
+  AcceptedResult,
   ArtifactFailureReason,
   ArtifactMetadata,
+  ResolvedWorkProductRequirements,
   ArtifactStore,
+  ResultAcceptanceEventEvidence,
   ResultAcceptanceManifestFailureReason,
   ResultAcceptanceTransactionFailureReason,
   WorkerProducedArtifact,
@@ -43,9 +47,51 @@ interface ResultAcceptanceDependencies {
   readonly synchronizeArtifactClock?: (timestamp: string) => void;
 }
 
-function identifier(prefix: string, ...parts: ReadonlyArray<string>): string {
+function deterministicIdentifier(prefix: string, ...parts: ReadonlyArray<string>): string {
   const hash = createHash("sha256").update(parts.join("\u0000"), "utf8").digest("hex");
   return `${prefix}.${hash}`;
+}
+
+function acceptanceProof(
+  operationId: string,
+  acceptance: Readonly<AcceptedResult>,
+): ResultAcceptanceProof {
+  return {
+    operationId,
+    acceptanceId: acceptance.acceptanceId,
+    manifestDigest: acceptance.manifestDigest,
+    eventSequenceNumber: acceptance.eventSequenceNumber,
+  } as ResultAcceptanceProof;
+}
+
+async function acceptedResultOutcome(
+  dependencies: ResultAcceptanceDependencies,
+  operationId: string,
+  acceptance: Readonly<AcceptedResult>,
+  eventEvidence: Readonly<ResultAcceptanceEventEvidence>,
+): Promise<ResultAcceptanceOutcome> {
+  const status = await dependencies.artifacts.resultAcceptancePreparationStatus(
+    dependencies.artifactCredential,
+    acceptance.preparationId,
+  );
+  if (status.kind === "failed") {
+    return {
+      state: status.terminal ? "failed" : "continuable",
+      ...(status.terminal ? { terminal: true } : {}),
+      reason: status.reason,
+    } as ResultAcceptanceOutcome;
+  }
+  if (status.kind === "continuable") {
+    return { state: "continuable", reason: "storage_inspection_unavailable" };
+  }
+  if (status.kind === "aborted") {
+    return { state: "failed", terminal: true, reason: "conflict" };
+  }
+  void dependencies.artifacts.finalizeResultAcceptance(
+    dependencies.artifactCredential,
+    eventEvidence,
+  ).catch(() => undefined);
+  return { state: "accepted", proof: acceptanceProof(operationId, acceptance) };
 }
 
 async function materializeArtifact(
@@ -64,8 +110,7 @@ async function materializeArtifact(
     }
   }
   const bytes = Buffer.concat(chunks);
-  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  if (byteCount !== artifact.expectedByteCount || digest !== artifact.expectedDigest) return undefined;
+  if (byteCount !== artifact.expectedByteCount || sha256Digest(bytes) !== artifact.expectedDigest) return undefined;
   return { ...artifact, bytes };
 }
 
@@ -77,7 +122,7 @@ async function registerArtifact(
   artifact: Readonly<WorkerProducedArtifact>,
   deadline: string,
 ): Promise<Readonly<ArtifactMetadata> | ResultAcceptanceOutcome> {
-  const registrationId = identifier("registration", operationId, acceptanceRequestId, slot);
+  const registrationId = deterministicIdentifier("registration", operationId, acceptanceRequestId, slot);
   const status = await dependencies.artifacts.registrationStatus(
     dependencies.artifactCredential,
     registrationId,
@@ -152,28 +197,109 @@ async function registerArtifact(
   } as ResultAcceptanceOutcome;
 }
 
+async function acceptPersistedResult(
+  dependencies: ResultAcceptanceDependencies,
+  operationId: string,
+  acceptance: Readonly<AcceptedResult>,
+  requirements: Readonly<ResolvedWorkProductRequirements>,
+  produced: Readonly<WorkerProducedResult>,
+): Promise<ResultAcceptanceOutcome> {
+  const accepted = acceptance;
+  const materializedBody = await materializeArtifact(produced.body);
+  const materializedWorkProducts = await Promise.all(produced.workProducts.map(materializeArtifact));
+  if (materializedBody === undefined || materializedWorkProducts.some((artifact) => artifact === undefined)) {
+    return { state: "failed", terminal: true, reason: "input_integrity_mismatch" };
+  }
+  const materialized: WorkerProducedResult = {
+    acceptanceRequestId: produced.acceptanceRequestId,
+    body: materializedBody,
+    workProducts: produced.workProducts.map((artifact, index) => ({
+      ...materializedWorkProducts[index]!,
+      key: artifact.key,
+    })),
+  };
+  const references = [
+    { artifactId: accepted.bodyArtifactId, artifact: materialized.body },
+    ...accepted.workProducts.flatMap(({ key, artifactIds }) => artifactIds.map((artifactId, index) => ({
+      artifactId,
+      artifact: materialized.workProducts.filter((candidate) => candidate.key === key)[index],
+    }))),
+  ];
+  let contentMatches = references.length === 1 + materialized.workProducts.length;
+  const acceptedArtifacts: Array<Readonly<ArtifactMetadata>> = [];
+  for (const reference of references) {
+    if (reference.artifact === undefined) { contentMatches = false; continue; }
+    const retrieved = await dependencies.artifacts.retrieve(
+      dependencies.artifactCredential,
+      reference.artifactId,
+    );
+    if (retrieved.kind !== "retrieved") {
+      return {
+        state: retrieved.terminal ? "failed" : "continuable",
+        ...(retrieved.terminal ? { terminal: true } : {}),
+        reason: retrieved.reason,
+      } as ResultAcceptanceOutcome;
+    }
+    acceptedArtifacts.push(retrieved.artifact);
+    contentMatches &&= retrieved.artifact.byteCount === reference.artifact.expectedByteCount &&
+      retrieved.artifact.digest === reference.artifact.expectedDigest &&
+      retrieved.artifact.formatId === reference.artifact.formatId &&
+      retrieved.artifact.normalizationId === reference.artifact.normalizationId;
+  }
+  if (!contentMatches) {
+    return {
+      state: "failed",
+      terminal: true,
+      reason: accepted.acceptanceRequestId === produced.acceptanceRequestId
+        ? "request_mismatch"
+        : "manifest_conflict",
+    };
+  }
+  const joinedAcceptance = await Effect.runPromise(dependencies.store.prepareResultAcceptance({
+    preparationId: deterministicIdentifier("acceptance", operationId, produced.acceptanceRequestId),
+    operationId,
+    acceptanceRequestId: produced.acceptanceRequestId,
+    manifest: validateResultAcceptanceManifest({
+      formatId: accepted.manifestFormatId,
+      normalizationId: accepted.manifestNormalizationId,
+      bodyArtifactId: accepted.bodyArtifactId,
+      requirementSetId: accepted.requirementSetId,
+      requirementSetDigest: accepted.requirementsDigest,
+      workProducts: accepted.workProducts,
+    }, requirements, acceptedArtifacts),
+    requirements,
+  }));
+  if (joinedAcceptance.kind !== "accepted") {
+    return joinedAcceptance.kind === "continuable"
+      ? { state: "continuable", reason: joinedAcceptance.reason }
+      : { state: "failed", terminal: true, reason: joinedAcceptance.kind === "failed" ? joinedAcceptance.reason : "corrupt_record" };
+  }
+  return acceptedResultOutcome(
+    dependencies,
+    operationId,
+    joinedAcceptance.acceptance,
+    joinedAcceptance.eventEvidence,
+  );
+}
+
 export function makeResultAcceptance(
   dependencies: ResultAcceptanceDependencies,
 ): ResultAcceptance {
   return {
     accept: (operationId, produced) => Effect.promise(async () => {
-      let snapshot;
-      try {
-        snapshot = await Effect.runPromise(dependencies.store.read(operationId));
-      } catch (error) {
-        const code = typeof error === "object" && error !== null && "code" in error
-          ? error.code
-          : undefined;
+      const stored = await Effect.runPromise(Effect.either(dependencies.store.read(operationId)));
+      if (stored._tag === "Left") {
         return {
           state: "failed",
           terminal: true,
-          reason: code === "not_found"
+          reason: stored.left.code === "not_found"
             ? "operation_not_found"
-            : code === "unsupported_schema"
+            : stored.left.code === "unsupported_schema"
             ? "unsupported_schema"
             : "corrupt_record",
         };
       }
+      const snapshot = stored.right;
       const declaredByteCount = produced.body.expectedByteCount +
         produced.workProducts.reduce((total, artifact) => total + artifact.expectedByteCount, 0);
       if (
@@ -183,100 +309,13 @@ export function makeResultAcceptance(
         return { state: "failed", terminal: true, reason: "limit_exceeded" };
       }
       if (snapshot.operation.result !== undefined) {
-        const accepted = snapshot.operation.result;
-        const materializedBody = await materializeArtifact(produced.body);
-        const materializedWorkProducts = await Promise.all(produced.workProducts.map(materializeArtifact));
-        if (materializedBody === undefined || materializedWorkProducts.some((artifact) => artifact === undefined)) {
-          return { state: "failed", terminal: true, reason: "input_integrity_mismatch" };
-        }
-        const materialized: WorkerProducedResult = {
-          acceptanceRequestId: produced.acceptanceRequestId,
-          body: materializedBody,
-          workProducts: produced.workProducts.map((artifact, index) => ({
-            ...materializedWorkProducts[index]!,
-            key: artifact.key,
-          })),
-        };
-        const references = [
-          { artifactId: accepted.bodyArtifactId, artifact: materialized.body },
-          ...accepted.workProducts.flatMap(({ key, artifactIds }) => artifactIds.map((artifactId, index) => ({
-            artifactId,
-            artifact: materialized.workProducts.filter((candidate) => candidate.key === key)[index],
-          }))),
-        ];
-        let same = references.length === 1 + materialized.workProducts.length;
-        const acceptedArtifacts: Array<Readonly<ArtifactMetadata>> = [];
-        for (const reference of references) {
-          if (reference.artifact === undefined) { same = false; continue; }
-          const retrieved = await dependencies.artifacts.retrieve(
-            dependencies.artifactCredential,
-            reference.artifactId,
-          );
-          if (retrieved.kind !== "retrieved") {
-            return {
-              state: retrieved.terminal ? "failed" : "continuable",
-              ...(retrieved.terminal ? { terminal: true } : {}),
-              reason: retrieved.reason,
-            } as ResultAcceptanceOutcome;
-          }
-          acceptedArtifacts.push(retrieved.artifact);
-          same &&= retrieved.artifact.byteCount === reference.artifact.expectedByteCount &&
-            retrieved.artifact.digest === reference.artifact.expectedDigest &&
-            retrieved.artifact.formatId === reference.artifact.formatId &&
-            retrieved.artifact.normalizationId === reference.artifact.normalizationId;
-        }
-        if (!same) {
-          return {
-            state: "failed",
-            terminal: true,
-            reason: accepted.acceptanceRequestId === produced.acceptanceRequestId
-              ? "request_mismatch"
-              : "manifest_conflict",
-          };
-        }
-        const joined = await Effect.runPromise(dependencies.store.prepareResultAcceptance({
-          preparationId: identifier("acceptance", operationId, produced.acceptanceRequestId),
+        return acceptPersistedResult(
+          dependencies,
           operationId,
-          acceptanceRequestId: produced.acceptanceRequestId,
-          manifest: validateResultAcceptanceManifest({
-            formatId: accepted.manifestFormatId,
-            normalizationId: "pions.canonical-json.v1",
-            bodyArtifactId: accepted.bodyArtifactId,
-            requirementSetId: accepted.requirementSetId,
-            requirementSetDigest: accepted.requirementsDigest,
-            workProducts: accepted.workProducts,
-          }, snapshot.operation.workProductRequirements, acceptedArtifacts),
-          requirements: snapshot.operation.workProductRequirements,
-        }));
-        if (joined.kind !== "accepted") {
-          return joined.kind === "continuable"
-            ? { state: "continuable", reason: joined.reason }
-            : { state: "failed", terminal: true, reason: joined.kind === "failed" ? joined.reason : "corrupt_record" };
-        }
-        const status = await dependencies.artifacts.resultAcceptancePreparationStatus(
-          dependencies.artifactCredential,
-          joined.acceptance.preparationId,
+          snapshot.operation.result,
+          snapshot.operation.workProductRequirements,
+          produced,
         );
-        if (status.kind === "failed") return {
-          state: status.terminal ? "failed" : "continuable",
-          ...(status.terminal ? { terminal: true } : {}),
-          reason: status.reason,
-        } as ResultAcceptanceOutcome;
-        if (status.kind === "continuable") return { state: "continuable", reason: "storage_inspection_unavailable" };
-        if (status.kind === "aborted") return { state: "failed", terminal: true, reason: "conflict" };
-        void dependencies.artifacts.finalizeResultAcceptance(
-          dependencies.artifactCredential,
-          joined.eventEvidence,
-        ).catch(() => undefined);
-        return {
-          state: "accepted",
-          proof: {
-            operationId,
-            acceptanceId: joined.acceptance.acceptanceId,
-            manifestDigest: joined.acceptance.manifestDigest,
-            eventSequenceNumber: joined.acceptance.eventSequenceNumber,
-          } as ResultAcceptanceProof,
-        };
       }
       const artifacts: Array<Readonly<ArtifactMetadata>> = [];
       const now = await Effect.runPromise(dependencies.clock.now());
@@ -329,7 +368,7 @@ export function makeResultAcceptance(
           : "invalid_manifest";
         return { state: "failed", terminal: true, reason };
       }
-      const preparationId = identifier("acceptance", operationId, produced.acceptanceRequestId);
+      const preparationId = deterministicIdentifier("acceptance", operationId, produced.acceptanceRequestId);
       const reservation = await Effect.runPromise(dependencies.store.prepareResultAcceptance({
         preparationId,
         operationId,
@@ -340,36 +379,12 @@ export function makeResultAcceptance(
       if (reservation.kind === "failed") return { state: "failed", terminal: true, reason: reservation.reason };
       if (reservation.kind === "continuable") return { state: "continuable", reason: reservation.reason };
       if (reservation.kind === "accepted") {
-        const status = await dependencies.artifacts.resultAcceptancePreparationStatus(
-          dependencies.artifactCredential,
-          reservation.acceptance.preparationId,
-        );
-        if (status.kind === "failed") {
-          return {
-            state: status.terminal ? "failed" : "continuable",
-            ...(status.terminal ? { terminal: true } : {}),
-            reason: status.reason,
-          } as ResultAcceptanceOutcome;
-        }
-        if (status.kind === "continuable") {
-          return { state: "continuable", reason: "storage_inspection_unavailable" };
-        }
-        if (status.kind === "aborted") {
-          return { state: "failed", terminal: true, reason: "conflict" };
-        }
-        void dependencies.artifacts.finalizeResultAcceptance(
-          dependencies.artifactCredential,
+        return acceptedResultOutcome(
+          dependencies,
+          operationId,
+          reservation.acceptance,
           reservation.eventEvidence,
-        ).catch(() => undefined);
-        return {
-          state: "accepted",
-          proof: {
-            operationId,
-            acceptanceId: reservation.acceptance.acceptanceId,
-            manifestDigest: reservation.acceptance.manifestDigest,
-            eventSequenceNumber: reservation.acceptance.eventSequenceNumber,
-          } as ResultAcceptanceProof,
-        };
+        );
       }
       const prepared = await dependencies.artifacts.prepareResultAcceptance(dependencies.artifactCredential, {
         preparationId: reservation.reservation.preparationId,
@@ -388,7 +403,22 @@ export function makeResultAcceptance(
       const published = await Effect.runPromise(
         dependencies.store.publishResultAcceptance(prepared.preparation.evidence),
       );
-      if (published.kind === "failed") return { state: "failed", terminal: true, reason: published.reason };
+      if (published.kind === "failed") {
+        const observedAt = await Effect.runPromise(dependencies.clock.now());
+        await dependencies.artifacts.abortResultAcceptance(
+          dependencies.artifactCredential,
+          {
+            preparationId: reservation.reservation.preparationId,
+            operationId,
+            acceptanceRequestId: reservation.reservation.acceptanceRequestId,
+            manifestDigest: reservation.reservation.manifestDigest,
+            evidenceDigest: prepared.preparation.evidence.digest,
+            state: "not_accepted",
+            observedAt,
+          },
+        ).catch(() => undefined);
+        return { state: "failed", terminal: true, reason: published.reason };
+      }
       if (published.kind === "continuable") return { state: "continuable", reason: published.reason };
       if (published.kind === "prepared") return { state: "continuable", reason: "write_failed" };
       void dependencies.artifacts.finalizeResultAcceptance(
@@ -397,12 +427,7 @@ export function makeResultAcceptance(
       ).catch(() => undefined);
       return {
         state: "accepted",
-        proof: {
-          operationId,
-          acceptanceId: published.acceptance.acceptanceId,
-          manifestDigest: published.acceptance.manifestDigest,
-          eventSequenceNumber: published.acceptance.eventSequenceNumber,
-        } as ResultAcceptanceProof,
+        proof: acceptanceProof(operationId, published.acceptance),
       };
     }),
   };

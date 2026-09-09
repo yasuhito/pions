@@ -890,6 +890,7 @@ export interface AcceptedResult {
   readonly acceptedAt: string;
   readonly eventSequenceNumber: number;
   readonly manifestFormatId: ResultAcceptanceManifest["formatId"];
+  readonly manifestNormalizationId: ResultAcceptanceManifest["normalizationId"];
   readonly manifestDigest: ArtifactDigest;
   readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
   readonly requirementsDigest: ArtifactDigest;
@@ -982,6 +983,13 @@ export interface ResultAcceptanceEventEvidence {
 
 export interface ResultAcceptanceEventEvidenceVerifier {
   verify(evidence: Readonly<ResultAcceptanceEventEvidence>): Promise<"trusted" | "untrusted" | "unknown">;
+}
+
+export interface ResultAcceptanceEventEvidenceSource {
+  read(
+    operationId: string,
+    preparationId: string,
+  ): Promise<Readonly<ResultAcceptanceEventEvidence> | "unknown">;
 }
 
 export interface ResultAcceptancePreparationSnapshot {
@@ -1111,6 +1119,7 @@ export interface OpenArtifactStoreOptions {
   readonly resultAcceptanceRetentionPolicySource?: ResultAcceptanceRetentionPolicySource;
   readonly resultAcceptanceRequirementsSource?: ResultAcceptanceRequirementsSource;
   readonly resultAcceptanceEventEvidenceVerifier?: ResultAcceptanceEventEvidenceVerifier;
+  readonly resultAcceptanceEventEvidenceSource?: ResultAcceptanceEventEvidenceSource;
   readonly now?: () => Date;
   readonly idGenerator?: () => string;
 }

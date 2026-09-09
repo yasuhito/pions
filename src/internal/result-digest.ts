@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
-import type { Result } from "../public.js";
+import type { ArtifactDigest } from "../public.js";
 
-export function resultDigest(bytes: Uint8Array): Result["digest"] {
+export function sha256Digest(bytes: Uint8Array): ArtifactDigest {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }

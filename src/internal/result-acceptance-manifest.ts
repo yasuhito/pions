@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import {
   ResultAcceptanceManifestError,
   WorkProductRequirementsError,
@@ -15,6 +13,7 @@ import {
   type WorkProductRequirement,
   type WorkProductRequirementsPolicy,
 } from "../public.js";
+import { sha256Digest } from "./result-digest.js";
 
 const MANIFEST_FORMAT_ID = "pions.result-acceptance-manifest.v1" as const;
 const CANONICAL_JSON_NORMALIZATION_ID = "pions.canonical-json.v1" as const;
@@ -22,7 +21,7 @@ const REQUIREMENT_SET_ID_PREFIX = "pions.work-product-requirements.v1:" as const
 const ASCII_KEY = /^[\x00-\x7f]+$/;
 
 function digest(bytes: Uint8Array): ArtifactDigest {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  return sha256Digest(bytes);
 }
 
 function compare(left: string, right: string): number {

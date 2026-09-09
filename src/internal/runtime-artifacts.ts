@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 
+import { Effect } from "effect";
+
 import { openArtifactStore } from "./artifact-store.js";
 import { eventStoreResultAcceptanceSources } from "./event-store-result-acceptance-sources.js";
 import type { EventStore } from "./event-store/index.js";
@@ -22,7 +24,21 @@ const policy = {
   maxGarbageCollectionRecoveryAttempts: 3,
 } as const;
 
-function trustedPrincipal(subjectId: string): ArtifactPrincipal {
+function runtimePrincipal(subjectId: string, store: EventStore): ArtifactPrincipal {
+  const canUseForResultAcceptance: ArtifactPrincipal["canPrepareResultAcceptance"] =
+    async (request, artifactId) => {
+      const stored = await Effect.runPromise(Effect.either(store.read(request.operationId)));
+      if (stored._tag === "Left") {
+        return stored.left.code === "not_found" ? "denied" : "unknown";
+      }
+      const reservation = stored.right.operation.resultAcceptanceReservation;
+      return reservation?.preparationId === request.preparationId &&
+          reservation.acceptanceRequestId === request.acceptanceRequestId &&
+          reservation.manifestDigest === request.manifestDigest &&
+          reservation.artifactIds.includes(artifactId)
+        ? "allowed"
+        : "denied";
+    };
   return {
     subjectId,
     canRegister: async () => "allowed",
@@ -30,7 +46,7 @@ function trustedPrincipal(subjectId: string): ArtifactPrincipal {
     canRetrieve: async () => "allowed",
     canBindArtifactUse: async () => "allowed",
     canPinArtifact: async () => "allowed",
-    canPrepareResultAcceptance: async () => "allowed",
+    canPrepareResultAcceptance: canUseForResultAcceptance,
     canReconcileResultAcceptance: async () => "allowed",
     canGarbageCollect: async () => "allowed",
   };
@@ -46,7 +62,7 @@ export function runtimeArtifactStore(
   readonly synchronizeClock: (timestamp: string) => void;
 } {
   const credential = randomBytes(32).toString("hex");
-  const principal = trustedPrincipal(`runtime.${randomUUID()}`);
+  const principal = runtimePrincipal(`runtime.${randomUUID()}`, store);
   const authenticator: ArtifactAuthenticator = {
     authenticate: async (value) => {
       if (value !== credential) throw new Error("invalid artifact credential");
@@ -66,6 +82,7 @@ export function runtimeArtifactStore(
     resultAcceptanceRequirementsSource: sources.requirements,
     resultAcceptanceRetentionPolicySource: sources.retentionPolicy,
     resultAcceptanceEventEvidenceVerifier: sources.eventEvidence,
+    resultAcceptanceEventEvidenceSource: sources.eventEvidenceSource,
     now: now ?? (() => synchronizedNow),
   });
   return {

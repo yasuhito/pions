@@ -8,9 +8,14 @@ import { test, type TestContext } from "node:test";
 import { Effect } from "effect";
 
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
+import { validateResultAcceptanceManifest } from "../src/internal/result-acceptance-manifest.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import { FakeClock, InMemoryEventStore } from "../src/internal/testing.js";
-import type { WorkerProducedResult } from "../src/public.js";
+import type {
+  ResultAcceptancePreparationEvidence,
+  ResultAcceptanceTransactionOutcome,
+  WorkerProducedResult,
+} from "../src/public.js";
 import {
   effectiveConfig,
   requestedConfig,
@@ -37,11 +42,25 @@ function produced(body = "finished", acceptanceRequestId = "request-1"): WorkerP
   };
 }
 
-async function fixture(context: TestContext) {
+class PublicationRejectingStore extends InMemoryEventStore {
+  preparationId?: string;
+
+  override publishResultAcceptance(
+    evidence: Readonly<ResultAcceptancePreparationEvidence>,
+  ): Effect.Effect<ResultAcceptanceTransactionOutcome> {
+    this.preparationId = evidence.preparationId;
+    return Effect.succeed({ kind: "failed", terminal: true, reason: "manifest_conflict" });
+  }
+}
+
+async function fixture(
+  context: TestContext,
+  storeFactory: (clock: FakeClock) => InMemoryEventStore = (clock) => new InMemoryEventStore([], clock),
+) {
   const clock = new FakeClock(Array.from({ length: 30 }, (_, index) =>
     `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
   ));
-  const store = new InMemoryEventStore([], clock);
+  const store = storeFactory(clock);
   await Effect.runPromise(store.create({
     operationId: "operation-1",
     task: { promptRef: "private://prompt", profile: "coding", idempotencyKey: "task-1" },
@@ -64,6 +83,7 @@ async function fixture(context: TestContext) {
     store,
     artifacts: artifactServices.artifacts,
     credential: artifactServices.credential,
+    synchronizeArtifactClock: artifactServices.synchronizeClock,
     acceptance: makeResultAcceptance({
       store,
       artifacts: artifactServices.artifacts,
@@ -74,12 +94,75 @@ async function fixture(context: TestContext) {
   };
 }
 
+test("Artifact Store denies Result use before the Event Store reserves the Operation", async (context) => {
+  const { artifacts, credential, synchronizeArtifactClock } = await fixture(context);
+  const now = "2026-09-06T10:01:00.000Z";
+  synchronizeArtifactClock(now);
+  const body = produced().body;
+  const registration = await artifacts.startRegistration(credential, {
+    registrationId: "unreserved-registration",
+    expectedByteCount: body.expectedByteCount,
+    expectedDigest: body.expectedDigest,
+    formatId: body.formatId,
+    normalizationId: body.normalizationId,
+    dependencies: [],
+    deadline: new Date(Date.parse(now) + 60_000).toISOString(),
+    recoveryBudget: 3,
+  });
+  const registered = registration.kind === "continuable"
+    ? await artifacts.transfer(credential, registration.registration.registrationId, body.bytes)
+    : registration;
+  if (registered.kind !== "registered") throw new Error("registration failed");
+  const manifest = validateResultAcceptanceManifest({
+    formatId: "pions.result-acceptance-manifest.v1",
+    normalizationId: "pions.canonical-json.v1",
+    bodyArtifactId: registered.artifact.artifactId,
+    requirementSetId: workProductRequirements.requirementSetId,
+    requirementSetDigest: workProductRequirements.digest,
+    workProducts: [],
+  }, workProductRequirements, [registered.artifact]);
+
+  const outcome = await artifacts.prepareResultAcceptance(credential, {
+    preparationId: "unreserved-preparation",
+    operationId: "operation-1",
+    acceptanceRequestId: "unreserved-request",
+    manifestDigest: manifest.digest,
+    requirementsDigest: workProductRequirements.digest,
+    retentionPolicyDigest: retentionPolicy("operation-1").digest,
+    manifest: manifest.value,
+  });
+
+  assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "unauthorized");
+});
+
+test("Result acceptance reports a missing Operation as not found", async (context) => {
+  const { acceptance } = await fixture(context);
+
+  const outcome = await Effect.runPromise(acceptance.accept("missing-operation", produced()));
+
+  assert.equal(outcome.state === "failed" ? outcome.reason : undefined, "operation_not_found");
+});
+
 test("Result acceptance publishes only after Artifact Store preparation", async (context) => {
   const { acceptance } = await fixture(context);
 
   const outcome = await Effect.runPromise(acceptance.accept("operation-1", produced()));
 
   assert.equal(outcome.state, "accepted");
+});
+
+test("a terminal Event Store publication failure aborts Artifact Store preparation", async (context) => {
+  const { acceptance, artifacts, credential, store } = await fixture(
+    context,
+    (clock) => new PublicationRejectingStore([], clock),
+  );
+  await Effect.runPromise(acceptance.accept("operation-1", produced()));
+  const preparationId = (store as PublicationRejectingStore).preparationId;
+  if (preparationId === undefined) throw new Error("publication was not attempted");
+
+  const status = await artifacts.resultAcceptancePreparationStatus(credential, preparationId);
+
+  assert.equal(status.kind, "aborted");
 });
 
 test("Result acceptance records the body Artifact identifier", async (context) => {

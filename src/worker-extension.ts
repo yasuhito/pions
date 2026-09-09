@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 
@@ -10,6 +10,7 @@ import {
 
 import type { PiToolUse, PiUsage } from "./internal/services.js";
 import { currentProcessStartToken } from "./internal/worker-process-control.js";
+import { sha256Digest } from "./internal/result-digest.js";
 import {
   WorkerProtocolPeer,
   decodeWorkerConfig,
@@ -189,7 +190,7 @@ class PiWorkerBridge {
           formatId: "pions.result-body.v1",
           normalizationId: "identity.v1",
           expectedByteCount: bytes.byteLength,
-          expectedDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          expectedDigest: sha256Digest(bytes),
           bytes,
         },
         workProducts: [],

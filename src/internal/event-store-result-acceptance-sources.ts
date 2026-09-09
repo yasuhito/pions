@@ -2,6 +2,7 @@ import { Effect } from "effect";
 
 import type {
   ResultAcceptanceEventEvidence,
+  ResultAcceptanceEventEvidenceSource,
   ResultAcceptanceEventEvidenceVerifier,
   ResultAcceptanceRequirementsSource,
   ResultAcceptanceRetentionPolicySource,
@@ -12,6 +13,7 @@ export function eventStoreResultAcceptanceSources(store: EventStore): {
   readonly requirements: ResultAcceptanceRequirementsSource;
   readonly retentionPolicy: ResultAcceptanceRetentionPolicySource;
   readonly eventEvidence: ResultAcceptanceEventEvidenceVerifier;
+  readonly eventEvidenceSource: ResultAcceptanceEventEvidenceSource;
 } {
   return {
     requirements: {
@@ -27,6 +29,26 @@ export function eventStoreResultAcceptanceSources(store: EventStore): {
       read: async (operationId) => {
         try {
           return (await Effect.runPromise(store.read(operationId))).operation.resultRetentionPolicy;
+        } catch {
+          return "unknown";
+        }
+      },
+    },
+    eventEvidenceSource: {
+      read: async (operationId, preparationId) => {
+        try {
+          const result = (await Effect.runPromise(store.read(operationId))).operation.result;
+          if (result === undefined || result.preparationId !== preparationId) return "unknown";
+          return {
+            preparationId: result.preparationId,
+            operationId: result.operationId,
+            acceptanceRequestId: result.acceptanceRequestId,
+            manifestDigest: result.manifestDigest,
+            evidenceDigest: result.preparationEvidence.digest,
+            state: "accepted",
+            observedAt: result.acceptedAt,
+            acceptedAt: result.acceptedAt,
+          };
         } catch {
           return "unknown";
         }

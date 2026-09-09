@@ -26,7 +26,7 @@ import type {
   ResourceProofRejectedError,
   Result,
 } from "../public.js";
-import { resultDigest } from "./result-digest.js";
+import { sha256Digest } from "./result-digest.js";
 
 export interface FakeResultMessage {
   readonly body: string;
@@ -148,7 +148,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
           formatId: "pions.result-body.v1",
           normalizationId: "identity.v1",
           expectedByteCount: bytes.byteLength,
-          expectedDigest: message.digest ?? resultDigest(bytes),
+          expectedDigest: message.digest ?? sha256Digest(bytes),
           bytes,
         },
         workProducts: [],

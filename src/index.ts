@@ -128,6 +128,7 @@ export type {
   ResultAcceptanceTransactionFailureReason,
   ResultAcceptanceTransactionOutcome,
   ResultAcceptanceEventEvidence,
+  ResultAcceptanceEventEvidenceSource,
   ResultAcceptanceEventEvidenceVerifier,
   ResultAcceptancePreparationEvidence,
   ResultAcceptancePreparationOutcome,

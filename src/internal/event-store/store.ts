@@ -378,6 +378,7 @@ export abstract class ValidatedEventStore implements EventStore {
           acceptedAt,
           eventSequenceNumber: loaded.operation.stateSeq + 1,
           manifestFormatId: reservation.manifest.formatId,
+          manifestNormalizationId: reservation.manifest.normalizationId,
           manifestDigest: reservation.manifestDigest,
           requirementSetId: reservation.requirementSetId,
           requirementsDigest: reservation.requirementsDigest,

@@ -164,6 +164,7 @@ const AcceptedResult = Schema.Struct({
   acceptedAt: Schema.String,
   eventSequenceNumber: SafeInteger,
   manifestFormatId: Schema.Literal("pions.result-acceptance-manifest.v1"),
+  manifestNormalizationId: Schema.Literal("pions.canonical-json.v1"),
   manifestDigest: Digest,
   requirementSetId: Schema.String,
   requirementsDigest: Digest,

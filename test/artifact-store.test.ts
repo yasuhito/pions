@@ -111,6 +111,7 @@ async function store(
     readonly storePolicy?: Readonly<ArtifactStorePolicy>;
     readonly acceptedRetentionMs?: number;
     readonly eventEvidenceTrust?: "trusted" | "untrusted" | "unknown";
+    readonly publishedEventEvidence?: Readonly<ResultAcceptanceEventEvidence>;
     readonly requirementsUnknown?: boolean | (() => boolean);
   } = {},
 ): Promise<{ readonly store: ArtifactStore; readonly principal: Principal; readonly rootDirectory: string }> {
@@ -140,6 +141,9 @@ async function store(
     },
     resultAcceptanceEventEvidenceVerifier: {
       verify: () => Promise.resolve(options.eventEvidenceTrust ?? "trusted"),
+    },
+    resultAcceptanceEventEvidenceSource: {
+      read: () => Promise.resolve(options.publishedEventEvidence ?? "unknown" as const),
     },
   };
   const opened = options.fault === undefined
@@ -609,6 +613,44 @@ test("retrying published Result finalization resumes preparation pin release", a
   assert.deepEqual(outcome.kind === "completed" ? outcome.deletedArtifactIds : undefined, [body.artifact.artifactId]);
 });
 
+test("restart finalizes a published Result whose active retention was not persisted", async (context) => {
+  const rootDirectory = await root(context);
+  let interrupted = false;
+  const first = await store(context, {
+    rootDirectory,
+    fault: (point) => {
+      if (!interrupted && point === "before_result_acceptance_active_retention_persisted") {
+        interrupted = true;
+        throw new Error("simulated interruption");
+      }
+    },
+  });
+  const body = await register(first.store, "registration-1", "hello");
+  if (body.kind !== "registered") throw new Error("registration failed");
+  const request = acceptanceRequest(body.artifact.artifactId);
+  await first.store.prepareResultAcceptance("credential", request);
+  const evidence = await eventEvidence(first.store, request, "accepted");
+  await first.store.finalizeResultAcceptance("credential", evidence).catch(() => undefined);
+  await first.store.close();
+  const reopened = await store(context, {
+    rootDirectory,
+    now: () => new Date("2026-09-07T10:01:00.000Z"),
+    publishedEventEvidence: evidence,
+  });
+
+  const outcome = await reopened.store.collectGarbage("credential", {
+    collectionId: "gc-after-recovered-result-finalization",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  assert.deepEqual(
+    outcome.kind === "completed" ? outcome.deletedArtifactIds : undefined,
+    [body.artifact.artifactId],
+  );
+});
+
 test("retrying a terminal Result acceptance preparation rechecks current target authority", async (context) => {
   const { store: artifacts, principal } = await store(context);
   const body = await register(artifacts, "registration-1", "hello");
@@ -728,6 +770,53 @@ test("missing retention for a published Result closes garbage collection toward 
 
   const outcome = await artifacts.collectGarbage("credential", {
     collectionId: "gc-missing-accepted-retention",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "gc_processing_unavailable");
+});
+
+test("inconsistent retention for a published Result closes garbage collection toward failure", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  const { store: artifacts, rootDirectory } = await store(context, { now: () => now });
+  const body = await register(artifacts, "registration-1", "hello");
+  if (body.kind !== "registered") throw new Error("registration failed");
+  const request = acceptanceRequest(body.artifact.artifactId);
+  await artifacts.prepareResultAcceptance("credential", request);
+  await artifacts.finalizeResultAcceptance("credential", await eventEvidence(artifacts, request, "accepted"));
+  const path = join(rootDirectory, "result-acceptance-retentions", `${request.preparationId}.json`);
+  const retention = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  await writeFile(path, JSON.stringify({ ...retention, retainUntil: "2026-09-07T11:00:00.000Z" }));
+  now = new Date("2026-09-07T10:01:00.000Z");
+
+  const outcome = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-inconsistent-accepted-retention",
+    scanBudget: 16,
+    deletionBudget: 8,
+    recoveryBudget: 2,
+  });
+
+  assert.equal(outcome.kind === "failed" ? outcome.reason : undefined, "gc_processing_unavailable");
+});
+
+test("uninspectable retention for a published Result closes garbage collection toward failure", async (context) => {
+  let now = new Date("2026-09-07T10:00:00.000Z");
+  const { store: artifacts, rootDirectory } = await store(context, { now: () => now });
+  const body = await register(artifacts, "registration-1", "hello");
+  if (body.kind !== "registered") throw new Error("registration failed");
+  const request = acceptanceRequest(body.artifact.artifactId);
+  await artifacts.prepareResultAcceptance("credential", request);
+  await artifacts.finalizeResultAcceptance("credential", await eventEvidence(artifacts, request, "accepted"));
+  await writeFile(
+    join(rootDirectory, "result-acceptance-retentions", `${request.preparationId}.json`),
+    "{ not json",
+  );
+  now = new Date("2026-09-07T10:01:00.000Z");
+
+  const outcome = await artifacts.collectGarbage("credential", {
+    collectionId: "gc-uninspectable-accepted-retention",
     scanBudget: 16,
     deletionBudget: 8,
     recoveryBudget: 2,

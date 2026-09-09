@@ -71,6 +71,7 @@ export type ArtifactStoreFaultPoint =
   | "before_result_acceptance_retention_persisted"
   | "result_acceptance_retention_persisted"
   | "result_acceptance_prepared_persisted"
+  | "before_result_acceptance_active_retention_persisted"
   | "result_acceptance_active_retention_persisted"
   | "result_acceptance_accepted_persisted"
   | "before_result_acceptance_pins_released"
@@ -1913,6 +1914,7 @@ class FileArtifactStore implements ArtifactStore {
           eventEvidence: evidence,
         };
         if (retention.state === "pending") {
+          await this.fault("before_result_acceptance_active_retention_persisted");
           await this.serializeIo(() => writeJson(this.resultAcceptanceRetentionPath(evidence.preparationId), active));
           await this.fault("result_acceptance_active_retention_persisted");
         }
@@ -2218,21 +2220,45 @@ class FileArtifactStore implements ArtifactStore {
       } else if (record.state === "prepared") {
         try {
           const retention = await this.readResultAcceptanceRetention(record.request.preparationId);
-          const evidenceTrust = retention?.eventEvidence === undefined
+          const sourcedEvidence = retention?.eventEvidence ??
+            await this.options.resultAcceptanceEventEvidenceSource?.read(
+              record.request.operationId,
+              record.request.preparationId,
+            );
+          const evidence = sourcedEvidence === "unknown" ? undefined : sourcedEvidence;
+          const evidenceTrust = evidence === undefined
             ? "unknown"
-            : await this.options.resultAcceptanceEventEvidenceVerifier?.verify(retention.eventEvidence) ?? "unknown";
-          if (evidenceTrust === "trusted" && retention?.state === "active" && retention.eventEvidence !== undefined &&
-            retention.retainUntil !== undefined && this.validEventEvidence(retention.eventEvidence, "accepted") &&
-            this.eventEvidenceMatchesPreparation(record, retention.eventEvidence) &&
-            retention.retainUntil === new Date(
-              Date.parse(retention.eventEvidence.acceptedAt!) + record.effectiveAcceptedRetentionMs,
-            ).toISOString() && retention.retentionMs === record.effectiveAcceptedRetentionMs &&
-            JSON.stringify(retention.artifactIds) === JSON.stringify(record.evidence.artifactIds)) {
+            : await this.options.resultAcceptanceEventEvidenceVerifier?.verify(evidence) ?? "unknown";
+          const retentionUntil = evidence?.acceptedAt === undefined
+            ? undefined
+            : new Date(Date.parse(evidence.acceptedAt) + record.effectiveAcceptedRetentionMs).toISOString();
+          const principal = evidence === undefined
+            ? undefined
+            : await this.options.authenticator.restore(record.subjectId);
+          const authority = evidence === undefined || principal === undefined
+            ? "authority_unavailable"
+            : await this.reconciliationAuthority(principal, evidence);
+          if (evidenceTrust === "trusted" && authority === undefined && retention !== undefined &&
+            (retention.state === "pending" || retention.state === "active") &&
+            retentionUntil !== undefined && this.validEventEvidence(evidence!, "accepted") &&
+            this.eventEvidenceMatchesPreparation(record, evidence!) &&
+            retention.retentionMs === record.effectiveAcceptedRetentionMs &&
+            JSON.stringify(retention.artifactIds) === JSON.stringify(record.evidence.artifactIds) &&
+            (retention.state !== "active" || retention.retainUntil === retentionUntil)) {
+            const active: ResultAcceptanceRetentionRecord = {
+              ...retention,
+              state: "active",
+              retainUntil: retentionUntil,
+              eventEvidence: evidence!,
+            };
+            if (retention.state === "pending") {
+              await writeJson(this.resultAcceptanceRetentionPath(record.request.preparationId), active);
+            }
             const accepted: ResultAcceptancePreparationRecord = {
               ...record,
               state: "accepted",
-              retentionUntil: retention.retainUntil,
-              eventEvidence: retention.eventEvidence,
+              retentionUntil,
+              eventEvidence: evidence!,
             };
             await writeJson(this.resultAcceptancePreparationPath(record.request.preparationId), accepted);
             await this.releaseResultAcceptancePins(record.request.preparationId);

@@ -64,13 +64,13 @@ test("file Event Store reconstructs a running Operation after restart", async (c
 test("Operation identifiers are not used as record paths", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()), "../private-operation");
-  assert.equal((await readFile(join(directory, operationDirectoryKey("../private-operation"), "events.v12.json"))).byteLength > 0, true);
+  assert.equal((await readFile(join(directory, operationDirectoryKey("../private-operation"), "events.v13.json"))).byteLength > 0, true);
 });
 
 test("an unsupported record schema is rejected", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()));
-  const path = join(directory, operationDirectoryKey("operation-1"), "events.v12.json");
+  const path = join(directory, operationDirectoryKey("operation-1"), "events.v13.json");
   const record = JSON.parse(await readFile(path, "utf8"));
   record.schemaVersion = 11;
   await writeFile(path, JSON.stringify(record));
@@ -80,7 +80,7 @@ test("an unsupported record schema is rejected", async (context) => {
 test("an unsupported event schema is rejected", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()));
-  const path = join(directory, operationDirectoryKey("operation-1"), "events.v12.json");
+  const path = join(directory, operationDirectoryKey("operation-1"), "events.v13.json");
   const record = JSON.parse(await readFile(path, "utf8"));
   record.events[0].schemaVersion = 11;
   await writeFile(path, JSON.stringify(record));
@@ -91,6 +91,6 @@ test("an old Event Store root is not initialized as the current schema", async (
   const directory = await root(context);
   const operationDirectory = join(directory, operationDirectoryKey("operation-1"));
   await mkdir(operationDirectory);
-  await writeFile(join(operationDirectory, "events.v11.json"), "{}\n");
+  await writeFile(join(operationDirectory, "events.v12.json"), "{}\n");
   assert.equal((await failure(new PrivateFileEventStore(directory, clock()).read("operation-1"))).code, "unsupported_schema");
 });

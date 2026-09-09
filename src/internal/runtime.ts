@@ -13,7 +13,10 @@ import type {
   StoreError,
 } from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
-import { resolveWorkProductRequirements } from "./result-acceptance-manifest.js";
+import {
+  resolveWorkProductRequirements,
+  resultAcceptanceManifestDocument,
+} from "./result-acceptance-manifest.js";
 import { resultAcceptanceRetentionPolicy } from "./result-acceptance-transaction.js";
 import { validateWorkspaceScope } from "./resource-proof.js";
 import { runtimeArtifactStore } from "./runtime-artifacts.js";
@@ -241,6 +244,17 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const accepted = snapshot.operation.result;
       if (accepted === undefined) {
         return yield* Effect.fail(new OperationPersistenceError(operationId, "incomplete_record"));
+      }
+      const manifest = resultAcceptanceManifestDocument({
+        formatId: accepted.manifestFormatId,
+        normalizationId: accepted.manifestNormalizationId,
+        bodyArtifactId: accepted.bodyArtifactId,
+        requirementSetId: accepted.requirementSetId,
+        requirementSetDigest: accepted.requirementsDigest,
+        workProducts: accepted.workProducts,
+      });
+      if (manifest.digest !== accepted.manifestDigest) {
+        return yield* Effect.fail(new ResultRetrievalError(operationId, "stored_artifact_corrupt"));
       }
       const retrieved = yield* Effect.tryPromise({
         try: () => artifactServices.artifacts.retrieve(

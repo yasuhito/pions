@@ -647,6 +647,8 @@ export function reduceOperation(
         event.acceptance.operationId !== current.operationId ||
         event.acceptance.preparationId !== reservation.preparationId ||
         event.acceptance.acceptanceRequestId !== reservation.acceptanceRequestId ||
+        event.acceptance.manifestFormatId !== reservation.manifest.formatId ||
+        event.acceptance.manifestNormalizationId !== reservation.manifest.normalizationId ||
         event.acceptance.manifestDigest !== reservation.manifestDigest ||
         event.acceptance.requirementSetId !== reservation.requirementSetId ||
         event.acceptance.requirementsDigest !== reservation.requirementsDigest ||
