@@ -409,7 +409,6 @@ test("public visible Runtime composes the production path", async (context) => {
     runtime.spawn({ promptRef: "/private/prompt", profile: "coding", idempotencyKey: "task-1" }),
     (error) => error instanceof HerdrPreconditionError,
   );
-  await new Promise<void>((resolve) => setTimeout(resolve, 50));
 });
 
 test("public visible Runtime rejects unsafe Claude bridge configuration", async (context) => {

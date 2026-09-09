@@ -90,29 +90,33 @@ export function runtimeArtifactStore(
     resultAcceptanceEventEvidenceSource: sources.eventEvidenceSource,
     now: now ?? (() => synchronizedNow),
   };
-  const opened = fault === undefined
-    ? openArtifactStore(options)
-    : openArtifactStoreWithFaultInjection(options, fault);
+  let opened: Promise<ArtifactStore> | undefined;
+  const open = (): Promise<ArtifactStore> => {
+    opened ??= fault === undefined
+      ? openArtifactStore(options)
+      : openArtifactStoreWithFaultInjection(options, fault);
+    return opened;
+  };
   return {
     credential,
     synchronizeClock: (timestamp) => { synchronizedNow = new Date(timestamp); },
     artifacts: {
-      startRegistration: (...args) => opened.then((value) => value.startRegistration(...args)),
-      transfer: (...args) => opened.then((value) => value.transfer(...args)),
-      registrationStatus: (...args) => opened.then((value) => value.registrationStatus(...args)),
-      retrieve: (...args) => opened.then((value) => value.retrieve(...args)),
-      prepareUseBinding: (...args) => opened.then((value) => value.prepareUseBinding(...args)),
-      useBindingStatus: (...args) => opened.then((value) => value.useBindingStatus(...args)),
-      retrieveForUseBinding: (...args) => opened.then((value) => value.retrieveForUseBinding(...args)),
-      releaseUseBinding: (...args) => opened.then((value) => value.releaseUseBinding(...args)),
-      createRetentionPin: (...args) => opened.then((value) => value.createRetentionPin(...args)),
-      releaseRetentionPin: (...args) => opened.then((value) => value.releaseRetentionPin(...args)),
-      prepareResultAcceptance: (...args) => opened.then((value) => value.prepareResultAcceptance(...args)),
-      resultAcceptancePreparationStatus: (...args) => opened.then((value) => value.resultAcceptancePreparationStatus(...args)),
-      finalizeResultAcceptance: (...args) => opened.then((value) => value.finalizeResultAcceptance(...args)),
-      abortResultAcceptance: (...args) => opened.then((value) => value.abortResultAcceptance(...args)),
-      collectGarbage: (...args) => opened.then((value) => value.collectGarbage(...args)),
-      close: () => opened.then((value) => value.close()),
+      startRegistration: (...args) => open().then((value) => value.startRegistration(...args)),
+      transfer: (...args) => open().then((value) => value.transfer(...args)),
+      registrationStatus: (...args) => open().then((value) => value.registrationStatus(...args)),
+      retrieve: (...args) => open().then((value) => value.retrieve(...args)),
+      prepareUseBinding: (...args) => open().then((value) => value.prepareUseBinding(...args)),
+      useBindingStatus: (...args) => open().then((value) => value.useBindingStatus(...args)),
+      retrieveForUseBinding: (...args) => open().then((value) => value.retrieveForUseBinding(...args)),
+      releaseUseBinding: (...args) => open().then((value) => value.releaseUseBinding(...args)),
+      createRetentionPin: (...args) => open().then((value) => value.createRetentionPin(...args)),
+      releaseRetentionPin: (...args) => open().then((value) => value.releaseRetentionPin(...args)),
+      prepareResultAcceptance: (...args) => open().then((value) => value.prepareResultAcceptance(...args)),
+      resultAcceptancePreparationStatus: (...args) => open().then((value) => value.resultAcceptancePreparationStatus(...args)),
+      finalizeResultAcceptance: (...args) => open().then((value) => value.finalizeResultAcceptance(...args)),
+      abortResultAcceptance: (...args) => open().then((value) => value.abortResultAcceptance(...args)),
+      collectGarbage: (...args) => open().then((value) => value.collectGarbage(...args)),
+      close: () => opened?.then((value) => value.close()) ?? Promise.resolve(),
     },
   };
 }
