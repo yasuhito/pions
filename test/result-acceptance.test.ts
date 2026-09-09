@@ -8,7 +8,10 @@ import { test, type TestContext } from "node:test";
 import { Effect } from "effect";
 
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
-import { validateResultAcceptanceManifest } from "../src/internal/result-acceptance-manifest.js";
+import {
+  resolveWorkProductRequirements,
+  validateResultAcceptanceManifest,
+} from "../src/internal/result-acceptance-manifest.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import { FakeClock, InMemoryEventStore } from "../src/internal/testing.js";
 import type {
@@ -56,6 +59,7 @@ class PublicationRejectingStore extends InMemoryEventStore {
 async function fixture(
   context: TestContext,
   storeFactory: (clock: FakeClock) => InMemoryEventStore = (clock) => new InMemoryEventStore([], clock),
+  requirements = workProductRequirements,
 ) {
   const clock = new FakeClock(Array.from({ length: 30 }, (_, index) =>
     `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
@@ -66,7 +70,7 @@ async function fixture(
     task: { promptRef: "private://prompt", profile: "coding", idempotencyKey: "task-1" },
     requestedConfig,
     effectiveConfig,
-    workProductRequirements,
+    workProductRequirements: requirements,
     resultRetentionPolicy: retentionPolicy("operation-1"),
     lineage: { rootOperationId: "operation-1", depth: 0 },
   }));
@@ -184,6 +188,46 @@ test("a repeated acceptance request returns the same acceptance identifier", asy
     repeated.state === "accepted" && first.state === "accepted"
       ? repeated.proof.acceptanceId
       : undefined,
+    first.state === "accepted" ? first.proof.acceptanceId : undefined,
+  );
+});
+
+test("a replay with multiple work products under one key returns the accepted identifier", async (context) => {
+  const requirements = resolveWorkProductRequirements({
+    workProductRequirements: {
+      body: workProductRequirements.body,
+      workProducts: [{
+        key: "attachment",
+        formatId: "pions.opaque.v1",
+        normalizationId: "identity.v1",
+        minCount: 2,
+        maxCount: 2,
+        maxByteCount: 128,
+      }],
+      maxTotalByteCount: workProductRequirements.maxTotalByteCount,
+    },
+  });
+  const { acceptance } = await fixture(context, undefined, requirements);
+  const withAttachments = (): WorkerProducedResult => ({
+    ...produced(),
+    workProducts: ["first", "second"].map((value) => {
+      const bytes = Buffer.from(value);
+      return {
+        key: "attachment",
+        formatId: "pions.opaque.v1",
+        normalizationId: "identity.v1",
+        expectedByteCount: bytes.byteLength,
+        expectedDigest: digest(bytes),
+        bytes,
+      };
+    }),
+  });
+  const first = await Effect.runPromise(acceptance.accept("operation-1", withAttachments()));
+
+  const replayed = await Effect.runPromise(acceptance.accept("operation-1", withAttachments()));
+
+  assert.equal(
+    replayed.state === "accepted" && first.state === "accepted" ? replayed.proof.acceptanceId : undefined,
     first.state === "accepted" ? first.proof.acceptanceId : undefined,
   );
 });

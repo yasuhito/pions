@@ -220,29 +220,47 @@ async function acceptPersistedResult(
       key: artifact.key,
     })),
   };
-  const references = [
-    { artifactId: accepted.bodyArtifactId, artifact: materialized.body },
-    ...accepted.workProducts.flatMap(({ key, artifactIds }) => artifactIds.map((artifactId, index) => ({
-      artifactId,
-      artifact: materialized.workProducts.filter((candidate) => candidate.key === key)[index],
-    }))),
-  ];
-  let contentMatches = references.length === 1 + materialized.workProducts.length;
   const acceptedArtifacts: Array<Readonly<ArtifactMetadata>> = [];
-  for (const reference of references) {
-    if (reference.artifact === undefined) { contentMatches = false; continue; }
+  for (const artifactId of accepted.artifactIds) {
     const retrieved = await dependencies.artifacts.retrieve(
       dependencies.artifactCredential,
-      reference.artifactId,
+      artifactId,
     );
     if (retrieved.kind !== "retrieved") {
       return failedOrContinuable(retrieved.terminal, retrieved.reason);
     }
     acceptedArtifacts.push(retrieved.artifact);
-    contentMatches &&= retrieved.artifact.byteCount === reference.artifact.expectedByteCount &&
-      retrieved.artifact.digest === reference.artifact.expectedDigest &&
-      retrieved.artifact.formatId === reference.artifact.formatId &&
-      retrieved.artifact.normalizationId === reference.artifact.normalizationId;
+  }
+  const metadataById = new Map(acceptedArtifacts.map((artifact) => [artifact.artifactId, artifact]));
+  const signature = (artifact: {
+    readonly byteCount?: number;
+    readonly expectedByteCount?: number;
+    readonly digest?: string;
+    readonly expectedDigest?: string;
+    readonly formatId: string;
+    readonly normalizationId: string;
+  }) => JSON.stringify([
+    artifact.byteCount ?? artifact.expectedByteCount,
+    artifact.digest ?? artifact.expectedDigest,
+    artifact.formatId,
+    artifact.normalizationId,
+  ]);
+  const acceptedBody = metadataById.get(accepted.bodyArtifactId);
+  let contentMatches = acceptedBody !== undefined &&
+    signature(acceptedBody) === signature(materialized.body) &&
+    accepted.workProducts.reduce((count, entry) => count + entry.artifactIds.length, 0) ===
+      materialized.workProducts.length;
+  for (const entry of accepted.workProducts) {
+    const acceptedSignatures = entry.artifactIds
+      .map((artifactId) => metadataById.get(artifactId))
+      .filter((artifact): artifact is Readonly<ArtifactMetadata> => artifact !== undefined)
+      .map(signature)
+      .sort();
+    const replayedSignatures = materialized.workProducts
+      .filter(({ key }) => key === entry.key)
+      .map(signature)
+      .sort();
+    contentMatches &&= JSON.stringify(acceptedSignatures) === JSON.stringify(replayedSignatures);
   }
   if (!contentMatches) {
     return {

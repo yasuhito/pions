@@ -19,7 +19,6 @@ import type { WorkerConfig } from "../src/internal/worker-protocol.js";
 import {
   effectiveConfig,
   resultAcceptanceProof,
-  resultDigest,
 } from "./worker-protocol-fixtures.js";
 
 interface RegisteredHandlers {
