@@ -9,7 +9,6 @@ import {
   TestContext,
 } from "effect";
 
-import { makeRuntime } from "../src/internal/runtime.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
 import {
   CancellationRejectedError,
@@ -41,6 +40,7 @@ import {
   FakeIdGenerator,
   FakePresentation,
   InMemoryEventStore,
+  makeTestRuntime,
 } from "../src/internal/testing.js";
 import type { FakeWorkerAdapterOptions } from "../src/internal/testing.js";
 
@@ -180,6 +180,17 @@ async function waitForReceiver(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 25));
 }
 
+async function waitForOperationState(
+  store: InMemoryEventStore,
+  operationId: string,
+  expectedState: Operation["state"],
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if ((await storedOperation(store, operationId)).state === expectedState) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function storedOperation(store: InMemoryEventStore, operationId: string) {
   return (await Effect.runPromise(store.read(operationId))).operation;
 }
@@ -213,7 +224,7 @@ async function completeOperation(
     attemptedState: "completed",
     projectionFails: presentationFails,
   });
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker,
     clock,
     ids: new FakeIdGenerator(["operation-1"]),
@@ -240,7 +251,7 @@ async function completeOperation(
 test("each Operation records root, parent, and depth lineage", async () => {
   const worker = new ControlledWorkerAdapter();
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker,
     clock: new FakeClock(Array.from({ length: 30 }, (_, index) =>
       `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
@@ -279,7 +290,7 @@ function nestedRuntime(operationIds: ReadonlyArray<string>) {
   const ids = new FakeIdGenerator(operationIds);
   const presentation = new FakePresentation();
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker,
     clock: new FakeClock(
       Array.from({ length: 100 }, (_, index) =>
@@ -294,7 +305,7 @@ function nestedRuntime(operationIds: ReadonlyArray<string>) {
 }
 
 async function spawnNested(
-  runtime: ReturnType<typeof makeRuntime>,
+  runtime: ReturnType<typeof makeTestRuntime>,
   parentOperationId: string,
   key: string,
 ) {
@@ -312,7 +323,7 @@ function cancellableNestedRuntime(operationIds: ReadonlyArray<string>) {
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(trace);
   const presentation = new FakePresentation();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker,
     clock,
     ids: new FakeIdGenerator(operationIds),
@@ -514,7 +525,7 @@ test("a self-settled parent drains while its child is still running", async () =
   await waitForReceiver();
 
   worker.deliver(root.operationId);
-  await waitForReceiver();
+  await waitForOperationState(store, root.operationId, "draining_descendants");
 
   assert.equal((await storedOperation(store, root.operationId)).state, "draining_descendants");
 });
@@ -539,7 +550,7 @@ test("a grandparent completes only after its grandchild terminates", async () =>
   await waitForReceiver();
   worker.deliver(root.operationId);
   worker.deliver(child.operationId);
-  await waitForReceiver();
+  await waitForOperationState(store, root.operationId, "draining_descendants");
 
   const beforeGrandchild = (await storedOperation(store, root.operationId)).state;
   worker.deliver(grandchild.operationId);
@@ -551,7 +562,7 @@ test("a grandparent completes only after its grandchild terminates", async () =>
 test("the default descendant failure policy fails a successful parent", async () => {
   const worker = new FailingChildWorkerAdapter();
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker,
     clock: new FakeClock(Array.from({ length: 30 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["root", "child"]),
@@ -788,7 +799,7 @@ test("Runtime rejects tools above the profile ceiling before resources", async (
 
 test("Runtime rejects a profile requiring an unavailable tool before issuing an identifier", async () => {
   const ids = new FakeIdGenerator(["operation-1"]);
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock: new FakeClock([]),
     ids,
@@ -816,7 +827,7 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
 });
 
 test("Runtime rejects required work products when the Worker adapter cannot produce them", async () => {
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock: new FakeClock([]),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -891,7 +902,7 @@ test("a child cannot raise its inherited tool ceiling", async () => {
 });
 
 test("an observed model mismatch becomes a typed Operation failure", async () => {
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "model_mismatch" }),
     clock: new FakeClock(Array.from({ length: 8 }, (_, index) => `config-time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -907,7 +918,7 @@ test("an observed model mismatch becomes a typed Operation failure", async () =>
 });
 
 test("an observed thinking mismatch becomes a typed Operation failure", async () => {
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "thinking_level_mismatch" }),
     clock: new FakeClock(Array.from({ length: 8 }, (_, index) => `config-time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -1035,7 +1046,7 @@ test("completion without confirmed Worker stop retains its pane", async () => {
 async function completeWithPaneClosureFailure() {
   const store = new InMemoryEventStore();
   const presentation = new FakePresentation({ paneClosureFails: true });
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
     clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -1074,7 +1085,7 @@ test("successful-worker cleanup targets only the Operation's persisted pane", as
 
 async function retryOperation(options?: { readonly parentOperationId?: string }) {
   const worker = new FakeWorkerAdapter({ messages: { body: "finished" } });
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker,
     clock: new FakeClock([
       "2026-09-06T10:00:00.000Z",
@@ -1141,7 +1152,7 @@ async function failOperation() {
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(trace);
   const presentation = new FakePresentation();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({
       messages: { body: "must not be returned" },
       trace,
@@ -1176,7 +1187,7 @@ test("failed Worker retains its pane", async () => {
 
 async function settledAgentFailure() {
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "agent_failed" }),
     clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `failure-time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -1204,7 +1215,7 @@ test("a settled Pi failure retains usage and tool evidence", async () => {
 });
 
 test("confirmed process exit without a Result becomes a bounded failure", async () => {
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "process-exited-without-result" }),
     clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `exit-time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -1220,7 +1231,7 @@ test("confirmed process exit without a Result becomes a bounded failure", async 
 });
 
 test("unproven Worker liveness becomes an unknown Operation", async () => {
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "liveness-unproven" }),
     clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `unknown-time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -1237,7 +1248,7 @@ test("unproven Worker liveness becomes an unknown Operation", async () => {
 
 test("a Worker protocol failure is durably classified without fake completion", async () => {
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({
       messages: { body: "unused" },
       failure: "worker_protocol_failed",
@@ -1257,7 +1268,7 @@ async function acknowledgementFailure(
   messages: NonNullable<FakeWorkerAdapterOptions["messages"]> = { body: "accepted" },
 ): Promise<InMemoryEventStore> {
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ messages, acknowledgementFails: true }),
     clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
     ids: new FakeIdGenerator(["operation-1"]),

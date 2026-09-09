@@ -1,7 +1,4 @@
-import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { Cause, Effect, Exit, Schema } from "effect";
 
@@ -19,7 +16,6 @@ import {
 } from "./result-acceptance-manifest.js";
 import { resultAcceptanceRetentionPolicy } from "./result-acceptance-transaction.js";
 import { validateWorkspaceScope } from "./resource-proof.js";
-import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
   RequestedWorkerConfigSchema,
@@ -108,13 +104,11 @@ function isTerminal(operation: Operation): boolean {
 }
 
 export function makeRuntime(services: RuntimeServices): Runtime {
-  const artifactServices = services.artifacts === undefined || services.artifactCredential === undefined
-    ? runtimeArtifactStore(join(tmpdir(), `pions-runtime-${randomUUID()}`), services.store)
-    : {
-        artifacts: services.artifacts,
-        credential: services.artifactCredential,
-        synchronizeClock: undefined,
-      };
+  const artifactServices = {
+    artifacts: services.artifacts,
+    credential: services.artifactCredential,
+    synchronizeClock: services.synchronizeArtifactClock,
+  };
   const resultAcceptance = makeResultAcceptance({
     store: services.store,
     artifacts: artifactServices.artifacts,
@@ -686,6 +680,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     let effectiveConfig;
     let resourceConfigurationRejected = false;
     const configuredProfile = runtimeConfiguration.profiles[task.profile];
+    if (configuredProfile === undefined) {
+      if (parent !== undefined) parent.pendingAdmissions -= 1;
+      throw new WorkerConfigurationError("unsupported_capability", "Unknown Worker profile");
+    }
     try {
       effectiveConfig = resolveWorkerConfig({
         requested: requestedConfig,
@@ -694,7 +692,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         ...(parentOperation === undefined ? {} : { parent: parentOperation.effectiveConfig }),
       });
     } catch (error) {
-      if (!(error instanceof ResourceProofRejectedError) || configuredProfile === undefined) {
+      if (!(error instanceof ResourceProofRejectedError)) {
         if (parent !== undefined) parent.pendingAdmissions -= 1;
         throw error;
       }
@@ -712,7 +710,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       }
     }
 
-    const workProductRequirements = resolveWorkProductRequirements(configuredProfile!);
+    const workProductRequirements = resolveWorkProductRequirements(configuredProfile);
     if (
       services.worker.producesWorkProducts !== true &&
       workProductRequirements.workProducts.some(({ minCount }) => minCount > 0)
@@ -724,7 +722,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       );
     }
 
-    const resourcePolicy = configuredProfile?.resources;
+    const resourcePolicy = configuredProfile.resources;
     const resourceAdmissionRejected = resourceConfigurationRejected ||
       resourcePolicy?.resourceProofPolicy === "required" && services.resourceProofController === undefined;
     if (!resourceConfigurationRejected && resourcePolicy?.resourceProofPolicy === "required") {
@@ -778,7 +776,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         workProductRequirements,
         resultRetentionPolicy: resultAcceptanceRetentionPolicy(
           operationId,
-          configuredProfile!.acceptedArtifactRetentionMs,
+          configuredProfile.acceptedArtifactRetentionMs,
         ),
         lineage,
       }).pipe(

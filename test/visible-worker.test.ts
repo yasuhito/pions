@@ -27,12 +27,12 @@ import {
   resolveClaudeBridgeExtension,
 } from "../src/internal/worker-extension-entry.js";
 import { VisibleWorker } from "../src/internal/visible-worker.js";
-import { makeRuntime } from "../src/internal/runtime.js";
 import {
   FakeClock,
   FakeIdGenerator,
   FakePresentation,
   InMemoryEventStore,
+  makeTestRuntime,
 } from "../src/internal/testing.js";
 import { WORKER_PROTOCOL_VERSION } from "../src/internal/worker-protocol.js";
 import type { WorkerProducedResult } from "../src/public.js";
@@ -447,7 +447,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
     capabilityGenerator: { nextCapability: () => capability },
     promptReader: { read: () => Promise.resolve(Buffer.from("private prompt", "utf8")) },
   });
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker,
     clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["operation-1"]),

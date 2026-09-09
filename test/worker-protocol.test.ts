@@ -160,6 +160,25 @@ test("repeating the same Result ACK remains complete at the worker", () => {
   assert.equal(repeated.acknowledgementsComplete, true);
 });
 
+test("disconnecting during Artifact chunks emits no Result", () => {
+  const { host, worker } = connected();
+  const frames = worker.send({ type: "artifacts", result: produced() }).toString("utf8").split("\n");
+  const partialTransfer = Buffer.from(`${frames[0]}\n${frames[1]}\n`);
+
+  const events = host.receive(partialTransfer);
+
+  assert.equal(events.length, 0);
+});
+
+test("an invalid acceptance request identifier is rejected before Result delivery", () => {
+  const { host, worker } = connected();
+  const result = { ...produced(), acceptanceRequestId: "invalid identifier" };
+
+  const reason = violationReason(() => host.receive(worker.send({ type: "artifacts", result })));
+
+  assert.equal(reason, "invalid_frame");
+});
+
 test("a stale Artifact frame sequence is rejected", () => {
   const { host, worker } = connected();
   const bytes = worker.send({ type: "artifacts", result: produced() });

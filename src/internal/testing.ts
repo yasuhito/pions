@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+
 import { Effect } from "effect";
 
 import type {
@@ -6,6 +9,8 @@ import type {
   OperationState,
 } from "./event-store/index.js";
 import type { ResultAcceptanceProof } from "./worker-protocol.js";
+import { makeRuntime } from "./runtime.js";
+import { runtimeArtifactStore } from "./runtime-artifacts.js";
 export { InMemoryEventStore } from "./event-store/memory-storage.js";
 import {
   acknowledgeResultAcceptance,
@@ -16,6 +21,7 @@ import type {
   IdGenerator,
   Presentation,
   RuntimeClock,
+  RuntimeServices,
   Worker,
   WorkerRunHooks,
   WorkerRunOutcome,
@@ -25,8 +31,31 @@ import type {
   OperationPersistenceError,
   ResourceProofRejectedError,
   Result,
+  Runtime,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
+
+type TestRuntimeServices = Omit<RuntimeServices, "artifacts" | "artifactCredential"> &
+  Partial<Pick<RuntimeServices, "artifacts" | "artifactCredential">>;
+
+export function makeTestRuntime(services: TestRuntimeServices): Runtime {
+  if (services.artifacts !== undefined && services.artifactCredential !== undefined) {
+    return makeRuntime({ ...services, artifacts: services.artifacts, artifactCredential: services.artifactCredential });
+  }
+  if (services.artifacts !== undefined || services.artifactCredential !== undefined) {
+    throw new Error("Test Artifact Store and credential must be supplied together");
+  }
+  const artifactServices = runtimeArtifactStore(
+    join(process.cwd(), ".test-dist", "runtime-artifacts", randomUUID()),
+    services.store,
+  );
+  return makeRuntime({
+    ...services,
+    artifacts: artifactServices.artifacts,
+    artifactCredential: artifactServices.credential,
+    synchronizeArtifactClock: artifactServices.synchronizeClock,
+  });
+}
 
 export interface FakeResultMessage {
   readonly body: string;

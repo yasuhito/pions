@@ -156,8 +156,9 @@ export interface RuntimeServices {
   readonly ids: IdGenerator;
   readonly presentation: Presentation;
   readonly store: EventStore;
-  readonly artifacts?: ArtifactStore;
-  readonly artifactCredential?: string;
+  readonly artifacts: ArtifactStore;
+  readonly artifactCredential: string;
+  readonly synchronizeArtifactClock?: (timestamp: string) => void;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
   readonly resourceProofController?: InternalResourceProofController;
   readonly configuration?: Readonly<{

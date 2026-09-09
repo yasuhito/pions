@@ -11,13 +11,13 @@ import {
   PrivateFileEventStore,
 } from "../src/internal/event-store/index.js";
 import type { EventStore } from "../src/internal/event-store/index.js";
-import { makeRuntime } from "../src/internal/runtime.js";
 import {
   FakeClock,
   FakeIdGenerator,
   FakePresentation,
   FakeWorkerAdapter,
   InMemoryEventStore,
+  makeTestRuntime,
 } from "../src/internal/testing.js";
 import { retentionPolicy, workProductRequirements } from "./worker-protocol-fixtures.js";
 
@@ -36,7 +36,7 @@ function fixture(options: {
 } = {}) {
   const clock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], clock);
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
     clock,
     ids: new FakeIdGenerator(["operation-1"]),
@@ -187,7 +187,7 @@ test("Operation lookup reconstructs a snapshot after the persistent store is reo
   const root = await mkdtemp(join(tmpdir(), "pions-operation-reader-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const firstClock = new FakeClock(timestamps);
-  const first = makeRuntime({
+  const first = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
     clock: firstClock,
     ids: new FakeIdGenerator(["operation-1"]),
@@ -201,7 +201,7 @@ test("Operation lookup reconstructs a snapshot after the persistent store is reo
   });
   await handle.result();
   const reopenedClock = new FakeClock(timestamps);
-  const reopened = makeRuntime({
+  const reopened = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock: reopenedClock,
     ids: new FakeIdGenerator([]),

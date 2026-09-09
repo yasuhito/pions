@@ -66,6 +66,7 @@ export class ProtocolViolation extends Error {
 const CapabilitySchema = Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64,}$/u));
 const ProcessInstanceIdSchema = Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/u));
 const DigestSchema = Schema.String.pipe(Schema.pattern(/^sha256:[0-9a-f]{64}$/u));
+const IdentifierSchema = Schema.String.pipe(Schema.pattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u));
 
 const CommonWorkerFrameFields = {
   protocolVersion: Schema.Number,
@@ -102,7 +103,7 @@ const ConfigurationFailedSchema = Schema.Struct({
 const ArtifactBeginSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("artifact_begin"),
-  acceptanceRequestId: Schema.NonEmptyString,
+  acceptanceRequestId: IdentifierSchema,
   slot: Schema.Literal("body", "work_product"),
   key: Schema.optional(Schema.String),
   index: Schema.optional(Schema.Number),
@@ -124,7 +125,7 @@ const ArtifactCommitSchema = Schema.Struct({
 const ResultManifestSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("result_manifest"),
-  acceptanceRequestId: Schema.NonEmptyString,
+  acceptanceRequestId: IdentifierSchema,
 });
 const UsageSchema = Schema.Struct({
   input: Schema.Number,
@@ -676,7 +677,10 @@ export class HostProtocolPeer extends FramedPeer {
         if (this.bodyArtifact !== undefined) throw violation("invalid_transition", "Result body was sent more than once");
         this.bodyArtifact = produced;
       } else {
-        this.workProducts.push({ ...produced, key: artifact.key! });
+        if (artifact.key === undefined) {
+          throw violation("invalid_frame", "Work product key is missing");
+        }
+        this.workProducts.push({ ...produced, key: artifact.key });
       }
       this.currentArtifact = undefined;
       return undefined;

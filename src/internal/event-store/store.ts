@@ -53,6 +53,8 @@ class StoreFailure extends Error {
   }
 }
 
+const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
+
 function failure(code: StoreErrorCode, message: string): StoreFailure {
   return new StoreFailure(code, message);
 }
@@ -262,8 +264,8 @@ export abstract class ValidatedEventStore implements EventStore {
         const loaded = await this.load(request.operationId, true);
         if (loaded === undefined) return terminalResultAcceptanceFailure("operation_not_found");
         if (
-          request.preparationId.length === 0 ||
-          request.acceptanceRequestId.length === 0 ||
+          !IDENTIFIER.test(request.preparationId) ||
+          !IDENTIFIER.test(request.acceptanceRequestId) ||
           request.manifest.value.requirementSetId !== request.requirements.requirementSetId ||
           request.manifest.value.requirementSetDigest !== request.requirements.digest
         ) {

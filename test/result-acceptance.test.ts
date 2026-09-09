@@ -7,6 +7,7 @@ import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
+import type { ArtifactStoreFaultPoint } from "../src/internal/artifact-store.js";
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
 import {
   resolveWorkProductRequirements,
@@ -60,6 +61,7 @@ async function fixture(
   context: TestContext,
   storeFactory: (clock: FakeClock) => InMemoryEventStore = (clock) => new InMemoryEventStore([], clock),
   requirements = workProductRequirements,
+  artifactFault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>,
 ) {
   const clock = new FakeClock(Array.from({ length: 30 }, (_, index) =>
     `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
@@ -78,7 +80,7 @@ async function fixture(
   await Effect.runPromise(store.advance("operation-1", { type: "worker_launched" }));
   await Effect.runPromise(store.advance("operation-1", { type: "automatic_operation_started" }));
   const root = await mkdtemp(join(tmpdir(), "pions-result-acceptance-"));
-  const artifactServices = runtimeArtifactStore(root, store);
+  const artifactServices = runtimeArtifactStore(root, store, undefined, artifactFault);
   context.after(async () => {
     await artifactServices.artifacts.close();
     await rm(root, { recursive: true, force: true });
@@ -153,6 +155,58 @@ test("Result acceptance publishes only after Artifact Store preparation", async 
   const outcome = await Effect.runPromise(acceptance.accept("operation-1", produced()));
 
   assert.equal(outcome.state, "accepted");
+});
+
+test("an interruption after body registration does not publish a Result", async (context) => {
+  const requirements = resolveWorkProductRequirements({
+    workProductRequirements: {
+      body: workProductRequirements.body,
+      workProducts: [{
+        key: "attachment",
+        formatId: "pions.opaque.v1",
+        normalizationId: "identity.v1",
+        minCount: 0,
+        maxCount: 1,
+        maxByteCount: 128,
+      }],
+      maxTotalByteCount: workProductRequirements.maxTotalByteCount,
+    },
+  });
+  let interrupted = false;
+  const { acceptance, store } = await fixture(context, undefined, requirements, (point) => {
+    if (!interrupted && point === "success_response") {
+      interrupted = true;
+      throw new Error("simulated interruption");
+    }
+  });
+  const attachment = Buffer.from("attachment");
+  await Effect.runPromise(acceptance.accept("operation-1", {
+    ...produced(),
+    workProducts: [{
+      key: "attachment",
+      formatId: "pions.opaque.v1",
+      normalizationId: "identity.v1",
+      expectedByteCount: attachment.byteLength,
+      expectedDigest: digest(attachment),
+      bytes: attachment,
+    }],
+  })).catch(() => undefined);
+
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.result, undefined);
+});
+
+test("an interruption before Artifact Store preparation does not publish a Result", async (context) => {
+  let interrupted = false;
+  const { acceptance, store } = await fixture(context, undefined, workProductRequirements, (point) => {
+    if (!interrupted && point === "before_result_acceptance_first_pin_persisted") {
+      interrupted = true;
+      throw new Error("simulated interruption");
+    }
+  });
+
+  await Effect.runPromise(acceptance.accept("operation-1", produced())).catch(() => undefined);
+
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.result, undefined);
 });
 
 test("a terminal Event Store publication failure aborts Artifact Store preparation", async (context) => {

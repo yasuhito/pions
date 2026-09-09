@@ -3,7 +3,11 @@ import { join } from "node:path";
 
 import { Effect } from "effect";
 
-import { openArtifactStore } from "./artifact-store.js";
+import {
+  openArtifactStore,
+  openArtifactStoreWithFaultInjection,
+  type ArtifactStoreFaultPoint,
+} from "./artifact-store.js";
 import { eventStoreResultAcceptanceSources } from "./event-store-result-acceptance-sources.js";
 import type { EventStore } from "./event-store/index.js";
 import type { ArtifactAuthenticator, ArtifactPrincipal, ArtifactStore } from "../public.js";
@@ -56,6 +60,7 @@ export function runtimeArtifactStore(
   stateDirectory: string,
   store: EventStore,
   now?: () => Date,
+  fault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>,
 ): {
   readonly artifacts: ArtifactStore;
   readonly credential: string;
@@ -75,7 +80,7 @@ export function runtimeArtifactStore(
   };
   const sources = eventStoreResultAcceptanceSources(store);
   let synchronizedNow = new Date();
-  const opened = openArtifactStore({
+  const options = {
     rootDirectory: join(stateDirectory, "artifacts"),
     policy,
     authenticator,
@@ -84,7 +89,10 @@ export function runtimeArtifactStore(
     resultAcceptanceEventEvidenceVerifier: sources.eventEvidence,
     resultAcceptanceEventEvidenceSource: sources.eventEvidenceSource,
     now: now ?? (() => synchronizedNow),
-  });
+  };
+  const opened = fault === undefined
+    ? openArtifactStore(options)
+    : openArtifactStoreWithFaultInjection(options, fault);
   return {
     credential,
     synchronizeClock: (timestamp) => { synchronizedNow = new Date(timestamp); },

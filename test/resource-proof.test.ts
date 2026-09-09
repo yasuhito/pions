@@ -7,9 +7,15 @@ import { test } from "node:test";
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
 import { EventStoreResourceEvidenceRepository } from "../src/internal/event-store-resource-evidence.js";
 import { makeResourceProofController } from "../src/internal/resource-controller.js";
-import { makeRuntime } from "../src/internal/runtime.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
-import { FakeClock, FakeIdGenerator, FakePresentation, FakeWorkerAdapter, InMemoryEventStore } from "../src/internal/testing.js";
+import {
+  FakeClock,
+  FakeIdGenerator,
+  FakePresentation,
+  FakeWorkerAdapter,
+  InMemoryEventStore,
+  makeTestRuntime,
+} from "../src/internal/testing.js";
 import {
   normalizePermissionManifest,
   parseProofDocument,
@@ -381,7 +387,7 @@ const unavailableRequiredRuntime = async () => {
   const timestamps = Array(20).fill(0).map((_, index) => new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString());
   const clock = new FakeClock(timestamps);
   const presentation = new FakePresentation();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock,
     ids: new FakeIdGenerator([request.operationId]),
@@ -421,7 +427,7 @@ test("a required Runtime profile revalidates the acquisition before execution", 
   const { adapter, controller, request } = await controllerFixture();
   const timestamps = Array(30).fill(0).map((_, index) => new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString());
   const clock = new FakeClock(timestamps);
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock,
     ids: new FakeIdGenerator([request.operationId]),
@@ -458,7 +464,7 @@ test("resource evidence is reconstructed from a reopened Operation event store",
     registrations: [registration],
     repository: new EventStoreResourceEvidenceRepository(store),
   });
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock,
     ids: new FakeIdGenerator([request.operationId]),
@@ -498,7 +504,7 @@ test("Runtime Operation snapshots expose persisted resource evidence", async () 
     registrations: [registration],
     repository: new EventStoreResourceEvidenceRepository(store),
   });
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock,
     ids: new FakeIdGenerator([request.operationId]),

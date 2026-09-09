@@ -19,6 +19,8 @@ import type {
   WorkerProducedResult,
 } from "../public.js";
 
+const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
+
 export type ResultAcceptanceOutcome =
   | { readonly state: "accepted"; readonly proof: Readonly<ResultAcceptanceProof> }
   | { readonly state: "continuable"; readonly reason: "write_failed" | ArtifactFailureReason }
@@ -208,17 +210,21 @@ async function acceptPersistedResult(
 ): Promise<ResultAcceptanceOutcome> {
   const accepted = acceptance;
   const materializedBody = await materializeArtifact(produced.body);
-  const materializedWorkProducts = await Promise.all(produced.workProducts.map(materializeArtifact));
-  if (materializedBody === undefined || materializedWorkProducts.some((artifact) => artifact === undefined)) {
+  if (materializedBody === undefined) {
     return { state: "failed", terminal: true, reason: "input_integrity_mismatch" };
+  }
+  const materializedWorkProducts: Array<WorkerProducedResult["workProducts"][number]> = [];
+  for (const workProduct of produced.workProducts) {
+    const artifact = await materializeArtifact(workProduct);
+    if (artifact === undefined) {
+      return { state: "failed", terminal: true, reason: "input_integrity_mismatch" };
+    }
+    materializedWorkProducts.push({ ...artifact, key: workProduct.key });
   }
   const materialized: WorkerProducedResult = {
     acceptanceRequestId: produced.acceptanceRequestId,
     body: materializedBody,
-    workProducts: produced.workProducts.map((artifact, index) => ({
-      ...materializedWorkProducts[index]!,
-      key: artifact.key,
-    })),
+    workProducts: materializedWorkProducts,
   };
   const acceptedArtifacts: Array<Readonly<ArtifactMetadata>> = [];
   for (const artifactId of accepted.artifactIds) {
@@ -437,6 +443,9 @@ export function makeResultAcceptance(
         };
       }
       const snapshot = stored.right;
+      if (!IDENTIFIER.test(produced.acceptanceRequestId)) {
+        return { state: "failed", terminal: true, reason: "request_mismatch" };
+      }
       const declaredByteCount = produced.body.expectedByteCount +
         produced.workProducts.reduce((total, artifact) => total + artifact.expectedByteCount, 0);
       if (

@@ -9,12 +9,12 @@ import {
   type CommandExecutor,
   type CommandInvocation,
 } from "../src/internal/herdr-presentation.js";
-import { makeRuntime } from "../src/internal/runtime.js";
 import {
   FakeWorkerAdapter,
   FakeClock,
   FakeIdGenerator,
   InMemoryEventStore,
+  makeTestRuntime,
 } from "../src/internal/testing.js";
 import { HerdrPreconditionError } from "../src/index.js";
 import { effectiveConfig, requestedConfig, retentionPolicy, workProductRequirements } from "./worker-protocol-fixtures.js";
@@ -260,7 +260,7 @@ test("successful cleanup without durable ownership does not target a pane", asyn
 });
 
 test("Runtime exposes a typed Herdr precondition violation", async () => {
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock([]),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -278,7 +278,7 @@ test("Runtime rejects missing Herdr before creating any resource", async () => {
   const executor = new FakeCommandExecutor([]);
   const ids = new FakeIdGenerator(["operation-1"]);
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock([]),
     ids,
@@ -298,7 +298,7 @@ test("failed ownership persistence rolls back exactly the created pane", async (
     { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
     { stdout: JSON.stringify({ result: {} }) },
   ]);
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock(["2026-09-06T10:00:00.000Z"]),
     ids: new FakeIdGenerator(["operation-1"]),
@@ -336,7 +336,7 @@ test("a Herdr projection failure cannot create Operation completion", async () =
     { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
   ]);
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({
       messages: { body: "unused" },
       failure: "worker_start_failed",
@@ -364,7 +364,7 @@ test("Runtime persists ownership returned by Herdr", async () => {
     { stdout: JSON.stringify({ result: {} }) },
   ]);
   const store = new InMemoryEventStore();
-  const runtime = makeRuntime({
+  const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
     ids: new FakeIdGenerator(["operation-1"]),
