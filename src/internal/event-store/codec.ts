@@ -430,6 +430,34 @@ const OperationEventSchema = Schema.Union(
   }),
   Schema.Struct({
     ...EventMetadataFields,
+    type: Schema.Literal("start_delivery_authority_acquired"),
+    instruction: StartInstructionReference,
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_delivery_authority_revoked"),
+    successorDispatcherId: Schema.NonEmptyString,
+    deliveryGeneration: Schema.Number,
+    writerOwnership: Schema.Struct({
+      pid: Schema.Number,
+      processStartToken: Schema.NonEmptyString,
+    }),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_delivery_generation_confirmed"),
+    dispatcherId: Schema.NonEmptyString,
+    deliveryGeneration: Schema.Number,
+    acceptanceState: Schema.Literal("not_accepted", "accepted", "unknown"),
+    acceptedInstruction: Schema.optional(StartInstructionReference),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_delivery_entered"),
+    instruction: StartInstructionReference,
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
     type: Schema.Literal("start_instruction_dispatched"),
     instruction: StartInstructionReference,
   }),
@@ -437,7 +465,16 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("start_instruction_accepted"),
     instruction: StartInstructionReference,
-    proof: Schema.Literal("authenticated-worker-acknowledgement"),
+    proof: Schema.Literal("worker-durable-acceptance"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("start_instruction_acknowledged"),
+    instruction: StartInstructionReference,
+    proof: Schema.Literal(
+      "authenticated-worker-acknowledgement",
+      "authenticated-generation-acknowledgement",
+    ),
   }),
   Schema.Struct({
     ...EventMetadataFields,
@@ -467,8 +504,6 @@ const OperationEventSchema = Schema.Union(
   }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_starting") }),
   Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("worker_launched") }),
-  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("automatic_operation_started") }),
-  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("authorized_operation_started") }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("worker_identified"),

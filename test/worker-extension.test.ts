@@ -44,11 +44,11 @@ const assistant = {
   timestamp: 1,
 };
 
-async function extensionResult(repeatBegin = false) {
+async function extensionResult(repeatBegin = false, reconnectAfterAcceptance = false) {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-extension-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v9.json");
+  const configPath = join(root, "worker.v13.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",
@@ -71,6 +71,7 @@ async function extensionResult(repeatBegin = false) {
   const prompts: Array<string> = [];
   let shutdownCount = 0;
   let shutdownCountBeforeAcknowledgement = -1;
+  let beginAcknowledgementCount = 0;
   let editorFactory: ((...arguments_: Array<never>) => { handleInput?(data: string): void }) | undefined;
   const api = {
     registerFlag: () => undefined,
@@ -98,8 +99,10 @@ async function extensionResult(repeatBegin = false) {
     shutdown: () => { shutdownCount += 1; },
   } as unknown as ExtensionContext;
 
-  const peer = new HostProtocolPeer({ operationId: config.operationId, capability });
+  let peer = new HostProtocolPeer({ operationId: config.operationId, capability });
   let accepted!: Socket;
+  let reconnecting = false;
+  let connectionInterrupted = false;
   let resolveStarted!: () => void;
   let workerProcessInstanceId = "";
   const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
@@ -112,6 +115,30 @@ async function extensionResult(repeatBegin = false) {
         if (event.type === "started") {
           workerProcessInstanceId = event.processInstanceId;
           resolveStarted();
+          if (reconnecting) {
+            accepted.write(peer.updateDeliveryGeneration(2, "dispatcher-2"));
+          }
+        }
+        if (event.type === "start_instruction_accepted") {
+          if (reconnectAfterAcceptance && !connectionInterrupted) {
+            connectionInterrupted = true;
+            reconnecting = true;
+            const instruction = event.instruction;
+            accepted.destroy();
+            server.close(() => {
+              peer = new HostProtocolPeer({ operationId: config.operationId, capability });
+              peer.restoreStartDelivery(instruction);
+              server.listen(socketPath);
+            });
+          } else {
+            accepted.write(peer.acknowledgeStartInstructionAcceptance(event.instruction));
+          }
+        }
+        if (event.type === "delivery_generation_updated") {
+          peer.completeDispatcherHandoff("dispatcher-2");
+        }
+        if (event.type === "start_instruction_acknowledged") {
+          beginAcknowledgementCount += 1;
         }
         if (event.type === "result_received") {
           shutdownCountBeforeAcknowledgement = shutdownCount;
@@ -145,7 +172,13 @@ async function extensionResult(repeatBegin = false) {
     handlers.agent_settled[0]?.({}, context);
     const delivery = await result;
     while (shutdownCount === 0) await new Promise<void>((resolve) => setImmediate(resolve));
-    return { delivery, promptCount: prompts.length, shutdownCountBeforeAcknowledgement, shutdownCount };
+    return {
+      beginAcknowledgementCount,
+      delivery,
+      promptCount: prompts.length,
+      shutdownCountBeforeAcknowledgement,
+      shutdownCount,
+    };
   } finally {
     accepted?.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -166,6 +199,14 @@ test("Pi Worker extension injects a repeated begin prompt only once", async () =
   assert.equal((await extensionResult(true)).promptCount, 1);
 });
 
+test("Pi Worker extension reconnects without reinjecting an accepted prompt", async () => {
+  assert.equal((await extensionResult(false, true)).promptCount, 1);
+});
+
+test("Pi Worker extension acknowledges every repeated begin", async () => {
+  assert.equal((await extensionResult(true)).beginAcknowledgementCount, 2);
+});
+
 test("Pi Worker extension does not request shutdown before Result acknowledgement", async () => {
   assert.equal((await extensionResult()).shutdownCountBeforeAcknowledgement, 0);
 });
@@ -178,7 +219,7 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-cancellation-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v9.json");
+  const configPath = join(root, "worker.v13.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",

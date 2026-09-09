@@ -7,14 +7,16 @@ import type {
 } from "./event-store/index.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
 import type { InternalResourceProofController } from "./resource-controller.js";
-import type { ResultAcceptanceProof } from "./worker-protocol.js";
+import type {
+  ResultAcceptanceProof,
+  StartInstruction,
+} from "./worker-protocol.js";
 import type {
   ArtifactStore,
   ObservedWorkerConfig,
   OperationPersistenceError,
   StartAuthorizationAuthenticator,
   ResourceProofRejectedError,
-  StartInstructionReference,
   WorkerProducedResult,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -51,28 +53,46 @@ export interface WorkerCancellationEvidence {
   readonly proof: "worker-stop";
 }
 
-export interface WorkerStartInstruction extends StartInstructionReference {
-  readonly deadline: string;
+export interface DeliveryGenerationConfirmation {
+  readonly dispatcherId: string;
+  readonly deliveryGeneration: number;
+  readonly acceptanceState: "not_accepted" | "accepted" | "unknown";
+  readonly acceptedInstruction?: Readonly<StartInstruction>;
 }
 
 export interface WorkerRunHooks {
   workerLaunched(): Effect.Effect<void, OperationPersistenceError>;
   workerIdentified(
     identity: Readonly<WorkerProcessIdentity>,
-  ): Effect.Effect<Readonly<WorkerStartInstruction>, OperationPersistenceError | ResourceProofRejectedError>;
+  ): Effect.Effect<Readonly<StartInstruction>, OperationPersistenceError | ResourceProofRejectedError>;
+  startDeliveryAuthorityRevoked(
+    successorDispatcherId: string,
+    deliveryGeneration: number,
+  ): Effect.Effect<void, OperationPersistenceError>;
+  deliveryGenerationConfirmed(
+    confirmation: Readonly<DeliveryGenerationConfirmation>,
+  ): Effect.Effect<void, OperationPersistenceError>;
+  startDeliveryEntered(
+    instruction: Readonly<StartInstruction>,
+  ): Effect.Effect<void, OperationPersistenceError>;
+  startInstructionDispatched(
+    instruction: Readonly<StartInstruction>,
+  ): Effect.Effect<void, OperationPersistenceError>;
   startInstructionAccepted(
-    instruction: Readonly<WorkerStartInstruction>,
+    instruction: Readonly<StartInstruction>,
+  ): Effect.Effect<void, OperationPersistenceError>;
+  startInstructionAcknowledged(
+    instruction: Readonly<StartInstruction>,
   ): Effect.Effect<void, OperationPersistenceError>;
   acceptResult(
     result: Readonly<WorkerProducedResult>,
   ): Effect.Effect<ResultAcceptanceOutcome>;
 }
 
-export type WorkerRunOutcome =
+export type WorkerRunOutcome = (
   | {
       readonly state: "result_acknowledged";
       readonly evidence: Readonly<AgentRunEvidence>;
-      readonly successfulExitConfirmed?: true;
     }
   | { readonly state: "worker_start_failed" }
   | { readonly state: "worker_protocol_failed" }
@@ -87,7 +107,8 @@ export type WorkerRunOutcome =
   | {
       readonly state: "agent_failed";
       readonly evidence: Readonly<AgentRunEvidence>;
-    };
+    }
+) & { readonly successfulExitConfirmed?: true };
 
 export interface Worker {
   run(
@@ -138,6 +159,7 @@ export function acknowledgeResultAcceptance(
 export interface WorkerAdapter {
   readonly producesWorkProducts?: boolean;
   open(operation: Operation): Worker;
+  recover(operation: Operation): Worker;
 }
 
 export interface RuntimeClock {

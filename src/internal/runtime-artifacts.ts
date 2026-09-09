@@ -103,6 +103,7 @@ export function runtimeArtifactStore(
     credential,
     synchronizeClock: (timestamp) => { synchronizedNow = new Date(timestamp); },
     artifacts: {
+      writerOwnership: () => open().then((value) => value.writerOwnership()),
       startRegistration: (...args) => open().then((value) => value.startRegistration(...args)),
       transfer: (...args) => open().then((value) => value.transfer(...args)),
       registrationStatus: (...args) => open().then((value) => value.registrationStatus(...args)),

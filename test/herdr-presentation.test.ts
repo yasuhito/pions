@@ -85,6 +85,7 @@ function operation(paneId?: string): Operation {
     },
     startGate: "not_required",
     rejectedStartAuthorizationDecisions: [],
+    startDeliveryHandoffs: [],
     childOperationIds: [],
     settledChildOperationIds: [],
     descendantFailure: false,

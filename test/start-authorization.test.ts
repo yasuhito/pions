@@ -9,7 +9,12 @@ import { Effect } from "effect";
 
 import type { Operation } from "../src/internal/event-store/index.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
-import type { WorkerCancellationEvidence, WorkerRunHooks } from "../src/internal/services.js";
+import { makeSingleRunWorker } from "../src/internal/services.js";
+import type {
+  Worker,
+  WorkerCancellationEvidence,
+  WorkerRunHooks,
+} from "../src/internal/services.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
 import {
   FakeClock,
@@ -90,6 +95,40 @@ class PausedStartAcceptanceWorker extends FakeWorkerAdapter {
       startInstructionAccepted: (instruction) => Effect.promise(() => this.gate).pipe(
         Effect.andThen(hooks.startInstructionAccepted(instruction)),
       ),
+    });
+  }
+}
+
+class NotAcceptedRecoveryWorker extends FakeWorkerAdapter {
+  recoveredDeliveryCount = 0;
+  recoveryAttempted = false;
+
+  override recover(operation: Operation): Worker {
+    this.recoveryAttempted = true;
+    return makeSingleRunWorker({
+      run: (hooks) => Effect.gen(this, function* () {
+        const identity = operation.workerIdentity!;
+        const instruction = yield* hooks.workerIdentified({
+          processId: identity.processId,
+          processInstanceId: identity.processInstanceId,
+          processStartToken: identity.processStartToken,
+          piSessionId: identity.piSessionId,
+          observedConfig: operation.observedConfig!,
+        });
+        yield* hooks.startDeliveryAuthorityRevoked(
+          instruction.dispatcherId,
+          instruction.deliveryGeneration,
+        );
+        yield* hooks.deliveryGenerationConfirmed({
+          dispatcherId: instruction.dispatcherId,
+          deliveryGeneration: instruction.deliveryGeneration,
+          acceptanceState: "not_accepted",
+        });
+        yield* hooks.startDeliveryEntered(instruction);
+        this.recoveredDeliveryCount += 1;
+        return { state: "liveness-unproven" } as const;
+      }),
+      cancel: () => Effect.succeed(undefined),
     });
   }
 }
@@ -242,6 +281,14 @@ test("an Operation remains starting until the Worker acknowledges begin", async 
   worker.acknowledgeStart();
 });
 
+test("cancellation before Start delivery authority prevents begin delivery", async () => {
+  const { handle } = await fixture();
+
+  await handle.cancel({ scope: "subtree" });
+
+  assert.equal((await handle.read()).startDeliveryAuthority, undefined);
+});
+
 test("cancellation after begin dispatch stops the possibly started Worker", async () => {
   const worker = new PausedStartAcceptanceWorker();
   const { inbox, handle } = await fixture({ worker });
@@ -253,12 +300,36 @@ test("cancellation after begin dispatch stops the possibly started Worker", asyn
   worker.acknowledgeStart();
 });
 
-test("Worker begin acknowledgement is persisted as Start acceptance", async () => {
+test("Start delivery authority acquisition is persisted independently", async () => {
   const { inbox, handle } = await fixture();
   await authorize(inbox);
   await handle.result();
 
-  assert.equal((await handle.read()).startInstructionAcceptance?.proof, "authenticated-worker-acknowledgement");
+  assert.equal((await handle.read()).startDeliveryAuthority?.dispatcherId, "pions-runtime");
+});
+
+test("Start delivery entry is persisted independently", async () => {
+  const { inbox, handle } = await fixture();
+  await authorize(inbox);
+  await handle.result();
+
+  assert.equal((await handle.read()).startDeliveryEntry?.dispatcherId, "pions-runtime");
+});
+
+test("Worker durable Start acceptance is persisted independently", async () => {
+  const { inbox, handle } = await fixture();
+  await authorize(inbox);
+  await handle.result();
+
+  assert.equal((await handle.read()).startInstructionAcceptance?.proof, "worker-durable-acceptance");
+});
+
+test("Worker begin acknowledgement is persisted independently", async () => {
+  const { inbox, handle } = await fixture();
+  await authorize(inbox);
+  await handle.result();
+
+  assert.equal((await handle.read()).startInstructionAcknowledgement?.proof, "authenticated-worker-acknowledgement");
 });
 
 test("coordinator disconnection alone leaves the Start gate waiting", async () => {
@@ -351,10 +422,9 @@ test("a retained and verified Review subject can pass both Start checks", async 
   });
   await handle.waitForStartupReceipt();
   await authorize(await runtime.startAuthorizationInbox("credential"));
-  const delivery = (await handle.read()).startInstructionDelivery;
   await handle.result().catch(() => undefined);
 
-  assert.equal(delivery?.authorizationDecisionId, "decision-1");
+  assert.equal((await handle.read()).startInstructionDelivery?.authorizationDecisionId, "decision-1");
 });
 
 test("an unverifiable Review subject prevents authorization publication", async () => {
@@ -541,6 +611,50 @@ test("a deadline crossed during pre-begin checks keeps the Worker stopped", asyn
   await handle.result().catch(() => undefined);
 
   assert.equal((await handle.read()).failureReason, "start_authorization_timed_out");
+});
+
+test("expired required authorization prevents recovery redispatch", async () => {
+  const store = new InMemoryEventStore();
+  const interrupted = new PausedStartAcceptanceWorker();
+  const first = await fixture({ worker: interrupted, store });
+  await authorize(first.inbox);
+  while ((await first.handle.read()).startDeliveryEntry === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await first.runtime.close();
+  const recoveredWorker = new NotAcceptedRecoveryWorker();
+  const recovered = makeTestRuntime({
+    worker: recoveredWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, () => "2026-09-06T11:00:00.000Z")),
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+    startAuthorizationAuthenticator: {
+      authenticate: async () => ({
+        subjectId: "reviewer-1",
+        currentAuthorization: async () => "authorized",
+      }),
+    },
+    configuration: {
+      cwd: "/test/workspace",
+      profiles: {
+        review: profile({
+          policy: "required",
+          windowMs: 60_000,
+          authorizedSubjectIds: ["reviewer-1"],
+          receipt,
+        }),
+      },
+    },
+  });
+  while (!recoveredWorker.recoveryAttempted) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  interrupted.acknowledgeStart();
+  await recovered.close();
+
+  assert.equal(recoveredWorker.recoveredDeliveryCount, 0);
 });
 
 test("resending the same decision is idempotent", async () => {

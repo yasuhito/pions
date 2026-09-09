@@ -408,13 +408,37 @@ export interface StartInstructionReference {
   readonly deliveryGeneration: number;
 }
 
+export interface StartDeliveryAuthorityEvidence extends StartInstructionReference {
+  readonly acquiredAt: string;
+}
+
+export interface StartDeliveryEntryEvidence extends StartInstructionReference {
+  readonly enteredAt: string;
+}
+
 export interface StartInstructionDeliveryEvidence extends StartInstructionReference {
   readonly dispatchedAt: string;
 }
 
 export interface StartInstructionAcceptanceEvidence extends StartInstructionReference {
   readonly acceptedAt: string;
-  readonly proof: "authenticated-worker-acknowledgement";
+  readonly proof: "worker-durable-acceptance";
+}
+
+export interface StartInstructionAcknowledgementEvidence extends StartInstructionReference {
+  readonly acknowledgedAt: string;
+  readonly proof: "authenticated-worker-acknowledgement" | "authenticated-generation-acknowledgement";
+}
+
+export interface StartDeliveryHandoffEvidence {
+  readonly previousDispatcherId: string;
+  readonly previousDeliveryGeneration: number;
+  readonly successorDispatcherId: string;
+  readonly deliveryGeneration: number;
+  readonly authorityRevokedAt: string;
+  readonly writerOwnership: Readonly<ArtifactWriterOwnership>;
+  readonly workerGenerationConfirmedAt?: string;
+  readonly acceptanceState?: "not_accepted" | "accepted" | "unknown";
 }
 
 export interface ResultAcceptanceEvidence {
@@ -652,8 +676,12 @@ export interface OperationSnapshot {
   readonly state: OperationState;
   readonly failureReason?: OperationFailureReason;
   readonly startAuthorization: Readonly<StartAuthorizationSnapshot>;
+  readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
+  readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
   readonly startInstructionAcceptance?: Readonly<StartInstructionAcceptanceEvidence>;
+  readonly startInstructionAcknowledgement?: Readonly<StartInstructionAcknowledgementEvidence>;
+  readonly startDeliveryHandoffs: ReadonlyArray<Readonly<StartDeliveryHandoffEvidence>>;
   readonly resultAcceptance?: Readonly<ResultAcceptanceEvidence>;
   readonly stopConfirmation?: Readonly<StopConfirmationEvidence>;
   readonly cleanupDiagnostics: ReadonlyArray<Readonly<CleanupDiagnostic>>;
@@ -1209,7 +1237,13 @@ export interface OpenArtifactStoreOptions {
   readonly idGenerator?: () => string;
 }
 
+export interface ArtifactWriterOwnership {
+  readonly pid: number;
+  readonly processStartToken: string;
+}
+
 export interface ArtifactStore {
+  writerOwnership(): Promise<Readonly<ArtifactWriterOwnership>>;
   startRegistration(
     credential: string,
     request: Readonly<ArtifactRegistrationRequest>,

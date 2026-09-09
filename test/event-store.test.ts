@@ -8,7 +8,11 @@ import { Effect } from "effect";
 
 import type { EventStore } from "../src/internal/event-store/index.js";
 import { operationDirectoryKey, PrivateFileEventStore } from "../src/internal/event-store/index.js";
-import { FakeClock, InMemoryEventStore } from "../src/internal/testing.js";
+import {
+  FakeClock,
+  InMemoryEventStore,
+  advanceTestOperationToRunning,
+} from "../src/internal/testing.js";
 import {
   effectiveConfig,
   requestedConfig,
@@ -42,9 +46,7 @@ async function create(store: EventStore, operationId = "operation-1") {
 }
 async function running(store: EventStore, operationId = "operation-1") {
   await create(store, operationId);
-  await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
-  await Effect.runPromise(store.advance(operationId, { type: "worker_launched" }));
-  await Effect.runPromise(store.advance(operationId, { type: "automatic_operation_started" }));
+  await advanceTestOperationToRunning(store, operationId);
 }
 async function failure(effect: Effect.Effect<unknown, { readonly code: string }>) {
   return Effect.runPromise(Effect.flip(effect));

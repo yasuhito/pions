@@ -14,7 +14,11 @@ import type {
 import type { EventStore } from "../src/internal/event-store/index.js";
 import { operationDirectoryKey, PrivateFileEventStore } from "../src/internal/event-store/index.js";
 import type { OperationEvent } from "../src/internal/event-store/model.js";
-import { FakeClock, InMemoryEventStore } from "../src/internal/testing.js";
+import {
+  FakeClock,
+  InMemoryEventStore,
+  advanceTestOperationToRunning,
+} from "../src/internal/testing.js";
 import { effectiveConfig, requestedConfig, retentionPolicy, workProductRequirements } from "./worker-protocol-fixtures.js";
 
 const digest = (value: string) =>
@@ -90,9 +94,7 @@ async function makeRunning(store: EventStore): Promise<void> {
     lineage: { rootOperationId: "operation-1", depth: 0 },
     startAuthorization: { configuredPolicy: "disabled", policy: "disabled", windowMs: 0, authorizedSubjectIds: [] },
   }));
-  await Effect.runPromise(store.advance("operation-1", { type: "operation_starting" }));
-  await Effect.runPromise(store.advance("operation-1", { type: "worker_launched" }));
-  await Effect.runPromise(store.advance("operation-1", { type: "automatic_operation_started" }));
+  await advanceTestOperationToRunning(store, "operation-1");
 }
 
 async function runningStore(trace: Array<string> = []): Promise<InMemoryEventStore> {

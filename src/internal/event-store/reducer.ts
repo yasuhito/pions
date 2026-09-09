@@ -9,6 +9,10 @@ import type { StartInstructionReference, StartupReceipt } from "../../public.js"
 import type { Operation, OperationEvent } from "./model.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
 import {
+  automaticStartScopeDigest,
+  startInstructionReference,
+} from "../start-instruction.js";
+import {
   manifestReservationIsConsistent,
   preparationEvidenceMatchesReservation,
 } from "../result-acceptance-transaction.js";
@@ -88,12 +92,22 @@ function immutable(operation: Operation): Operation {
     Object.freeze(operation.startAuthorizationDecision);
   }
   deepFreeze(operation.rejectedStartAuthorizationDecisions);
+  if (operation.startDeliveryAuthority !== undefined) {
+    Object.freeze(operation.startDeliveryAuthority);
+  }
+  if (operation.startDeliveryEntry !== undefined) {
+    Object.freeze(operation.startDeliveryEntry);
+  }
   if (operation.startInstructionDelivery !== undefined) {
     Object.freeze(operation.startInstructionDelivery);
   }
   if (operation.startInstructionAcceptance !== undefined) {
     Object.freeze(operation.startInstructionAcceptance);
   }
+  if (operation.startInstructionAcknowledgement !== undefined) {
+    Object.freeze(operation.startInstructionAcknowledgement);
+  }
+  deepFreeze(operation.startDeliveryHandoffs);
   if (operation.resourceEvidenceRecord !== undefined) deepFreeze(operation.resourceEvidenceRecord);
   if (operation.agentRunEvidence !== undefined) {
     Object.freeze(operation.agentRunEvidence.usage);
@@ -195,16 +209,19 @@ function validStartInstructionReference(
 ): boolean {
   if (
     operation.workerIdentity === undefined ||
-    operation.startupReceipt === undefined ||
     instruction.dispatcherId.length === 0 ||
+    !Number.isSafeInteger(instruction.deliveryGeneration) ||
     instruction.deliveryGeneration < 1 ||
-    instruction.workerProcessInstanceId !== operation.workerIdentity.processInstanceId ||
-    instruction.receiptDigest !== operation.startupReceipt.digest
+    instruction.workerProcessInstanceId !== operation.workerIdentity.processInstanceId
   ) return false;
-  return operation.startGate === "not_required"
-    ? instruction.authorizationDecisionId === undefined
-    : operation.startGate === "authorized" &&
-      instruction.authorizationDecisionId === operation.startAuthorizationDecision?.decisionId;
+  if (operation.startGate === "not_required") {
+    return instruction.authorizationDecisionId === undefined &&
+      instruction.receiptDigest === automaticStartScopeDigest(operation);
+  }
+  return operation.startGate === "authorized" &&
+    operation.startupReceipt !== undefined &&
+    instruction.receiptDigest === operation.startupReceipt.digest &&
+    instruction.authorizationDecisionId === operation.startAuthorizationDecision?.decisionId;
 }
 
 function hasUnsettledChildren(operation: Operation): boolean {
@@ -307,6 +324,7 @@ export function reduceOperation(
       resultRetentionPolicy: structuredClone(event.resultRetentionPolicy),
       startGate: "not_required",
       rejectedStartAuthorizationDecisions: [],
+      startDeliveryHandoffs: [],
       childOperationIds: [],
       settledChildOperationIds: [],
       descendantFailure: false,
@@ -496,37 +514,134 @@ export function reduceOperation(
         stateSeq: event.seq,
       });
 
-    case "start_instruction_dispatched":
+    case "start_delivery_authority_acquired": {
+      const handoff = current.startDeliveryHandoffs.at(-1);
+      const replacesRevokedAuthority = handoff !== undefined &&
+        handoff.workerGenerationConfirmedAt !== undefined &&
+        handoff.acceptanceState === "not_accepted" &&
+        event.instruction.dispatcherId === handoff.successorDispatcherId &&
+        event.instruction.deliveryGeneration === handoff.deliveryGeneration;
       if (
         current.state !== "starting" ||
-        current.startupReceipt === undefined ||
+        !current.workerLaunched ||
         current.startGate !== "not_required" && current.startGate !== "authorized" ||
-        current.startInstructionDelivery !== undefined ||
-        Date.parse(event.timestamp) >= Date.parse(current.startAuthorizationTiming.deadline) ||
+        current.startDeliveryAuthority !== undefined && !replacesRevokedAuthority ||
+        current.startAuthorizationTiming.policy === "required" &&
+          Date.parse(event.timestamp) >= Date.parse(current.startAuthorizationTiming.deadline) ||
         !validStartInstructionReference(current, event.instruction)
       ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({
         ...current,
-        startInstructionDelivery: {
-          ...event.instruction,
-          dispatchedAt: event.timestamp,
-        },
+        startDeliveryAuthority: { ...event.instruction, acquiredAt: event.timestamp },
         stateSeq: event.seq,
       });
+    }
 
-    case "start_instruction_accepted":
+    case "start_delivery_authority_revoked": {
+      const authority = current.startDeliveryAuthority;
+      const pendingHandoff = current.startDeliveryHandoffs.at(-1);
       if (
-        current.state !== "starting" ||
-        current.startInstructionDelivery === undefined ||
-        current.startInstructionAcceptance !== undefined ||
-        event.proof !== "authenticated-worker-acknowledgement" ||
-        !validStartInstructionReference(current, event.instruction) ||
-        !isDeepStrictEqual(
-          event.instruction,
-          (({ dispatchedAt: _dispatchedAt, ...instruction }) => instruction)(current.startInstructionDelivery),
-        )
+        current.state !== "starting" && current.state !== "running" ||
+        authority === undefined ||
+        event.successorDispatcherId === authority.dispatcherId ||
+        event.deliveryGeneration !== authority.deliveryGeneration + 1 ||
+        !Number.isSafeInteger(event.writerOwnership.pid) ||
+        event.writerOwnership.pid < 1 ||
+        event.writerOwnership.processStartToken.length === 0 ||
+        pendingHandoff?.workerGenerationConfirmedAt === undefined && pendingHandoff !== undefined
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        startDeliveryHandoffs: [
+          ...current.startDeliveryHandoffs,
+          {
+            previousDispatcherId: authority.dispatcherId,
+            previousDeliveryGeneration: authority.deliveryGeneration,
+            successorDispatcherId: event.successorDispatcherId,
+            deliveryGeneration: event.deliveryGeneration,
+            authorityRevokedAt: event.timestamp,
+            writerOwnership: { ...event.writerOwnership },
+          },
+        ],
+        stateSeq: event.seq,
+      });
+    }
+
+    case "start_delivery_generation_confirmed": {
+      const handoff = current.startDeliveryHandoffs.at(-1);
+      if (
+        handoff === undefined ||
+        handoff.workerGenerationConfirmedAt !== undefined ||
+        event.dispatcherId !== handoff.successorDispatcherId ||
+        event.deliveryGeneration !== handoff.deliveryGeneration ||
+        (event.acceptanceState === "accepted") !== (event.acceptedInstruction !== undefined) ||
+        event.acceptedInstruction !== undefined &&
+          current.startInstructionDelivery !== undefined &&
+          !isDeepStrictEqual(
+            event.acceptedInstruction,
+            startInstructionReference(current.startInstructionDelivery),
+          )
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      const confirmed = {
+        ...handoff,
+        workerGenerationConfirmedAt: event.timestamp,
+        acceptanceState: event.acceptanceState,
+      };
+      return immutable({
+        ...current,
+        startDeliveryHandoffs: [...current.startDeliveryHandoffs.slice(0, -1), confirmed],
+        stateSeq: event.seq,
+      });
+    }
+
+    case "start_delivery_entered": {
+      const authority = current.startDeliveryAuthority;
+      if (
+        current.state !== "starting" || authority === undefined ||
+        current.startDeliveryEntry !== undefined &&
+          current.startDeliveryEntry.deliveryGeneration === event.instruction.deliveryGeneration ||
+        !isDeepStrictEqual(event.instruction, startInstructionReference(authority))
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        startDeliveryEntry: { ...event.instruction, enteredAt: event.timestamp },
+        stateSeq: event.seq,
+      });
+    }
+
+    case "start_instruction_dispatched": {
+      const entry = current.startDeliveryEntry;
+      if (
+        current.state !== "starting" || entry === undefined ||
+        current.startInstructionDelivery !== undefined &&
+          current.startInstructionDelivery.deliveryGeneration === event.instruction.deliveryGeneration ||
+        !isDeepStrictEqual(event.instruction, startInstructionReference(entry))
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        startInstructionDelivery: { ...event.instruction, dispatchedAt: event.timestamp },
+        stateSeq: event.seq,
+      });
+    }
+
+    case "start_instruction_accepted": {
+      const deliveryEvidence = current.startInstructionDelivery ?? current.startDeliveryEntry;
+      if (
+        current.state !== "starting" || deliveryEvidence === undefined ||
+        current.startInstructionAcceptance !== undefined &&
+          current.startInstructionAcceptance.deliveryGeneration === event.instruction.deliveryGeneration ||
+        event.proof !== "worker-durable-acceptance" ||
+        !isDeepStrictEqual(event.instruction, startInstructionReference(deliveryEvidence))
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -537,9 +652,33 @@ export function reduceOperation(
           acceptedAt: event.timestamp,
           proof: event.proof,
         },
+        stateSeq: event.seq,
+      });
+    }
+
+    case "start_instruction_acknowledged": {
+      const acceptance = current.startInstructionAcceptance;
+      if (
+        current.state !== "starting" || acceptance === undefined ||
+        current.startInstructionAcknowledgement !== undefined &&
+          current.startInstructionAcknowledgement.deliveryGeneration === event.instruction.deliveryGeneration ||
+        event.proof !== "authenticated-worker-acknowledgement" &&
+          event.proof !== "authenticated-generation-acknowledgement" ||
+        !isDeepStrictEqual(event.instruction, startInstructionReference(acceptance))
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        startInstructionAcknowledgement: {
+          ...event.instruction,
+          acknowledgedAt: event.timestamp,
+          proof: event.proof,
+        },
         state: "running",
         stateSeq: event.seq,
       });
+    }
 
     case "resource_evidence_recorded":
       if (
@@ -558,7 +697,6 @@ export function reduceOperation(
     case "worker_stop_confirmed":
       if (
         !current.workerLaunched ||
-        (current.result === undefined && current.startGate !== "rejected" && current.startGate !== "expired" && current.startGate !== "invalidated") ||
         current.state !== "starting" && current.state !== "running" && current.state !== "blocked" ||
         current.workerStopConfirmedAt !== undefined ||
         event.proof !== "worker-stop"
@@ -583,24 +721,10 @@ export function reduceOperation(
       }
       return immutable({ ...current, workerLaunched: true, stateSeq: event.seq });
 
-    case "automatic_operation_started":
-      if (current.state !== "starting" || !current.workerLaunched || current.startGate !== "not_required") {
-        throw new TransitionError("illegal_transition");
-      }
-      return immutable({ ...current, state: "running", stateSeq: event.seq });
-
-    case "authorized_operation_started":
-      if (
-        current.state !== "starting" || !current.workerLaunched ||
-        current.startGate !== "authorized" || current.startInstructionDelivery === undefined
-      ) {
-        throw new TransitionError("illegal_transition");
-      }
-      return immutable({ ...current, state: "running", stateSeq: event.seq });
-
     case "worker_identified":
       if (
         current.state !== "starting" && current.state !== "running" ||
+        !current.workerLaunched ||
         current.workerIdentity !== undefined ||
         current.presentation === undefined ||
         !Number.isSafeInteger(event.workerIdentity.processId) ||
@@ -789,7 +913,7 @@ export function reduceOperation(
       }
       return immutable({
         ...current,
-        workerStopConfirmedAt: event.timestamp,
+        workerStopConfirmedAt: current.workerStopConfirmedAt ?? event.timestamp,
         stateSeq: event.seq,
       });
 

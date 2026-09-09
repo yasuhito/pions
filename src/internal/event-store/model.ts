@@ -1,5 +1,6 @@
 import type {
   AcceptedResult,
+  ArtifactWriterOwnership,
   EffectiveWorkerConfig,
   ObservedWorkerConfig,
   OperationFailureReason,
@@ -12,10 +13,14 @@ import type {
   StartAuthorizationDecisionAttemptRecord,
   StartAuthorizationDecisionRecord,
   StartAuthorizationTiming,
+  StartDeliveryHandoffEvidence,
   StartGateState,
   StartInstructionAcceptanceEvidence,
+  StartInstructionAcknowledgementEvidence,
   StartInstructionDeliveryEvidence,
   StartInstructionReference,
+  StartDeliveryAuthorityEvidence,
+  StartDeliveryEntryEvidence,
   StartupReceipt,
   StartupReceiptPolicy,
   TaskSpec,
@@ -57,8 +62,12 @@ export interface Operation {
   readonly startupReceipt?: Readonly<StartupReceipt>;
   readonly startAuthorizationDecision?: Readonly<StartAuthorizationDecisionRecord>;
   readonly rejectedStartAuthorizationDecisions: ReadonlyArray<Readonly<StartAuthorizationDecisionAttemptRecord>>;
+  readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
+  readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
   readonly startInstructionAcceptance?: Readonly<StartInstructionAcceptanceEvidence>;
+  readonly startInstructionAcknowledgement?: Readonly<StartInstructionAcknowledgementEvidence>;
+  readonly startDeliveryHandoffs: ReadonlyArray<Readonly<StartDeliveryHandoffEvidence>>;
   readonly resultAcceptedAt?: string;
   readonly workerStopConfirmedAt?: string;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
@@ -79,7 +88,7 @@ export interface Operation {
   readonly terminalReason?: OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 15 as const;
+export const EVENT_SCHEMA_VERSION = 17 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -125,13 +134,39 @@ export type OperationEvent = EventMetadata &
         readonly attempt: Readonly<StartAuthorizationDecisionAttemptRecord>;
       }
     | {
+        readonly type: "start_delivery_authority_acquired";
+        readonly instruction: Readonly<StartInstructionReference>;
+      }
+    | {
+        readonly type: "start_delivery_authority_revoked";
+        readonly successorDispatcherId: string;
+        readonly deliveryGeneration: number;
+        readonly writerOwnership: Readonly<ArtifactWriterOwnership>;
+      }
+    | {
+        readonly type: "start_delivery_generation_confirmed";
+        readonly dispatcherId: string;
+        readonly deliveryGeneration: number;
+        readonly acceptanceState: "not_accepted" | "accepted" | "unknown";
+        readonly acceptedInstruction?: Readonly<StartInstructionReference>;
+      }
+    | {
+        readonly type: "start_delivery_entered";
+        readonly instruction: Readonly<StartInstructionReference>;
+      }
+    | {
         readonly type: "start_instruction_dispatched";
         readonly instruction: Readonly<StartInstructionReference>;
       }
     | {
         readonly type: "start_instruction_accepted";
         readonly instruction: Readonly<StartInstructionReference>;
-        readonly proof: "authenticated-worker-acknowledgement";
+        readonly proof: "worker-durable-acceptance";
+      }
+    | {
+        readonly type: "start_instruction_acknowledged";
+        readonly instruction: Readonly<StartInstructionReference>;
+        readonly proof: "authenticated-worker-acknowledgement" | "authenticated-generation-acknowledgement";
       }
     | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
     | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }

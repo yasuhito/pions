@@ -497,6 +497,21 @@ class FileArtifactStore implements ArtifactStore {
     }
   }
 
+  async writerOwnership(): Promise<Readonly<{ readonly pid: number; readonly processStartToken: string }>> {
+    const owner = await readJson(join(this.lockDirectory, "owner.json")) as {
+      readonly pid?: unknown;
+      readonly startToken?: unknown;
+    };
+    if (owner.pid !== process.pid || typeof owner.startToken !== "string") {
+      throw new ArtifactStoreOpenError("writer_locked", "Artifact writer ownership changed");
+    }
+    const current = await processStartToken(process.pid);
+    if (current !== owner.startToken) {
+      throw new ArtifactStoreOpenError("writer_locked", "Artifact writer ownership changed");
+    }
+    return { pid: owner.pid, processStartToken: owner.startToken };
+  }
+
   private now(): Date {
     return (this.options.now ?? (() => new Date()))();
   }
@@ -2447,10 +2462,14 @@ async function acquireLock(rootDirectory: string): Promise<string> {
   const parent = dirname(lockDirectory);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const claim = `${lockDirectory}.claim-${process.pid}-${randomUUID()}`;
+  const startToken = await processStartToken(process.pid);
+  if (startToken === undefined) {
+    throw new ArtifactStoreOpenError("writer_locked", "Artifact writer ownership is not inspectable");
+  }
   await mkdir(claim, { mode: 0o700 });
   await writeFile(join(claim, "owner.json"), `${JSON.stringify({
     pid: process.pid,
-    startToken: await processStartToken(process.pid),
+    startToken,
   })}\n`, { mode: 0o600 });
   await syncDirectory(claim);
   try {

@@ -1,4 +1,5 @@
 import type {
+  ArtifactWriterOwnership,
   ObservedWorkerConfig,
   OperationFailureReason,
   StartAuthorizationDecisionAttemptRecord,
@@ -58,19 +59,42 @@ export type OperationIntent =
       readonly attempt: Readonly<Omit<StartAuthorizationDecisionAttemptRecord, "attemptedAt">>;
     }
   | {
+      readonly type: "start_delivery_authority_acquired";
+      readonly instruction: Readonly<StartInstructionReference>;
+    }
+  | {
+      readonly type: "start_delivery_authority_revoked";
+      readonly successorDispatcherId: string;
+      readonly deliveryGeneration: number;
+      readonly writerOwnership: Readonly<ArtifactWriterOwnership>;
+    }
+  | {
+      readonly type: "start_delivery_generation_confirmed";
+      readonly dispatcherId: string;
+      readonly deliveryGeneration: number;
+      readonly acceptanceState: "not_accepted" | "accepted" | "unknown";
+      readonly acceptedInstruction?: Readonly<StartInstructionReference>;
+    }
+  | {
+      readonly type: "start_delivery_entered";
+      readonly instruction: Readonly<StartInstructionReference>;
+    }
+  | {
       readonly type: "start_instruction_dispatched";
       readonly instruction: Readonly<StartInstructionReference>;
     }
   | {
       readonly type: "start_instruction_accepted";
       readonly instruction: Readonly<StartInstructionReference>;
-      readonly proof: "authenticated-worker-acknowledgement";
+      readonly proof: "worker-durable-acceptance";
+    }
+  | {
+      readonly type: "start_instruction_acknowledged";
+      readonly instruction: Readonly<StartInstructionReference>;
+      readonly proof: "authenticated-worker-acknowledgement" | "authenticated-generation-acknowledgement";
     }
   | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
   | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
-  // Existing trusted profiles have no external gate or Startup receipt.
-  | { readonly type: "automatic_operation_started" }
-  | { readonly type: "authorized_operation_started" }
   | {
       readonly type: "worker_identified";
       readonly workerIdentity: Readonly<WorkerIdentity>;

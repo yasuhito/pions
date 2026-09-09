@@ -17,7 +17,7 @@ import {
   ObservedWorkerConfigSchema,
 } from "./worker-configuration.js";
 
-export const WORKER_PROTOCOL_VERSION = 9 as const;
+export const WORKER_PROTOCOL_VERSION = 13 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -173,11 +173,21 @@ const StartInstructionSchema = Schema.Struct({
   receiptDigest: DigestSchema,
   authorizationDecisionId: Schema.optional(IdentifierSchema),
   deliveryGeneration: Schema.Number,
-  deadline: Schema.String,
+  deadline: Schema.optional(Schema.String),
 });
 const BeginRequestSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("begin"),
+  instruction: StartInstructionSchema,
+});
+const BeginAcceptanceSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("begin_accepted"),
+  instruction: StartInstructionSchema,
+});
+const BeginAcceptanceObservedSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("begin_acceptance_observed"),
   instruction: StartInstructionSchema,
 });
 const BeginAcknowledgementSchema = Schema.Struct({
@@ -185,9 +195,23 @@ const BeginAcknowledgementSchema = Schema.Struct({
   type: Schema.Literal("begin_ack"),
   instruction: StartInstructionSchema,
 });
+const BeginRejectionReasonSchema = Schema.Literal(
+  "conflict",
+  "worker_mismatch",
+  "expired",
+  "stale_generation",
+  "acceptance_unknown",
+);
+const BeginRejectionSchema = Schema.Struct({
+  ...CommonWorkerFrameFields,
+  type: Schema.Literal("begin_rejected"),
+  instruction: StartInstructionSchema,
+  reason: BeginRejectionReasonSchema,
+});
 const DeliveryGenerationUpdateSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("delivery_generation_update"),
+  dispatcherId: IdentifierSchema,
   deliveryGeneration: Schema.Number,
 });
 const GenerationUpdatedSchema = Schema.Struct({
@@ -200,6 +224,8 @@ const GenerationUpdatedSchema = Schema.Struct({
 const CancellationRequestSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
   type: Schema.Literal("cancel"),
+  dispatcherId: Schema.optional(IdentifierSchema),
+  deliveryGeneration: Schema.optional(Schema.Number),
 });
 
 const WorkerConfigSchema = Schema.Struct({
@@ -230,27 +256,30 @@ export interface ResultAcceptanceProof {
 }
 
 export interface StartInstruction extends StartInstructionReference {
-  readonly deadline: string;
+  readonly deadline?: string;
 }
 
 export interface StartInstructionAcceptanceStore {
   load(): Readonly<StartInstruction> | "none" | "unknown";
   save(instruction: Readonly<StartInstruction>): boolean;
-  loadGeneration?(): number | "unknown";
-  saveGeneration?(deliveryGeneration: number): boolean;
+  loadGeneration(): number | "unknown";
+  saveGeneration(deliveryGeneration: number): boolean;
 }
+
+export type BeginRejectionReason = Schema.Schema.Type<typeof BeginRejectionReasonSchema>;
+export type StartAcceptanceState = "not_accepted" | "accepted" | "unknown";
 
 export interface WorkerProtocolReception {
   readonly acknowledgementsComplete: boolean;
-  readonly beginReceived?: true;
   readonly cancellationRequested?: true;
-  readonly startInstruction?: Readonly<{
-    readonly status: "accepted" | "duplicate" | "expired" | "stale_generation" | "acceptance_unknown";
+  readonly startInstructions: ReadonlyArray<Readonly<{
+    readonly status: "accepted" | "duplicate" | BeginRejectionReason;
     readonly instruction: Readonly<StartInstruction>;
-  }>;
+  }>>;
+  readonly observedStartAcceptances: ReadonlyArray<Readonly<StartInstruction>>;
   readonly generationUpdate?: Readonly<{
     readonly deliveryGeneration: number;
-    readonly acceptanceState: "not_accepted" | "accepted" | "unknown";
+    readonly acceptanceState: StartAcceptanceState;
     readonly acceptedInstruction?: Readonly<StartInstruction>;
   }>;
 }
@@ -283,9 +312,18 @@ export type HostProtocolEvent =
       readonly instruction: Readonly<StartInstruction>;
     }
   | {
+      readonly type: "start_instruction_rejected";
+      readonly instruction: Readonly<StartInstruction>;
+      readonly reason: BeginRejectionReason;
+    }
+  | {
+      readonly type: "start_instruction_acknowledged";
+      readonly instruction: Readonly<StartInstruction>;
+    }
+  | {
       readonly type: "delivery_generation_updated";
       readonly deliveryGeneration: number;
-      readonly acceptanceState: "not_accepted" | "accepted" | "unknown";
+      readonly acceptanceState: StartAcceptanceState;
       readonly acceptedInstruction?: Readonly<StartInstruction>;
     }
   | { readonly type: "worker_cancelled" };
@@ -312,11 +350,17 @@ export type WorkerProtocolEvent =
     }
   | ({ readonly type: "done" } & Readonly<AgentRunEvidence>)
   | ({ readonly type: "failed"; readonly errorMessage: string } & Readonly<AgentRunEvidence>)
+  | { readonly type: "begin_accepted"; readonly instruction: Readonly<StartInstruction> }
   | { readonly type: "begin_ack"; readonly instruction: Readonly<StartInstruction> }
+  | {
+      readonly type: "begin_rejected";
+      readonly instruction: Readonly<StartInstruction>;
+      readonly reason: BeginRejectionReason;
+    }
   | {
       readonly type: "generation_updated";
       readonly deliveryGeneration: number;
-      readonly acceptanceState: "not_accepted" | "accepted" | "unknown";
+      readonly acceptanceState: StartAcceptanceState;
       readonly acceptedInstruction?: Readonly<StartInstruction>;
     }
   | { readonly type: "cancelled" };
@@ -368,9 +412,19 @@ function validateSafePositiveInteger(value: number, field: string): void {
 
 function validateStartInstruction(instruction: Readonly<StartInstruction>): void {
   validateSafePositiveInteger(instruction.deliveryGeneration, "deliveryGeneration");
-  if (!Number.isFinite(Date.parse(instruction.deadline))) {
+  if (instruction.deadline !== undefined && !Number.isFinite(Date.parse(instruction.deadline))) {
     throw violation("invalid_frame", "Start instruction deadline must be absolute");
   }
+}
+
+export function decodeStartInstruction(value: unknown): StartInstruction {
+  const instruction = decodeShape(
+    StartInstructionSchema,
+    value,
+    "Stored Start instruction has an invalid shape",
+  ) as StartInstruction;
+  validateStartInstruction(instruction);
+  return instruction;
 }
 
 function encode(value: unknown): Buffer {
@@ -507,9 +561,13 @@ export class HostProtocolPeer extends FramedPeer {
   private acknowledgementPending = false;
   private acknowledgedProof?: Readonly<ResultAcceptanceProof>;
   private startInstruction?: Readonly<StartInstruction>;
+  private acceptedStartInstruction?: Readonly<StartInstruction>;
+  private pendingStartAcceptanceObservations = 0;
+  private pendingStartAcknowledgements = 0;
   private activeDispatcherId?: string;
   private pendingDeliveryGeneration: number | undefined;
   private confirmedDeliveryGeneration = 1;
+  private confirmedStartAcceptanceState: StartAcceptanceState | undefined;
 
   constructor(
     private readonly authority: Readonly<ProtocolAuthority>,
@@ -550,7 +608,7 @@ export class HostProtocolPeer extends FramedPeer {
 
   begin(instruction: Readonly<StartInstruction>): Buffer {
     if (this.activeDispatcherId !== undefined && instruction.dispatcherId !== this.activeDispatcherId) {
-      throw violation("authority_mismatch", "Dispatcher does not hold Start sending authority");
+      throw violation("authority_mismatch", "Dispatcher does not hold Start delivery authority");
     }
     if (this.state !== "awaiting_begin" && this.state !== "receiving_results") {
       throw violation("invalid_transition", "Worker execution cannot begin before identification");
@@ -566,6 +624,16 @@ export class HostProtocolPeer extends FramedPeer {
     return bytes;
   }
 
+  restoreStartDelivery(instruction: Readonly<StartInstruction>): void {
+    if (this.state !== "awaiting_hello" || this.startInstruction !== undefined) {
+      throw violation("invalid_transition", "Start delivery can only be restored before Worker reconnection");
+    }
+    validateStartInstruction(instruction);
+    this.startInstruction = { ...instruction };
+    this.activeDispatcherId = instruction.dispatcherId;
+    this.confirmedDeliveryGeneration = instruction.deliveryGeneration;
+  }
+
   completeDispatcherHandoff(nextDispatcherId: string): void {
     if (
       nextDispatcherId.length === 0 ||
@@ -578,15 +646,36 @@ export class HostProtocolPeer extends FramedPeer {
       );
     }
     this.activeDispatcherId = nextDispatcherId;
+    if (this.confirmedStartAcceptanceState === "not_accepted") {
+      delete this.startInstruction;
+      delete this.acceptedStartInstruction;
+      this.state = "awaiting_begin";
+    }
   }
 
-  updateDeliveryGeneration(deliveryGeneration: number): Buffer {
+  acknowledgeStartInstructionAcceptance(instruction: Readonly<StartInstruction>): Buffer {
+    if (
+      this.acceptedStartInstruction === undefined ||
+      !isDeepStrictEqual(instruction, this.acceptedStartInstruction) ||
+      this.pendingStartAcceptanceObservations === 0
+    ) {
+      throw violation("invalid_transition", "Start acceptance cannot be acknowledged before observation");
+    }
+    this.pendingStartAcceptanceObservations -= 1;
+    this.pendingStartAcknowledgements += 1;
+    return this.encodeHostFrame("begin_acceptance_observed", { instruction });
+  }
+
+  updateDeliveryGeneration(deliveryGeneration: number, dispatcherId: string): Buffer {
     validateSafePositiveInteger(deliveryGeneration, "deliveryGeneration");
     if (deliveryGeneration <= this.confirmedDeliveryGeneration || this.pendingDeliveryGeneration !== undefined) {
       throw violation("invalid_transition", "A newer delivery generation is already confirmed or pending");
     }
+    if (dispatcherId.length === 0) {
+      throw violation("invalid_frame", "Successor Dispatcher identity is required");
+    }
     this.pendingDeliveryGeneration = deliveryGeneration;
-    return this.encodeHostFrame("delivery_generation_update", { deliveryGeneration });
+    return this.encodeHostFrame("delivery_generation_update", { dispatcherId, deliveryGeneration });
   }
 
   requestCancellation(): Buffer | undefined {
@@ -596,7 +685,14 @@ export class HostProtocolPeer extends FramedPeer {
       this.state === "failed" ||
       this.state === "done"
     ) return undefined;
-    const bytes = this.encodeHostFrame("cancel");
+    const bytes = this.encodeHostFrame("cancel", {
+      ...(this.activeDispatcherId === undefined
+        ? {}
+        : {
+            dispatcherId: this.activeDispatcherId,
+            deliveryGeneration: this.confirmedDeliveryGeneration,
+          }),
+    });
     this.state = "cancelling";
     return bytes;
   }
@@ -635,7 +731,7 @@ export class HostProtocolPeer extends FramedPeer {
   }
 
   private encodeHostFrame(
-    type: "begin" | "cancel" | "delivery_generation_update",
+    type: "begin" | "begin_acceptance_observed" | "cancel" | "delivery_generation_update",
     fields: Readonly<Record<string, unknown>> = {},
   ): Buffer {
     const bytes = this.encodeFrame({
@@ -737,7 +833,11 @@ export class HostProtocolPeer extends FramedPeer {
         throw violation("unexpected_acknowledgement", "Worker generation acknowledgement is inconsistent");
       }
       this.confirmedDeliveryGeneration = acknowledgement.deliveryGeneration;
+      this.confirmedStartAcceptanceState = acknowledgement.acceptanceState;
       this.pendingDeliveryGeneration = undefined;
+      if (acknowledgement.acceptanceState === "accepted") {
+        this.state = "receiving_results";
+      }
       return {
         type: "delivery_generation_updated",
         deliveryGeneration: acknowledgement.deliveryGeneration,
@@ -745,6 +845,47 @@ export class HostProtocolPeer extends FramedPeer {
         ...(acknowledgement.acceptedInstruction === undefined
           ? {}
           : { acceptedInstruction: { ...acknowledgement.acceptedInstruction } as StartInstruction }),
+      };
+    }
+    if (object.type === "begin_rejected") {
+      const rejection = decodeShape(
+        BeginRejectionSchema,
+        value,
+        "Worker begin rejection has an invalid shape",
+      );
+      this.validateCommon(rejection);
+      if (
+        this.state !== "receiving_results" ||
+        this.startInstruction === undefined ||
+        !isDeepStrictEqual(rejection.instruction, this.startInstruction)
+      ) {
+        throw violation("unexpected_acknowledgement", "Begin rejection does not match the dispatched instruction");
+      }
+      return {
+        type: "start_instruction_rejected",
+        instruction: { ...rejection.instruction } as StartInstruction,
+        reason: rejection.reason,
+      };
+    }
+    if (object.type === "begin_accepted") {
+      const acceptance = decodeShape(
+        BeginAcceptanceSchema,
+        value,
+        "Worker begin acceptance has an invalid shape",
+      );
+      this.validateCommon(acceptance);
+      if (
+        this.state !== "receiving_results" ||
+        this.startInstruction === undefined ||
+        !isDeepStrictEqual(acceptance.instruction, this.startInstruction)
+      ) {
+        throw violation("unexpected_acknowledgement", "Begin acceptance does not match the dispatched instruction");
+      }
+      this.acceptedStartInstruction = { ...acceptance.instruction } as StartInstruction;
+      this.pendingStartAcceptanceObservations += 1;
+      return {
+        type: "start_instruction_accepted",
+        instruction: this.acceptedStartInstruction,
       };
     }
     if (object.type === "begin_ack") {
@@ -756,13 +897,15 @@ export class HostProtocolPeer extends FramedPeer {
       this.validateCommon(acknowledgement);
       if (
         this.state !== "receiving_results" ||
-        this.startInstruction === undefined ||
-        !isDeepStrictEqual(acknowledgement.instruction, this.startInstruction)
+        this.acceptedStartInstruction === undefined ||
+        this.pendingStartAcknowledgements === 0 ||
+        !isDeepStrictEqual(acknowledgement.instruction, this.acceptedStartInstruction)
       ) {
-        throw violation("unexpected_acknowledgement", "Begin acknowledgement does not match the dispatched instruction");
+        throw violation("unexpected_acknowledgement", "Begin acknowledgement does not match the accepted instruction");
       }
+      this.pendingStartAcknowledgements -= 1;
       return {
-        type: "start_instruction_accepted",
+        type: "start_instruction_acknowledged",
         instruction: { ...acknowledgement.instruction } as StartInstruction,
       };
     }
@@ -953,6 +1096,7 @@ export class WorkerProtocolPeer extends FramedPeer {
   private acknowledgementPending = false;
   private processInstanceId?: string;
   private deliveryGeneration = 1;
+  private deliveryDispatcherId: string | undefined;
   private acceptedStartInstruction?: Readonly<StartInstruction>;
   private acknowledgedEvidence?: {
     readonly acceptanceId: string;
@@ -962,9 +1106,9 @@ export class WorkerProtocolPeer extends FramedPeer {
 
   constructor(
     private readonly authority: Readonly<ProtocolAuthority>,
+    private readonly startAcceptanceStore: Readonly<StartInstructionAcceptanceStore>,
     limits?: Partial<ProtocolLimits>,
     private readonly now: () => string = () => new Date().toISOString(),
-    private readonly startAcceptanceStore?: Readonly<StartInstructionAcceptanceStore>,
   ) {
     const resolvedLimits = completeLimits(limits);
     super(resolvedLimits);
@@ -1032,6 +1176,14 @@ export class WorkerProtocolPeer extends FramedPeer {
             : { acceptedInstruction: event.acceptedInstruction }),
         });
       }
+      case "begin_accepted": {
+        if (this.state !== "running" ||
+            this.acceptedStartInstruction === undefined ||
+            !isDeepStrictEqual(event.instruction, this.acceptedStartInstruction)) {
+          return this.invalidSend(event.type);
+        }
+        return this.encodeWorkerFrame({ type: "begin_accepted", instruction: event.instruction });
+      }
       case "begin_ack": {
         if (this.state !== "running" ||
             this.acceptedStartInstruction === undefined ||
@@ -1039,6 +1191,16 @@ export class WorkerProtocolPeer extends FramedPeer {
           return this.invalidSend(event.type);
         }
         return this.encodeWorkerFrame({ type: "begin_ack", instruction: event.instruction });
+      }
+      case "begin_rejected": {
+        if (this.state !== "ready" && this.state !== "running") {
+          return this.invalidSend(event.type);
+        }
+        return this.encodeWorkerFrame({
+          type: "begin_rejected",
+          instruction: event.instruction,
+          reason: event.reason,
+        });
       }
       case "artifacts": {
         if (this.state !== "running") return this.invalidSend(event.type);
@@ -1120,7 +1282,8 @@ export class WorkerProtocolPeer extends FramedPeer {
 
   receive(bytes: Buffer): WorkerProtocolReception {
     try {
-      let startInstruction: WorkerProtocolReception["startInstruction"];
+      const startInstructions: Array<WorkerProtocolReception["startInstructions"][number]> = [];
+      const observedStartAcceptances: Array<Readonly<StartInstruction>> = [];
       let generationUpdate: WorkerProtocolReception["generationUpdate"];
       let cancellationRequested = false;
       this.acceptBytes(bytes, false, (frameBytes) => {
@@ -1136,55 +1299,82 @@ export class WorkerProtocolPeer extends FramedPeer {
           this.validateHostControl(begin, "Begin");
           validateStartInstruction(begin.instruction as StartInstruction);
           const received = { ...begin.instruction } as StartInstruction;
-          const durableGeneration = this.startAcceptanceStore?.loadGeneration?.();
+          const durableGeneration = this.startAcceptanceStore.loadGeneration();
           if (durableGeneration === "unknown") {
-            startInstruction = { status: "acceptance_unknown", instruction: received };
+            startInstructions.push({ status: "acceptance_unknown", instruction: received });
             return;
           }
-          if (durableGeneration !== undefined) this.deliveryGeneration = durableGeneration;
+          this.deliveryGeneration = durableGeneration;
           if (received.workerProcessInstanceId !== this.processInstanceId) {
-            throw violation("authority_mismatch", "Begin targets another Worker instance");
+            startInstructions.push({ status: "worker_mismatch", instruction: received });
+            return;
           }
-          if (received.deliveryGeneration !== this.deliveryGeneration) {
-            startInstruction = { status: "stale_generation", instruction: received };
+          if (
+            received.deliveryGeneration !== this.deliveryGeneration ||
+            this.deliveryDispatcherId !== undefined &&
+              received.dispatcherId !== this.deliveryDispatcherId
+          ) {
+            startInstructions.push({ status: "stale_generation", instruction: received });
             return;
           }
           if (this.acceptedStartInstruction !== undefined) {
-            if (!isDeepStrictEqual(received, this.acceptedStartInstruction)) {
-              throw violation("invalid_transition", "A different Begin cannot replace the accepted instruction");
-            }
-            startInstruction ??= { status: "duplicate", instruction: received };
+            startInstructions.push({
+              status: isDeepStrictEqual(received, this.acceptedStartInstruction)
+                ? "duplicate"
+                : "conflict",
+              instruction: received,
+            });
             return;
           }
-          const storedAcceptance = this.startAcceptanceStore?.load() ?? "none";
+          const storedAcceptance = this.restoreDurableStartAcceptance();
           if (storedAcceptance === "unknown") {
-            startInstruction = { status: "acceptance_unknown", instruction: received };
+            startInstructions.push({ status: "acceptance_unknown", instruction: received });
             return;
           }
           if (storedAcceptance !== "none") {
-            validateStartInstruction(storedAcceptance);
-            if (!isDeepStrictEqual(received, storedAcceptance)) {
-              throw violation("invalid_transition", "A different Begin cannot replace the durable accepted instruction");
-            }
-            this.acceptedStartInstruction = { ...storedAcceptance };
-            this.state = "running";
-            startInstruction ??= { status: "duplicate", instruction: received };
+            startInstructions.push({
+              status: isDeepStrictEqual(received, storedAcceptance) ? "duplicate" : "conflict",
+              instruction: received,
+            });
             return;
           }
           if (this.state !== "ready") {
             throw violation("invalid_transition", "Begin arrived before Worker start");
           }
-          if (Date.parse(this.now()) >= Date.parse(received.deadline)) {
-            startInstruction = { status: "expired", instruction: received };
+          if (
+            received.deadline !== undefined &&
+            Date.parse(this.now()) >= Date.parse(received.deadline)
+          ) {
+            startInstructions.push({ status: "expired", instruction: received });
             return;
           }
-          if (this.startAcceptanceStore?.save(received) === false) {
-            startInstruction = { status: "acceptance_unknown", instruction: received };
+          if (!this.startAcceptanceStore.save(received)) {
+            startInstructions.push({ status: "acceptance_unknown", instruction: received });
             return;
           }
           this.acceptedStartInstruction = received;
+          this.deliveryDispatcherId = received.dispatcherId;
           this.state = "running";
-          startInstruction = { status: "accepted", instruction: received };
+          startInstructions.push({ status: "accepted", instruction: received });
+          return;
+        }
+        if (object.type === "begin_acceptance_observed") {
+          const observation = decodeShape(
+            BeginAcceptanceObservedSchema,
+            value,
+            "Worker Start acceptance observation has an invalid shape",
+          );
+          this.validateHostControl(observation, "Start acceptance observation");
+          validateStartInstruction(observation.instruction as StartInstruction);
+          const durableAcceptance = this.acceptedStartInstruction ?? this.restoreDurableStartAcceptance();
+          if (
+            durableAcceptance === "none" ||
+            durableAcceptance === "unknown" ||
+            !isDeepStrictEqual(observation.instruction, durableAcceptance)
+          ) {
+            throw violation("unexpected_acknowledgement", "Observed Start acceptance does not match durable acceptance");
+          }
+          observedStartAcceptances.push({ ...durableAcceptance });
           return;
         }
         if (object.type === "delivery_generation_update") {
@@ -1198,34 +1388,29 @@ export class WorkerProtocolPeer extends FramedPeer {
           if (this.state !== "ready" && this.state !== "running") {
             throw violation("invalid_transition", "Delivery generation changed before Worker identification");
           }
-          const durableGeneration = this.startAcceptanceStore?.loadGeneration?.();
+          const durableGeneration = this.startAcceptanceStore.loadGeneration();
           if (durableGeneration === "unknown") {
             throw violation("invalid_transition", "Durable delivery generation is unavailable");
           }
-          if (durableGeneration !== undefined) this.deliveryGeneration = durableGeneration;
+          this.deliveryGeneration = durableGeneration;
           if (update.deliveryGeneration <= this.deliveryGeneration) {
             throw violation("invalid_transition", "Delivery generation must increase");
           }
-          let acceptanceState: "not_accepted" | "accepted" | "unknown" =
+          let acceptanceState: StartAcceptanceState =
             this.acceptedStartInstruction === undefined ? "not_accepted" : "accepted";
           if (this.acceptedStartInstruction === undefined) {
-            const storedAcceptance = this.startAcceptanceStore?.load() ?? "none";
-            if (storedAcceptance === "unknown") {
-              acceptanceState = "unknown";
-            } else if (storedAcceptance !== "none") {
-              validateStartInstruction(storedAcceptance);
-              if (storedAcceptance.workerProcessInstanceId !== this.processInstanceId) {
-                throw violation("authority_mismatch", "Durable Begin belongs to another Worker instance");
-              }
-              this.acceptedStartInstruction = { ...storedAcceptance };
-              this.state = "running";
-              acceptanceState = "accepted";
-            }
+            const storedAcceptance = this.restoreDurableStartAcceptance();
+            acceptanceState = storedAcceptance === "unknown"
+              ? "unknown"
+              : storedAcceptance === "none"
+                ? "not_accepted"
+                : "accepted";
           }
-          if (this.startAcceptanceStore?.saveGeneration?.(update.deliveryGeneration) === false) {
+          if (!this.startAcceptanceStore.saveGeneration(update.deliveryGeneration)) {
             throw violation("invalid_transition", "Delivery generation could not be durably updated");
           }
           this.deliveryGeneration = update.deliveryGeneration;
+          this.deliveryDispatcherId = update.dispatcherId;
           generationUpdate = {
             deliveryGeneration: update.deliveryGeneration,
             acceptanceState,
@@ -1242,6 +1427,16 @@ export class WorkerProtocolPeer extends FramedPeer {
             "Worker cancellation request has an invalid shape",
           );
           this.validateHostControl(cancellation, "Cancellation");
+          if (cancellation.deliveryGeneration !== undefined) {
+            validateSafePositiveInteger(cancellation.deliveryGeneration, "deliveryGeneration");
+          }
+          if (
+            this.deliveryDispatcherId !== undefined &&
+            (cancellation.deliveryGeneration !== this.deliveryGeneration ||
+              cancellation.dispatcherId !== this.deliveryDispatcherId)
+          ) {
+            throw violation("authority_mismatch", "Cancellation sender has no current Start delivery authority");
+          }
           if (
             this.state !== "ready" &&
             this.state !== "running" &&
@@ -1287,10 +1482,8 @@ export class WorkerProtocolPeer extends FramedPeer {
       }
       return {
         acknowledgementsComplete,
-        ...(startInstruction === undefined ? {} : {
-          startInstruction,
-          ...(startInstruction.status === "accepted" ? { beginReceived: true as const } : {}),
-        }),
+        startInstructions,
+        observedStartAcceptances,
         ...(generationUpdate === undefined ? {} : { generationUpdate }),
         ...(cancellationRequested ? { cancellationRequested: true as const } : {}),
       };
@@ -1298,6 +1491,17 @@ export class WorkerProtocolPeer extends FramedPeer {
       this.state = "failed";
       throw error;
     }
+  }
+
+  private restoreDurableStartAcceptance(): Readonly<StartInstruction> | "none" | "unknown" {
+    const stored = this.startAcceptanceStore.load();
+    if (stored === "none" || stored === "unknown") return stored;
+    validateStartInstruction(stored);
+    if (stored.workerProcessInstanceId !== this.processInstanceId) return "unknown";
+    this.acceptedStartInstruction = { ...stored };
+    this.deliveryDispatcherId = stored.dispatcherId;
+    this.state = "running";
+    return this.acceptedStartInstruction;
   }
 
   private validateHostControl(

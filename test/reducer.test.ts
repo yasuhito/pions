@@ -16,8 +16,10 @@ import {
   replayOperation,
   TransitionError,
 } from "../src/internal/event-store/reducer.js";
+import { automaticStartScopeDigest } from "../src/internal/start-instruction.js";
 import {
   effectiveConfig,
+  observedConfig,
   requestedConfig,
   retentionPolicy,
   workProductRequirements,
@@ -69,9 +71,23 @@ function event(seq: number, value: TestEventInput): OperationEvent {
   } as OperationEvent;
 }
 
-function runningOperation(): Operation {
-  const requested = reduceOperation(
-    undefined,
+const startInstruction = {
+  dispatcherId: RUNTIME_ACTOR_ID,
+  workerProcessInstanceId: "worker-instance",
+  receiptDigest: automaticStartScopeDigest({
+    operationId: metadata.operationId,
+    task: {
+      promptRef: "private://prompt/1",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    },
+    effectiveConfig,
+  }),
+  deliveryGeneration: 1,
+};
+
+function runningEvents(): ReadonlyArray<OperationEvent> {
+  return [
     event(1, {
       type: "operation_requested",
       task: {
@@ -80,16 +96,41 @@ function runningOperation(): Operation {
         idempotencyKey: "task-1",
       },
     }),
-  );
-  const starting = reduceOperation(
-    requested,
-    event(2, { type: "operation_starting" }),
-  );
-  const launched = reduceOperation(
-    starting,
-    event(3, { type: "worker_launched" }),
-  );
-  return reduceOperation(launched, event(4, { type: "automatic_operation_started" }));
+    event(2, {
+      type: "presentation_owned",
+      presentation: { kind: "herdr_pane", paneId: "pane-1", ownedByPions: true },
+    }),
+    event(3, { type: "operation_starting" }),
+    event(4, { type: "worker_launched" }),
+    event(5, {
+      type: "worker_identified",
+      workerIdentity: {
+        processId: 1,
+        processInstanceId: "worker-instance",
+        processStartToken: "worker-start",
+        piSessionId: "pi-session",
+        paneId: "pane-1",
+      },
+      observedConfig,
+    }),
+    event(6, { type: "start_delivery_authority_acquired", instruction: startInstruction }),
+    event(7, { type: "start_delivery_entered", instruction: startInstruction }),
+    event(8, { type: "start_instruction_dispatched", instruction: startInstruction }),
+    event(9, {
+      type: "start_instruction_accepted",
+      instruction: startInstruction,
+      proof: "worker-durable-acceptance",
+    }),
+    event(10, {
+      type: "start_instruction_acknowledged",
+      instruction: startInstruction,
+      proof: "authenticated-worker-acknowledgement",
+    }),
+  ];
+}
+
+function runningOperation(): Operation {
+  return { ...replayOperation(runningEvents())!, stateSeq: 4 };
 }
 
 test("reducer rejects an inconsistent fixed authorization deadline", () => {
@@ -110,15 +151,13 @@ test("reducer rejects an inconsistent fixed authorization deadline", () => {
   );
 });
 
-test("reducer refuses Operation start without Worker launch evidence", () => {
-  const requested = reduceOperation(undefined, event(1, {
-    type: "operation_requested",
-    task: { promptRef: "prompt", profile: "coding", idempotencyKey: "task" },
-  }));
-  const starting = reduceOperation(requested, event(2, { type: "operation_starting" }));
+test("reducer refuses Worker identification without launch evidence", () => {
+  const requested = reduceOperation(undefined, runningEvents()[0]!);
+  const presented = reduceOperation(requested, runningEvents()[1]!);
+  const starting = reduceOperation(presented, runningEvents()[2]!);
 
   assert.throws(
-    () => reduceOperation(starting, event(3, { type: "automatic_operation_started" })),
+    () => reduceOperation(starting, { ...runningEvents()[4]!, seq: 4 }),
     (error) => error instanceof TransitionError && error.code === "illegal_transition",
   );
 });
@@ -236,23 +275,13 @@ test("a failed self-settlement reaches the failed terminal state", () => {
 
 test("replay reconstructs a terminal failure reason", () => {
   const events = [
-    event(1, {
-      type: "operation_requested",
-      task: {
-        promptRef: "private://prompt/1",
-        profile: "coding",
-        idempotencyKey: "task-1",
-      },
-    }),
-    event(2, { type: "operation_starting" }),
-    event(3, { type: "worker_launched" }),
-    event(4, { type: "automatic_operation_started" }),
-    event(5, {
+    ...runningEvents(),
+    event(11, {
       type: "self_settled",
       outcome: "failed",
       reason: "worker_start_failed",
     }),
-    event(6, { type: "operation_failed", reason: "worker_start_failed" }),
+    event(12, { type: "operation_failed", reason: "worker_start_failed" }),
   ];
 
   assert.equal(replayOperation(events)?.terminalReason, "worker_start_failed");
@@ -280,23 +309,27 @@ test("replay rejects a reused event identifier", () => {
 
 test("replay reconstructs the same snapshot", () => {
   const events = [
-    event(1, {
-      type: "operation_requested",
-      task: {
-        promptRef: "private://prompt/1",
-        profile: "coding",
-        idempotencyKey: "task-1",
-      },
-    }),
-    event(2, { type: "operation_starting" }),
-    event(3, { type: "worker_launched" }),
-    event(4, { type: "automatic_operation_started" }),
-    event(5, { type: "operation_blocked" }),
-    event(6, { type: "operation_unblocked" }),
+    ...runningEvents(),
+    event(11, { type: "operation_blocked" }),
+    event(12, { type: "operation_unblocked" }),
   ];
   const snapshot = events.reduce<Operation | undefined>(reduceOperation, undefined);
 
   assert.deepEqual(replayOperation(events), snapshot);
+});
+
+test("Start delivery authority revocation records writer ownership independently", () => {
+  const revoked = reduceOperation(runningOperation(), event(5, {
+    type: "start_delivery_authority_revoked",
+    successorDispatcherId: "dispatcher-2",
+    deliveryGeneration: 2,
+    writerOwnership: { pid: 1234, processStartToken: "writer-start" },
+  }));
+
+  assert.deepEqual(
+    revoked.startDeliveryHandoffs[0]?.writerOwnership,
+    { pid: 1234, processStartToken: "writer-start" },
+  );
 });
 
 test("reducer rejects an unsupported event schema", () => {

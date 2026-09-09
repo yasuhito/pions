@@ -14,7 +14,11 @@ import {
   validateResultAcceptanceManifest,
 } from "../src/internal/result-acceptance-manifest.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
-import { FakeClock, InMemoryEventStore } from "../src/internal/testing.js";
+import {
+  FakeClock,
+  InMemoryEventStore,
+  advanceTestOperationToRunning,
+} from "../src/internal/testing.js";
 import type {
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceTransactionOutcome,
@@ -77,9 +81,7 @@ async function fixture(
     lineage: { rootOperationId: "operation-1", depth: 0 },
     startAuthorization: { configuredPolicy: "disabled", policy: "disabled", windowMs: 0, authorizedSubjectIds: [] },
   }));
-  await Effect.runPromise(store.advance("operation-1", { type: "operation_starting" }));
-  await Effect.runPromise(store.advance("operation-1", { type: "worker_launched" }));
-  await Effect.runPromise(store.advance("operation-1", { type: "automatic_operation_started" }));
+  await advanceTestOperationToRunning(store, "operation-1");
   const root = await mkdtemp(join(tmpdir(), "pions-result-acceptance-"));
   const artifactServices = runtimeArtifactStore(root, store, undefined, artifactFault);
   context.after(async () => {

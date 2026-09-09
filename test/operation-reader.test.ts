@@ -193,8 +193,8 @@ test("Operation snapshot identifies one coherent persisted version", async () =>
   await handle.result();
 
   assert.deepEqual((await handle.read()).version, {
-    sequenceNumber: 12,
-    recordedAt: "2026-09-06T10:00:12.000Z",
+    sequenceNumber: 16,
+    recordedAt: "2026-09-06T10:00:16.000Z",
   });
 });
 
@@ -266,18 +266,31 @@ test("Operation snapshot retrieves start instruction acceptance separately", asy
     deliveryGeneration: 1,
   };
   await Effect.runPromise(store.advance("operation-1", {
+    type: "start_delivery_authority_acquired",
+    instruction,
+  }));
+  await Effect.runPromise(store.advance("operation-1", {
+    type: "start_delivery_entered",
+    instruction,
+  }));
+  await Effect.runPromise(store.advance("operation-1", {
     type: "start_instruction_dispatched",
     instruction,
   }));
   await Effect.runPromise(store.advance("operation-1", {
     type: "start_instruction_accepted",
     instruction,
+    proof: "worker-durable-acceptance",
+  }));
+  await Effect.runPromise(store.advance("operation-1", {
+    type: "start_instruction_acknowledged",
+    instruction,
     proof: "authenticated-worker-acknowledgement",
   }));
 
   assert.equal(
     (await (await runtime.operation("operation-1")).read()).startInstructionAcceptance?.acceptedAt,
-    "2026-09-06T10:00:07.000Z",
+    "2026-09-06T10:00:09.000Z",
   );
 });
 

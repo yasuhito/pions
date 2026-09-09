@@ -30,6 +30,7 @@ export type {
   Operation,
   OperationLineage,
 } from "./model.js";
+export { RUNTIME_ACTOR_ID } from "./model.js";
 
 export type StoreErrorCode =
   | "not_found"
@@ -80,6 +81,7 @@ export interface EventStore {
   ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError>;
   listWaitingStartAuthorizations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
+  listRecoverableOperations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
 }
 
 export type { OperationState };

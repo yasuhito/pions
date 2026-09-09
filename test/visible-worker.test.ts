@@ -34,7 +34,11 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import { WORKER_PROTOCOL_VERSION } from "../src/internal/worker-protocol.js";
+import {
+  WORKER_PROTOCOL_VERSION,
+  WorkerProtocolPeer,
+  encodeWorkerConfig,
+} from "../src/internal/worker-protocol.js";
 import type { WorkerProducedResult } from "../src/public.js";
 import {
   agentRunEvidence,
@@ -193,11 +197,46 @@ function operation(
     },
     startGate: "not_required",
     rejectedStartAuthorizationDecisions: [],
+    startDeliveryHandoffs: [],
     childOperationIds: [],
     settledChildOperationIds: [],
     descendantFailure: false,
     spawnFrozen: false,
     cancellationEpoch: 0,
+  };
+}
+
+function recoverableOperation(): Operation {
+  const base = operation();
+  const instruction = {
+    dispatcherId: "pions-runtime",
+    workerProcessInstanceId: processInstanceId,
+    receiptDigest: `sha256:${"e".repeat(64)}` as const,
+    deliveryGeneration: 1,
+  };
+  return {
+    ...base,
+    workerLaunched: true,
+    workerIdentity: {
+      processId,
+      processInstanceId,
+      processStartToken,
+      piSessionId,
+      paneId: "opaque:pane",
+    },
+    observedConfig,
+    startDeliveryAuthority: {
+      ...instruction,
+      acquiredAt: "2026-09-06T10:00:01.000Z",
+    },
+    startDeliveryEntry: {
+      ...instruction,
+      enteredAt: "2026-09-06T10:00:02.000Z",
+    },
+    startInstructionDelivery: {
+      ...instruction,
+      dispatchedAt: "2026-09-06T10:00:03.000Z",
+    },
   };
 }
 
@@ -214,7 +253,12 @@ function workerHooks(
       deliveryGeneration: 1,
       deadline: "2099-01-01T00:00:00.000Z",
     }),
+    startDeliveryAuthorityRevoked: () => Effect.void,
+    deliveryGenerationConfirmed: () => Effect.void,
+    startDeliveryEntered: () => Effect.void,
+    startInstructionDispatched: () => Effect.void,
     startInstructionAccepted: () => Effect.void,
+    startInstructionAcknowledged: () => Effect.void,
     acceptResult,
   };
 }
@@ -227,6 +271,8 @@ async function fixture(options: {
   readonly workerIdentified?: (
     identity: Parameters<WorkerRunHooks["workerIdentified"]>[0],
   ) => Effect.Effect<void>;
+  readonly startInstructionAccepted?: WorkerRunHooks["startInstructionAccepted"];
+  readonly startInstructionAcknowledged?: WorkerRunHooks["startInstructionAcknowledged"];
   readonly providerExtension?: Readonly<ApprovedProviderExtension>;
   readonly operationModel?: Readonly<{ readonly provider: string; readonly id: string }>;
 } = {}) {
@@ -278,7 +324,12 @@ async function fixture(options: {
         deadline: "2099-01-01T00:00:00.000Z",
       }),
     ),
-    startInstructionAccepted: () => Effect.void,
+    startDeliveryAuthorityRevoked: () => Effect.void,
+    deliveryGenerationConfirmed: () => Effect.void,
+    startDeliveryEntered: () => Effect.void,
+    startInstructionDispatched: () => Effect.void,
+    startInstructionAccepted: options.startInstructionAccepted ?? (() => Effect.void),
+    startInstructionAcknowledged: options.startInstructionAcknowledged ?? (() => Effect.void),
     acceptResult: (received) => Effect.sync(() => {
       deliveries.push(received);
       return {
@@ -293,7 +344,7 @@ async function fixture(options: {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const directory = join(root, operationDirectoryKey(current.operationId));
-  const config = JSON.parse(await readFile(join(directory, "worker.v9.json"), "utf8")) as {
+  const config = JSON.parse(await readFile(join(directory, "worker.v13.json"), "utf8")) as {
     readonly socketPath: string;
   };
   const protocolSession = {
@@ -371,9 +422,17 @@ function receiveFrame(client: Socket): Promise<string> {
   });
 }
 
-function acknowledgeBegin(client: Socket, capability: string, begin: string, sequenceNumber = 3): void {
+async function acknowledgeBegin(
+  client: Socket,
+  capability: string,
+  begin: string,
+  sequenceNumber = 3,
+): Promise<void> {
   const instruction = (JSON.parse(begin) as { readonly instruction: unknown }).instruction;
-  send(client, frame(capability, sequenceNumber, "begin_ack", { instruction }));
+  const observation = receiveFrame(client);
+  send(client, frame(capability, sequenceNumber, "begin_accepted", { instruction }));
+  await observation;
+  send(client, frame(capability, sequenceNumber + 1, "begin_ack", { instruction }));
 }
 
 async function sendResultDelivery(
@@ -393,10 +452,13 @@ async function sendResultDelivery(
   send(client, withOperation(frame(options.capability, 2, "started", { piSessionId, observedConfig })));
   const receivedBegin = await begin;
   const beginInstruction = (JSON.parse(receivedBegin) as { readonly instruction: unknown }).instruction;
-  send(client, withOperation(frame(options.capability, 3, "begin_ack", { instruction: beginInstruction })));
+  const acceptanceObservation = receiveFrame(client);
+  send(client, withOperation(frame(options.capability, 3, "begin_accepted", { instruction: beginInstruction })));
+  await acceptanceObservation;
+  send(client, withOperation(frame(options.capability, 4, "begin_ack", { instruction: beginInstruction })));
   const acknowledgement = receiveFrame(client);
   const bytes = Buffer.from(options.body, "utf8");
-  send(client, withOperation(frame(options.capability, 4, "artifact_begin", {
+  send(client, withOperation(frame(options.capability, 5, "artifact_begin", {
     acceptanceRequestId: "request-1",
     slot: "body",
     formatId: "pions.result-body.v1",
@@ -404,16 +466,16 @@ async function sendResultDelivery(
     expectedByteCount: bytes.byteLength,
     expectedDigest: resultDigest(options.body),
   })));
-  send(client, withOperation(frame(options.capability, 5, "artifact_chunk", {
+  send(client, withOperation(frame(options.capability, 6, "artifact_chunk", {
     payload: bytes.toString("base64"),
   })));
-  send(client, withOperation(frame(options.capability, 6, "artifact_commit", {
+  send(client, withOperation(frame(options.capability, 7, "artifact_commit", {
     expectedDigest: resultDigest(options.body),
   })));
-  send(client, withOperation(frame(options.capability, 7, "result_manifest", {
+  send(client, withOperation(frame(options.capability, 8, "result_manifest", {
     acceptanceRequestId: "request-1",
   })));
-  send(client, withOperation(frame(options.capability, 8, "done", { ...agentRunEvidence })));
+  send(client, withOperation(frame(options.capability, 9, "done", { ...agentRunEvidence })));
   return { acknowledgement, begin: receivedBegin };
 }
 
@@ -429,6 +491,117 @@ async function deliver(
   });
   return { acknowledgement, begin, client, outcome: await workerFixture.outcome };
 }
+
+test("visible Worker recovery does not redispatch a durably accepted Start instruction", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-visible-recovery-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const recovered = recoverableOperation();
+  const directory = join(root, operationDirectoryKey(recovered.operationId));
+  const socketPath = join(root, `${operationDirectoryKey(recovered.operationId)}.sock`);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "worker.v13.json"), encodeWorkerConfig({
+    operationId: recovered.operationId,
+    capability: "ab".repeat(32),
+    socketPath,
+    promptPath: join(directory, "prompt.utf8"),
+    effectiveConfig: recovered.effectiveConfig,
+  }));
+  const adapter = new VisibleWorker({
+    rootDirectory: root,
+    socketDirectory: root,
+    cwd: "/work/project",
+    executor: new FakeExecutor(),
+    extensionEntryPath: "/pions/worker-extension.js",
+    processControl: new FakeProcessControl("stopped"),
+  });
+  let acceptanceState: string | undefined;
+  const hooks: WorkerRunHooks = {
+    ...workerHooks(),
+    workerIdentified: () => Effect.succeed({
+      dispatcherId: "pions-runtime-recovery-2",
+      workerProcessInstanceId: processInstanceId,
+      receiptDigest: `sha256:${"e".repeat(64)}`,
+      deliveryGeneration: 2,
+    }),
+    startDeliveryAuthorityRevoked: () => Effect.void,
+    deliveryGenerationConfirmed: (confirmation) => Effect.sync(() => {
+      acceptanceState = confirmation.acceptanceState;
+    }),
+  };
+  const outcome = Effect.runPromise(adapter.recover(recovered).run(hooks));
+  while (await stat(socketPath).then(() => false, () => true)) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const client = await socket(socketPath);
+  const durableInstruction = {
+    dispatcherId: "pions-runtime",
+    workerProcessInstanceId: processInstanceId,
+    receiptDigest: `sha256:${"e".repeat(64)}` as const,
+    deliveryGeneration: 1,
+  };
+  const peer = new WorkerProtocolPeer(
+    { operationId: recovered.operationId, capability: "ab".repeat(32) },
+    {
+      load: () => durableInstruction,
+      save: () => false,
+      loadGeneration: () => 1,
+      saveGeneration: () => true,
+    },
+  );
+  client.write(peer.send({ type: "hello", processId, processInstanceId, processStartToken }));
+  client.write(peer.send({ type: "started", piSessionId, observedConfig }));
+  const generationFrame = await receiveFrame(client);
+  const generation = peer.receive(Buffer.from(generationFrame));
+  let hostFrameCount = 0;
+  client.on("data", () => { hostFrameCount += 1; });
+  client.write(peer.send({
+    type: "generation_updated",
+    deliveryGeneration: generation.generationUpdate!.deliveryGeneration,
+    acceptanceState: generation.generationUpdate!.acceptanceState,
+    ...(generation.generationUpdate!.acceptedInstruction === undefined
+      ? {}
+      : { acceptedInstruction: generation.generationUpdate!.acceptedInstruction }),
+  }));
+  while (acceptanceState === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  client.write(peer.send({ type: "failed", errorMessage: "finished recovery test", ...agentRunEvidence }));
+  await outcome;
+
+  assert.equal(hostFrameCount, 0);
+});
+
+test("recovery timeout confirms a stopped Worker instead of waiting forever", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-visible-recovery-timeout-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const recovered = recoverableOperation();
+  const directory = join(root, operationDirectoryKey(recovered.operationId));
+  const socketPath = join(root, `${operationDirectoryKey(recovered.operationId)}.sock`);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "worker.v13.json"), encodeWorkerConfig({
+    operationId: recovered.operationId,
+    capability: "ab".repeat(32),
+    socketPath,
+    promptPath: join(directory, "prompt.utf8"),
+    effectiveConfig: recovered.effectiveConfig,
+  }));
+  const adapter = new VisibleWorker({
+    rootDirectory: root,
+    socketDirectory: root,
+    cwd: "/work/project",
+    executor: new FakeExecutor(),
+    extensionEntryPath: "/pions/worker-extension.js",
+    processControl: new FakeProcessControl("stopped"),
+    agentStartTimeoutMs: 1,
+  });
+
+  const outcome = await Effect.runPromise(adapter.recover(recovered).run(workerHooks()));
+
+  assert.deepEqual(outcome, {
+    state: "worker_protocol_failed",
+    successfulExitConfirmed: true,
+  });
+});
 
 test("public visible Runtime composes the production path", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pions-visible-runtime-"));
@@ -491,7 +664,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   while (executor.invocations.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v9.json");
+  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v13.json");
   const config = JSON.parse(await readFile(configPath, "utf8")) as { readonly socketPath: string };
   const client = await socket(config.socketPath);
   await sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
@@ -550,7 +723,7 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--no-prompt-templates",
     "--no-themes",
     "--approve",
-    "--pions-worker-config", join(value.directory, "worker.v9.json"),
+    "--pions-worker-config", join(value.directory, "worker.v13.json"),
   ]);
 });
 
@@ -598,7 +771,7 @@ test("visible Worker configuration uses private permissions", async (context) =>
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal(await mode(join(value.directory, "worker.v9.json")), 0o600);
+  assert.equal(await mode(join(value.directory, "worker.v13.json")), 0o600);
 });
 
 test("invalid Worker configuration reports a Worker start failure", async (context) => {
@@ -711,8 +884,8 @@ test("visible Worker does not send begin while the launch command is incomplete"
   const framesBeforeLaunchCompleted = frames.length;
   executor.complete();
   while (frames.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
-  acknowledgeBegin(client, value.capability, frames[0]!);
-  send(client, frame(value.capability, 4, "failed", {
+  await acknowledgeBegin(client, value.capability, frames[0]!);
+  send(client, frame(value.capability, 5, "failed", {
     errorMessage: "finished cleanup",
     ...agentRunEvidence,
   }));
@@ -1099,8 +1272,8 @@ test("settled Pi failure becomes an agent failure with evidence", async (context
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   const begin = receiveFrame(client);
   send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
-  acknowledgeBegin(client, value.capability, await begin);
-  send(client, frame(value.capability, 4, "failed", {
+  await acknowledgeBegin(client, value.capability, await begin);
+  send(client, frame(value.capability, 5, "failed", {
     errorMessage: "provider failed",
     ...agentRunEvidence,
   }));
@@ -1124,8 +1297,8 @@ test("Claude Code login failure becomes an authentication failure", async (conte
     piSessionId,
     observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
   }));
-  acknowledgeBegin(client, value.capability, await begin);
-  send(client, frame(value.capability, 4, "failed", {
+  await acknowledgeBegin(client, value.capability, await begin);
+  send(client, frame(value.capability, 5, "failed", {
     errorMessage: "Not logged in. Please run /login in Claude Code.",
     ...agentRunEvidence,
   }));
@@ -1146,8 +1319,8 @@ test("Claude Code unavailable model failure stays model-specific", async (contex
     piSessionId,
     observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
   }));
-  acknowledgeBegin(client, value.capability, await begin);
-  send(client, frame(value.capability, 4, "failed", {
+  await acknowledgeBegin(client, value.capability, await begin);
+  send(client, frame(value.capability, 5, "failed", {
     errorMessage: "Model claude-opus-5 is not available.",
     ...agentRunEvidence,
   }));
@@ -1168,8 +1341,8 @@ test("Claude Code plan failure becomes an unsupported capability failure", async
     piSessionId,
     observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
   }));
-  acknowledgeBegin(client, value.capability, await begin);
-  send(client, frame(value.capability, 4, "failed", {
+  await acknowledgeBegin(client, value.capability, await begin);
+  send(client, frame(value.capability, 5, "failed", {
     errorMessage: "Claude Opus 5 is not available on your current plan.",
     ...agentRunEvidence,
   }));
@@ -1190,8 +1363,8 @@ test("Claude failure with uninspectable child processes has unknown liveness", a
     piSessionId,
     observedConfig: { ...observedConfig, model: { state: "observed", value: value.current.effectiveConfig.model } },
   }));
-  acknowledgeBegin(client, value.capability, await begin);
-  send(client, frame(value.capability, 4, "failed", {
+  await acknowledgeBegin(client, value.capability, await begin);
+  send(client, frame(value.capability, 5, "failed", {
     errorMessage: "provider failed",
     ...agentRunEvidence,
   }));
@@ -1216,6 +1389,50 @@ test("protocol failure releases Worker protocol listeners", async (context) => {
   await workerFixture.outcome;
 
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
+});
+
+test("a rejected begin is followed by confirmed Worker stop", async (context) => {
+  const value = await fixture({ processControl: new FakeProcessControl("stopped") });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  const begin = receiveFrame(client);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  const instruction = (JSON.parse(await begin) as { readonly instruction: unknown }).instruction;
+  const cancellation = receiveFrame(client);
+  send(client, frame(value.capability, 3, "begin_rejected", {
+    instruction,
+    reason: "acceptance_unknown",
+  }));
+  await cancellation;
+  send(client, frame(value.capability, 4, "cancelled"));
+
+  assert.deepEqual(await value.outcome, {
+    state: "worker_protocol_failed",
+    successfulExitConfirmed: true,
+  });
+});
+
+test("connection loss after durable Start acceptance does not invent an acknowledgement", async (context) => {
+  let resolveAccepted!: () => void;
+  const accepted = new Promise<void>((resolve) => { resolveAccepted = resolve; });
+  let acknowledgementCount = 0;
+  const value = await fixture({
+    startInstructionAccepted: () => Effect.sync(resolveAccepted),
+    startInstructionAcknowledged: () => Effect.sync(() => { acknowledgementCount += 1; }),
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  const begin = receiveFrame(client);
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  const instruction = (JSON.parse(await begin) as { readonly instruction: unknown }).instruction;
+  send(client, frame(value.capability, 3, "begin_accepted", { instruction }));
+  await accepted;
+  client.destroy();
+  await value.outcome;
+
+  assert.equal(acknowledgementCount, 0);
 });
 
 test("disconnect before session identification has unknown liveness", async (context) => {
@@ -1393,7 +1610,7 @@ test("missing cancellation acknowledgement triggers process termination", async 
   assert.equal(processControl.terminations.length, 1);
 });
 
-test("a disconnected cancellation channel retains the unconfirmed process", async (context) => {
+test("a disconnected cancellation channel triggers Worker termination", async (context) => {
   const processControl = new FakeProcessControl("running", { proof: "worker-stop" });
   const value = await fixture({ processControl, backendCancellationGraceMs: 10 });
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -1407,7 +1624,7 @@ test("a disconnected cancellation channel retains the unconfirmed process", asyn
   client.destroy();
   await cancellation;
 
-  assert.equal(processControl.terminations.length, 0);
+  assert.equal(processControl.terminations.length, 1);
 });
 
 test("unverifiable process identity keeps acknowledged cancellation unproven", async (context) => {
@@ -1512,8 +1729,8 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   }
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
-  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v9.json"), "utf8")) as { readonly socketPath: string };
-  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v9.json"), "utf8")) as { readonly socketPath: string };
+  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v13.json"), "utf8")) as { readonly socketPath: string };
+  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v13.json"), "utf8")) as { readonly socketPath: string };
   const secondClient = await socket(secondConfig.socketPath);
   await sendResultDelivery(secondClient, {
     capability: "cd".repeat(32),

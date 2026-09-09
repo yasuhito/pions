@@ -1654,6 +1654,19 @@ test("a second writer cannot open the same storage root", async (context) => {
   await assert.rejects(opening, (error) => error instanceof ArtifactStoreOpenError && error.reason === "writer_locked");
 });
 
+test("changed writer ownership blocks Start delivery authority revocation proof", async (context) => {
+  const value = await store(context);
+  await writeFile(
+    join(`${value.rootDirectory}.writer-lock`, "owner.json"),
+    `${JSON.stringify({ pid: process.pid, startToken: "another-process-start" })}\n`,
+  );
+
+  await assert.rejects(
+    value.store.writerOwnership(),
+    (error) => error instanceof ArtifactStoreOpenError && error.reason === "writer_locked",
+  );
+});
+
 test("an unsupported storage root is rejected without changing it", async (context) => {
   const rootDirectory = await root(context);
   await mkdir(rootDirectory, { recursive: true });

@@ -5,13 +5,15 @@ import { Effect } from "effect";
 
 import type {
   CreatedPresentation,
+  EventStore,
   Operation,
   OperationState,
 } from "./event-store/index.js";
 import type { ResultAcceptanceProof } from "./worker-protocol.js";
 import { makeRuntime } from "./runtime.js";
 import { runtimeArtifactStore } from "./runtime-artifacts.js";
-export { InMemoryEventStore } from "./event-store/memory-storage.js";
+import { InMemoryEventStore } from "./event-store/memory-storage.js";
+export { InMemoryEventStore };
 import {
   acknowledgeResultAcceptance,
   makeSingleRunWorker,
@@ -34,9 +36,62 @@ import type {
   Runtime,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
+import { automaticStartScopeDigest } from "./start-instruction.js";
 
 type TestRuntimeServices = Omit<RuntimeServices, "artifacts" | "artifactCredential"> &
   Partial<Pick<RuntimeServices, "artifacts" | "artifactCredential">>;
+
+export async function advanceTestOperationToRunning(
+  store: EventStore,
+  operationId: string,
+): Promise<void> {
+  const operation = (await Effect.runPromise(store.read(operationId))).operation;
+  const processInstanceId = "test-worker-instance";
+  const instruction = {
+    dispatcherId: "pions-runtime",
+    workerProcessInstanceId: processInstanceId,
+    receiptDigest: automaticStartScopeDigest(operation),
+    deliveryGeneration: 1,
+  };
+  await Effect.runPromise(store.advance(operationId, {
+    type: "presentation_owned",
+    presentation: { kind: "herdr_pane", paneId: "test-pane", ownedByPions: true },
+  }));
+  await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
+  await Effect.runPromise(store.advance(operationId, { type: "worker_launched" }));
+  await Effect.runPromise(store.advance(operationId, {
+    type: "worker_identified",
+    workerIdentity: {
+      processId: 1,
+      processInstanceId,
+      processStartToken: "test-worker-start",
+      piSessionId: "test-pi-session",
+      paneId: "test-pane",
+    },
+    observedConfig: {
+      model: { state: "observed", value: operation.effectiveConfig.model },
+      thinkingLevel: { state: "observed", value: operation.effectiveConfig.thinkingLevel },
+      tools: { state: "observed", value: operation.effectiveConfig.tools },
+      cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+    },
+  }));
+  await Effect.runPromise(store.advance(operationId, {
+    type: "start_delivery_authority_acquired",
+    instruction,
+  }));
+  await Effect.runPromise(store.advance(operationId, { type: "start_delivery_entered", instruction }));
+  await Effect.runPromise(store.advance(operationId, { type: "start_instruction_dispatched", instruction }));
+  await Effect.runPromise(store.advance(operationId, {
+    type: "start_instruction_accepted",
+    instruction,
+    proof: "worker-durable-acceptance",
+  }));
+  await Effect.runPromise(store.advance(operationId, {
+    type: "start_instruction_acknowledged",
+    instruction,
+    proof: "authenticated-worker-acknowledgement",
+  }));
+}
 
 export function makeTestRuntime(services: TestRuntimeServices): Runtime {
   if (services.artifacts !== undefined && services.artifactCredential !== undefined) {
@@ -106,6 +161,10 @@ export class FakeWorkerAdapter implements WorkerAdapter {
     });
   }
 
+  recover(operation: Operation): Worker {
+    return this.open(operation);
+  }
+
   protected run(
     operation: Operation,
     hooks: Readonly<WorkerRunHooks>,
@@ -145,7 +204,10 @@ export class FakeWorkerAdapter implements WorkerAdapter {
           cwd: { state: "observed", value: operation.effectiveConfig.cwd },
         },
       });
+      yield* hooks.startDeliveryEntered(startInstruction);
+      yield* hooks.startInstructionDispatched(startInstruction);
       yield* hooks.startInstructionAccepted(startInstruction);
+      yield* hooks.startInstructionAcknowledged(startInstruction);
       if (
         this.failure === "process-exited-without-result" ||
         this.failure === "liveness-unproven"

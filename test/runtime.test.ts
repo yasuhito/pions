@@ -44,6 +44,70 @@ import {
 } from "../src/internal/testing.js";
 import type { FakeWorkerAdapterOptions } from "../src/internal/testing.js";
 
+class InterruptedStartWorkerAdapter implements WorkerAdapter {
+  recoveredDeliveryCount = 0;
+  private releaseRun: (() => void) | undefined;
+
+  release(): void {
+    this.releaseRun?.();
+  }
+
+  open(operation: Operation): Worker {
+    return makeSingleRunWorker({
+      run: (hooks) => Effect.gen(this, function* () {
+        yield* hooks.workerLaunched();
+        const instruction = yield* hooks.workerIdentified({
+          processId: 1234,
+          processInstanceId: "interrupted-worker",
+          processStartToken: "interrupted-worker-start",
+          piSessionId: "interrupted-pi",
+          observedConfig: {
+            model: { state: "observed", value: operation.effectiveConfig.model },
+            thinkingLevel: { state: "observed", value: operation.effectiveConfig.thinkingLevel },
+            tools: { state: "observed", value: operation.effectiveConfig.tools },
+            cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+          },
+        });
+        yield* hooks.startDeliveryEntered(instruction);
+        yield* hooks.startInstructionDispatched(instruction);
+        return yield* Effect.async<WorkerRunOutcome>((resume) => {
+          this.releaseRun = () => resume(Effect.succeed({ state: "liveness-unproven" }));
+        });
+      }),
+      cancel: () => Effect.succeed(undefined),
+    });
+  }
+
+  recover(operation: Operation): Worker {
+    return makeSingleRunWorker({
+      run: (hooks) => Effect.gen(this, function* () {
+        const identity = operation.workerIdentity!;
+        const instruction = yield* hooks.workerIdentified({
+          processId: identity.processId,
+          processInstanceId: identity.processInstanceId,
+          processStartToken: identity.processStartToken,
+          piSessionId: identity.piSessionId,
+          observedConfig: operation.observedConfig!,
+        });
+        yield* hooks.startDeliveryAuthorityRevoked(
+          instruction.dispatcherId,
+          instruction.deliveryGeneration,
+        );
+        yield* hooks.deliveryGenerationConfirmed({
+          dispatcherId: instruction.dispatcherId,
+          deliveryGeneration: instruction.deliveryGeneration,
+          acceptanceState: "not_accepted",
+        });
+        yield* hooks.startDeliveryEntered(instruction);
+        yield* hooks.startInstructionDispatched(instruction);
+        this.recoveredDeliveryCount += 1;
+        return { state: "liveness-unproven" } as const;
+      }),
+      cancel: () => Effect.succeed(undefined),
+    });
+  }
+}
+
 class ControlledTestClock implements RuntimeClock {
   private readonly runtime = ManagedRuntime.make(TestContext.TestContext);
   private timestampIndex = 0;
@@ -79,6 +143,7 @@ class ControlledTestClock implements RuntimeClock {
 
 class ControlledWorkerAdapter implements WorkerAdapter {
   startCount = 0;
+  recoverCount = 0;
   readonly cancelTrace: Array<string> = [];
   private readonly receivers = new Map<
     string,
@@ -96,6 +161,39 @@ class ControlledWorkerAdapter implements WorkerAdapter {
         this.cancelTrace.push(`${operation.operationId}:${cancellationEpoch}`);
         this.cancellationResponders.set(operation.operationId, resume);
       }),
+    });
+  }
+
+  recover(operation: Operation): Worker {
+    this.recoverCount += 1;
+    return makeSingleRunWorker({
+      run: (hooks) => Effect.gen(function* () {
+        const identity = operation.workerIdentity!;
+        const instruction = yield* hooks.workerIdentified({
+          processId: identity.processId,
+          processInstanceId: identity.processInstanceId,
+          processStartToken: identity.processStartToken,
+          piSessionId: identity.piSessionId,
+          observedConfig: operation.observedConfig!,
+        });
+        yield* hooks.startDeliveryAuthorityRevoked(
+          instruction.dispatcherId,
+          instruction.deliveryGeneration,
+        );
+        yield* hooks.deliveryGenerationConfirmed({
+          dispatcherId: instruction.dispatcherId,
+          deliveryGeneration: instruction.deliveryGeneration,
+          acceptanceState: "accepted",
+          acceptedInstruction: {
+            ...operation.startInstructionAcceptance!,
+            ...(operation.startAuthorizationTiming.policy === "required"
+              ? { deadline: operation.startAuthorizationTiming.deadline }
+              : {}),
+          },
+        });
+        return { state: "liveness-unproven" } as const;
+      }),
+      cancel: () => Effect.succeed(undefined),
     });
   }
 
@@ -121,7 +219,10 @@ class ControlledWorkerAdapter implements WorkerAdapter {
           cwd: { state: "observed", value: operation.effectiveConfig.cwd },
         },
       });
+      yield* hooks.startDeliveryEntered(startInstruction);
+      yield* hooks.startInstructionDispatched(startInstruction);
       yield* hooks.startInstructionAccepted(startInstruction);
+      yield* hooks.startInstructionAcknowledged(startInstruction);
       const produced = yield* Effect.async<Readonly<WorkerProducedResult>>((resume) => {
         this.receivers.set(operation.operationId, resume);
       });
@@ -256,6 +357,87 @@ async function completeOperation(
     trace,
   };
 }
+
+test("runtime startup adopts a recoverable Start delivery", async () => {
+  const store = new InMemoryEventStore();
+  const firstWorker = new ControlledWorkerAdapter();
+  const firstRuntime = makeTestRuntime({
+    worker: firstWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await firstRuntime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  while ((await handle.read()).state !== "running") {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await firstRuntime.close();
+  const recoveredWorker = new ControlledWorkerAdapter();
+  const recoveredRuntime = makeTestRuntime({
+    worker: recoveredWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T11:00:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  let handoff = (await handle.read()).startDeliveryHandoffs.at(-1);
+  while (handoff?.workerGenerationConfirmedAt === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    handoff = (await handle.read()).startDeliveryHandoffs.at(-1);
+  }
+  await recoveredRuntime.close();
+
+  assert.equal(handoff.acceptanceState, "accepted");
+});
+
+test("runtime recovery redispatches only after a durable not-accepted result", async () => {
+  const store = new InMemoryEventStore();
+  const firstWorker = new InterruptedStartWorkerAdapter();
+  const firstRuntime = makeTestRuntime({
+    worker: firstWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T10:10:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await firstRuntime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  while ((await handle.read()).startDeliveryEntry === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await firstRuntime.close();
+  const recoveredWorker = new InterruptedStartWorkerAdapter();
+  const recoveredRuntime = makeTestRuntime({
+    worker: recoveredWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T11:10:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  while (recoveredWorker.recoveredDeliveryCount === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  firstWorker.release();
+  await recoveredRuntime.close();
+
+  assert.equal(recoveredWorker.recoveredDeliveryCount, 1);
+});
 
 test("each Operation records root, parent, and depth lineage", async () => {
   const worker = new ControlledWorkerAdapter();
@@ -999,7 +1181,11 @@ test("Runtime records the successful Operation event sequence", async () => {
       "operation_starting",
       "worker_launched",
       "worker_identified",
-      "automatic_operation_started",
+      "start_delivery_authority_acquired",
+      "start_delivery_entered",
+      "start_instruction_dispatched",
+      "start_instruction_accepted",
+      "start_instruction_acknowledged",
       "result_acceptance_prepared",
       "result_accepted",
       "agent_settled",
@@ -1021,11 +1207,15 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
       { seq: 4, timestamp: "2026-09-06T10:00:03.000Z" },
       { seq: 5, timestamp: "2026-09-06T10:00:04.000Z" },
       { seq: 6, timestamp: "2026-09-06T10:00:05.000Z" },
-      { seq: 7, timestamp: "2026-09-06T10:00:07.000Z" },
-      { seq: 8, timestamp: "2026-09-06T10:00:08.000Z" },
-      { seq: 9, timestamp: "2026-09-06T10:00:09.000Z" },
-      { seq: 10, timestamp: "2026-09-06T10:00:10.000Z" },
+      { seq: 7, timestamp: "2026-09-06T10:00:06.000Z" },
+      { seq: 8, timestamp: "2026-09-06T10:00:07.000Z" },
+      { seq: 9, timestamp: "2026-09-06T10:00:08.000Z" },
+      { seq: 10, timestamp: "2026-09-06T10:00:09.000Z" },
       { seq: 11, timestamp: "2026-09-06T10:00:11.000Z" },
+      { seq: 12, timestamp: "2026-09-06T10:00:12.000Z" },
+      { seq: 13, timestamp: "2026-09-06T10:00:13.000Z" },
+      { seq: 14, timestamp: "2026-09-06T10:00:14.000Z" },
+      { seq: 15, timestamp: "2026-09-06T10:00:15.000Z" },
     ],
   );
 });

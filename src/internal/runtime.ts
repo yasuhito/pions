@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { Cause, Effect, Exit, Schema } from "effect";
 
+import { RUNTIME_ACTOR_ID } from "./event-store/index.js";
 import type {
   Operation,
   OperationIntent,
@@ -26,9 +27,12 @@ import type {
   WorkerCancellationEvidence,
   RuntimeServices,
   Worker,
-  WorkerStartInstruction,
 } from "./services.js";
-import { sha256Digest } from "./result-digest.js";
+import type { StartInstruction } from "./worker-protocol.js";
+import {
+  automaticStartScopeDigest,
+  startInstructionReference,
+} from "./start-instruction.js";
 import {
   CancellationRejectedError,
   OperationCancelledError,
@@ -139,7 +143,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const cancellations = new Map<string, Promise<CancellationResult>>();
   const cancellingSubtreeRoots = new Set<string>();
   const startGateWaiters = new Map<string, {
-    readonly resolve: (instruction: Readonly<WorkerStartInstruction>) => void;
+    readonly resolve: (instruction: Readonly<StartInstruction>) => void;
     readonly reject: (error: unknown) => void;
   }>();
   const authorizationMutationTails = new Map<string, Promise<void>>();
@@ -199,6 +203,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       Effect.mapError((error) => persistenceError(operationId, error)),
     );
 
+  const advanceAndProject = (
+    operationId: string,
+    intent: OperationIntent,
+  ): Effect.Effect<void, OperationPersistenceError> =>
+    advanceOperation(operationId, intent).pipe(
+      Effect.tap((operation) => project(operation)),
+      Effect.asVoid,
+    );
+
   const publicSnapshot = (
     stored: Readonly<StoredOperationSnapshot>,
   ): Readonly<PublicOperationSnapshot> => {
@@ -230,12 +243,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           : { decision: operation.startAuthorizationDecision }),
         rejectedDecisions: Object.freeze(operation.rejectedStartAuthorizationDecisions),
       }),
+      ...(operation.startDeliveryAuthority === undefined
+        ? {}
+        : { startDeliveryAuthority: operation.startDeliveryAuthority }),
+      ...(operation.startDeliveryEntry === undefined
+        ? {}
+        : { startDeliveryEntry: operation.startDeliveryEntry }),
       ...(operation.startInstructionDelivery === undefined
         ? {}
         : { startInstructionDelivery: operation.startInstructionDelivery }),
       ...(operation.startInstructionAcceptance === undefined
         ? {}
         : { startInstructionAcceptance: operation.startInstructionAcceptance }),
+      ...(operation.startInstructionAcknowledgement === undefined
+        ? {}
+        : { startInstructionAcknowledgement: operation.startInstructionAcknowledgement }),
+      startDeliveryHandoffs: operation.startDeliveryHandoffs,
       ...(resultAcceptance === undefined
         ? {}
         : { resultAcceptance: Object.freeze(resultAcceptance) }),
@@ -576,16 +599,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const waitAtStartGate = async (
     record: OperationRecord,
     identified: Operation,
-  ): Promise<Readonly<WorkerStartInstruction>> => {
+  ): Promise<Readonly<StartInstruction>> => {
     const authorization = identified.startAuthorizationTiming;
     if (authorization.policy === "disabled") {
-      return {
-        dispatcherId: "pions-runtime",
+      const instruction = {
+        dispatcherId: RUNTIME_ACTOR_ID,
         workerProcessInstanceId: identified.workerIdentity!.processInstanceId,
-        receiptDigest: sha256Digest(Buffer.from(`${identified.operationId}\0automatic-start`, "utf8")),
+        receiptDigest: automaticStartScopeDigest(identified),
         deliveryGeneration: 1,
-        deadline: new Date(8_640_000_000_000_000).toISOString(),
       };
+      await runEffect(advanceAndProject(record.operationId, {
+        type: "start_delivery_authority_acquired",
+        instruction: startInstructionReference(instruction),
+      }));
+      return instruction;
     }
     const receiptPolicy = identified.startupReceiptPolicy;
     if (receiptPolicy === undefined) {
@@ -642,7 +669,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       throw new Error("Start authorization expired before publication");
     }
 
-    const gate = new Promise<Readonly<WorkerStartInstruction>>((resolve, reject) => {
+    const gate = new Promise<Readonly<StartInstruction>>((resolve, reject) => {
       startGateWaiters.set(record.operationId, { resolve, reject });
     });
     void (async () => {
@@ -659,25 +686,55 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     return gate;
   };
 
-  const execute = async (record: OperationRecord): Promise<void> => {
+  const execute = async (record: OperationRecord, recovering = false): Promise<void> => {
     try {
-      let operation = await runEffect(
-        advanceOperation(record.operationId, { type: "operation_starting" }),
-      );
-      await runEffect(project(operation));
+      let operation = recovering
+        ? await runEffect(getOperation(record.operationId))
+        : await runEffect(advanceOperation(record.operationId, { type: "operation_starting" }));
+      if (!recovering) await runEffect(project(operation));
 
       const worker = record.worker;
       if (worker === undefined) {
         throw new Error("Worker was not opened");
       }
       const workerOutcome = await runEffect(worker.run({
-        workerLaunched: () => advanceOperation(record.operationId, {
-          type: "worker_launched",
-        }).pipe(
-          Effect.tap((launched) => project(launched)),
-          Effect.asVoid,
-        ),
-        workerIdentified: (workerIdentity) => advanceOperation(record.operationId, {
+        workerLaunched: () => recovering
+          ? Effect.void
+          : advanceAndProject(record.operationId, { type: "worker_launched" }),
+        workerIdentified: (workerIdentity) => recovering
+          ? Effect.tryPromise({
+              try: async () => {
+                const current = await runEffect(getOperation(record.operationId));
+                const existingIdentity = current.workerIdentity;
+                const previous = current.startDeliveryAuthority;
+                if (
+                  existingIdentity === undefined ||
+                  previous === undefined ||
+                  existingIdentity.processInstanceId !== workerIdentity.processInstanceId ||
+                  existingIdentity.processStartToken !== workerIdentity.processStartToken
+                ) {
+                  throw new OperationPersistenceError(record.operationId, "corrupt_record");
+                }
+                const deliveryGeneration = previous.deliveryGeneration + 1;
+                const dispatcherId = `${RUNTIME_ACTOR_ID}-recovery-${deliveryGeneration}`;
+                return {
+                  dispatcherId,
+                  workerProcessInstanceId: previous.workerProcessInstanceId,
+                  receiptDigest: previous.receiptDigest,
+                  ...(previous.authorizationDecisionId === undefined
+                    ? {}
+                    : { authorizationDecisionId: previous.authorizationDecisionId }),
+                  deliveryGeneration,
+                  ...(current.startAuthorizationTiming.policy === "required"
+                    ? { deadline: current.startAuthorizationTiming.deadline }
+                    : {}),
+                };
+              },
+              catch: (error) => error instanceof OperationPersistenceError
+                ? error
+                : new OperationPersistenceError(record.operationId, "write_failed"),
+            })
+          : advanceOperation(record.operationId, {
           type: "worker_identified",
           workerIdentity: {
             processId: workerIdentity.processId,
@@ -731,23 +788,124 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               : new OperationPersistenceError(record.operationId, "write_failed"),
           })),
         ),
-        startInstructionAccepted: (instruction) => getOperation(record.operationId).pipe(
-          Effect.flatMap((current) => {
-            if (current.startAuthorizationTiming.policy === "disabled") {
-              return advanceOperation(record.operationId, { type: "automatic_operation_started" });
+        startDeliveryAuthorityRevoked: (successorDispatcherId, deliveryGeneration) =>
+          Effect.tryPromise({
+            try: () => services.artifacts.writerOwnership(),
+            catch: () => new OperationPersistenceError(record.operationId, "write_failed"),
+          }).pipe(
+            Effect.flatMap((writerOwnership) => advanceAndProject(record.operationId, {
+              type: "start_delivery_authority_revoked",
+              successorDispatcherId,
+              deliveryGeneration,
+              writerOwnership,
+            })),
+          ),
+        deliveryGenerationConfirmed: (confirmation) => Effect.gen(function* () {
+          yield* advanceAndProject(record.operationId, {
+            type: "start_delivery_generation_confirmed",
+            dispatcherId: confirmation.dispatcherId,
+            deliveryGeneration: confirmation.deliveryGeneration,
+            acceptanceState: confirmation.acceptanceState,
+            ...(confirmation.acceptedInstruction === undefined
+              ? {}
+              : { acceptedInstruction: startInstructionReference(confirmation.acceptedInstruction) }),
+          });
+          const current = yield* getOperation(record.operationId);
+          if (confirmation.acceptanceState === "accepted") {
+            const accepted = confirmation.acceptedInstruction;
+            if (accepted === undefined) {
+              return yield* Effect.fail(new OperationPersistenceError(record.operationId, "corrupt_record"));
             }
-            const { deadline: _deadline, ...reference } = instruction;
-            return advanceOperation(record.operationId, {
-              type: "start_instruction_accepted",
-              instruction: reference,
-              proof: "authenticated-worker-acknowledgement",
+            if (current.startInstructionAcceptance === undefined) {
+              yield* advanceAndProject(record.operationId, {
+                type: "start_instruction_accepted",
+                instruction: startInstructionReference(accepted),
+                proof: "worker-durable-acceptance",
+              });
+            }
+            const acceptedCurrent = yield* getOperation(record.operationId);
+            if (acceptedCurrent.startInstructionAcknowledgement === undefined) {
+              yield* advanceAndProject(record.operationId, {
+                type: "start_instruction_acknowledged",
+                instruction: startInstructionReference(accepted),
+                proof: "authenticated-generation-acknowledgement",
+              });
+            }
+            return;
+          }
+          if (confirmation.acceptanceState === "unknown") return;
+          const workerIdentity = current.workerIdentity;
+          const previousAuthority = current.startDeliveryAuthority;
+          if (
+            current.state !== "starting" ||
+            workerIdentity === undefined ||
+            previousAuthority === undefined ||
+            current.startGate !== "not_required" && current.startGate !== "authorized" ||
+            current.startAuthorizationTiming.policy === "required" &&
+              Date.parse(yield* services.clock.now()) >= Date.parse(current.startAuthorizationTiming.deadline)
+          ) {
+            return yield* Effect.fail(new OperationPersistenceError(record.operationId, "write_failed"));
+          }
+          if (current.startAuthorizationTiming.policy === "required") {
+            const receiptPolicy = current.startupReceiptPolicy;
+            if (receiptPolicy === undefined) {
+              return yield* Effect.fail(new OperationPersistenceError(record.operationId, "corrupt_record"));
+            }
+            yield* Effect.tryPromise({
+              try: () => verifyReviewSubject(record.operationId, receiptPolicy, true),
+              catch: () => new OperationPersistenceError(record.operationId, "write_failed"),
             });
-          }),
-          Effect.tap((started) => project(started)),
-          Effect.asVoid,
-        ),
+          }
+          yield* advanceAndProject(record.operationId, {
+            type: "start_delivery_authority_acquired",
+            instruction: {
+              dispatcherId: confirmation.dispatcherId,
+              workerProcessInstanceId: workerIdentity.processInstanceId,
+              receiptDigest: previousAuthority.receiptDigest,
+              ...(previousAuthority.authorizationDecisionId === undefined
+                ? {}
+                : { authorizationDecisionId: previousAuthority.authorizationDecisionId }),
+              deliveryGeneration: confirmation.deliveryGeneration,
+            },
+          });
+          yield* Effect.tryPromise({
+            try: async () => {
+              await services.resourceProofController?.revalidate(record.operationId);
+            },
+            catch: () => new OperationPersistenceError(record.operationId, "write_failed"),
+          });
+        }),
+        startDeliveryEntered: (instruction) => advanceAndProject(record.operationId, {
+          type: "start_delivery_entered",
+          instruction: startInstructionReference(instruction),
+        }),
+        startInstructionDispatched: (instruction) => advanceAndProject(record.operationId, {
+          type: "start_instruction_dispatched",
+          instruction: startInstructionReference(instruction),
+        }),
+        startInstructionAccepted: (instruction) => advanceAndProject(record.operationId, {
+          type: "start_instruction_accepted",
+          instruction: startInstructionReference(instruction),
+          proof: "worker-durable-acceptance",
+        }),
+        startInstructionAcknowledged: (instruction) => advanceAndProject(record.operationId, {
+          type: "start_instruction_acknowledged",
+          instruction: startInstructionReference(instruction),
+          proof: "authenticated-worker-acknowledgement",
+        }),
         acceptResult: (result) => resultAcceptance.accept(record.operationId, result),
       }));
+      if (workerOutcome.successfulExitConfirmed === true) {
+        const current = await runEffect(getOperation(record.operationId));
+        if (!isTerminal(current) && current.state !== "cancelling") {
+          record.successfulExitConfirmed = true;
+          await runEffect(advanceAndProject(record.operationId, {
+            type: "worker_stop_confirmed",
+            proof: "worker-stop",
+          }));
+          operation = await runEffect(getOperation(record.operationId));
+        }
+      }
       if (workerOutcome.state !== "result_acknowledged") {
         const current = await runEffect(getOperation(record.operationId));
         if (isTerminal(current) || current.state === "cancelling") return;
@@ -799,14 +957,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         return;
       }
       if (workerOutcome.successfulExitConfirmed === true) {
-        record.successfulExitConfirmed = true;
-        operation = await runEffect(
-          advanceOperation(record.operationId, {
-            type: "worker_stop_confirmed",
-            proof: "worker-stop",
-          }),
-        );
-        await runEffect(project(operation));
         const runtimeConfiguration = services.configuration ?? {
           cwd: "/test/workspace",
           profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
@@ -1343,9 +1493,30 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     };
   };
 
+  const recovery = runEffect(services.store.listRecoverableOperations().pipe(
+    Effect.mapError((error) => persistenceError("runtime-recovery", error)),
+  )).then((snapshots) => {
+    for (const { operation } of snapshots) {
+      if (records.has(operation.operationId)) continue;
+      const deferred = deferredResult();
+      const record: OperationRecord = {
+        operationId: operation.operationId,
+        terminalPromise: deferred.promise,
+        resolveTerminal: deferred.resolve,
+        rejectTerminal: deferred.reject,
+        pendingAdmissions: 0,
+        worker: services.worker.recover(operation),
+      };
+      records.set(operation.operationId, record);
+      void execute(record, true);
+    }
+  });
+  void recovery.catch(() => undefined);
+
   return {
-    close(): Promise<void> {
-      return artifactServices.artifacts.close();
+    async close(): Promise<void> {
+      await recovery.catch(() => undefined);
+      await artifactServices.artifacts.close();
     },
 
     spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
@@ -1624,13 +1795,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 throw new StartRevalidationError(timedOut ? "timed_out" : "invalidated");
               }
               const instruction = {
-                dispatcherId: "pions-runtime",
+                dispatcherId: RUNTIME_ACTOR_ID,
                 workerProcessInstanceId: latest.workerIdentity!.processInstanceId,
                 receiptDigest: request.receiptDigest,
                 authorizationDecisionId: request.decisionId,
                 deliveryGeneration: 1,
               };
-              await runEffect(advanceOperation(request.operationId, { type: "start_instruction_dispatched", instruction }));
+              await runEffect(advanceAndProject(request.operationId, {
+                type: "start_delivery_authority_acquired",
+                instruction,
+              }));
               const dispatchCheckedAt = await runEffect(services.clock.now());
               if (authorizationDeadlineElapsed(
                 request.operationId,

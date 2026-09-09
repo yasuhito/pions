@@ -1,5 +1,13 @@
-import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { dirname, join } from "node:path";
@@ -16,6 +24,7 @@ import { currentProcessStartToken } from "./internal/worker-process-control.js";
 import { sha256Digest } from "./internal/result-digest.js";
 import {
   WorkerProtocolPeer,
+  decodeStartInstruction,
   decodeWorkerConfig,
 } from "./internal/worker-protocol.js";
 import type {
@@ -27,15 +36,47 @@ import type {
 
 const CONFIG_FLAG = "pions-worker-config";
 
+function writeDurableJson(
+  path: string,
+  value: unknown,
+  replace: boolean,
+): boolean {
+  const writePath = replace ? `${path}.tmp-${process.pid}-${randomUUID()}` : path;
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(writePath, "wx", 0o600);
+    writeFileSync(descriptor, `${JSON.stringify(value)}\n`, "utf8");
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    if (replace) renameSync(writePath, path);
+    const directory = openSync(dirname(path), "r");
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+    return true;
+  } catch {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (replace) {
+      try {
+        unlinkSync(writePath);
+      } catch {
+        // The temporary file may not have been created.
+      }
+    }
+    return false;
+  }
+}
+
 class FileStartInstructionAcceptanceStore implements StartInstructionAcceptanceStore {
   constructor(private readonly path: string) {}
 
   load(): Readonly<StartInstruction> | "none" | "unknown" {
     try {
       const value = JSON.parse(readFileSync(this.path, "utf8")) as unknown;
-      return typeof value === "object" && value !== null
-        ? value as StartInstruction
-        : "unknown";
+      return decodeStartInstruction(value);
     } catch (error) {
       return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
         ? "none"
@@ -56,48 +97,14 @@ class FileStartInstructionAcceptanceStore implements StartInstructionAcceptanceS
 
   saveGeneration(deliveryGeneration: number): boolean {
     const target = `${this.path}.generation`;
-    const temporary = `${target}.tmp`;
-    let descriptor: number | undefined;
-    try {
-      descriptor = openSync(temporary, "wx", 0o600);
-      writeFileSync(descriptor, `${JSON.stringify(deliveryGeneration)}\n`, "utf8");
-      fsyncSync(descriptor);
-      closeSync(descriptor);
-      descriptor = undefined;
-      renameSync(temporary, target);
-      const directory = openSync(dirname(this.path), "r");
-      try {
-        fsyncSync(directory);
-      } finally {
-        closeSync(directory);
-      }
-      return true;
-    } catch {
-      if (descriptor !== undefined) closeSync(descriptor);
-      return this.loadGeneration() === deliveryGeneration;
-    }
+    return writeDurableJson(target, deliveryGeneration, true) ||
+      this.loadGeneration() === deliveryGeneration;
   }
 
   save(instruction: Readonly<StartInstruction>): boolean {
-    let descriptor: number | undefined;
-    try {
-      descriptor = openSync(this.path, "wx", 0o600);
-      writeFileSync(descriptor, `${JSON.stringify(instruction)}\n`, "utf8");
-      fsyncSync(descriptor);
-      closeSync(descriptor);
-      descriptor = undefined;
-      const directory = openSync(dirname(this.path), "r");
-      try {
-        fsyncSync(directory);
-      } finally {
-        closeSync(directory);
-      }
-      return true;
-    } catch {
-      if (descriptor !== undefined) closeSync(descriptor);
-      const stored = this.load();
-      return stored !== "none" && stored !== "unknown" && isDeepStrictEqual(stored, instruction);
-    }
+    if (writeDurableJson(this.path, instruction, false)) return true;
+    const stored = this.load();
+    return stored !== "none" && stored !== "unknown" && isDeepStrictEqual(stored, instruction);
   }
 }
 
@@ -172,6 +179,10 @@ function addUsage(total: PiUsage, message: AssistantMessage): PiUsage {
 class PiWorkerBridge {
   private socket: Socket | undefined;
   private protocol: WorkerProtocolPeer | undefined;
+  private context: ExtensionContext | undefined;
+  private reconnecting = false;
+  private stopped = false;
+  private readonly processInstanceId = randomBytes(32).toString("hex");
   private finalAssistant: AssistantMessage | undefined;
   private usage = emptyUsage();
   private readonly toolUses: Array<PiToolUse> = [];
@@ -187,48 +198,8 @@ class PiWorkerBridge {
   async start(ctx: ExtensionContext): Promise<void> {
     ctx.ui.setEditorComponent((tui, theme, keybindings) =>
       new ObservationOnlyEditor(tui, theme, keybindings));
-    this.protocol = new WorkerProtocolPeer(
-      {
-        operationId: this.config.operationId,
-        capability: this.config.capability,
-      },
-      undefined,
-      undefined,
-      new FileStartInstructionAcceptanceStore(join(
-        dirname(this.config.promptPath),
-        "start-instruction.v9.json",
-      )),
-    );
-    this.socket = connect(this.config.socketPath);
-    await new Promise<void>((resolve, reject) => {
-      this.socket!.once("connect", resolve);
-      this.socket!.once("error", reject);
-    });
-    this.socket.on("data", (chunk: Buffer) => this.receiveControl(chunk, ctx));
-    this.socket.on("error", () => undefined);
-    this.send({
-      type: "hello",
-      processId: process.pid,
-      processInstanceId: randomBytes(32).toString("hex"),
-      processStartToken: await currentProcessStartToken(),
-    });
-    this.send({
-      type: "started",
-      piSessionId: ctx.sessionManager.getSessionId(),
-      observedConfig: {
-        model: ctx.model === undefined
-          ? { state: "unavailable" }
-          : {
-              state: "observed",
-              value: { provider: ctx.model.provider, id: ctx.model.id },
-            },
-        thinkingLevel: ctx.thinkingLevel === undefined
-          ? { state: "unavailable" }
-          : { state: "observed", value: ctx.thinkingLevel },
-        tools: { state: "observed", value: this.pi.getActiveTools() },
-        cwd: { state: "observed", value: ctx.cwd },
-      },
-    });
+    this.context = ctx;
+    await this.connectToHost(ctx);
   }
 
   recordAssistant(value: unknown): void {
@@ -246,6 +217,7 @@ class PiWorkerBridge {
     if (this.completionSent) return;
     if (this.cancelled) {
       this.completionSent = true;
+      this.stopped = true;
       this.send({ type: "cancelled" });
       this.socket?.end(() => ctx.shutdown());
       return;
@@ -287,7 +259,66 @@ class PiWorkerBridge {
   }
 
   close(): void {
+    this.stopped = true;
     this.socket?.end();
+  }
+
+  private async connectToHost(ctx: ExtensionContext): Promise<void> {
+    this.protocol = new WorkerProtocolPeer(
+      {
+        operationId: this.config.operationId,
+        capability: this.config.capability,
+      },
+      new FileStartInstructionAcceptanceStore(join(
+        dirname(this.config.promptPath),
+        "start-instruction.v13.json",
+      )),
+    );
+    const socket = connect(this.config.socketPath);
+    this.socket = socket;
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.on("data", (chunk: Buffer) => this.receiveControl(chunk, ctx));
+    socket.on("error", () => socket.destroy());
+    socket.on("close", () => this.scheduleReconnect());
+    this.send({
+      type: "hello",
+      processId: process.pid,
+      processInstanceId: this.processInstanceId,
+      processStartToken: await currentProcessStartToken(),
+    });
+    this.send({
+      type: "started",
+      piSessionId: ctx.sessionManager.getSessionId(),
+      observedConfig: {
+        model: ctx.model === undefined
+          ? { state: "unavailable" }
+          : {
+              state: "observed",
+              value: { provider: ctx.model.provider, id: ctx.model.id },
+            },
+        thinkingLevel: ctx.thinkingLevel === undefined
+          ? { state: "unavailable" }
+          : { state: "observed", value: ctx.thinkingLevel },
+        tools: { state: "observed", value: this.pi.getActiveTools() },
+        cwd: { state: "observed", value: ctx.cwd },
+      },
+    });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnecting || this.context === undefined) return;
+    this.reconnecting = true;
+    const retry = (): void => {
+      setTimeout(() => {
+        void this.connectToHost(this.context!).then(() => {
+          this.reconnecting = false;
+        }).catch(() => retry());
+      }, 100).unref();
+    };
+    retry();
   }
 
   private receiveControl(chunk: Buffer, ctx: ExtensionContext): void {
@@ -302,17 +333,35 @@ class PiWorkerBridge {
             ? {}
             : { acceptedInstruction: reception.generationUpdate.acceptedInstruction }),
         });
+        if (
+          reception.generationUpdate.acceptanceState === "accepted" &&
+          this.completionSent
+        ) {
+          this.completionSent = false;
+          this.settle(ctx);
+        }
       }
       if (reception.cancellationRequested && !this.cancelled) {
         this.cancelled = true;
         if (this.began) ctx.abort();
         else this.settle(ctx);
       }
-      const startInstruction = reception.startInstruction;
-      if (startInstruction?.status === "accepted" || startInstruction?.status === "duplicate") {
-        this.send({ type: "begin_ack", instruction: startInstruction.instruction });
+      for (const startInstruction of reception.startInstructions) {
+        if (startInstruction.status === "accepted" || startInstruction.status === "duplicate") {
+          this.send({ type: "begin_accepted", instruction: startInstruction.instruction });
+        } else {
+          this.send({
+            type: "begin_rejected",
+            instruction: startInstruction.instruction,
+            reason: startInstruction.status,
+          });
+        }
       }
-      if (startInstruction?.status === "accepted" && !this.cancelled && !this.began) {
+      for (const instruction of reception.observedStartAcceptances) {
+        this.send({ type: "begin_ack", instruction });
+      }
+      const accepted = reception.startInstructions.find(({ status }) => status === "accepted");
+      if (accepted !== undefined && !this.cancelled && !this.began) {
         this.began = true;
         void this.begin(ctx).catch((error) => {
           if (this.completionSent) return;
@@ -326,6 +375,7 @@ class PiWorkerBridge {
         });
       }
       if (reception.acknowledgementsComplete) {
+        this.stopped = true;
         this.socket?.end(() => ctx.shutdown());
       }
     } catch {
