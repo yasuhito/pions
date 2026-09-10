@@ -662,6 +662,32 @@ test("delegated task does not appear in TaskSpec metadata", async (context) => {
   assert.equal(JSON.stringify(value.runtime.tasks[0]).includes("secret review request"), false);
 });
 
+test("Worker prompt begins with a read-oriented role without naming review", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute();
+  const promptRef = value.runtime.tasks[0]?.promptRef;
+  if (promptRef === undefined) throw new Error("promptRef missing");
+
+  assert.equal(
+    (await readFile(promptRef, "utf8")).startsWith(
+      "You are a read-oriented Worker with an independent context.\n",
+    ),
+    true,
+  );
+});
+
+test("Worker prompt instructions do not assign a review role", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute();
+  const promptRef = value.runtime.tasks[0]?.promptRef;
+  if (promptRef === undefined) throw new Error("promptRef missing");
+  const instructions = (await readFile(promptRef, "utf8")).split("\n\nTask:\n", 1)[0] ?? "";
+
+  assert.doesNotMatch(instructions, /\breview(?:er)?\b/i);
+});
+
 test("Worker prompt states that bash policy is not isolation", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));

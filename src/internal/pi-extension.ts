@@ -249,7 +249,7 @@ function selectedThinkingLevel(context: ExtensionContext): ThinkingLevel {
 
 function workerPrompt(task: string): string {
   return [
-    "You are a read-oriented review Worker with an independent context.",
+    "You are a read-oriented Worker with an independent context.",
     "Follow the trusted project's AGENTS.md instructions.",
     "Do not load skills, extensions, or prompt templates.",
     "Use only read, grep, find, ls, and bash. Use bash only for read-only investigation.",
