@@ -23,10 +23,11 @@ import {
   requestedWorkerConfig,
   resolveWorkerConfig,
 } from "./worker-configuration.js";
-import type {
-  WorkerCancellationEvidence,
-  RuntimeServices,
-  Worker,
+import {
+  StartDeliveryAbortedError,
+  type WorkerCancellationEvidence,
+  type RuntimeServices,
+  type Worker,
 } from "./services.js";
 import type { StartInstruction } from "./worker-protocol.js";
 import {
@@ -870,7 +871,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           const workerIdentity = current.workerIdentity;
           const previousAuthority = current.startDeliveryAuthority;
           if (current.state !== "starting") {
-            return yield* Effect.fail(new OperationPersistenceError(record.operationId, "write_failed"));
+            return yield* Effect.fail(new StartDeliveryAbortedError(
+              `Start delivery was aborted for Operation ${record.operationId}`,
+            ));
           }
           if (
             workerIdentity === undefined ||
@@ -884,7 +887,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             Date.parse(yield* services.clock.now()) >= Date.parse(current.startAuthorizationTiming.deadline)
           ) {
             yield* Effect.promise(() => expireStartAuthorization(record.operationId));
-            return yield* Effect.fail(new OperationPersistenceError(record.operationId, "write_failed"));
+            return yield* Effect.fail(new StartDeliveryAbortedError(
+              `Start authorization expired for Operation ${record.operationId}`,
+            ));
           }
           if (current.startAuthorizationTiming.policy === "required") {
             const receiptPolicy = current.startupReceiptPolicy;

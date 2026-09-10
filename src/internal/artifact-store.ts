@@ -33,6 +33,7 @@ import {
   type ArtifactUseBindingOutcome,
   type ArtifactUseBindingRequest,
   type ArtifactUseBindingSnapshot,
+  type ArtifactWriterOwnership,
   type OpenArtifactStoreOptions,
   type ResultAcceptanceEventEvidence,
   type ResultAcceptancePreparationEvidence,
@@ -497,7 +498,7 @@ class FileArtifactStore implements ArtifactStore {
     }
   }
 
-  async writerOwnership(): Promise<Readonly<{ readonly pid: number; readonly processStartToken: string }>> {
+  async writerOwnership(): Promise<Readonly<ArtifactWriterOwnership>> {
     const owner = await readJson(join(this.lockDirectory, "owner.json")) as {
       readonly pid?: unknown;
       readonly startToken?: unknown;

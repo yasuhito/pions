@@ -53,6 +53,10 @@ export interface WorkerCancellationEvidence {
   readonly proof: "worker-stop";
 }
 
+export class StartDeliveryAbortedError extends Error {
+  override readonly name = "StartDeliveryAbortedError";
+}
+
 export interface DeliveryGenerationConfirmation {
   readonly dispatcherId: string;
   readonly deliveryGeneration: number;
@@ -71,7 +75,10 @@ export interface WorkerRunHooks {
   ): Effect.Effect<void, OperationPersistenceError>;
   deliveryGenerationConfirmed(
     confirmation: Readonly<DeliveryGenerationConfirmation>,
-  ): Effect.Effect<void, OperationPersistenceError | ResourceProofRejectedError>;
+  ): Effect.Effect<
+    void,
+    OperationPersistenceError | ResourceProofRejectedError | StartDeliveryAbortedError
+  >;
   startDeliveryEntered(
     instruction: Readonly<StartInstruction>,
   ): Effect.Effect<void, OperationPersistenceError>;
@@ -113,7 +120,10 @@ export type WorkerRunOutcome = (
 export interface Worker {
   run(
     hooks: Readonly<WorkerRunHooks>,
-  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError | ResourceProofRejectedError>;
+  ): Effect.Effect<
+    WorkerRunOutcome,
+    OperationPersistenceError | ResourceProofRejectedError | StartDeliveryAbortedError
+  >;
   cancel(
     cancellationEpoch: number,
     timeoutMs: number,
