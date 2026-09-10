@@ -613,10 +613,11 @@ test("a deadline crossed during pre-begin checks keeps the Worker stopped", asyn
   assert.equal((await handle.read()).failureReason, "start_authorization_timed_out");
 });
 
-test("expired required authorization prevents recovery redispatch", async () => {
-  const store = new InMemoryEventStore();
-  const interrupted = new PausedStartAcceptanceWorker();
-  const first = await fixture({ worker: interrupted, store });
+async function expiredRequiredAuthorizationRecovery() {
+  const clock = new FakeClock(timestamps);
+  const store = new InMemoryEventStore([], clock);
+  const firstWorker = new PausedStartAcceptanceWorker();
+  const first = await fixture({ worker: firstWorker, store, clock });
   await authorize(first.inbox);
   while ((await first.handle.read()).startDeliveryEntry === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -647,14 +648,26 @@ test("expired required authorization prevents recovery redispatch", async () => 
       },
     },
   });
-  while (!recoveredWorker.recoveryAttempted) {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    if (recoveredWorker.recoveryAttempted && (await first.handle.read()).failureReason !== undefined) break;
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  interrupted.acknowledgeStart();
+  const operation = await first.handle.read();
+  firstWorker.acknowledgeStart();
   await recovered.close();
+  return { operation, recoveredWorker };
+}
+
+test("expired required authorization prevents recovery redispatch", async () => {
+  const { recoveredWorker } = await expiredRequiredAuthorizationRecovery();
 
   assert.equal(recoveredWorker.recoveredDeliveryCount, 0);
+});
+
+test("expired required authorization keeps its failure classification during recovery", async () => {
+  const { operation } = await expiredRequiredAuthorizationRecovery();
+
+  assert.equal(operation.failureReason, "start_authorization_timed_out");
 });
 
 test("resending the same decision is idempotent", async () => {

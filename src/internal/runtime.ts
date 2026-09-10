@@ -869,14 +869,21 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           if (confirmation.acceptanceState === "unknown") return;
           const workerIdentity = current.workerIdentity;
           const previousAuthority = current.startDeliveryAuthority;
+          if (current.state !== "starting") {
+            return yield* Effect.fail(new OperationPersistenceError(record.operationId, "write_failed"));
+          }
           if (
-            current.state !== "starting" ||
             workerIdentity === undefined ||
             previousAuthority === undefined ||
-            current.startGate !== "not_required" && current.startGate !== "authorized" ||
-            current.startAuthorizationTiming.policy === "required" &&
-              Date.parse(yield* services.clock.now()) >= Date.parse(current.startAuthorizationTiming.deadline)
+            current.startGate !== "not_required" && current.startGate !== "authorized"
           ) {
+            return yield* Effect.fail(new OperationPersistenceError(record.operationId, "corrupt_record"));
+          }
+          if (
+            current.startAuthorizationTiming.policy === "required" &&
+            Date.parse(yield* services.clock.now()) >= Date.parse(current.startAuthorizationTiming.deadline)
+          ) {
+            yield* Effect.promise(() => expireStartAuthorization(record.operationId));
             return yield* Effect.fail(new OperationPersistenceError(record.operationId, "write_failed"));
           }
           if (current.startAuthorizationTiming.policy === "required") {

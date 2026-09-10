@@ -266,6 +266,8 @@ const defaultCapabilityGenerator: WorkerCapabilityGenerator = {
 
 export class VisibleWorker implements WorkerAdapter {
   private readonly sessions = new Map<string, Session>();
+  private readonly lastKnownIdentities = new Map<string, Readonly<WorkerProcessIdentity>>();
+  private readonly processTerminations = new Map<string, Promise<WorkerCancellationEvidence | undefined>>();
   private readonly capabilityGenerator: WorkerCapabilityGenerator;
   private readonly promptReader: PromptReader;
   private readonly serverFactory: () => Server;
@@ -687,6 +689,7 @@ export class VisibleWorker implements WorkerAdapter {
               observedConfig: event.observedConfig,
             };
             session.identity = identity;
+            this.lastKnownIdentities.set(session.operation.operationId, identity);
             session.resolveStarted({
               state: "identified",
               identity,
@@ -769,7 +772,21 @@ export class VisibleWorker implements WorkerAdapter {
       if (session !== undefined) {
         this.reject(session, "Visible Worker cancelled before protocol identification");
       }
-      return undefined;
+      const knownIdentity = this.lastKnownIdentities.get(operation.operationId);
+      const storedIdentity = operation.workerIdentity;
+      const observedConfig = operation.observedConfig;
+      if (knownIdentity === undefined && (storedIdentity === undefined || observedConfig === undefined)) {
+        return undefined;
+      }
+      const identity: WorkerProcessIdentity = knownIdentity ?? { ...storedIdentity!, observedConfig: observedConfig! };
+      const state = await Effect.runPromise(this.processControl.observe(identity));
+      if (state === "unverifiable") return undefined;
+      const evidence = state === "stopped"
+        ? { proof: "worker-stop" } as const
+        : await this.terminateProcess(identity, timeoutMs);
+      if (operation.effectiveConfig.model.provider === "claude-bridge") return undefined;
+      if (evidence !== undefined) this.lastKnownIdentities.delete(operation.operationId);
+      return evidence;
     }
     const cancellationDeadline = Date.now() + Math.max(
       0,
@@ -793,7 +810,7 @@ export class VisibleWorker implements WorkerAdapter {
       if (state === "unverifiable" || remaining() === 0) return undefined;
       const workerEvidence = state === "stopped"
         ? { proof: "worker-stop" } as const
-        : await Effect.runPromise(this.processControl.terminate(session.identity, remaining()));
+        : await this.terminateProcess(session.identity, remaining());
       return workerEvidence !== undefined && await this.confirmBackendStop(session, remaining())
         ? workerEvidence
         : undefined;
@@ -807,7 +824,7 @@ export class VisibleWorker implements WorkerAdapter {
       if (state === "unverifiable" || remaining() === 0) return undefined;
       const workerEvidence = state === "stopped"
         ? { proof: "worker-stop" } as const
-        : await Effect.runPromise(this.processControl.terminate(session.identity, remaining()));
+        : await this.terminateProcess(session.identity, remaining());
       return workerEvidence !== undefined && await this.confirmBackendStop(session, remaining())
         ? workerEvidence
         : undefined;
@@ -818,11 +835,9 @@ export class VisibleWorker implements WorkerAdapter {
       Math.min(this.backendCancellationGraceMs, remaining()),
     );
     if (!acknowledged) {
-      if (session.identity === undefined || session.socket.destroyed) return undefined;
+      if (session.identity === undefined) return undefined;
       const evidence = remaining() > 0
-        ? await Effect.runPromise(
-            this.processControl.terminate(session.identity, remaining()),
-          )
+        ? await this.terminateProcess(session.identity, remaining())
         : undefined;
       const backendStopped = evidence !== undefined && await this.confirmBackendStop(session, remaining());
       this.completeCancellation(session);
@@ -841,9 +856,7 @@ export class VisibleWorker implements WorkerAdapter {
     const evidence = state === "stopped"
       ? { proof: "worker-stop" } as const
       : state === "running" && remaining() > 0
-        ? await Effect.runPromise(
-            this.processControl.terminate(session.identity, remaining()),
-          )
+        ? await this.terminateProcess(session.identity, remaining())
         : undefined;
     const backendStopped = evidence !== undefined && await this.confirmBackendStop(session, remaining());
     this.completeCancellation(session);
@@ -958,12 +971,25 @@ export class VisibleWorker implements WorkerAdapter {
       return { state: "worker_protocol_failed", successfulExitConfirmed: true };
     }
     if (observed !== "running") return { state: "liveness-unproven" };
-    const stopped = await Effect.runPromise(
-      this.processControl.terminate(identity, this.agentStartTimeoutMs),
-    );
+    const stopped = await this.terminateProcess(identity, this.agentStartTimeoutMs);
     return stopped === undefined
       ? { state: "liveness-unproven" }
       : { state: "worker_protocol_failed", successfulExitConfirmed: true };
+  }
+
+  private terminateProcess(
+    identity: Readonly<WorkerProcessIdentity>,
+    timeoutMs: number,
+  ): Promise<WorkerCancellationEvidence | undefined> {
+    const key = `${identity.processInstanceId}:${identity.processStartToken}`;
+    const existing = this.processTerminations.get(key);
+    if (existing !== undefined) return existing;
+    const termination = Effect.runPromise(this.processControl.terminate(identity, timeoutMs));
+    this.processTerminations.set(key, termination);
+    void termination.finally(() => {
+      if (this.processTerminations.get(key) === termination) this.processTerminations.delete(key);
+    });
+    return termination;
   }
 
   private async stopAfterUncertainStart(

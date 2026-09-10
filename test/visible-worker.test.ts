@@ -1459,7 +1459,7 @@ test("disconnect releases Worker protocol listeners", async (context) => {
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
 });
 
-test("communication loss stays unknown when Pi has stopped without a Result", async (context) => {
+test("communication loss records protocol failure when Pi is confirmed stopped", async (context) => {
   const value = await fixture({ processControl: new FakeProcessControl("stopped") });
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const client = await socket(value.config.socketPath);
@@ -1467,7 +1467,7 @@ test("communication loss stays unknown when Pi has stopped without a Result", as
   send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
   client.end();
 
-  assert.equal((await value.outcome).state, "liveness-unproven");
+  assert.equal((await value.outcome).state, "worker_protocol_failed");
 });
 
 test("unverifiable process liveness is classified as unknown evidence", async (context) => {
@@ -1613,7 +1613,7 @@ test("missing cancellation acknowledgement triggers process termination", async 
   assert.equal(processControl.terminations.length, 1);
 });
 
-test("a disconnected cancellation channel triggers Worker termination", async (context) => {
+test("concurrent protocol loss and cancellation send one Worker termination", async (context) => {
   const processControl = new FakeProcessControl("running", { proof: "worker-stop" });
   const value = await fixture({ processControl, backendCancellationGraceMs: 10 });
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -1628,6 +1628,51 @@ test("a disconnected cancellation channel triggers Worker termination", async (c
   await cancellation;
 
   assert.equal(processControl.terminations.length, 1);
+});
+
+test("cancellation after a disconnected protocol channel terminates the Worker", async (context) => {
+  const processControl = new FakeProcessControl("running", { proof: "worker-stop" });
+  const value = await fixture({ processControl, backendCancellationGraceMs: 0 });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", { piSessionId, observedConfig }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  client.destroy();
+  while (value.protocolSession.socket?.destroyed !== true) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await Effect.runPromise(value.worker.cancel(1, 1_000));
+
+  assert.equal(processControl.terminations.length, 1);
+});
+
+test("disconnected Claude cancellation without backend stop confirmation remains unproven", async (context) => {
+  const value = await fixture({
+    processControl: new FakeProcessControl("running", { proof: "worker-stop" }),
+    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(client, frame(value.capability, 2, "started", {
+    piSessionId,
+    observedConfig: {
+      ...observedConfig,
+      model: { state: "observed", value: value.current.effectiveConfig.model },
+    },
+  }));
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  client.destroy();
+  while (value.protocolSession.socket?.destroyed !== true) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(await Effect.runPromise(value.worker.cancel(1, 1_000)), undefined);
 });
 
 test("unverifiable process identity keeps acknowledged cancellation unproven", async (context) => {
