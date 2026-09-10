@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { Effect } from "effect";
 
 import {
@@ -19,6 +21,8 @@ import type {
   OperationIntent,
   OperationRequest,
   OperationSnapshot,
+  RevisionAdoptionCommand,
+  RevisionReservationCommand,
   StoreError,
   StoreErrorCode,
 } from "./index.js";
@@ -29,9 +33,14 @@ import type {
   ResultAcceptanceReservation,
   ResultAcceptanceReservationRequest,
   ResultAcceptanceTransactionOutcome,
+  RevisionReservation,
+  RevisionReservationOutcome,
+  RevisionResultAdoptionOutcome,
+  RevisionSeriesSnapshot,
   StartupReceipt,
 } from "../../public.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
+import { revisionSeriesId, revisionSeriesOrigin } from "../revision-series.js";
 import {
   preparationEvidenceMatchesReservation,
   resultAcceptanceIdentifier,
@@ -173,6 +182,9 @@ export abstract class ValidatedEventStore implements EventStore {
         workProductRequirements: request.workProductRequirements,
         resultRetentionPolicy: request.resultRetentionPolicy,
         lineage: request.lineage,
+        ...(request.revisionMembership === undefined
+          ? {}
+          : { revisionMembership: request.revisionMembership }),
         startAuthorizationTiming: {
           createdAt,
           windowMs: authorizationWindowMs,
@@ -459,6 +471,215 @@ export abstract class ValidatedEventStore implements EventStore {
     } as OperationEvent;
   }
 
+  reserveRevision(
+    command: Readonly<RevisionReservationCommand>,
+  ): Effect.Effect<RevisionReservationOutcome, StoreError> {
+    return Effect.tryPromise({
+      try: () => this.serialize(command.seriesOriginOperationId, async () => {
+        const origin = await this.load(command.seriesOriginOperationId, true);
+        if (origin === undefined) throw failure("not_found", "Revision series origin not found");
+        const series = origin.operation.revisionSeries;
+        const existing = series?.reservations.find(({ requestId }) => requestId === command.requestId);
+        if (existing !== undefined) {
+          const matches = existing.kind === command.kind &&
+            existing.targetOperationId === command.targetOperationId &&
+            existing.targetResultId === command.targetResultId &&
+            existing.targetResultDigest === command.targetResultDigest &&
+            existing.retryOfOperationId === command.retryOfOperationId &&
+            existing.reason === command.reason && existing.requestedBy === command.requestedBy &&
+            (command.maxAttempts === undefined || existing.maxAttempts === command.maxAttempts) &&
+            (command.artifactAcceptanceSubjectIds === undefined ||
+              isDeepStrictEqual(existing.artifactAcceptanceSubjectIds, command.artifactAcceptanceSubjectIds)) &&
+            isDeepStrictEqual(existing.task, command.task) &&
+            existing.retryClearanceId === command.clearance?.clearanceId;
+          return matches
+            ? { status: "idempotent", reservation: existing } as const
+            : { status: "rejected", reason: "request_conflict" } as const;
+        }
+        const maxAttempts = series?.maxAttempts ?? command.maxAttempts;
+        if (maxAttempts === undefined || !Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+          return { status: "rejected", reason: "invalid_target" } as const;
+        }
+        if (
+          command.maxAttempts !== undefined && command.maxAttempts !== maxAttempts ||
+          series !== undefined && command.artifactAcceptanceSubjectIds !== undefined &&
+            !isDeepStrictEqual(series.artifactAcceptanceSubjectIds, command.artifactAcceptanceSubjectIds)
+        ) {
+          return { status: "rejected", reason: "request_conflict" } as const;
+        }
+        const artifactAcceptanceSubjectIds = series?.artifactAcceptanceSubjectIds ?? command.artifactAcceptanceSubjectIds;
+        if (
+          artifactAcceptanceSubjectIds === undefined || artifactAcceptanceSubjectIds.length < 1 ||
+          new Set(artifactAcceptanceSubjectIds).size !== artifactAcceptanceSubjectIds.length
+        ) return { status: "rejected", reason: "invalid_target" } as const;
+        if ((series?.reservations.length ?? 0) >= maxAttempts) {
+          return { status: "rejected", reason: "limit_exceeded" } as const;
+        }
+        const target = await this.load(command.targetOperationId, false);
+        if (target === undefined) return { status: "rejected", reason: "not_found" } as const;
+
+        let revisionNumber: number;
+        if (command.kind === "revision") {
+          const accepted = target.operation.result;
+          const latestRevisionNumber = series?.reservations.reduce(
+            (max, reservation) => Math.max(max, reservation.revisionNumber),
+            0,
+          ) ?? 0;
+          const latestRevisionReservations = series?.reservations.filter(({ revisionNumber }) =>
+            revisionNumber === latestRevisionNumber
+          ) ?? [];
+          const directRevision = latestRevisionReservations.find(({ kind }) => kind === "revision");
+          const latestRevisionHasRetry = latestRevisionReservations.some(({ kind }) => kind === "retry");
+          const adoptedResult = series?.adoptions.find(({ revisionNumber }) =>
+            revisionNumber === latestRevisionNumber
+          );
+          const expectedTargetOperationId = series === undefined
+            ? command.seriesOriginOperationId
+            : latestRevisionHasRetry ? adoptedResult?.retryOperationId : directRevision?.operationId;
+          const expected = expectedTargetOperationId === command.targetOperationId ? accepted : undefined;
+          if (
+            expected === undefined ||
+            series === undefined && target.operation.revisionMembership !== undefined ||
+            target.operation.state !== "completed" ||
+            target.operation.workerStopConfirmedAt === undefined ||
+            target.operation.resourceEvidenceRecord !== undefined &&
+              target.operation.resourceEvidenceRecord.snapshot.state !== "released" ||
+            command.retryOfOperationId !== undefined || command.clearance !== undefined ||
+            expected.acceptanceId !== command.targetResultId || expected.manifestDigest !== command.targetResultDigest ||
+            series?.reservations.some((reservation) =>
+              reservation.kind === "revision" && reservation.targetResultId === command.targetResultId
+            ) === true
+          ) {
+            return { status: "rejected", reason: "invalid_target" } as const;
+          }
+          revisionNumber = (series?.reservations.reduce((max, item) => Math.max(max, item.revisionNumber), 0) ?? 0) + 1;
+        } else {
+          const failedId = command.retryOfOperationId;
+          const previous = series?.reservations.find(({ operationId }) => operationId === failedId);
+          if (
+            failedId === undefined || previous === undefined || command.targetOperationId !== failedId ||
+            target.operation.result !== undefined ||
+            target.operation.state !== "failed" && target.operation.state !== "unknown" && target.operation.state !== "cancelled" ||
+            series?.reservations.some(({ retryOfOperationId }) => retryOfOperationId === failedId) === true
+          ) {
+            return { status: "rejected", reason: "invalid_target" } as const;
+          }
+          const clearanceRequired = target.operation.state === "unknown" ||
+            target.operation.workerStopConfirmedAt === undefined ||
+            target.operation.resourceEvidenceRecord !== undefined &&
+              target.operation.resourceEvidenceRecord.snapshot.state !== "released";
+          if (clearanceRequired && command.clearance === undefined) {
+            return { status: "rejected", reason: "retry_clearance_required" } as const;
+          }
+          if (command.clearance !== undefined && (
+            command.clearance.failedOperationId !== failedId ||
+            !command.clearance.workerStoppedOrAccessBlocked || !command.clearance.noConflict ||
+            !command.clearance.handoffConfirmed || command.clearance.affectedResourceIds.length === 0 ||
+            target.operation.resourceEvidenceRecord !== undefined &&
+              !command.clearance.affectedResourceIds.includes(
+                target.operation.resourceEvidenceRecord.snapshot.acquisitionId
+              )
+          )) {
+            return { status: "rejected", reason: "retry_clearance_invalid" } as const;
+          }
+          revisionNumber = previous.revisionNumber;
+        }
+
+        let loaded = origin;
+        if (command.clearance !== undefined) {
+          const recordedClearance = series?.retryClearances.find(({ clearanceId }) =>
+            clearanceId === command.clearance!.clearanceId
+          );
+          if (recordedClearance !== undefined && !isDeepStrictEqual(recordedClearance, command.clearance)) {
+            return { status: "rejected", reason: "request_conflict" } as const;
+          }
+          if (recordedClearance === undefined) {
+            loaded = await this.appendLoaded(command.seriesOriginOperationId, loaded, {
+              type: "retry_clearance_recorded",
+              clearance: structuredClone(command.clearance),
+            });
+          }
+        }
+        const reservedAt = await Effect.runPromise(this.clock.now());
+        const reservation: RevisionReservation = {
+          requestId: command.requestId,
+          kind: command.kind,
+          seriesId: revisionSeriesId(command.seriesOriginOperationId),
+          seriesOriginOperationId: command.seriesOriginOperationId,
+          revisionNumber,
+          attemptNumber: (series?.reservations.length ?? 0) + 1,
+          operationId: command.operationId,
+          targetOperationId: command.targetOperationId,
+          ...(command.targetResultId === undefined ? {} : { targetResultId: command.targetResultId }),
+          ...(command.targetResultDigest === undefined ? {} : { targetResultDigest: command.targetResultDigest }),
+          ...(command.retryOfOperationId === undefined ? {} : { retryOfOperationId: command.retryOfOperationId }),
+          reason: command.reason,
+          requestedBy: command.requestedBy,
+          maxAttempts,
+          artifactAcceptanceSubjectIds: [...artifactAcceptanceSubjectIds],
+          task: structuredClone(command.task),
+          reservedAt,
+          ...(command.clearance === undefined ? {} : { retryClearanceId: command.clearance.clearanceId }),
+        };
+        await this.appendLoaded(command.seriesOriginOperationId, loaded, {
+          type: "revision_reserved",
+          reservation,
+        }, reservedAt);
+        return { status: "reserved", reservation } as const;
+      }),
+      catch: (error) => asStoreError(error, "corrupt_record"),
+    });
+  }
+
+  adoptRevisionResult(
+    command: Readonly<RevisionAdoptionCommand>,
+  ): Effect.Effect<RevisionResultAdoptionOutcome, StoreError> {
+    const originId = revisionSeriesOrigin(command.seriesId);
+    if (originId === undefined) {
+      return Effect.succeed({ status: "rejected", reason: "series_not_found" });
+    }
+    return Effect.tryPromise({
+      try: () => this.serialize(originId, async () => {
+        const origin = await this.load(originId, false);
+        const series = origin?.operation.revisionSeries;
+        if (origin === undefined || series === undefined || series.seriesId !== command.seriesId) {
+          return { status: "rejected", reason: "series_not_found" } as const;
+        }
+        const byDecision = series.adoptions.find(({ decisionId }) => decisionId === command.decisionId);
+        const byRevision = series.adoptions.find(({ revisionNumber }) => revisionNumber === command.revisionNumber);
+        if (byDecision !== undefined || byRevision !== undefined) {
+          const existing = byDecision ?? byRevision!;
+          return isDeepStrictEqual(
+            { ...existing, decidedAt: undefined },
+            { ...command, decidedAt: undefined },
+          )
+            ? { status: "idempotent", adoption: existing } as const
+            : { status: "rejected", reason: "decision_conflict" } as const;
+        }
+        const reservation = series.reservations.find(({ operationId, revisionNumber }) =>
+          operationId === command.retryOperationId && revisionNumber === command.revisionNumber
+        );
+        if (reservation === undefined) return { status: "rejected", reason: "invalid_successor" } as const;
+        const resultOperation = await this.load(command.retryOperationId, false);
+        const result = resultOperation?.operation.result;
+        if (result === undefined || result.acceptanceId !== command.resultId || result.manifestDigest !== command.resultDigest) {
+          return { status: "rejected", reason: "result_not_accepted" } as const;
+        }
+        const adoption = { ...command, decidedAt: await Effect.runPromise(this.clock.now()) };
+        await this.appendLoaded(originId, origin, { type: "revision_result_adopted", adoption }, adoption.decidedAt);
+        return { status: "adopted", adoption } as const;
+      }),
+      catch: (error) => asStoreError(error, "corrupt_record"),
+    });
+  }
+
+  readRevisionSeries(seriesOriginOperationId: string): Effect.Effect<RevisionSeriesSnapshot, StoreError> {
+    return Effect.flatMap(this.read(seriesOriginOperationId), ({ operation }) =>
+      operation.revisionSeries === undefined
+        ? Effect.fail({ _tag: "StoreError" as const, code: "not_found" as const, message: "Revision series not found" })
+        : Effect.succeed(operation.revisionSeries));
+  }
+
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError> {
     return Effect.tryPromise({
       try: () => this.serialize(operationId, async () => {
@@ -525,6 +746,52 @@ export abstract class ValidatedEventStore implements EventStore {
     });
   }
 
+  listPendingRevisionReservations(): Effect.Effect<ReadonlyArray<Readonly<RevisionReservation>>, StoreError> {
+    return Effect.tryPromise({
+      try: async () => {
+        const operationIds = await this.listOperationIds();
+        const existing = new Set(operationIds);
+        const snapshots = await Promise.all(operationIds.map((operationId) =>
+          Effect.runPromise(this.read(operationId)),
+        ));
+        return snapshots.flatMap(({ operation }) =>
+          operation.revisionSeries?.reservations.filter(({ operationId }) => !existing.has(operationId)) ?? []
+        );
+      },
+      catch: (error) => asStoreError(error, "corrupt_record"),
+    });
+  }
+
+  private async appendLoaded(
+    operationId: string,
+    loaded: LoadedRecord | undefined,
+    input: EventInput,
+    fixedTimestamp?: string,
+  ): Promise<LoadedRecord> {
+    const event = this.makeEvent(
+      operationId,
+      loaded?.operation.stateSeq ?? 0,
+      input,
+      fixedTimestamp ?? await Effect.runPromise(this.clock.now()),
+    );
+    const record = decodeRecord({
+      schemaVersion: EVENT_SCHEMA_VERSION,
+      operationId,
+      events: [...(loaded?.record.events ?? []), event],
+    }, operationId);
+    const persistedEvent = record.events.at(-1);
+    if (persistedEvent === undefined) throw failure("corrupt_record", "Operation record has no events");
+    const operation = reduceOperation(loaded?.operation, persistedEvent);
+    this.willAppend(persistedEvent);
+    try {
+      await this.writeRecord(operationId, record);
+    } catch (error) {
+      throw failure("write_failed", error instanceof Error ? error.message : String(error));
+    }
+    this.didAppend(persistedEvent);
+    return { record, operation };
+  }
+
   private appendEvent(
     operationId: string,
     input: EventInput,
@@ -533,34 +800,11 @@ export abstract class ValidatedEventStore implements EventStore {
     return Effect.tryPromise({
       try: () => this.serialize(operationId, async () => {
         const loaded = await this.load(operationId, input.type !== "operation_requested");
-        const event = this.makeEvent(
-          operationId,
-          loaded?.operation.stateSeq ?? 0,
-          input,
-          fixedTimestamp ?? await Effect.runPromise(this.clock.now()),
-        );
-        const record = decodeRecord({
-          schemaVersion: EVENT_SCHEMA_VERSION,
-          operationId,
-          events: [...(loaded?.record.events ?? []), event],
-        }, operationId);
-        const persistedEvent = record.events.at(-1);
-        if (persistedEvent === undefined) {
-          throw failure("corrupt_record", "Operation record has no events");
-        }
-        const operation = reduceOperation(loaded?.operation, persistedEvent);
-        try {
-          await this.writeRecord(operationId, record);
-        } catch (error) {
-          throw failure("write_failed", error instanceof Error ? error.message : String(error));
-        }
-        this.didAppend(persistedEvent);
+        const persisted = await this.appendLoaded(operationId, loaded, input, fixedTimestamp);
+        const lastEvent = persisted.record.events.at(-1)!;
         return {
-          version: {
-            sequenceNumber: persistedEvent.seq,
-            recordedAt: persistedEvent.timestamp,
-          },
-          operation,
+          version: { sequenceNumber: lastEvent.seq, recordedAt: lastEvent.timestamp },
+          operation: persisted.operation,
         };
       }),
       catch: (error) => asStoreError(error, "corrupt_record"),

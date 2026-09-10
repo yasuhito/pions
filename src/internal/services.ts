@@ -18,6 +18,8 @@ import type {
   StartAuthorizationAuthenticator,
   StartAuthorizationAuthority,
   ResourceProofRejectedError,
+  RevisionAuthenticator,
+  RetryClearanceVerifier,
   WorkerProducedResult,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -206,6 +208,8 @@ export interface RuntimeServices {
   readonly synchronizeArtifactClock?: (timestamp: string) => void;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
   readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
+  readonly revisionAuthenticator?: RevisionAuthenticator;
+  readonly retryClearanceVerifier?: RetryClearanceVerifier;
   readonly resourceProofController?: InternalResourceProofController;
   readonly configuration?: Readonly<{
     readonly cwd: string;

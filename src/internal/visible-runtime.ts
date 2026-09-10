@@ -20,6 +20,8 @@ import {
 import type {
   ResourceAuthorityRegistration,
   ResourceCleanupAuthenticator,
+  RetryClearanceVerifier,
+  RevisionAuthenticator,
   Runtime,
   StartAuthorizationAuthenticator,
   StartAuthorizationAuthority,
@@ -34,6 +36,8 @@ export interface VisibleRuntimeOptions {
   readonly extensionEntryPath?: string;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
   readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
+  readonly revisionAuthenticator?: RevisionAuthenticator;
+  readonly retryClearanceVerifier?: RetryClearanceVerifier;
   readonly resourceAuthorities?: ReadonlyArray<Readonly<ResourceAuthorityRegistration>>;
   readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
 }
@@ -94,6 +98,12 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     ...(options.startAuthorizationAuthority === undefined
       ? {}
       : { startAuthorizationAuthority: options.startAuthorizationAuthority }),
+    ...(options.revisionAuthenticator === undefined
+      ? {}
+      : { revisionAuthenticator: options.revisionAuthenticator }),
+    ...(options.retryClearanceVerifier === undefined
+      ? {}
+      : { retryClearanceVerifier: options.retryClearanceVerifier }),
     ...(options.resourceAuthorities === undefined
       ? {}
       : {

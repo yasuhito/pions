@@ -7,6 +7,7 @@ import {
 } from "./model.js";
 import type { StartInstructionReference, StartupReceipt } from "../../public.js";
 import type { Operation, OperationEvent } from "./model.js";
+import { revisionSeriesId, revisionSeriesOrigin } from "../revision-series.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
 import {
   automaticStartScopeDigest,
@@ -287,6 +288,13 @@ export function reduceOperation(
       (event.startAuthorizationTiming.policy === "required") !==
         (event.startupReceiptPolicy !== undefined) ||
       event.resultRetentionPolicy.operationId !== event.operationId ||
+      (event.revisionMembership !== undefined && (
+        revisionSeriesOrigin(event.revisionMembership.seriesId) === undefined ||
+        !Number.isSafeInteger(event.revisionMembership.revisionNumber) ||
+        event.revisionMembership.revisionNumber < 1 ||
+        !Number.isSafeInteger(event.revisionMembership.attemptNumber) ||
+        event.revisionMembership.attemptNumber < 1
+      )) ||
       !Number.isSafeInteger(event.resultRetentionPolicy.acceptedArtifactRetentionMs) ||
       event.resultRetentionPolicy.acceptedArtifactRetentionMs <= 0
     ) {
@@ -296,6 +304,9 @@ export function reduceOperation(
     return immutable({
       operationId: event.operationId,
       lineage: { ...event.lineage },
+      ...(event.revisionMembership === undefined
+        ? {}
+        : { revisionMembership: { ...event.revisionMembership } }),
       state: "queued",
       stateSeq: event.seq,
       workerLaunched: false,
@@ -347,6 +358,9 @@ export function reduceOperation(
     event.type !== "presentation_cleanup_completed" &&
     event.type !== "presentation_cleanup_unconfirmed" &&
     event.type !== "resource_evidence_recorded" &&
+    event.type !== "retry_clearance_recorded" &&
+    event.type !== "revision_reserved" &&
+    event.type !== "revision_result_adopted" &&
     event.type !== "start_authorization_decision_rejected" &&
     (current.state === "completed" ||
       current.state === "failed" ||
@@ -702,6 +716,127 @@ export function reduceOperation(
         resourceEvidenceRecord: structuredClone(event.record),
         stateSeq: event.seq,
       });
+
+    case "retry_clearance_recorded": {
+      const series = current.revisionSeries;
+      if (
+        series === undefined ||
+        event.clearance.failedOperationId.length === 0 ||
+        event.clearance.clearanceId.length === 0 ||
+        series.retryClearances.some(({ clearanceId }) => clearanceId === event.clearance.clearanceId) ||
+        !event.clearance.workerStoppedOrAccessBlocked ||
+        !event.clearance.noConflict ||
+        !event.clearance.handoffConfirmed
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        revisionSeries: {
+          ...series,
+          retryClearances: [...series.retryClearances, structuredClone(event.clearance)],
+        },
+        stateSeq: event.seq,
+      });
+    }
+
+    case "revision_reserved": {
+      const reservation = event.reservation;
+      const series = current.revisionSeries;
+      const latestRevisionNumber = series?.reservations.reduce(
+        (max, item) => Math.max(max, item.revisionNumber),
+        0,
+      ) ?? 0;
+      const previousRetry = reservation.retryOfOperationId === undefined
+        ? undefined
+        : series?.reservations.find(({ operationId }) => operationId === reservation.retryOfOperationId);
+      const latestRevisionReservations = series?.reservations.filter(({ revisionNumber }) =>
+        revisionNumber === latestRevisionNumber
+      ) ?? [];
+      const directRevision = latestRevisionReservations.find(({ kind }) => kind === "revision");
+      const latestRevisionHasRetry = latestRevisionReservations.some(({ kind }) => kind === "retry");
+      const adoptedResult = series?.adoptions.find(({ revisionNumber }) =>
+        revisionNumber === latestRevisionNumber
+      );
+      const expectedRevisionTargetOperationId = latestRevisionHasRetry
+        ? adoptedResult?.retryOperationId
+        : directRevision?.operationId;
+      if (
+        reservation.seriesOriginOperationId !== current.operationId ||
+        reservation.seriesId !== revisionSeriesId(current.operationId) ||
+        reservation.requestId.length === 0 || reservation.operationId.length === 0 ||
+        reservation.reason.length === 0 || reservation.requestedBy.length === 0 ||
+        !Number.isSafeInteger(reservation.revisionNumber) || reservation.revisionNumber < 1 ||
+        !Number.isSafeInteger(reservation.attemptNumber) || reservation.attemptNumber < 1 ||
+        !Number.isSafeInteger(reservation.maxAttempts) || reservation.maxAttempts < 1 ||
+        reservation.artifactAcceptanceSubjectIds.length < 1 ||
+        new Set(reservation.artifactAcceptanceSubjectIds).size !== reservation.artifactAcceptanceSubjectIds.length ||
+        reservation.attemptNumber !== (series?.reservations.length ?? 0) + 1 ||
+        reservation.attemptNumber > reservation.maxAttempts ||
+        (reservation.kind === "revision" && (
+          reservation.retryOfOperationId !== undefined ||
+          reservation.revisionNumber !== latestRevisionNumber + 1 ||
+          series !== undefined && expectedRevisionTargetOperationId !== reservation.targetOperationId
+        )) ||
+        (reservation.kind === "retry" && (
+          previousRetry === undefined ||
+          reservation.revisionNumber !== previousRetry.revisionNumber ||
+          reservation.targetOperationId !== reservation.retryOfOperationId ||
+          series?.reservations.some(({ retryOfOperationId }) =>
+            retryOfOperationId === reservation.retryOfOperationId
+          ) === true
+        )) ||
+        (series !== undefined && (
+          series.seriesId !== reservation.seriesId ||
+          series.maxAttempts !== reservation.maxAttempts ||
+          !isDeepStrictEqual(series.artifactAcceptanceSubjectIds, reservation.artifactAcceptanceSubjectIds) ||
+          series.reservations.some(({ requestId }) => requestId === reservation.requestId) ||
+          series.reservations.some(({ operationId }) => operationId === reservation.operationId)
+        ))
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      const nextSeries = series ?? {
+        seriesId: reservation.seriesId,
+        seriesOriginOperationId: current.operationId,
+        maxAttempts: reservation.maxAttempts,
+        artifactAcceptanceSubjectIds: [...reservation.artifactAcceptanceSubjectIds],
+        reservations: [],
+        retryClearances: [],
+        adoptions: [],
+      };
+      return immutable({
+        ...current,
+        revisionSeries: {
+          ...nextSeries,
+          reservations: [...nextSeries.reservations, structuredClone(reservation)],
+        },
+        stateSeq: event.seq,
+      });
+    }
+
+    case "revision_result_adopted": {
+      const series = current.revisionSeries;
+      if (
+        series === undefined || event.adoption.seriesId !== series.seriesId ||
+        !series.artifactAcceptanceSubjectIds.includes(event.adoption.decidedBy) ||
+        !series.reservations.some(({ operationId, revisionNumber }) =>
+          operationId === event.adoption.retryOperationId && revisionNumber === event.adoption.revisionNumber
+        ) ||
+        series.adoptions.some(({ revisionNumber }) => revisionNumber === event.adoption.revisionNumber) ||
+        series.adoptions.some(({ decisionId }) => decisionId === event.adoption.decisionId)
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        revisionSeries: {
+          ...series,
+          adoptions: [...series.adoptions, structuredClone(event.adoption)],
+        },
+        stateSeq: event.seq,
+      });
+    }
 
     case "worker_stop_confirmed":
       if (

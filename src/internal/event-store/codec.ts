@@ -60,6 +60,11 @@ const Lineage = Schema.Struct({
   parentOperationId: Schema.optional(Schema.String),
   depth: SafeInteger,
 });
+const RevisionMembership = Schema.Struct({
+  seriesId: Schema.NonEmptyString,
+  revisionNumber: NonNegativeSafeInteger,
+  attemptNumber: NonNegativeSafeInteger,
+});
 const Presentation = Schema.Struct({
   kind: Schema.Literal("herdr_pane"),
   paneId: Schema.String,
@@ -398,6 +403,46 @@ const PersistedResourceRecord = Schema.Struct({
   canonicalResources: Schema.Array(CanonicalResourceRequest),
   snapshot: ResourceEvidenceSnapshot,
 });
+const RetryClearanceEvidence = Schema.Struct({
+  clearanceId: Schema.NonEmptyString,
+  failedOperationId: Schema.NonEmptyString,
+  affectedResourceIds: Schema.Array(Schema.NonEmptyString),
+  workerStoppedOrAccessBlocked: Schema.Literal(true),
+  noConflict: Schema.Literal(true),
+  handoffConfirmed: Schema.Literal(true),
+  verifiedBy: Schema.NonEmptyString,
+  verifiedAt: Schema.NonEmptyString,
+});
+const RevisionReservation = Schema.Struct({
+  requestId: Schema.NonEmptyString,
+  kind: Schema.Literal("revision", "retry"),
+  seriesId: Schema.NonEmptyString,
+  seriesOriginOperationId: Schema.NonEmptyString,
+  revisionNumber: NonNegativeSafeInteger,
+  attemptNumber: NonNegativeSafeInteger,
+  operationId: Schema.NonEmptyString,
+  targetOperationId: Schema.NonEmptyString,
+  targetResultId: Schema.optional(Schema.NonEmptyString),
+  targetResultDigest: Schema.optional(Digest),
+  retryOfOperationId: Schema.optional(Schema.NonEmptyString),
+  reason: Schema.NonEmptyString,
+  requestedBy: Schema.NonEmptyString,
+  maxAttempts: NonNegativeSafeInteger,
+  artifactAcceptanceSubjectIds: Schema.Array(Schema.NonEmptyString),
+  task: Task,
+  reservedAt: Schema.NonEmptyString,
+  retryClearanceId: Schema.optional(Schema.NonEmptyString),
+});
+const RevisionResultAdoption = Schema.Struct({
+  decisionId: Schema.NonEmptyString,
+  seriesId: Schema.NonEmptyString,
+  revisionNumber: NonNegativeSafeInteger,
+  retryOperationId: Schema.NonEmptyString,
+  resultId: Schema.NonEmptyString,
+  resultDigest: Digest,
+  decidedBy: Schema.NonEmptyString,
+  decidedAt: Schema.NonEmptyString,
+});
 
 const OperationEventSchema = Schema.Union(
   Schema.Struct({
@@ -409,6 +454,7 @@ const OperationEventSchema = Schema.Union(
     workProductRequirements: ResolvedWorkProductRequirements,
     resultRetentionPolicy: ResultAcceptanceRetentionPolicy,
     lineage: Lineage,
+    revisionMembership: Schema.optional(RevisionMembership),
     startAuthorizationTiming: StartAuthorizationTiming,
     startupReceiptPolicy: Schema.optional(StartupReceiptPolicy),
   }),
@@ -491,6 +537,21 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("worker_stop_confirmed"),
     proof: Schema.Literal("worker-stop"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("retry_clearance_recorded"),
+    clearance: RetryClearanceEvidence,
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("revision_reserved"),
+    reservation: RevisionReservation,
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("revision_result_adopted"),
+    adoption: RevisionResultAdoption,
   }),
   Schema.Struct({
     ...EventMetadataFields,

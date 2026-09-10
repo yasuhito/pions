@@ -11,6 +11,10 @@ import type {
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceReservation,
   ResultAcceptanceRetentionPolicyEvidence,
+  RetryClearanceEvidence,
+  RevisionReservation,
+  RevisionResultAdoptionRecord,
+  RevisionSeriesSnapshot,
   StartAuthorizationDecisionAttemptRecord,
   StartAuthorizationDecisionRecord,
   StartAuthorizationTiming,
@@ -40,6 +44,12 @@ export type {
   WorkerIdentity,
 } from "./intent.js";
 
+export interface RevisionMembership {
+  readonly seriesId: RevisionReservation["seriesId"];
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+}
+
 export interface OperationLineage {
   readonly rootOperationId: string;
   readonly parentOperationId?: string;
@@ -58,6 +68,7 @@ export interface PresentationCleanupRecord {
 export interface Operation {
   readonly operationId: string;
   readonly lineage: Readonly<OperationLineage>;
+  readonly revisionMembership?: Readonly<RevisionMembership>;
   readonly presentation?: Readonly<PresentationOwnership>;
   readonly workerIdentity?: Readonly<WorkerIdentity>;
   readonly agentRunEvidence?: Readonly<AgentRunEvidence>;
@@ -79,6 +90,7 @@ export interface Operation {
   readonly startInstructionAcknowledgement?: Readonly<StartInstructionAcknowledgementEvidence>;
   readonly startDeliveryHandoffs: ReadonlyArray<Readonly<StartDeliveryHandoffEvidence>>;
   readonly resultAcceptedAt?: string;
+  readonly revisionSeries?: Readonly<RevisionSeriesSnapshot>;
   readonly workerStopConfirmedAt?: string;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
   readonly resourceEvidenceRecord?: Readonly<PersistedResourceRecord>;
@@ -98,7 +110,7 @@ export interface Operation {
   readonly terminalReason?: OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 18 as const;
+export const EVENT_SCHEMA_VERSION = 19 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -122,6 +134,7 @@ export type OperationEvent = EventMetadata &
         readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
         readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
         readonly lineage: Readonly<OperationLineage>;
+        readonly revisionMembership?: Readonly<RevisionMembership>;
         readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
         readonly startupReceiptPolicy?: Readonly<StartupReceiptPolicy>;
       }
@@ -180,6 +193,9 @@ export type OperationEvent = EventMetadata &
       }
     | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
     | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
+    | { readonly type: "retry_clearance_recorded"; readonly clearance: Readonly<RetryClearanceEvidence> }
+    | { readonly type: "revision_reserved"; readonly reservation: Readonly<RevisionReservation> }
+    | { readonly type: "revision_result_adopted"; readonly adoption: Readonly<RevisionResultAdoptionRecord> }
     | PersistableOperationIntent
     | {
         readonly type: "result_acceptance_prepared";

@@ -68,6 +68,10 @@ class FakeRuntime implements Runtime {
     return Promise.reject(new Error("unused"));
   }
 
+  revisions(): Promise<never> {
+    return Promise.reject(new Error("unused"));
+  }
+
   resourceProofs(): never {
     throw new Error("unused");
   }
@@ -130,6 +134,10 @@ class PendingRuntime implements Runtime {
   }
 
   startAuthorizationInbox(): Promise<never> {
+    return Promise.reject(new Error("unused"));
+  }
+
+  revisions(): Promise<never> {
     return Promise.reject(new Error("unused"));
   }
 

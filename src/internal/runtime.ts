@@ -16,6 +16,7 @@ import {
   resultAcceptanceManifestDocument,
 } from "./result-acceptance-manifest.js";
 import { resultAcceptanceRetentionPolicy } from "./result-acceptance-transaction.js";
+import { revisionSeriesOrigin } from "./revision-series.js";
 import { permissionManifestDocument, validateWorkspaceScope } from "./resource-proof.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
@@ -43,6 +44,7 @@ import {
   StartAuthorizationAuthenticationError,
   ResourceProofRejectedError,
   ResultRetrievalError,
+  RevisionAuthenticationError,
   SpawnRejectedError,
   WorkerConfigurationError,
 } from "../public.js";
@@ -56,6 +58,9 @@ import type {
   OperationReader,
   OperationSnapshot as PublicOperationSnapshot,
   Result,
+  RevisionCoordinator,
+  RevisionReservation,
+  RevisionReservationOutcome,
   Runtime,
   SpawnOptions,
   StartAuthorizationDecisionOutcome,
@@ -292,6 +297,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               evidence: operation.resourceEvidenceRecord.snapshot,
             }),
           }),
+      ...(operation.revisionSeries === undefined
+        ? {}
+        : { revisionSeries: structuredClone(operation.revisionSeries) }),
     });
   };
 
@@ -1223,6 +1231,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const createOperationUnlocked = async (
     taskInput: TaskSpec,
     options: SpawnOptions | undefined,
+    revisionReservation?: Readonly<RevisionReservation>,
   ): Promise<OperationRecord> => {
     await runEffect(services.presentation.preflight());
     const decodedTask = await Effect.runPromise(
@@ -1342,7 +1351,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
     let operationId: string;
     try {
-      operationId = await Effect.runPromise(services.ids.nextOperationId());
+      operationId = revisionReservation?.operationId ?? await Effect.runPromise(services.ids.nextOperationId());
     } catch (error) {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
       throw error;
@@ -1392,6 +1401,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           configuredProfile.acceptedArtifactRetentionMs,
         ),
         lineage,
+        ...(revisionReservation === undefined
+          ? {}
+          : {
+              revisionMembership: {
+                seriesId: revisionReservation.seriesId,
+                revisionNumber: revisionReservation.revisionNumber,
+                attemptNumber: revisionReservation.attemptNumber,
+              },
+            }),
         startAuthorization: authorization,
       }).pipe(
         Effect.map((snapshot) => snapshot.operation),
@@ -1735,12 +1753,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       }
     }
   });
+  const revisionRecovery = runEffect(services.store.listPendingRevisionReservations().pipe(
+    Effect.mapError((error) => persistenceError("revision-reservation-recovery", error)),
+  )).then(async (reservations) => {
+    for (const reservation of reservations) {
+      const record = await serializeTreeMutation(() =>
+        createOperationUnlocked(reservation.task, undefined, reservation)
+      );
+      if (record.executionRejected !== true) void execute(record);
+    }
+  });
   const cleanupRecovery = runEffect(services.store.listPendingPresentationCleanups().pipe(
     Effect.mapError((error) => persistenceError("presentation-cleanup-recovery", error)),
   )).then(async (snapshots) => {
     for (const { operation } of snapshots) await performPresentationCleanup(operation, false);
   });
-  const recovery = Promise.all([workerRecovery, cleanupRecovery]);
+  const recovery = Promise.all([workerRecovery, revisionRecovery, cleanupRecovery]);
   void recovery.catch(() => undefined);
 
   return {
@@ -1768,6 +1796,134 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     async operation(operationId: string): Promise<OperationReader> {
       await readStoredSnapshot(operationId);
       return createReader(operationId);
+    },
+
+    async revisions(credential: string): Promise<RevisionCoordinator> {
+      const authenticator = services.revisionAuthenticator;
+      if (authenticator === undefined) {
+        throw new RevisionAuthenticationError("Revision authentication is unavailable");
+      }
+      const principal = await authenticator.authenticate(credential).catch((error) => {
+        throw error instanceof RevisionAuthenticationError
+          ? error
+          : new RevisionAuthenticationError("Revision authentication failed");
+      });
+      const reserveOperation = async (
+        request: Parameters<RevisionCoordinator["reserveRevision"]>[0] | Parameters<RevisionCoordinator["reserveRetry"]>[0],
+        kind: "revision" | "retry",
+      ): Promise<Readonly<RevisionReservationOutcome>> => {
+        const operationId = await Effect.runPromise(services.ids.nextOperationId());
+        const retry = kind === "retry"
+          ? request as Parameters<RevisionCoordinator["reserveRetry"]>[0]
+          : undefined;
+        const revision = kind === "revision"
+          ? request as Parameters<RevisionCoordinator["reserveRevision"]>[0]
+          : undefined;
+        const originId = revision?.seriesId === undefined
+          ? revision?.targetOperationId ?? revisionSeriesOrigin(retry!.seriesId)
+          : revisionSeriesOrigin(revision.seriesId);
+        if (originId === undefined) return { status: "rejected", reason: "not_found" };
+        if (retry?.clearance !== undefined) {
+          const verified = await services.retryClearanceVerifier?.verify(retry.clearance).catch(() => false) ?? false;
+          if (!verified) return { status: "rejected", reason: "retry_clearance_invalid" };
+        }
+        const artifactAcceptanceSubjectIds = revision !== undefined && revision.seriesId === undefined
+          ? await principal.fixedArtifactAcceptanceSubjectIds(revision.targetOperationId)
+          : undefined;
+        const outcome = await runEffect(services.store.reserveRevision({
+          seriesOriginOperationId: originId,
+          operationId,
+          requestId: request.requestId,
+          kind,
+          targetOperationId: revision?.targetOperationId ?? retry!.failedOperationId,
+          ...(revision === undefined ? {} : {
+            targetResultId: revision.targetResultId,
+            targetResultDigest: revision.targetResultDigest,
+            ...(revision.maxAttempts === undefined ? {} : { maxAttempts: revision.maxAttempts }),
+            ...(artifactAcceptanceSubjectIds === undefined
+              ? {}
+              : { artifactAcceptanceSubjectIds: [...artifactAcceptanceSubjectIds] }),
+          }),
+          ...(retry === undefined ? {} : {
+            retryOfOperationId: retry.failedOperationId,
+            ...(retry.clearance === undefined ? {} : { clearance: retry.clearance }),
+          }),
+          reason: request.reason,
+          requestedBy: principal.subjectId,
+          task: request.task,
+        }).pipe(Effect.mapError((error) => persistenceError(originId, error))));
+        if (outcome.status === "reserved" || outcome.status === "idempotent") {
+          const reservedOperationId = outcome.reservation.operationId;
+          const existingOperation = await runEffect(Effect.either(services.store.read(reservedOperationId)));
+          if (existingOperation._tag === "Left") {
+            if (existingOperation.left.code !== "not_found") {
+              throw persistenceError(reservedOperationId, existingOperation.left);
+            }
+            const record = await serializeTreeMutation(() =>
+              createOperationUnlocked(outcome.reservation.task, undefined, outcome.reservation)
+            );
+            if (record.executionRejected !== true) void execute(record);
+          }
+        }
+        return outcome;
+      };
+      return {
+        reserveRevision: (request) => reserveOperation(request, "revision"),
+        reserveRetry: (request) => reserveOperation(request, "retry"),
+        read: async (seriesId) => {
+          const originId = revisionSeriesOrigin(seriesId);
+          if (originId === undefined) throw new OperationPersistenceError(seriesId, "corrupt_record");
+          const series = await runEffect(services.store.readRevisionSeries(originId).pipe(
+            Effect.mapError((error) => persistenceError(originId, error)),
+          ));
+          if (series.seriesId !== seriesId) {
+            throw new OperationPersistenceError(originId, "corrupt_record");
+          }
+          return series;
+        },
+        adopt: async (request) => {
+          let currentPrincipal;
+          try {
+            currentPrincipal = await authenticator.authenticate(credential);
+          } catch {
+            return { status: "rejected", reason: "authority_unknown" } as const;
+          }
+          if (currentPrincipal.subjectId !== principal.subjectId) {
+            return { status: "rejected", reason: "authority_unknown" } as const;
+          }
+          const originId = revisionSeriesOrigin(request.seriesId);
+          if (originId === undefined) return { status: "rejected", reason: "series_not_found" };
+          const result = await runEffect(Effect.either(services.store.readRevisionSeries(originId)));
+          if (result._tag === "Left") {
+            if (result.left.code === "not_found") {
+              return { status: "rejected", reason: "series_not_found" } as const;
+            }
+            throw persistenceError(originId, result.left);
+          }
+          const series = result.right;
+          if (!series.artifactAcceptanceSubjectIds.includes(principal.subjectId)) {
+            return { status: "rejected", reason: "fixed_scope_denied" } as const;
+          }
+          const currentAuthority = async () => currentPrincipal
+            .currentArtifactAcceptanceAuthority(request.seriesId)
+            .catch(() => "unknown" as const);
+          const authorityImmediatelyBeforeDecision = await currentAuthority();
+          if (authorityImmediatelyBeforeDecision !== "authorized") {
+            return {
+              status: "rejected",
+              reason: authorityImmediatelyBeforeDecision === "revoked"
+                ? "authority_revoked"
+                : authorityImmediatelyBeforeDecision === "unknown"
+                  ? "authority_unknown"
+                  : "current_authority_denied",
+            } as const;
+          }
+          return runEffect(services.store.adoptRevisionResult({
+            ...request,
+            decidedBy: currentPrincipal.subjectId,
+          }).pipe(Effect.mapError((error) => persistenceError(originId, error))));
+        },
+      };
     },
 
     resourceProofs() {

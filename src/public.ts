@@ -684,6 +684,128 @@ export class ResourceProofRejectedError extends Error {
   }
 }
 
+export interface RetryClearanceEvidence {
+  readonly clearanceId: string;
+  readonly failedOperationId: string;
+  readonly affectedResourceIds: ReadonlyArray<string>;
+  readonly workerStoppedOrAccessBlocked: true;
+  readonly noConflict: true;
+  readonly handoffConfirmed: true;
+  readonly verifiedBy: string;
+  readonly verifiedAt: string;
+}
+
+export type RevisionSeriesId = `pions.revision-series.v1:${string}`;
+
+export interface RevisionReservation {
+  readonly requestId: string;
+  readonly kind: "revision" | "retry";
+  readonly seriesId: RevisionSeriesId;
+  readonly seriesOriginOperationId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly operationId: string;
+  readonly targetOperationId: string;
+  readonly targetResultId?: string;
+  readonly targetResultDigest?: ArtifactDigest;
+  readonly retryOfOperationId?: string;
+  readonly reason: string;
+  readonly requestedBy: string;
+  readonly maxAttempts: number;
+  readonly artifactAcceptanceSubjectIds: ReadonlyArray<string>;
+  readonly task: Readonly<TaskSpec>;
+  readonly reservedAt: string;
+  readonly retryClearanceId?: string;
+}
+
+export interface RevisionResultAdoptionRecord {
+  readonly decisionId: string;
+  readonly seriesId: RevisionSeriesId;
+  readonly revisionNumber: number;
+  readonly retryOperationId: string;
+  readonly resultId: string;
+  readonly resultDigest: ArtifactDigest;
+  readonly decidedBy: string;
+  readonly decidedAt: string;
+}
+
+export interface RevisionSeriesSnapshot {
+  readonly seriesId: RevisionSeriesId;
+  readonly seriesOriginOperationId: string;
+  readonly maxAttempts: number;
+  readonly artifactAcceptanceSubjectIds: ReadonlyArray<string>;
+  readonly reservations: ReadonlyArray<Readonly<RevisionReservation>>;
+  readonly retryClearances: ReadonlyArray<Readonly<RetryClearanceEvidence>>;
+  readonly adoptions: ReadonlyArray<Readonly<RevisionResultAdoptionRecord>>;
+}
+
+interface ReserveRevisionRequestBase {
+  readonly requestId: string;
+  readonly targetOperationId: string;
+  readonly targetResultId: string;
+  readonly targetResultDigest: ArtifactDigest;
+  readonly reason: string;
+  readonly task: Readonly<TaskSpec>;
+}
+
+export type ReserveRevisionRequest = ReserveRevisionRequestBase & (
+  | { readonly seriesId?: never; readonly maxAttempts: number }
+  | { readonly seriesId: RevisionSeriesId; readonly maxAttempts?: never }
+);
+
+export interface ReserveRetryRequest {
+  readonly requestId: string;
+  readonly seriesId: RevisionSeriesId;
+  readonly failedOperationId: string;
+  readonly reason: string;
+  readonly task: Readonly<TaskSpec>;
+  readonly clearance?: Readonly<RetryClearanceEvidence>;
+}
+
+export type RevisionReservationOutcome =
+  | { readonly status: "reserved" | "idempotent"; readonly reservation: Readonly<RevisionReservation> }
+  | { readonly status: "rejected"; readonly reason: "not_found" | "request_conflict" | "invalid_target" | "limit_exceeded" | "retry_clearance_required" | "retry_clearance_invalid" };
+
+export interface AdoptRevisionResultRequest {
+  readonly decisionId: string;
+  readonly seriesId: RevisionSeriesId;
+  readonly revisionNumber: number;
+  readonly retryOperationId: string;
+  readonly resultId: string;
+  readonly resultDigest: ArtifactDigest;
+}
+
+export type RevisionResultAdoptionOutcome =
+  | { readonly status: "adopted" | "idempotent"; readonly adoption: Readonly<RevisionResultAdoptionRecord> }
+  | { readonly status: "rejected"; readonly reason: "series_not_found" | "fixed_scope_denied" | "current_authority_denied" | "authority_revoked" | "authority_unknown" | "decision_conflict" | "invalid_successor" | "result_not_accepted" };
+
+export type CurrentArtifactAcceptanceAuthority = "authorized" | "denied" | "revoked" | "unknown";
+
+export interface AuthenticatedRevisionCoordinator {
+  readonly subjectId: string;
+  fixedArtifactAcceptanceSubjectIds(targetOperationId: string): Promise<ReadonlyArray<string>>;
+  currentArtifactAcceptanceAuthority(seriesId: string): Promise<CurrentArtifactAcceptanceAuthority>;
+}
+
+export interface RetryClearanceVerifier {
+  verify(evidence: Readonly<RetryClearanceEvidence>): Promise<boolean>;
+}
+
+export interface RevisionAuthenticator {
+  authenticate(credential: string): Promise<Readonly<AuthenticatedRevisionCoordinator>>;
+}
+
+export class RevisionAuthenticationError extends Error {
+  override readonly name = "RevisionAuthenticationError";
+}
+
+export interface RevisionCoordinator {
+  reserveRevision(request: Readonly<ReserveRevisionRequest>): Promise<Readonly<RevisionReservationOutcome>>;
+  reserveRetry(request: Readonly<ReserveRetryRequest>): Promise<Readonly<RevisionReservationOutcome>>;
+  adopt(request: Readonly<AdoptRevisionResultRequest>): Promise<Readonly<RevisionResultAdoptionOutcome>>;
+  read(seriesId: string): Promise<Readonly<RevisionSeriesSnapshot>>;
+}
+
 export interface OperationSnapshot {
   readonly operationId: string;
   readonly version: Readonly<OperationVersion>;
@@ -701,6 +823,7 @@ export interface OperationSnapshot {
   readonly presentationCleanup?: Readonly<PresentationCleanupEvidence>;
   readonly cleanupDiagnostics: ReadonlyArray<Readonly<CleanupDiagnostic>>;
   readonly resourceEvidence?: Readonly<VersionedResourceEvidenceSnapshot>;
+  readonly revisionSeries?: Readonly<RevisionSeriesSnapshot>;
 }
 
 export interface OperationReader {
@@ -915,6 +1038,7 @@ export interface Runtime {
   spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle>;
   operation(operationId: string): Promise<OperationReader>;
   startAuthorizationInbox(credential: string): Promise<StartAuthorizationInbox>;
+  revisions(credential: string): Promise<RevisionCoordinator>;
   resourceProofs(): ResourceProofController;
   close(): Promise<void>;
 }

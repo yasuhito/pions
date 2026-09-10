@@ -9,12 +9,19 @@ import type {
   ResultAcceptanceReservationRequest,
   ResultAcceptanceRetentionPolicyEvidence,
   ResultAcceptanceTransactionOutcome,
+  RetryClearanceEvidence,
+  RevisionReservation,
+  RevisionReservationOutcome,
+  RevisionResultAdoptionOutcome,
+  RevisionResultAdoptionRecord,
+  RevisionSeriesSnapshot,
   StartupReceiptPolicy,
   TaskSpec,
 } from "../../public.js";
 import type {
   Operation,
   OperationLineage,
+  RevisionMembership,
 } from "./model.js";
 import type {
   OperationIntent,
@@ -28,7 +35,9 @@ export type {
 } from "./intent.js";
 export type {
   Operation,
+  OperationEvent,
   OperationLineage,
+  RevisionMembership,
 } from "./model.js";
 export { RUNTIME_ACTOR_ID } from "./model.js";
 
@@ -53,6 +62,7 @@ export interface OperationRequest {
   readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
   readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
   readonly lineage: Readonly<OperationLineage>;
+  readonly revisionMembership?: Readonly<RevisionMembership>;
   readonly startAuthorization: Readonly<{
     readonly configuredPolicy: "disabled" | "optional" | "required";
     readonly policy: "disabled" | "required";
@@ -67,6 +77,25 @@ export interface OperationSnapshot {
   readonly operation: Operation;
 }
 
+export interface RevisionReservationCommand {
+  readonly seriesOriginOperationId: string;
+  readonly operationId: string;
+  readonly requestId: string;
+  readonly kind: "revision" | "retry";
+  readonly targetOperationId: string;
+  readonly targetResultId?: string;
+  readonly targetResultDigest?: `sha256:${string}`;
+  readonly retryOfOperationId?: string;
+  readonly reason: string;
+  readonly requestedBy: string;
+  readonly maxAttempts?: number;
+  readonly artifactAcceptanceSubjectIds?: ReadonlyArray<string>;
+  readonly task: Readonly<TaskSpec>;
+  readonly clearance?: Readonly<RetryClearanceEvidence>;
+}
+
+export interface RevisionAdoptionCommand extends Omit<RevisionResultAdoptionRecord, "decidedAt"> {}
+
 export interface EventStore {
   create(request: OperationRequest): Effect.Effect<OperationSnapshot, StoreError>;
   advance(
@@ -79,10 +108,14 @@ export interface EventStore {
   publishResultAcceptance(
     evidence: Readonly<ResultAcceptancePreparationEvidence>,
   ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
+  reserveRevision(command: Readonly<RevisionReservationCommand>): Effect.Effect<RevisionReservationOutcome, StoreError>;
+  adoptRevisionResult(command: Readonly<RevisionAdoptionCommand>): Effect.Effect<RevisionResultAdoptionOutcome, StoreError>;
+  readRevisionSeries(seriesOriginOperationId: string): Effect.Effect<RevisionSeriesSnapshot, StoreError>;
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError>;
   listWaitingStartAuthorizations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
   listRecoverableOperations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
   listPendingPresentationCleanups(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
+  listPendingRevisionReservations(): Effect.Effect<ReadonlyArray<Readonly<RevisionReservation>>, StoreError>;
 }
 
 export type { OperationState };

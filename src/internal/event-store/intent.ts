@@ -3,6 +3,9 @@ import type {
   CleanupDiagnosticCode,
   ObservedWorkerConfig,
   OperationFailureReason,
+  RetryClearanceEvidence,
+  RevisionReservation,
+  RevisionResultAdoptionRecord,
   StartAuthorizationDecisionAttemptRecord,
   StartAuthorizationDecisionRecord,
   StartInstructionReference,
@@ -96,6 +99,9 @@ export type OperationIntent =
     }
   | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
   | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
+  | { readonly type: "retry_clearance_recorded"; readonly clearance: Readonly<RetryClearanceEvidence> }
+  | { readonly type: "revision_reserved"; readonly reservation: Readonly<RevisionReservation> }
+  | { readonly type: "revision_result_adopted"; readonly adoption: Readonly<RevisionResultAdoptionRecord> }
   | {
       readonly type: "worker_identified";
       readonly workerIdentity: Readonly<WorkerIdentity>;
