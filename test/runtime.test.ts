@@ -109,9 +109,15 @@ class InterruptedStartWorkerAdapter implements WorkerAdapter {
 }
 
 class AuthorityOnlyWorkerAdapter extends InterruptedStartWorkerAdapter {
+  private releaseAuthorityRun: (() => void) | undefined;
+
+  override release(): void {
+    this.releaseAuthorityRun?.();
+  }
+
   override open(operation: Operation): Worker {
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(function* () {
+      run: (hooks) => Effect.gen(this, function* () {
         yield* hooks.workerLaunched();
         yield* hooks.workerIdentified({
           processId: 1234,
@@ -125,7 +131,9 @@ class AuthorityOnlyWorkerAdapter extends InterruptedStartWorkerAdapter {
             cwd: { state: "observed", value: operation.effectiveConfig.cwd },
           },
         });
-        return yield* Effect.async<WorkerRunOutcome>(() => undefined);
+        return yield* Effect.async<WorkerRunOutcome>((resume) => {
+          this.releaseAuthorityRun = () => resume(Effect.succeed({ state: "liveness-unproven" }));
+        });
       }),
       cancel: () => Effect.succeed(undefined),
     });
@@ -451,8 +459,9 @@ test("runtime startup adopts a recoverable Start delivery", async () => {
 
 test("runtime recovery delivers a Start instruction acquired before delivery entry", async () => {
   const store = new InMemoryEventStore();
+  const firstWorker = new AuthorityOnlyWorkerAdapter();
   const firstRuntime = makeTestRuntime({
-    worker: new AuthorityOnlyWorkerAdapter(),
+    worker: firstWorker,
     clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
       `2026-09-06T10:05:${String(index).padStart(2, "0")}.000Z`,
     )),
@@ -482,6 +491,7 @@ test("runtime recovery delivers a Start instruction acquired before delivery ent
   while (recoveredWorker.recoveredDeliveryCount === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
+  firstWorker.release();
   await recoveredRuntime.close();
 
   assert.equal(recoveredWorker.recoveredDeliveryCount, 1);
