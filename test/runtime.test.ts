@@ -108,6 +108,32 @@ class InterruptedStartWorkerAdapter implements WorkerAdapter {
   }
 }
 
+class PausedHandoffWorkerAdapter extends InterruptedStartWorkerAdapter {
+  revocationRecorded = false;
+
+  override recover(operation: Operation): Worker {
+    return makeSingleRunWorker({
+      run: (hooks) => Effect.gen(this, function* () {
+        const identity = operation.workerIdentity!;
+        const instruction = yield* hooks.workerIdentified({
+          processId: identity.processId,
+          processInstanceId: identity.processInstanceId,
+          processStartToken: identity.processStartToken,
+          piSessionId: identity.piSessionId,
+          observedConfig: operation.observedConfig!,
+        });
+        yield* hooks.startDeliveryAuthorityRevoked(
+          instruction.dispatcherId,
+          instruction.deliveryGeneration,
+        );
+        this.revocationRecorded = true;
+        return yield* Effect.async<WorkerRunOutcome>(() => undefined);
+      }),
+      cancel: () => Effect.succeed(undefined),
+    });
+  }
+}
+
 class ControlledTestClock implements RuntimeClock {
   private readonly runtime = ManagedRuntime.make(TestContext.TestContext);
   private timestampIndex = 0;
@@ -425,6 +451,60 @@ test("runtime recovery redispatches only after a durable not-accepted result", a
     worker: recoveredWorker,
     clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
       `2026-09-06T11:10:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  while (recoveredWorker.recoveredDeliveryCount === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  firstWorker.release();
+  await recoveredRuntime.close();
+
+  assert.equal(recoveredWorker.recoveredDeliveryCount, 1);
+});
+
+test("runtime recovery resumes a Start delivery handoff interrupted after revocation", async () => {
+  const store = new InMemoryEventStore();
+  const firstWorker = new InterruptedStartWorkerAdapter();
+  const firstRuntime = makeTestRuntime({
+    worker: firstWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T10:20:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await firstRuntime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  while ((await handle.read()).startDeliveryEntry === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await firstRuntime.close();
+  const pausedWorker = new PausedHandoffWorkerAdapter();
+  const interruptedRuntime = makeTestRuntime({
+    worker: pausedWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T11:20:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  while (!pausedWorker.revocationRecorded) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await interruptedRuntime.close();
+  const recoveredWorker = new InterruptedStartWorkerAdapter();
+  const recoveredRuntime = makeTestRuntime({
+    worker: recoveredWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T12:20:${String(index).padStart(2, "0")}.000Z`,
     )),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),

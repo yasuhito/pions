@@ -542,6 +542,11 @@ export function reduceOperation(
     case "start_delivery_authority_revoked": {
       const authority = current.startDeliveryAuthority;
       const pendingHandoff = current.startDeliveryHandoffs.at(-1);
+      const resumesPendingHandoff =
+        pendingHandoff !== undefined &&
+        pendingHandoff.workerGenerationConfirmedAt === undefined &&
+        event.successorDispatcherId === pendingHandoff.successorDispatcherId &&
+        event.deliveryGeneration === pendingHandoff.deliveryGeneration;
       if (
         current.state !== "starting" && current.state !== "running" ||
         authority === undefined ||
@@ -550,7 +555,9 @@ export function reduceOperation(
         !Number.isSafeInteger(event.writerOwnership.pid) ||
         event.writerOwnership.pid < 1 ||
         event.writerOwnership.processStartToken.length === 0 ||
-        pendingHandoff?.workerGenerationConfirmedAt === undefined && pendingHandoff !== undefined
+        pendingHandoff !== undefined &&
+          pendingHandoff.workerGenerationConfirmedAt === undefined &&
+          !resumesPendingHandoff
       ) {
         throw new TransitionError("illegal_transition");
       }

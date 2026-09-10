@@ -332,6 +332,26 @@ test("Start delivery authority revocation records writer ownership independently
   );
 });
 
+test("a pending Start delivery handoff records the recovering writer ownership", () => {
+  const revoked = reduceOperation(runningOperation(), event(5, {
+    type: "start_delivery_authority_revoked",
+    successorDispatcherId: "dispatcher-2",
+    deliveryGeneration: 2,
+    writerOwnership: { pid: 1234, processStartToken: "first-writer" },
+  }));
+  const resumed = reduceOperation(revoked, event(6, {
+    type: "start_delivery_authority_revoked",
+    successorDispatcherId: "dispatcher-2",
+    deliveryGeneration: 2,
+    writerOwnership: { pid: 5678, processStartToken: "recovering-writer" },
+  }));
+
+  assert.deepEqual(
+    resumed.startDeliveryHandoffs.at(-1)?.writerOwnership,
+    { pid: 5678, processStartToken: "recovering-writer" },
+  );
+});
+
 test("reducer rejects an unsupported event schema", () => {
   const invalid = { ...event(5, { type: "operation_blocked" }), schemaVersion: 1 };
 

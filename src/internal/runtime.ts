@@ -740,8 +740,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 ) {
                   throw new OperationPersistenceError(record.operationId, "corrupt_record");
                 }
-                const deliveryGeneration = previous.deliveryGeneration + 1;
-                const dispatcherId = `${RUNTIME_ACTOR_ID}-recovery-${deliveryGeneration}`;
+                const pendingHandoff = current.startDeliveryHandoffs.at(-1);
+                const resumesHandoff =
+                  pendingHandoff !== undefined &&
+                  pendingHandoff.deliveryGeneration === previous.deliveryGeneration + 1;
+                const deliveryGeneration = resumesHandoff
+                  ? pendingHandoff.deliveryGeneration
+                  : previous.deliveryGeneration + 1;
+                const dispatcherId = resumesHandoff
+                  ? pendingHandoff.successorDispatcherId
+                  : `${RUNTIME_ACTOR_ID}-recovery-${deliveryGeneration}`;
                 return {
                   dispatcherId,
                   workerProcessInstanceId: previous.workerProcessInstanceId,

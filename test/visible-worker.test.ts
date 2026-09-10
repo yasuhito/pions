@@ -344,7 +344,7 @@ async function fixture(options: {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const directory = join(root, operationDirectoryKey(current.operationId));
-  const config = JSON.parse(await readFile(join(directory, "worker.v13.json"), "utf8")) as {
+  const config = JSON.parse(await readFile(join(directory, "worker.v14.json"), "utf8")) as {
     readonly socketPath: string;
   };
   const protocolSession = {
@@ -499,7 +499,7 @@ test("visible Worker recovery does not redispatch a durably accepted Start instr
   const directory = join(root, operationDirectoryKey(recovered.operationId));
   const socketPath = join(root, `${operationDirectoryKey(recovered.operationId)}.sock`);
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, "worker.v13.json"), encodeWorkerConfig({
+  await writeFile(join(directory, "worker.v14.json"), encodeWorkerConfig({
     operationId: recovered.operationId,
     capability: "ab".repeat(32),
     socketPath,
@@ -544,8 +544,11 @@ test("visible Worker recovery does not redispatch a durably accepted Start instr
     {
       load: () => durableInstruction,
       save: () => false,
-      loadGeneration: () => 1,
-      saveGeneration: () => true,
+      loadDeliveryAuthority: () => ({
+        deliveryGeneration: 1,
+        dispatcherId: durableInstruction.dispatcherId,
+      }),
+      saveDeliveryAuthority: () => true,
     },
   );
   client.write(peer.send({ type: "hello", processId, processInstanceId, processStartToken }));
@@ -578,7 +581,7 @@ test("recovery timeout confirms a stopped Worker instead of waiting forever", as
   const directory = join(root, operationDirectoryKey(recovered.operationId));
   const socketPath = join(root, `${operationDirectoryKey(recovered.operationId)}.sock`);
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, "worker.v13.json"), encodeWorkerConfig({
+  await writeFile(join(directory, "worker.v14.json"), encodeWorkerConfig({
     operationId: recovered.operationId,
     capability: "ab".repeat(32),
     socketPath,
@@ -664,7 +667,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   while (executor.invocations.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v13.json");
+  const configPath = join(root, operationDirectoryKey("operation-1"), "worker.v14.json");
   const config = JSON.parse(await readFile(configPath, "utf8")) as { readonly socketPath: string };
   const client = await socket(config.socketPath);
   await sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
@@ -723,7 +726,7 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--no-prompt-templates",
     "--no-themes",
     "--approve",
-    "--pions-worker-config", join(value.directory, "worker.v13.json"),
+    "--pions-worker-config", join(value.directory, "worker.v14.json"),
   ]);
 });
 
@@ -771,7 +774,7 @@ test("visible Worker configuration uses private permissions", async (context) =>
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal(await mode(join(value.directory, "worker.v13.json")), 0o600);
+  assert.equal(await mode(join(value.directory, "worker.v14.json")), 0o600);
 });
 
 test("invalid Worker configuration reports a Worker start failure", async (context) => {
@@ -1729,8 +1732,8 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   }
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
-  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v13.json"), "utf8")) as { readonly socketPath: string };
-  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v13.json"), "utf8")) as { readonly socketPath: string };
+  const firstConfig = JSON.parse(await readFile(join(firstDirectory, "worker.v14.json"), "utf8")) as { readonly socketPath: string };
+  const secondConfig = JSON.parse(await readFile(join(secondDirectory, "worker.v14.json"), "utf8")) as { readonly socketPath: string };
   const secondClient = await socket(secondConfig.socketPath);
   await sendResultDelivery(secondClient, {
     capability: "cd".repeat(32),

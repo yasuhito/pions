@@ -17,7 +17,7 @@ import {
   ObservedWorkerConfigSchema,
 } from "./worker-configuration.js";
 
-export const WORKER_PROTOCOL_VERSION = 13 as const;
+export const WORKER_PROTOCOL_VERSION = 14 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -259,11 +259,16 @@ export interface StartInstruction extends StartInstructionReference {
   readonly deadline?: string;
 }
 
+export interface DurableDeliveryAuthority {
+  readonly deliveryGeneration: number;
+  readonly dispatcherId?: string;
+}
+
 export interface StartInstructionAcceptanceStore {
   load(): Readonly<StartInstruction> | "none" | "unknown";
   save(instruction: Readonly<StartInstruction>): boolean;
-  loadGeneration(): number | "unknown";
-  saveGeneration(deliveryGeneration: number): boolean;
+  loadDeliveryAuthority(): Readonly<DurableDeliveryAuthority> | "unknown";
+  saveDeliveryAuthority(authority: Readonly<DurableDeliveryAuthority>): boolean;
 }
 
 export type BeginRejectionReason = Schema.Schema.Type<typeof BeginRejectionReasonSchema>;
@@ -1299,12 +1304,13 @@ export class WorkerProtocolPeer extends FramedPeer {
           this.validateHostControl(begin, "Begin");
           validateStartInstruction(begin.instruction as StartInstruction);
           const received = { ...begin.instruction } as StartInstruction;
-          const durableGeneration = this.startAcceptanceStore.loadGeneration();
-          if (durableGeneration === "unknown") {
+          const durableAuthority = this.startAcceptanceStore.loadDeliveryAuthority();
+          if (durableAuthority === "unknown") {
             startInstructions.push({ status: "acceptance_unknown", instruction: received });
             return;
           }
-          this.deliveryGeneration = durableGeneration;
+          this.deliveryGeneration = durableAuthority.deliveryGeneration;
+          this.deliveryDispatcherId = durableAuthority.dispatcherId;
           if (received.workerProcessInstanceId !== this.processInstanceId) {
             startInstructions.push({ status: "worker_mismatch", instruction: received });
             return;
@@ -1348,6 +1354,16 @@ export class WorkerProtocolPeer extends FramedPeer {
             startInstructions.push({ status: "expired", instruction: received });
             return;
           }
+          if (
+            this.deliveryDispatcherId === undefined &&
+            !this.startAcceptanceStore.saveDeliveryAuthority({
+              deliveryGeneration: this.deliveryGeneration,
+              dispatcherId: received.dispatcherId,
+            })
+          ) {
+            startInstructions.push({ status: "acceptance_unknown", instruction: received });
+            return;
+          }
           if (!this.startAcceptanceStore.save(received)) {
             startInstructions.push({ status: "acceptance_unknown", instruction: received });
             return;
@@ -1388,13 +1404,14 @@ export class WorkerProtocolPeer extends FramedPeer {
           if (this.state !== "ready" && this.state !== "running") {
             throw violation("invalid_transition", "Delivery generation changed before Worker identification");
           }
-          const durableGeneration = this.startAcceptanceStore.loadGeneration();
-          if (durableGeneration === "unknown") {
-            throw violation("invalid_transition", "Durable delivery generation is unavailable");
+          const durableAuthority = this.startAcceptanceStore.loadDeliveryAuthority();
+          if (durableAuthority === "unknown") {
+            throw violation("invalid_transition", "Durable delivery authority is unavailable");
           }
-          this.deliveryGeneration = durableGeneration;
-          if (update.deliveryGeneration <= this.deliveryGeneration) {
-            throw violation("invalid_transition", "Delivery generation must increase");
+          this.deliveryGeneration = durableAuthority.deliveryGeneration;
+          this.deliveryDispatcherId = durableAuthority.dispatcherId;
+          if (update.deliveryGeneration < this.deliveryGeneration) {
+            throw violation("invalid_transition", "Delivery generation must not decrease");
           }
           let acceptanceState: StartAcceptanceState =
             this.acceptedStartInstruction === undefined ? "not_accepted" : "accepted";
@@ -1406,8 +1423,15 @@ export class WorkerProtocolPeer extends FramedPeer {
                 ? "not_accepted"
                 : "accepted";
           }
-          if (!this.startAcceptanceStore.saveGeneration(update.deliveryGeneration)) {
-            throw violation("invalid_transition", "Delivery generation could not be durably updated");
+          if (update.deliveryGeneration === this.deliveryGeneration) {
+            if (update.dispatcherId !== this.deliveryDispatcherId) {
+              throw violation("authority_mismatch", "Delivery generation belongs to another Dispatcher");
+            }
+          } else if (!this.startAcceptanceStore.saveDeliveryAuthority({
+            deliveryGeneration: update.deliveryGeneration,
+            dispatcherId: update.dispatcherId,
+          })) {
+            throw violation("invalid_transition", "Delivery authority could not be durably updated");
           }
           this.deliveryGeneration = update.deliveryGeneration;
           this.deliveryDispatcherId = update.dispatcherId;
@@ -1499,7 +1523,6 @@ export class WorkerProtocolPeer extends FramedPeer {
     validateStartInstruction(stored);
     if (stored.workerProcessInstanceId !== this.processInstanceId) return "unknown";
     this.acceptedStartInstruction = { ...stored };
-    this.deliveryDispatcherId = stored.dispatcherId;
     this.state = "running";
     return this.acceptedStartInstruction;
   }

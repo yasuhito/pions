@@ -56,16 +56,18 @@ const instruction = {
 
 function acceptanceStore(): StartInstructionAcceptanceStore {
   let accepted: Readonly<StartInstruction> | "none" = "none";
-  let generation = 1;
+  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } = {
+    deliveryGeneration: 1,
+  };
   return {
     load: () => accepted,
     save: (instruction) => {
       accepted = { ...instruction };
       return true;
     },
-    loadGeneration: () => generation,
-    saveGeneration: (next) => {
-      generation = next;
+    loadDeliveryAuthority: () => deliveryAuthority,
+    saveDeliveryAuthority: (next) => {
+      deliveryAuthority = { ...next };
       return true;
     },
   };
@@ -209,14 +211,20 @@ test("batched duplicate begins each produce a reception result", () => {
 
 test("a lost acknowledgement recovers the durable acceptance without reinjecting", () => {
   let accepted: Readonly<StartInstruction> | "none" = "none";
+  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } = {
+    deliveryGeneration: 1,
+  };
   const store = {
     load: () => accepted,
     save: (value: Readonly<StartInstruction>) => {
       accepted = value;
       return true;
     },
-    loadGeneration: () => 1,
-    saveGeneration: () => true,
+    loadDeliveryAuthority: () => deliveryAuthority,
+    saveDeliveryAuthority: (next: typeof deliveryAuthority) => {
+      deliveryAuthority = { ...next };
+      return true;
+    },
   } as const;
   const host = new HostProtocolPeer(authority);
   const firstWorker = new WorkerProtocolPeer(authority, store);
@@ -302,8 +310,8 @@ test("a lost Worker acceptance record prevents begin execution", () => {
   const worker = new WorkerProtocolPeer(authority, {
     load: () => "unknown",
     save: () => false,
-    loadGeneration: () => 1,
-    saveGeneration: () => true,
+    loadDeliveryAuthority: () => ({ deliveryGeneration: 1 }),
+    saveDeliveryAuthority: () => true,
   });
   host.receive(worker.send(identity));
   host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
@@ -318,8 +326,8 @@ test("generation recovery preserves unknown acceptance instead of redispatching"
   const worker = new WorkerProtocolPeer(authority, {
     load: () => "unknown",
     save: () => false,
-    loadGeneration: () => 1,
-    saveGeneration: () => true,
+    loadDeliveryAuthority: () => ({ deliveryGeneration: 1 }),
+    saveDeliveryAuthority: () => true,
   });
   host.receive(worker.send(identity));
   host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
@@ -357,6 +365,54 @@ test("a generation update acknowledgement includes the previously accepted begin
   }));
 
   assert.deepEqual(events[0]?.type === "delivery_generation_updated" ? events[0].acceptedInstruction : undefined, instruction);
+});
+
+test("a restarted Worker repeats confirmation for the same delivery authority", () => {
+  const durableInstruction = {
+    ...instruction,
+    dispatcherId: "dispatcher-1",
+    deliveryGeneration: 1,
+  };
+  const worker = new WorkerProtocolPeer(authority, {
+    load: () => durableInstruction,
+    save: () => false,
+    loadDeliveryAuthority: () => ({
+      deliveryGeneration: 2,
+      dispatcherId: "dispatcher-2",
+    }),
+    saveDeliveryAuthority: () => false,
+  });
+  const host = new HostProtocolPeer(authority);
+  host.receive(worker.send(identity));
+  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+
+  const update = worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
+
+  assert.deepEqual(update.generationUpdate, {
+    deliveryGeneration: 2,
+    acceptanceState: "accepted",
+    acceptedInstruction: durableInstruction,
+  });
+});
+
+test("a restarted Worker rejects another Dispatcher in the durable generation", () => {
+  const worker = new WorkerProtocolPeer(authority, {
+    load: () => "none",
+    save: () => false,
+    loadDeliveryAuthority: () => ({
+      deliveryGeneration: 2,
+      dispatcherId: "dispatcher-2",
+    }),
+    saveDeliveryAuthority: () => false,
+  });
+  const host = new HostProtocolPeer(authority);
+  host.receive(worker.send(identity));
+  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+
+  assert.equal(
+    violationReason(() => worker.receive(host.updateDeliveryGeneration(2, "dispatcher-3"))),
+    "authority_mismatch",
+  );
 });
 
 test("a confirmed handoff revokes the old Dispatcher's Start delivery authority", () => {
@@ -410,12 +466,17 @@ test("a confirmed successor can deliver begin in the new generation", () => {
 });
 
 test("a restarted Worker rejects an old generation from durable state", () => {
-  let generation = 1;
+  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } = {
+    deliveryGeneration: 1,
+  };
   const store = {
     load: () => "none" as const,
     save: () => true,
-    loadGeneration: () => generation,
-    saveGeneration: (next: number) => { generation = next; return true; },
+    loadDeliveryAuthority: () => deliveryAuthority,
+    saveDeliveryAuthority: (next: typeof deliveryAuthority) => {
+      deliveryAuthority = { ...next };
+      return true;
+    },
   };
   const firstHost = new HostProtocolPeer(authority);
   const firstWorker = new WorkerProtocolPeer(authority, store);

@@ -468,14 +468,24 @@ export class VisibleWorker implements WorkerAdapter {
           WorkerRunOutcome,
           OperationPersistenceError | ResourceProofRejectedError
         > => {
-          if (error instanceof OperationPersistenceError || error instanceof ResourceProofRejectedError) {
+          if (error instanceof ResourceProofRejectedError) {
             return startDeliveryEntered
               ? Effect.promise(() => this.cancelSession(operation, 1_000)).pipe(
                   Effect.andThen(Effect.fail(error)),
                 )
               : Effect.fail(error);
           }
-          return startDeliveryEntered
+          if (error instanceof OperationPersistenceError) {
+            if (recovering && !startDeliveryEntered) {
+              return Effect.promise(() => this.stopAfterUncertainStart(operation));
+            }
+            return startDeliveryEntered
+              ? Effect.promise(() => this.cancelSession(operation, 1_000)).pipe(
+                  Effect.andThen(Effect.fail(error)),
+                )
+              : Effect.fail(error);
+          }
+          return recovering || startDeliveryEntered
             ? Effect.promise(() => this.stopAfterUncertainStart(operation))
             : Effect.succeed<WorkerRunOutcome>({ state: "worker_protocol_failed" });
         }),
@@ -502,7 +512,7 @@ export class VisibleWorker implements WorkerAdapter {
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
-    const configPath = join(directory, "worker.v13.json");
+    const configPath = join(directory, "worker.v14.json");
     await mkdir(this.options.socketDirectory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(this.options.socketDirectory, DIRECTORY_MODE);
     const socketPath = join(this.options.socketDirectory, `${operationDirectoryKey(operation.operationId)}.sock`);
@@ -583,7 +593,7 @@ export class VisibleWorker implements WorkerAdapter {
   ): Promise<Session> {
     cancellation.requireLaunchAllowed();
     const directory = join(this.options.rootDirectory, operationDirectoryKey(operation.operationId));
-    const config = decodeWorkerConfig(await readFile(join(directory, "worker.v13.json"), "utf8"));
+    const config = decodeWorkerConfig(await readFile(join(directory, "worker.v14.json"), "utf8"));
     if (config.operationId !== operation.operationId) {
       throw new Error("Recovered Worker configuration belongs to another Operation");
     }

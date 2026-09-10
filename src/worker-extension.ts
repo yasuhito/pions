@@ -28,6 +28,7 @@ import {
   decodeWorkerConfig,
 } from "./internal/worker-protocol.js";
 import type {
+  DurableDeliveryAuthority,
   StartInstruction,
   StartInstructionAcceptanceStore,
   WorkerConfig,
@@ -84,21 +85,32 @@ class FileStartInstructionAcceptanceStore implements StartInstructionAcceptanceS
     }
   }
 
-  loadGeneration(): number | "unknown" {
+  loadDeliveryAuthority(): Readonly<DurableDeliveryAuthority> | "unknown" {
     try {
-      const value = JSON.parse(readFileSync(`${this.path}.generation`, "utf8")) as unknown;
-      return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : "unknown";
+      const value = JSON.parse(readFileSync(`${this.path}.authority`, "utf8")) as unknown;
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return "unknown";
+      const authority = value as { readonly deliveryGeneration?: unknown; readonly dispatcherId?: unknown };
+      if (
+        !Number.isSafeInteger(authority.deliveryGeneration) ||
+        (authority.deliveryGeneration as number) < 1 ||
+        (authority.dispatcherId !== undefined &&
+          (typeof authority.dispatcherId !== "string" || authority.dispatcherId.length === 0))
+      ) return "unknown";
+      return {
+        deliveryGeneration: authority.deliveryGeneration as number,
+        ...(authority.dispatcherId === undefined ? {} : { dispatcherId: authority.dispatcherId as string }),
+      };
     } catch (error) {
       return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
-        ? 1
+        ? { deliveryGeneration: 1 }
         : "unknown";
     }
   }
 
-  saveGeneration(deliveryGeneration: number): boolean {
-    const target = `${this.path}.generation`;
-    return writeDurableJson(target, deliveryGeneration, true) ||
-      this.loadGeneration() === deliveryGeneration;
+  saveDeliveryAuthority(authority: Readonly<DurableDeliveryAuthority>): boolean {
+    const target = `${this.path}.authority`;
+    return writeDurableJson(target, authority, true) ||
+      isDeepStrictEqual(this.loadDeliveryAuthority(), authority);
   }
 
   save(instruction: Readonly<StartInstruction>): boolean {
@@ -271,7 +283,7 @@ class PiWorkerBridge {
       },
       new FileStartInstructionAcceptanceStore(join(
         dirname(this.config.promptPath),
-        "start-instruction.v13.json",
+        "start-instruction.v14.json",
       )),
     );
     const socket = connect(this.config.socketPath);

@@ -48,7 +48,7 @@ async function extensionResult(repeatBegin = false, reconnectAfterAcceptance = f
   const root = await mkdtemp(join(tmpdir(), "pions-worker-extension-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v13.json");
+  const configPath = join(root, "worker.v14.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",
@@ -219,7 +219,7 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-cancellation-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v13.json");
+  const configPath = join(root, "worker.v14.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",
