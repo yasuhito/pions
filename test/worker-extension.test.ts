@@ -185,6 +185,10 @@ async function extensionResult(
     accepted.write(peer.begin(instruction));
     if (repeatBegin) accepted.write(peer.begin(instruction));
     while (prompts.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    const expectedBeginAcknowledgements = reconnectAfterAcceptance ? 0 : repeatBegin ? 2 : 1;
+    while (beginAcknowledgementCount < expectedBeginAcknowledgements) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     handlers.message_end[0]?.({ message: assistant });
     handlers.agent_settled[0]?.({}, context);
     const delivery = await result;

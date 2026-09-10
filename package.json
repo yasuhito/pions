@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "check:test-assertions": "npm run build:test --silent && node .test-dist/scripts/check-test-assertions.js",
     "check": "npm run typecheck && npm run check:test-assertions && npm test",
-    "test": "npm run build:test && node --test --test-force-exit --test-reporter=dot .test-dist/test/*.test.js",
+    "test": "npm run build:test && node --test --test-reporter=dot .test-dist/test/*.test.js",
     "build:test": "rm -rf .test-dist && tsc --outDir .test-dist"
   },
   "dependencies": {
