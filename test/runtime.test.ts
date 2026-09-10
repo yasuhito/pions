@@ -703,7 +703,7 @@ test("runtime startup resumes an interrupted Worker cancellation", async () => {
   while ((await handle.read()).state !== "running") {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  void handle.cancel({ scope: "subtree" });
+  const interruptedCancellation = handle.cancel({ scope: "subtree" });
   while ((await handle.read()).state !== "cancelling") {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
@@ -722,6 +722,8 @@ test("runtime startup resumes an interrupted Worker cancellation", async () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const operation = await recoveredHandle.read();
+  firstWorker.confirmWorkerStopped("operation-1");
+  await interruptedCancellation.catch(() => undefined);
   await recoveredRuntime.close();
 
   assert.equal(operation.state, "cancelled");
