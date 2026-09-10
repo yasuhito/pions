@@ -171,6 +171,7 @@ export type {
   TaskSpec,
   ThinkingLevel,
   WorkerConfigurationFailureReason,
+  WorkerProfileIntendedUse,
   WorkerProfilePolicy,
   WorkProductRequirement,
   WorkProductRequirementsFailureReason,

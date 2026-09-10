@@ -717,7 +717,7 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--provider", "test",
     "--model", "test-model",
     "--thinking", "medium",
-    "--tools", "read,bash,edit,write",
+    "--tools", "read,bash",
     "--no-session",
     "--tui-mode", "regular",
     "--no-extensions",

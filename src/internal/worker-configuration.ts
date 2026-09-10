@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { Schema } from "effect";
 
 import type {
@@ -10,7 +12,7 @@ import type {
   WorkerProfilePolicy,
 } from "../public.js";
 import { ResourceProofRejectedError, WorkerConfigurationError } from "../public.js";
-import { normalizePermissionManifest } from "./resource-proof.js";
+import { normalizePermissionManifest, permissionManifestDocument } from "./resource-proof.js";
 import { resolveWorkProductRequirements } from "./result-acceptance-manifest.js";
 
 export const ModelReferenceSchema = Schema.Struct({
@@ -85,9 +87,10 @@ export const BODY_ONLY_WORK_PRODUCT_REQUIREMENTS = Object.freeze({
 });
 
 export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze({
+  intendedUse: "reader",
   modelCandidates: Object.freeze([{ provider: "test", id: "test-model" }]),
   thinkingLevel: "medium",
-  tools: Object.freeze(["read", "bash", "edit", "write"]),
+  tools: Object.freeze(["read", "bash"]),
   resources: Object.freeze({ resourceProofPolicy: "disabled" }),
   startAuthorization: Object.freeze({ policy: "disabled" }),
   workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
@@ -139,6 +142,77 @@ function validateStartAuthorizationPolicy(profile: Readonly<WorkerProfilePolicy>
   }
 }
 
+function validateIntendedUse(profile: Readonly<WorkerProfilePolicy>): void {
+  if (profile.intendedUse === "reader") {
+    if (profile.tools.includes("edit") || profile.tools.includes("write")) {
+      throw new WorkerConfigurationError(
+        "tool_policy_violation",
+        "A reader profile cannot provide editing tools",
+      );
+    }
+    return;
+  }
+  if (profile.intendedUse === "formal_reviewer") {
+    if (profile.tools.includes("edit") || profile.tools.includes("write")) {
+      throw new WorkerConfigurationError(
+        "tool_policy_violation",
+        "A formal reviewer profile cannot provide editing tools",
+      );
+    }
+    if (profile.startAuthorization.policy !== "required") {
+      throw new WorkerConfigurationError(
+        "unsupported_capability",
+        "A formal reviewer profile requires Start authorization",
+      );
+    }
+    if (profile.startAuthorization.receipt.reviewSubjectVerification !== "required") {
+      throw new WorkerConfigurationError(
+        "unsupported_capability",
+        "A formal reviewer profile requires fixed Review subject verification",
+      );
+    }
+    return;
+  }
+  if (profile.intendedUse !== "writer" && profile.intendedUse !== "revision_retry") {
+    throw new WorkerConfigurationError("unsupported_capability", "Unknown Worker profile intended use");
+  }
+  const intendedUse = profile.intendedUse === "writer" ? "Writer" : "Revision and Retry";
+  if (profile.startAuthorization.policy !== "required") {
+    throw new WorkerConfigurationError(
+      "unsupported_capability",
+      `A ${intendedUse} profile requires Start authorization`,
+    );
+  }
+  if (profile.resources.resourceProofPolicy !== "required") {
+    throw new ResourceProofRejectedError(
+      "invalid_profile",
+      `A ${intendedUse} profile requires resource proof`,
+    );
+  }
+  if (profile.resources.permissionManifest.write.kind === "none") {
+    throw new ResourceProofRejectedError(
+      "invalid_profile",
+      `A ${intendedUse} profile requires a write permission manifest`,
+    );
+  }
+  const receipt = profile.startAuthorization.receipt;
+  if (
+    !isDeepStrictEqual(receipt.workspace, profile.resources.workspace) ||
+    receipt.permissionManifest.digest !== permissionManifestDocument(profile.resources.permissionManifest).digest
+  ) {
+    throw new ResourceProofRejectedError(
+      "binding_mismatch",
+      `A ${intendedUse} profile Start receipt differs from its resource guarantees`,
+    );
+  }
+  if (!profile.workProductRequirements.workProducts.some(({ minCount }) => minCount > 0)) {
+    throw new WorkerConfigurationError(
+      "unsupported_capability",
+      `A ${intendedUse} profile requires at least one Work product`,
+    );
+  }
+}
+
 function sameModel(left: Readonly<ModelReference>, right: Readonly<ModelReference>): boolean {
   return left.provider === right.provider && left.id === right.id;
 }
@@ -181,6 +255,7 @@ export function resolveWorkerConfig(options: {
   validateWorkerResourcePolicy(profile);
   resolveWorkProductRequirements(profile);
   validateStartAuthorizationPolicy(profile);
+  validateIntendedUse(profile);
   boundedString(options.runtimeCwd, "working directory");
   if (profile.modelCandidates.length !== 1) {
     fail("model_mismatch", "Exactly one model candidate is required because fallback is forbidden");

@@ -188,7 +188,7 @@ test("projection targets the persisted Pions-owned pane", async () => {
   assert.deepEqual(executor.invocations[0]?.args, [
     "pane", "report-metadata", "--source", "pions", "opaque:new-pane",
     "--state-label", "working=running",
-    "--display-agent", "effective(model=test/test-model;thinking=medium;tools=read,bash,edit,write;cwd=/test/workspace) observed(model=unavailable;thinking=unavailable;tools=unavailable;cwd=unavailable)",
+    "--display-agent", "effective(model=test/test-model;thinking=medium;tools=read,bash;cwd=/test/workspace) observed(model=unavailable;thinking=unavailable;tools=unavailable;cwd=unavailable)",
     "--seq", "3",
   ]);
 });

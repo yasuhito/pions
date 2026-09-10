@@ -23,6 +23,49 @@ class InterruptiblePresentation extends FakePresentation {
   }
 }
 
+class PausedCleanupPresentation extends FakePresentation {
+  private releaseInspection: (() => void) | undefined;
+  private reportInspectionStarted: (() => void) | undefined;
+  private inspectionGate: Promise<void> | undefined;
+  private inspectionStarted: Promise<void> | undefined;
+
+  pauseInspection(): void {
+    this.inspectionGate = new Promise<void>((resolve) => { this.releaseInspection = resolve; });
+    this.inspectionStarted = new Promise<void>((resolve) => { this.reportInspectionStarted = resolve; });
+  }
+
+  waitForInspection(): Promise<void> {
+    if (this.inspectionStarted === undefined) throw new Error("Inspection is not paused");
+    return this.inspectionStarted;
+  }
+
+  resumeInspection(): void {
+    this.releaseInspection?.();
+  }
+
+  override inspectOwnedPane(operation: Operation): Effect.Effect<"matching" | "missing", Error> {
+    if (this.inspectionGate === undefined) return super.inspectOwnedPane(operation);
+    this.reportInspectionStarted?.();
+    return Effect.promise(() => this.inspectionGate!).pipe(
+      Effect.orDie,
+      Effect.andThen(super.inspectOwnedPane(operation)),
+    );
+  }
+}
+
+class CleanupRecoveryStore extends InMemoryEventStore {
+  interruptCleanupPersistence = false;
+
+  protected override willAppend(event: OperationEvent): void {
+    if (this.interruptCleanupPersistence && (
+      event.type === "presentation_cleanup_completed" ||
+      event.type === "presentation_cleanup_unconfirmed"
+    )) {
+      throw new Error("injected Presentation cleanup persistence interruption");
+    }
+  }
+}
+
 class ClearanceFaultStore extends InMemoryEventStore {
   failClearance = false;
 
@@ -152,8 +195,11 @@ test("同じRevision依頼IDの異なる内容は競合する", async () => {
   assert.deepEqual(conflict, { status: "rejected", reason: "request_conflict" });
 });
 
-test("unknownのRetryは安全証明なしでは予約しない", async () => {
+test("表示終了処理が完了済みでもunknownのRetryは安全証明なしでは予約しない", async () => {
   const { runtime, original, snapshot } = await fixture(["success", "liveness-unproven"]);
+  if (snapshot.presentationCleanup?.state !== "completed") {
+    throw new Error("Original Presentation cleanup did not complete");
+  }
   const revision = await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
   if (revision.status === "rejected") throw new Error("Revision was not reserved");
   await waitForState(runtime, revision.reservation.operationId, "unknown");
@@ -164,6 +210,127 @@ test("unknownのRetryは安全証明なしでは予約しない", async () => {
     reason: "状態不明から安全に再試行する",
     task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
   });
+
+  assert.deepEqual(outcome, { status: "rejected", reason: "retry_clearance_required" });
+});
+
+test("旧ワーカーの子プロセスへのアクセスが残るRetry clearanceを拒否する", async () => {
+  const { runtime, original, snapshot } = await fixture(["success", "liveness-unproven"]);
+  const revision = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest,
+  );
+  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  await waitForState(runtime, revision.reservation.operationId, "unknown");
+  const outcome = await (await runtime.revisions("credential")).reserveRetry({
+    requestId: "retry-request-1",
+    seriesId: revision.reservation.seriesId,
+    failedOperationId: revision.reservation.operationId,
+    reason: "子プロセスへのアクセスが残ったまま再試行する",
+    clearance: {
+      clearanceId: "clearance-1",
+      failedOperationId: revision.reservation.operationId,
+      affectedResourceIds: ["workspace:writer"],
+      workerStoppedOrAccessBlocked: false,
+      noConflict: true,
+      handoffConfirmed: true,
+      verifiedBy: "resource-adapter-1",
+      verifiedAt: "2026-09-06T10:01:00.000Z",
+    } as never,
+    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
+  });
+
+  assert.deepEqual(outcome, { status: "rejected", reason: "retry_clearance_invalid" });
+});
+
+test("外部ジョブの資源引き渡しが未確認のRetry clearanceを拒否する", async () => {
+  const { runtime, original, snapshot } = await fixture(["success", "liveness-unproven"]);
+  const revision = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest,
+  );
+  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  await waitForState(runtime, revision.reservation.operationId, "unknown");
+  const outcome = await (await runtime.revisions("credential")).reserveRetry({
+    requestId: "retry-request-1",
+    seriesId: revision.reservation.seriesId,
+    failedOperationId: revision.reservation.operationId,
+    reason: "外部ジョブの引き渡し未確認で再試行する",
+    clearance: {
+      clearanceId: "clearance-1",
+      failedOperationId: revision.reservation.operationId,
+      affectedResourceIds: ["external-job:deployment"],
+      workerStoppedOrAccessBlocked: true,
+      noConflict: true,
+      handoffConfirmed: false,
+      verifiedBy: "resource-adapter-1",
+      verifiedAt: "2026-09-06T10:01:00.000Z",
+    } as never,
+    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
+  });
+
+  assert.deepEqual(outcome, { status: "rejected", reason: "retry_clearance_invalid" });
+});
+
+test("表示終了処理の復旧と同時でもunknownのRetryは安全証明なしでは予約しない", async (context) => {
+  const clock = new FakeClock(Array.from({ length: 180 }, (_, index) =>
+    new Date(Date.parse("2026-09-06T14:00:00.000Z") + index * 1_000).toISOString(),
+  ));
+  const store = new CleanupRecoveryStore([], clock);
+  const presentation = new PausedCleanupPresentation();
+  store.interruptCleanupPersistence = true;
+  const firstRuntime = makeTestRuntime({
+    worker: new SequencedWorkerAdapter(["success", "liveness-unproven"]),
+    clock,
+    ids: new FakeIdGenerator(["original", "revision-1"]),
+    presentation,
+    store,
+    revisionAuthenticator: authenticator(),
+  });
+  const original = await firstRuntime.spawn({
+    promptRef: "private://original",
+    profile: "coding",
+    idempotencyKey: "original",
+  });
+  await original.result();
+  const accepted = (await original.read()).resultAcceptance!;
+  const revision = await reserveFirst(
+    firstRuntime,
+    original.operationId,
+    accepted.acceptanceId,
+    accepted.manifestDigest,
+  );
+  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  await waitForState(firstRuntime, revision.reservation.operationId, "unknown");
+  if ((await original.read()).presentationCleanup?.state !== "pending") {
+    throw new Error("Presentation cleanup is not pending");
+  }
+  await firstRuntime.close();
+
+  store.interruptCleanupPersistence = false;
+  presentation.pauseInspection();
+  const recoveredRuntime = makeTestRuntime({
+    worker: new SequencedWorkerAdapter([]),
+    clock,
+    ids: new FakeIdGenerator(["retry-1"]),
+    presentation,
+    store,
+    revisionAuthenticator: authenticator(),
+  });
+  context.after(() => recoveredRuntime.close());
+  await presentation.waitForInspection();
+  const outcome = await (await recoveredRuntime.revisions("credential")).reserveRetry({
+    requestId: "retry-request-1",
+    seriesId: revision.reservation.seriesId,
+    failedOperationId: revision.reservation.operationId,
+    reason: "終了処理復旧中に安全証明なしで再試行する",
+    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
+  });
+  presentation.resumeInspection();
 
   assert.deepEqual(outcome, { status: "rejected", reason: "retry_clearance_required" });
 });

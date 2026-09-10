@@ -1297,7 +1297,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
     };
     let effectiveConfig;
-    let resourceConfigurationRejected = false;
     const configuredProfile = runtimeConfiguration.profiles[task.profile];
     if (configuredProfile === undefined) {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
@@ -1311,22 +1310,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         ...(parentOperation === undefined ? {} : { parent: parentOperation.effectiveConfig }),
       });
     } catch (error) {
-      if (!(error instanceof ResourceProofRejectedError)) {
-        if (parent !== undefined) parent.pendingAdmissions -= 1;
-        throw error;
-      }
-      resourceConfigurationRejected = true;
-      try {
-        effectiveConfig = resolveWorkerConfig({
-          requested: requestedConfig,
-          profile: { ...configuredProfile, resources: { resourceProofPolicy: "disabled" } },
-          runtimeCwd: runtimeConfiguration.cwd,
-          ...(parentOperation === undefined ? {} : { parent: parentOperation.effectiveConfig }),
-        });
-      } catch (configurationError) {
-        if (parent !== undefined) parent.pendingAdmissions -= 1;
-        throw configurationError;
-      }
+      if (parent !== undefined) parent.pendingAdmissions -= 1;
+      throw error;
     }
 
     const workProductRequirements = resolveWorkProductRequirements(configuredProfile);
@@ -1342,9 +1327,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
 
     const resourcePolicy = configuredProfile.resources;
-    const resourceAdmissionRejected = resourceConfigurationRejected ||
-      resourcePolicy?.resourceProofPolicy === "required" && services.resourceProofController === undefined;
-    if (!resourceConfigurationRejected && resourcePolicy?.resourceProofPolicy === "required") {
+    const resourceAdmissionRejected =
+      resourcePolicy.resourceProofPolicy === "required" && services.resourceProofController === undefined;
+    if (resourcePolicy.resourceProofPolicy === "required") {
       await validateWorkspaceScope(resourcePolicy.workspace.normalizedPath, resourcePolicy.permissionManifest.read);
       await validateWorkspaceScope(resourcePolicy.workspace.normalizedPath, resourcePolicy.permissionManifest.write);
     }

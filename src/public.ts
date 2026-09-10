@@ -144,7 +144,14 @@ export type WorkerStartAuthorizationPolicy =
       readonly receipt: Readonly<StartupReceiptPolicy>;
     };
 
+export type WorkerProfileIntendedUse =
+  | "reader"
+  | "formal_reviewer"
+  | "writer"
+  | "revision_retry";
+
 export interface WorkerProfilePolicy {
+  readonly intendedUse: WorkerProfileIntendedUse;
   readonly modelCandidates: ReadonlyArray<Readonly<ModelReference>>;
   readonly thinkingLevel: ThinkingLevel;
   readonly tools: ReadonlyArray<string>;

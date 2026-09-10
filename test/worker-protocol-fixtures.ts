@@ -17,7 +17,7 @@ export const requestedConfig: RequestedWorkerConfig = {};
 export const effectiveConfig: EffectiveWorkerConfig = {
   model: { provider: "test", id: "test-model" },
   thinkingLevel: "medium",
-  tools: ["read", "bash", "edit", "write"],
+  tools: ["read", "bash"],
   cwd: "/test/workspace",
   modelPolicy: {
     candidates: [{ provider: "test", id: "test-model" }],
@@ -30,13 +30,14 @@ export const effectiveConfig: EffectiveWorkerConfig = {
 export const observedConfig: ObservedWorkerConfig = {
   model: { state: "observed", value: { provider: "test", id: "test-model" } },
   thinkingLevel: { state: "observed", value: "medium" },
-  tools: { state: "observed", value: ["read", "bash", "edit", "write"] },
+  tools: { state: "observed", value: ["read", "bash"] },
   cwd: { state: "observed", value: "/test/workspace" },
 };
 export const profilePolicy: WorkerProfilePolicy = {
+  intendedUse: "reader",
   modelCandidates: [{ provider: "test", id: "test-model" }],
   thinkingLevel: "medium",
-  tools: ["read", "bash", "edit", "write"],
+  tools: ["read", "bash"],
   resources: { resourceProofPolicy: "disabled" },
   startAuthorization: { policy: "disabled" },
   workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,

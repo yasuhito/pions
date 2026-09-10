@@ -1134,7 +1134,7 @@ test("Operation records the observed Worker tool set", async () => {
 
   assert.deepEqual(
     (await storedOperation(store, "operation-1")).observedConfig?.tools,
-    { state: "observed", value: ["read", "bash", "edit", "write"] },
+    { state: "observed", value: ["read", "bash"] },
   );
 });
 
@@ -1208,6 +1208,7 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
       cwd: "/work/project",
       profiles: {
         coding: {
+          intendedUse: "reader",
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "network"],
@@ -1226,6 +1227,89 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
   assert.equal(ids.issuedCount, 0);
 });
 
+test("Runtime rejects a contradictory candidate profile without disabling its guarantees", async () => {
+  const workspace = {
+    workspaceId: "workspace-1",
+    normalizedPath: "/work/project",
+    baseRevision: "a".repeat(40),
+    owner: { state: "known" as const, ownerId: "launcher-1" },
+    pionsMayDelete: false as const,
+  };
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new FakeClock([]),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore(),
+    configuration: {
+      cwd: "/work/project",
+      profiles: {
+        candidate: {
+          intendedUse: "writer",
+          modelCandidates: [{ provider: "test", id: "test-model" }],
+          thinkingLevel: "medium",
+          tools: ["read"],
+          resources: {
+            resourceProofPolicy: "required",
+            authorityId: "launcher-1",
+            authorityRegistrationId: "registration-1",
+            authorityGeneration: "generation-1",
+            normalizationVersion: "selector-v1",
+            workspace,
+            permissionManifest: {
+              tools: ["read", "bash"],
+              read: { kind: "workspace" },
+              write: { kind: "workspace" },
+              commands: "none",
+              network: "none",
+              externalResources: [],
+            },
+            cleanupPolicy: "coordinator_required",
+            cleanupTimeoutMs: 1_000,
+            maxCleanupAttempts: 2,
+            safetyCleanupOperations: ["inspect", "revoke", "release"],
+          },
+          startAuthorization: {
+            policy: "required",
+            windowMs: 60_000,
+            authorizedSubjectIds: ["coordinator-1"],
+            receipt: {
+              workspace,
+              permissionManifest: { manifestId: "manifest-1", digest: `sha256:${"ab".repeat(32)}` },
+              reviewSubjectVerification: "disabled",
+              reviewSubject: {
+                artifactId: "artifact-1",
+                byteCount: 1,
+                digest: `sha256:${"cd".repeat(32)}`,
+                format: "pions.opaque.v1",
+                normalization: "identity.v1",
+              },
+            },
+          },
+          workProductRequirements: {
+            body: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS.body,
+            workProducts: [{
+              key: "patch",
+              formatId: "pions.patch.v1",
+              normalizationId: "identity.v1",
+              minCount: 1,
+              maxCount: 1,
+              maxByteCount: 1_024,
+            }],
+            maxTotalByteCount: 1_049_600,
+          },
+          acceptedArtifactRetentionMs: 86_400_000,
+        },
+      },
+    },
+  });
+
+  await assert.rejects(
+    runtime.spawn({ promptRef: "prompt", profile: "candidate", idempotencyKey: "candidate" }),
+    { name: "ResourceProofRejectedError", reason: "permission_contradiction" },
+  );
+});
+
 test("Runtime rejects required work products when the Worker adapter cannot produce them", async () => {
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
@@ -1237,6 +1321,7 @@ test("Runtime rejects required work products when the Worker adapter cannot prod
       cwd: "/work/project",
       profiles: {
         coding: {
+          intendedUse: "reader",
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],

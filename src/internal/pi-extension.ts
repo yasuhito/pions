@@ -449,6 +449,7 @@ export function installPionsExtension(
       await writePrivatePrompt(promptRef, workerPrompt(parameters.task));
 
       const profile: WorkerProfilePolicy = {
+        intendedUse: "reader",
         modelCandidates: [model],
         thinkingLevel,
         tools: REVIEW_TOOLS,

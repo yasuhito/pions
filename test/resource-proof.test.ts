@@ -417,6 +417,7 @@ function requiredRuntimeConfiguration(
     cwd: request.workspace.normalizedPath,
     profiles: {
       protected: {
+        intendedUse: "reader" as const,
         modelCandidates: [{ provider: "test", id: "test-model" }],
         thinkingLevel: "medium" as const,
         tools: ["read", "bash"],
@@ -490,6 +491,7 @@ const unavailableRequiredRuntime = async () => {
       cwd: request.workspace.normalizedPath,
       profiles: {
         protected: {
+          intendedUse: "reader",
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],
@@ -532,6 +534,7 @@ test("a required Runtime profile revalidates the acquisition before execution", 
       cwd: request.workspace.normalizedPath,
       profiles: {
         protected: {
+          intendedUse: "reader",
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],
@@ -626,6 +629,7 @@ test("resource evidence is reconstructed from a reopened Operation event store",
       cwd: request.workspace.normalizedPath,
       profiles: {
         protected: {
+          intendedUse: "reader",
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],
@@ -667,6 +671,7 @@ test("Runtime Operation snapshots expose persisted resource evidence", async () 
       cwd: request.workspace.normalizedPath,
       profiles: {
         protected: {
+          intendedUse: "reader",
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],
