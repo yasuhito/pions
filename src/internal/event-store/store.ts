@@ -512,6 +512,19 @@ export abstract class ValidatedEventStore implements EventStore {
     });
   }
 
+  listPendingPresentationCleanups(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError> {
+    return Effect.tryPromise({
+      try: async () => {
+        const operationIds = await this.listOperationIds();
+        const snapshots = await Promise.all(operationIds.map((operationId) =>
+          Effect.runPromise(this.read(operationId)),
+        ));
+        return snapshots.filter(({ operation }) => operation.presentationCleanup?.state === "pending");
+      },
+      catch: (error) => asStoreError(error, "corrupt_record"),
+    });
+  }
+
   private appendEvent(
     operationId: string,
     input: EventInput,

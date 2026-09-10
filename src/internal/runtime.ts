@@ -49,6 +49,8 @@ import {
 import type {
   CancellationResult,
   CancelOptions,
+  CleanupDiagnosticCode,
+  OperationCompletion,
   OperationFailureReason,
   OperationHandle,
   OperationReader,
@@ -92,24 +94,23 @@ class StartRevalidationError extends Error {
 
 interface OperationRecord {
   readonly operationId: string;
-  readonly terminalPromise: Promise<Result>;
-  readonly resolveTerminal: (result: Result) => void;
+  readonly terminalPromise: Promise<Readonly<OperationCompletion>>;
+  readonly resolveTerminal: (completion: Readonly<OperationCompletion>) => void;
   readonly rejectTerminal: (error: unknown) => void;
   pendingAdmissions: number;
   finalizing?: Promise<void>;
-  successfulExitConfirmed?: true;
   executionRejected?: true;
   worker?: Worker;
 }
 
 function deferredResult(): {
-  readonly promise: Promise<Result>;
-  readonly resolve: (result: Result) => void;
+  readonly promise: Promise<Readonly<OperationCompletion>>;
+  readonly resolve: (completion: Readonly<OperationCompletion>) => void;
   readonly reject: (error: unknown) => void;
 } {
-  let resolve!: (result: Result) => void;
+  let resolve!: (completion: Readonly<OperationCompletion>) => void;
   let reject!: (error: unknown) => void;
-  const promise = new Promise<Result>((resolvePromise, rejectPromise) => {
+  const promise = new Promise<Readonly<OperationCompletion>>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
@@ -137,6 +138,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       : { synchronizeArtifactClock: artifactServices.synchronizeClock }),
   });
   const records = new Map<string, OperationRecord>();
+  const volatileCleanupDiagnostics = new Map<string, Set<CleanupDiagnosticCode>>();
   const spawnsByParent = new Map<
     string | undefined,
     Map<string, Promise<OperationHandle>>
@@ -266,9 +268,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ...(operation.workerStopConfirmedAt === undefined
         ? {}
         : { stopConfirmation: Object.freeze({ confirmedAt: operation.workerStopConfirmedAt, proof: "worker-stop" as const }) }),
-      cleanupDiagnostics: Object.freeze(operation.presentationCleanupFailure === undefined
+      ...(operation.presentationCleanup === undefined
+        ? {}
+        : {
+            presentationCleanup: Object.freeze({
+              cleanupId: operation.presentationCleanup.cleanupId,
+              paneId: operation.presentationCleanup.paneId,
+              state: operation.presentationCleanup.state,
+              startedAt: operation.presentationCleanup.startedAt,
+              ...(operation.presentationCleanup.finishedAt === undefined
+                ? {}
+                : { finishedAt: operation.presentationCleanup.finishedAt }),
+            }),
+          }),
+      cleanupDiagnostics: Object.freeze(operation.presentationCleanup?.diagnostic === undefined
         ? []
-        : [Object.freeze({ code: operation.presentationCleanupFailure })]),
+        : [Object.freeze({ code: operation.presentationCleanup.diagnostic })]),
       ...(operation.resourceEvidenceRecord === undefined
         ? {}
         : {
@@ -342,6 +357,92 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     throw new Error(Cause.pretty(exit.cause));
   };
 
+  const noteVolatileCleanupDiagnostic = (
+    operationId: string,
+    code: CleanupDiagnosticCode,
+  ): void => {
+    const diagnostics = volatileCleanupDiagnostics.get(operationId) ?? new Set<CleanupDiagnosticCode>();
+    diagnostics.add(code);
+    volatileCleanupDiagnostics.set(operationId, diagnostics);
+  };
+
+  const performPresentationCleanup = async (
+    initial: Operation,
+    directResponseAvailable: boolean,
+  ): Promise<void> => {
+    if (
+      initial.state !== "completed" || initial.result === undefined ||
+      initial.workerStopConfirmedAt === undefined || initial.presentation === undefined
+    ) return;
+
+    const paneId = initial.presentation.paneId;
+    let operation = initial;
+    let cleanup = operation.presentationCleanup;
+    if (cleanup === undefined) {
+      const cleanupId = `presentation-cleanup:${operation.operationId}`;
+      try {
+        operation = await runEffect(advanceOperation(operation.operationId, {
+          type: "presentation_cleanup_started",
+          cleanupId,
+          paneId,
+        }));
+        cleanup = operation.presentationCleanup;
+      } catch {
+        if (directResponseAvailable) {
+          noteVolatileCleanupDiagnostic(operation.operationId, "cleanup_record_unavailable");
+        }
+        return;
+      }
+    }
+    if (cleanup?.state !== "pending") return;
+
+    const finishUnconfirmed = async (code: CleanupDiagnosticCode): Promise<void> => {
+      try {
+        await runEffect(advanceOperation(operation.operationId, {
+          type: "presentation_cleanup_unconfirmed",
+          cleanupId: cleanup.cleanupId,
+          paneId: cleanup.paneId,
+          reason: code,
+        }));
+      } catch {
+        if (directResponseAvailable) {
+          noteVolatileCleanupDiagnostic(operation.operationId, "cleanup_record_unavailable");
+          noteVolatileCleanupDiagnostic(operation.operationId, code);
+        }
+      }
+    };
+
+    let identity: "matching" | "missing";
+    try {
+      identity = await runEffect(services.presentation.inspectOwnedPane(operation));
+    } catch {
+      await finishUnconfirmed("pane_identity_unavailable");
+      return;
+    }
+    if (identity === "missing") {
+      await finishUnconfirmed("pane_identity_missing");
+      return;
+    }
+
+    try {
+      await runEffect(services.presentation.closeOwnedPane(operation));
+    } catch {
+      await finishUnconfirmed("pane_close_failed");
+      return;
+    }
+    try {
+      await runEffect(advanceOperation(operation.operationId, {
+        type: "presentation_cleanup_completed",
+        cleanupId: cleanup.cleanupId,
+        paneId: cleanup.paneId,
+      }));
+    } catch {
+      if (directResponseAvailable) {
+        noteVolatileCleanupDiagnostic(operation.operationId, "cleanup_record_unavailable");
+      }
+    }
+  };
+
   const settleTerminal = async (
     record: OperationRecord,
     operation: Operation,
@@ -350,24 +451,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     authorizationMonotonicDeadlines.delete(record.operationId);
 
     if (operation.state === "completed") {
-      if (record.successfulExitConfirmed === true) {
-        const cleanupFailed = await runEffect(
-          services.presentation.closeOwnedPane(operation).pipe(
-            Effect.as(false),
-            Effect.catchAllCause(() => Effect.succeed(true)),
-          ),
-        );
-        if (cleanupFailed) {
-          await runEffect(
-            advanceOperation(record.operationId, {
-              type: "presentation_cleanup_failed",
-              reason: "pane_close_failed",
-            }).pipe(Effect.catchAllCause(() => Effect.void)),
-          );
-        }
-      }
+      await performPresentationCleanup(operation, true);
       const result = await runEffect(readResult(record.operationId));
-      record.resolveTerminal(result);
+      const cleanupSnapshot = await readPublicSnapshot(record.operationId);
+      const volatileDiagnostics = [...(volatileCleanupDiagnostics.get(record.operationId) ?? [])]
+        .filter((code) => !cleanupSnapshot.cleanupDiagnostics.some((diagnostic) => diagnostic.code === code))
+        .map((code) => Object.freeze({ code }));
+      volatileCleanupDiagnostics.delete(record.operationId);
+      record.resolveTerminal(Object.freeze({
+        result,
+        ...(cleanupSnapshot.presentationCleanup === undefined
+          ? {}
+          : { presentationCleanup: cleanupSnapshot.presentationCleanup }),
+        cleanupDiagnostics: Object.freeze([
+          ...cleanupSnapshot.cleanupDiagnostics,
+          ...volatileDiagnostics,
+        ]),
+      }));
     } else if (operation.state === "cancelled") {
       record.rejectTerminal(new OperationCancelledError(record.operationId));
     } else if (operation.state === "unknown") {
@@ -981,7 +1081,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (workerOutcome.successfulExitConfirmed === true) {
         const current = await runEffect(getOperation(record.operationId));
         if (!isTerminal(current) && current.state !== "cancelling") {
-          record.successfulExitConfirmed = true;
           await runEffect(advanceAndProject(record.operationId, {
             type: "worker_stop_confirmed",
             proof: "worker-stop",
@@ -1614,7 +1713,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     await settleTerminal(record, cancelled);
   };
 
-  const recovery = runEffect(services.store.listRecoverableOperations().pipe(
+  const workerRecovery = runEffect(services.store.listRecoverableOperations().pipe(
     Effect.mapError((error) => persistenceError("runtime-recovery", error)),
   )).then((snapshots) => {
     for (const { operation } of snapshots) {
@@ -1636,6 +1735,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       }
     }
   });
+  const cleanupRecovery = runEffect(services.store.listPendingPresentationCleanups().pipe(
+    Effect.mapError((error) => persistenceError("presentation-cleanup-recovery", error)),
+  )).then(async (snapshots) => {
+    for (const { operation } of snapshots) await performPresentationCleanup(operation, false);
+  });
+  const recovery = Promise.all([workerRecovery, cleanupRecovery]);
   void recovery.catch(() => undefined);
 
   return {

@@ -356,6 +356,7 @@ export interface FakePresentationOptions {
   readonly trace?: Array<string>;
   readonly attemptedState?: OperationState;
   readonly projectionFails?: boolean;
+  readonly paneInspection?: "matching" | "missing" | "unavailable";
   readonly paneClosureFails?: boolean;
 }
 
@@ -368,12 +369,14 @@ export class FakePresentation implements Presentation {
   private readonly trace: Array<string>;
   private readonly attemptedState: OperationState | undefined;
   private readonly projectionFails: boolean;
+  private readonly paneInspection: "matching" | "missing" | "unavailable";
   private readonly paneClosureFails: boolean;
 
   constructor(options: FakePresentationOptions = {}) {
     this.trace = options.trace ?? [];
     this.attemptedState = options.attemptedState;
     this.projectionFails = options.projectionFails ?? false;
+    this.paneInspection = options.paneInspection ?? "matching";
     this.paneClosureFails = options.paneClosureFails ?? false;
   }
 
@@ -399,8 +402,17 @@ export class FakePresentation implements Presentation {
     return Effect.void;
   }
 
+  inspectOwnedPane(_operation: Operation): Effect.Effect<"matching" | "missing", Error> {
+    return Effect.sync(() => {
+      this.trace.push("presentation:inspect-owned-pane");
+      if (this.paneInspection === "unavailable") throw new Error("Pane inspection unavailable");
+      return this.paneInspection;
+    });
+  }
+
   closeOwnedPane(operation: Operation): Effect.Effect<void> {
     return Effect.sync(() => {
+      this.trace.push("presentation:close-owned-pane");
       if (operation.presentation === undefined) return;
       this.closedPaneIds.push(operation.presentation.paneId);
       if (this.paneClosureFails) throw new Error("Pane closure failed");

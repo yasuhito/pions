@@ -343,7 +343,9 @@ export function reduceOperation(
     throw new TransitionError("unexpected_sequence");
   }
   if (
-    event.type !== "presentation_cleanup_failed" &&
+    event.type !== "presentation_cleanup_started" &&
+    event.type !== "presentation_cleanup_completed" &&
+    event.type !== "presentation_cleanup_unconfirmed" &&
     event.type !== "resource_evidence_recorded" &&
     event.type !== "start_authorization_decision_rejected" &&
     (current.state === "completed" ||
@@ -776,19 +778,67 @@ export function reduceOperation(
         stateSeq: event.seq,
       });
 
-    case "presentation_cleanup_failed":
+    case "presentation_cleanup_started":
       if (
         current.state !== "completed" ||
+        current.result === undefined ||
+        current.workerStopConfirmedAt === undefined ||
         current.presentation === undefined ||
-        current.presentationCleanupFailure !== undefined
+        current.presentation.paneId !== event.paneId ||
+        current.presentationCleanup !== undefined ||
+        event.cleanupId.length === 0
       ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({
         ...current,
-        presentationCleanupFailure: event.reason,
+        presentationCleanup: {
+          cleanupId: event.cleanupId,
+          paneId: event.paneId,
+          state: "pending",
+          startedAt: event.timestamp,
+        },
         stateSeq: event.seq,
       });
+
+    case "presentation_cleanup_completed": {
+      const cleanup = current.presentationCleanup;
+      if (
+        current.state !== "completed" || cleanup?.state !== "pending" ||
+        cleanup.cleanupId !== event.cleanupId || cleanup.paneId !== event.paneId
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        presentationCleanup: {
+          ...cleanup,
+          state: "completed",
+          finishedAt: event.timestamp,
+        },
+        stateSeq: event.seq,
+      });
+    }
+
+    case "presentation_cleanup_unconfirmed": {
+      const cleanup = current.presentationCleanup;
+      if (
+        current.state !== "completed" || cleanup?.state !== "pending" ||
+        cleanup.cleanupId !== event.cleanupId || cleanup.paneId !== event.paneId
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
+      return immutable({
+        ...current,
+        presentationCleanup: {
+          ...cleanup,
+          state: "unconfirmed",
+          finishedAt: event.timestamp,
+          diagnostic: event.reason,
+        },
+        stateSeq: event.seq,
+      });
+    }
 
     case "operation_blocked":
       if (current.state !== "running") {

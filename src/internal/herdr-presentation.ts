@@ -175,6 +175,21 @@ export class HerdrPresentation implements Presentation {
     return this.rollbackCreated(operation.presentation);
   }
 
+  inspectOwnedPane(operation: Operation): Effect.Effect<"matching" | "missing", unknown> {
+    if (operation.presentation === undefined) return Effect.succeed("missing");
+    const paneId = operation.presentation.paneId;
+    return this.executeJson(["pane", "list"]).pipe(
+      Effect.map((envelope) => {
+        const result = object(envelope.result);
+        const panes = result?.panes;
+        if (!Array.isArray(panes)) throw new Error("Herdr pane list response has no pane list");
+        return panes.some((pane) => object(pane)?.pane_id === paneId)
+          ? "matching" as const
+          : "missing" as const;
+      }),
+    );
+  }
+
   closeOwnedPane(operation: Operation): Effect.Effect<void, unknown> {
     if (operation.presentation === undefined) return Effect.void;
     return this.rollbackCreated(operation.presentation);

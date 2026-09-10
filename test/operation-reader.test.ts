@@ -27,6 +27,7 @@ const timestamps = Array.from({ length: 40 }, (_, index) =>
 
 function fixture(options: {
   readonly paneClosureFails?: boolean;
+  readonly paneInspection?: "matching" | "missing" | "unavailable";
   readonly authenticator?: {
     authenticate(credential: string): Promise<{
       readonly subjectId: string;
@@ -40,9 +41,10 @@ function fixture(options: {
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
     clock,
     ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(options.paneClosureFails === undefined
-      ? {}
-      : { paneClosureFails: options.paneClosureFails }),
+    presentation: new FakePresentation({
+      ...(options.paneClosureFails === undefined ? {} : { paneClosureFails: options.paneClosureFails }),
+      ...(options.paneInspection === undefined ? {} : { paneInspection: options.paneInspection }),
+    }),
     store,
     ...(options.authenticator === undefined
       ? {}
@@ -193,8 +195,8 @@ test("Operation snapshot identifies one coherent persisted version", async () =>
   await handle.result();
 
   assert.deepEqual((await handle.read()).version, {
-    sequenceNumber: 16,
-    recordedAt: "2026-09-06T10:00:16.000Z",
+    sequenceNumber: 18,
+    recordedAt: "2026-09-06T10:00:18.000Z",
   });
 });
 
@@ -318,6 +320,18 @@ test("Operation snapshot retrieves stop confirmation separately", async () => {
   assert.equal((await handle.read()).stopConfirmation?.proof, "worker-stop");
 });
 
+test("Operation snapshot retrieves completed Presentation cleanup evidence", async () => {
+  const { runtime } = fixture();
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+
+  assert.equal((await handle.read()).presentationCleanup?.state, "completed");
+});
+
 test("Operation snapshot retrieves cleanup diagnostics independently", async () => {
   const { runtime } = fixture({ paneClosureFails: true });
   const handle = await runtime.spawn({
@@ -330,6 +344,30 @@ test("Operation snapshot retrieves cleanup diagnostics independently", async () 
   assert.deepEqual((await handle.read()).cleanupDiagnostics, [{ code: "pane_close_failed" }]);
 });
 
+test("a missing pane identity is retained as an unconfirmed cleanup", async () => {
+  const { runtime } = fixture({ paneInspection: "missing" });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+
+  assert.equal((await handle.read()).presentationCleanup?.state, "unconfirmed");
+});
+
+test("an unavailable pane identity is reported independently from Result acceptance", async () => {
+  const { runtime } = fixture({ paneInspection: "unavailable" });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+
+  assert.deepEqual((await handle.read()).cleanupDiagnostics, [{ code: "pane_identity_unavailable" }]);
+});
+
 test("persisted Startup receipt omits authentication secrets", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pions-receipt-secret-"));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -338,7 +376,7 @@ test("persisted Startup receipt omits authentication secrets", async (context) =
     extraReceiptFields: { capability: "worker-secret" },
   });
   const record = await readFile(
-    join(root, operationDirectoryKey("operation-1"), "events.v17.json"),
+    join(root, operationDirectoryKey("operation-1"), "events.v18.json"),
     "utf8",
   );
 

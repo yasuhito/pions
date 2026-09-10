@@ -1,6 +1,7 @@
 import type {
   AcceptedResult,
   ArtifactWriterOwnership,
+  CleanupDiagnosticCode,
   EffectiveWorkerConfig,
   ObservedWorkerConfig,
   OperationFailureReason,
@@ -45,13 +46,22 @@ export interface OperationLineage {
   readonly depth: number;
 }
 
+export interface PresentationCleanupRecord {
+  readonly cleanupId: string;
+  readonly paneId: string;
+  readonly state: "pending" | "completed" | "unconfirmed";
+  readonly startedAt: string;
+  readonly finishedAt?: string;
+  readonly diagnostic?: CleanupDiagnosticCode;
+}
+
 export interface Operation {
   readonly operationId: string;
   readonly lineage: Readonly<OperationLineage>;
   readonly presentation?: Readonly<PresentationOwnership>;
   readonly workerIdentity?: Readonly<WorkerIdentity>;
   readonly agentRunEvidence?: Readonly<AgentRunEvidence>;
-  readonly presentationCleanupFailure?: "pane_close_failed";
+  readonly presentationCleanup?: Readonly<PresentationCleanupRecord>;
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
@@ -88,7 +98,7 @@ export interface Operation {
   readonly terminalReason?: OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 17 as const;
+export const EVENT_SCHEMA_VERSION = 18 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 

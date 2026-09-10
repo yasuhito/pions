@@ -20,7 +20,7 @@ import {
   SpawnRejectedError,
   WorkerConfigurationError,
 } from "../src/index.js";
-import type { Operation } from "../src/internal/event-store/index.js";
+import type { Operation, OperationIntent } from "../src/internal/event-store/index.js";
 import type { WorkerProducedResult } from "../src/public.js";
 import {
   acknowledgeResultAcceptance,
@@ -413,11 +413,12 @@ async function completeOperation(
     idempotencyKey: "task-1",
   });
 
+  const completion = await handle.result();
   return {
     worker,
     handle,
     presentation,
-    result: await handle.result(),
+    result: completion.result,
     store,
     trace,
   };
@@ -1451,8 +1452,23 @@ test("completion without confirmed Worker stop retains its pane", async () => {
   assert.deepEqual(presentation.closedPaneIds, []);
 });
 
-async function completeWithPaneClosureFailure() {
-  const store = new InMemoryEventStore();
+class CleanupWriteFailingStore extends InMemoryEventStore {
+  constructor(private readonly failedType: OperationIntent["type"]) {
+    super();
+  }
+
+  override advance(operationId: string, intent: OperationIntent) {
+    return intent.type === this.failedType
+      ? Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "simulated cleanup write failure",
+        })
+      : super.advance(operationId, intent);
+  }
+}
+
+async function completeWithPaneClosureFailure(store: InMemoryEventStore = new InMemoryEventStore()) {
   const presentation = new FakePresentation({ paneClosureFails: true });
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
@@ -1473,10 +1489,52 @@ async function completeWithPaneClosureFailure() {
   };
 }
 
+test("successful cleanup follows Result acceptance and Worker stop confirmation", async () => {
+  const trace: Array<string> = [];
+  const store = new InMemoryEventStore(trace, new FakeClock(
+    Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`),
+  ));
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true, trace }),
+    clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation({ trace }),
+    store,
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  const sequence = trace.flatMap((entry) => {
+    if (entry.startsWith("presentation:")) return [entry];
+    if (!entry.startsWith("event:")) return [];
+    const type = (JSON.parse(entry.slice("event:".length)) as { readonly type: string }).type;
+    return [type];
+  }).filter((entry) => [
+    "result_accepted",
+    "worker_stop_confirmed",
+    "presentation_cleanup_started",
+    "presentation:inspect-owned-pane",
+    "presentation:close-owned-pane",
+    "presentation_cleanup_completed",
+  ].includes(entry));
+
+  assert.deepEqual(sequence, [
+    "result_accepted",
+    "worker_stop_confirmed",
+    "presentation_cleanup_started",
+    "presentation:inspect-owned-pane",
+    "presentation:close-owned-pane",
+    "presentation_cleanup_completed",
+  ]);
+});
+
 test("Runtime records failed successful-pane cleanup", async () => {
   const { operation } = await completeWithPaneClosureFailure();
 
-  assert.equal(operation.presentationCleanupFailure, "pane_close_failed");
+  assert.equal(operation.presentationCleanup?.diagnostic, "pane_close_failed");
 });
 
 test("failed successful-pane cleanup cannot prevent terminal completion", async () => {
@@ -1489,6 +1547,101 @@ test("successful-worker cleanup targets only the Operation's persisted pane", as
   const { presentation } = await completeWithPaneClosureFailure();
 
   assert.deepEqual(presentation.closedPaneIds, ["fake-pane:operation-1"]);
+});
+
+test("cleanup does not close a pane when its pending record cannot be saved", async () => {
+  const { presentation } = await completeWithPaneClosureFailure(
+    new CleanupWriteFailingStore("presentation_cleanup_started"),
+  );
+
+  assert.deepEqual(presentation.closedPaneIds, []);
+});
+
+test("a pending-record failure is returned as an independent cleanup diagnostic", async () => {
+  const store = new CleanupWriteFailingStore("presentation_cleanup_started");
+  const presentation = new FakePresentation();
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
+    clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation,
+    store,
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  const completion = await handle.result();
+
+  assert.deepEqual(completion.cleanupDiagnostics, [{ code: "cleanup_record_unavailable" }]);
+});
+
+test("close and diagnostic persistence failures preserve both cleanup failures",  async () => {
+  const store = new CleanupWriteFailingStore("presentation_cleanup_unconfirmed");
+  const presentation = new FakePresentation({ paneClosureFails: true });
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
+    clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation,
+    store,
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  const completion = await handle.result();
+
+  assert.deepEqual(
+    completion.cleanupDiagnostics.map(({ code }) => code).sort(),
+    ["cleanup_record_unavailable", "pane_close_failed"],
+  );
+});
+
+async function recoverInterruptedCleanup() {
+  const store = new CleanupWriteFailingStore("presentation_cleanup_completed");
+  const firstRuntime = makeTestRuntime({
+    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
+    clock: new FakeClock(Array.from({ length: 30 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await firstRuntime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  await firstRuntime.close();
+
+  const recoveredPresentation = new FakePresentation({ paneInspection: "missing" });
+  const recoveredRuntime = makeTestRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new FakeClock(["2026-09-06T10:01:00.000Z"]),
+    ids: new FakeIdGenerator([]),
+    presentation: recoveredPresentation,
+    store,
+  });
+  await recoveredRuntime.close();
+  return {
+    operation: await storedOperation(store, "operation-1"),
+    presentation: recoveredPresentation,
+  };
+}
+
+test("cleanup recovery does not close a pane whose identity is no longer present", async () => {
+  const { presentation } = await recoverInterruptedCleanup();
+
+  assert.deepEqual(presentation.closedPaneIds, []);
+});
+
+test("cleanup recovery records missing completion proof as unconfirmed", async () => {
+  const { operation } = await recoverInterruptedCleanup();
+
+  assert.equal(operation.presentationCleanup?.state, "unconfirmed");
 });
 
 async function retryOperation(options?: { readonly parentOperationId?: string }) {
@@ -1540,7 +1693,8 @@ test("Runtime starts the Worker once for an idempotent spawn", async () => {
 test("OperationHandle returns the same Result without republishing it", async () => {
   const { handle } = await completeOperation();
 
-  const results = await Promise.all([handle.result(), handle.result()]);
+  const results = (await Promise.all([handle.result(), handle.result()]))
+    .map((completion) => completion.result);
 
   assert.deepEqual(results, [
     {

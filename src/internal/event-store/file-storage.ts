@@ -18,7 +18,7 @@ import type { RuntimeClock } from "../services.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
-const RECORD_FILE = "events.v17.json";
+const RECORD_FILE = "events.v18.json";
 
 function hasCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;

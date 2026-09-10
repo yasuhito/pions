@@ -672,7 +672,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   const client = await socket(config.socketPath);
   await sendResultDelivery(client, { capability, operationId: "operation-1", body: "finished" });
 
-  assert.deepEqual(await handle.result(), {
+  assert.deepEqual((await handle.result()).result, {
     body: "finished",
     byteCount: 8,
     digest: resultDigest("finished"),

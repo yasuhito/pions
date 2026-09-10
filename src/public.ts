@@ -453,8 +453,22 @@ export interface StopConfirmationEvidence {
   readonly proof: "worker-stop";
 }
 
+export type CleanupDiagnosticCode =
+  | "pane_close_failed"
+  | "pane_identity_missing"
+  | "pane_identity_unavailable"
+  | "cleanup_record_unavailable";
+
 export interface CleanupDiagnostic {
-  readonly code: "pane_close_failed";
+  readonly code: CleanupDiagnosticCode;
+}
+
+export interface PresentationCleanupEvidence {
+  readonly cleanupId: string;
+  readonly paneId: string;
+  readonly state: "pending" | "completed" | "unconfirmed";
+  readonly startedAt: string;
+  readonly finishedAt?: string;
 }
 
 export type ResourceAcquisitionState =
@@ -684,6 +698,7 @@ export interface OperationSnapshot {
   readonly startDeliveryHandoffs: ReadonlyArray<Readonly<StartDeliveryHandoffEvidence>>;
   readonly resultAcceptance?: Readonly<ResultAcceptanceEvidence>;
   readonly stopConfirmation?: Readonly<StopConfirmationEvidence>;
+  readonly presentationCleanup?: Readonly<PresentationCleanupEvidence>;
   readonly cleanupDiagnostics: ReadonlyArray<Readonly<CleanupDiagnostic>>;
   readonly resourceEvidence?: Readonly<VersionedResourceEvidenceSnapshot>;
 }
@@ -885,8 +900,14 @@ export interface CancellationResult {
   readonly reason?: "cancel-unproven";
 }
 
+export interface OperationCompletion {
+  readonly result: Readonly<Result>;
+  readonly presentationCleanup?: Readonly<PresentationCleanupEvidence>;
+  readonly cleanupDiagnostics: ReadonlyArray<Readonly<CleanupDiagnostic>>;
+}
+
 export interface OperationHandle extends OperationReader {
-  result(): Promise<Result>;
+  result(): Promise<Readonly<OperationCompletion>>;
   cancel(options: CancelOptions): Promise<CancellationResult>;
 }
 

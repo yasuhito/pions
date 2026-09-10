@@ -250,6 +250,37 @@ test("rollback targets exactly the newly-created pane", async () => {
   assert.deepEqual(executor.invocations[0]?.args, ["pane", "close", "opaque:new-pane"]);
 });
 
+test("owned pane inspection matches the persisted opaque identity", async () => {
+  const executor = new FakeCommandExecutor([{
+    stdout: JSON.stringify({ result: { panes: [{ pane_id: "opaque:owned-pane" }] } }),
+  }]);
+
+  assert.equal(
+    await Effect.runPromise(presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))),
+    "matching",
+  );
+});
+
+test("owned pane inspection uses a read-only pane listing", async () => {
+  const executor = new FakeCommandExecutor([{
+    stdout: JSON.stringify({ result: { panes: [{ pane_id: "opaque:owned-pane" }] } }),
+  }]);
+  await Effect.runPromise(presentation(executor).inspectOwnedPane(operation("opaque:owned-pane")));
+
+  assert.deepEqual(executor.invocations[0]?.args, ["pane", "list"]);
+});
+
+test("owned pane inspection reports a missing persisted identity", async () => {
+  const executor = new FakeCommandExecutor([{
+    stdout: JSON.stringify({ result: { panes: [{ pane_id: "opaque:other-pane" }] } }),
+  }]);
+
+  assert.equal(
+    await Effect.runPromise(presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))),
+    "missing",
+  );
+});
+
 test("successful cleanup targets exactly the persistently owned pane", async () => {
   const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
   await Effect.runPromise(presentation(executor).closeOwnedPane(operation("opaque:owned-pane")));

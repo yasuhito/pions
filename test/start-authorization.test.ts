@@ -194,15 +194,17 @@ async function fixture(options: {
   readonly clock: FakeClock;
   readonly handle: Awaited<ReturnType<Runtime["spawn"]>>;
   readonly trace: ReadonlyArray<string>;
+  readonly presentation: FakePresentation;
 }> {
   const clock = options.clock ?? new FakeClock(timestamps);
   const trace: Array<string> = [];
   let authorizationChecks = 0;
+  const presentation = new FakePresentation();
   const runtime = makeTestRuntime({
     worker: options.worker ?? new FakeWorkerAdapter({ trace }),
     clock,
     ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
+    presentation,
     store: options.store ?? new InMemoryEventStore(trace, clock),
     startAuthorizationAuthenticator: {
       authenticate: async () => {
@@ -244,6 +246,7 @@ async function fixture(options: {
     clock,
     handle,
     trace,
+    presentation,
   };
 }
 
@@ -613,6 +616,18 @@ test("a deadline crossed during pre-begin checks keeps the Worker stopped", asyn
   assert.equal((await handle.read()).failureReason, "start_authorization_timed_out");
 });
 
+test("an expired Start authorization retains its owned pane", async () => {
+  const { inbox, handle, presentation } = await fixture({
+    beforeCurrentAuthorization: (callNumber, clock) => {
+      if (callNumber === 3) clock.advanceBy(60_000);
+    },
+  });
+  await authorize(inbox);
+  await handle.result().catch(() => undefined);
+
+  assert.deepEqual(presentation.closedPaneIds, []);
+});
+
 async function requiredAuthorizationRecovery(
   recoveredAt: string,
   currentAuthorization: CurrentStartAuthorization,
@@ -838,6 +853,15 @@ test("authority loss during pre-begin revalidation invalidates the Operation", a
   assert.equal((await handle.read()).failureReason, "start_authorization_invalidated");
 });
 
+test("an invalidated Start authorization retains its owned pane", async () => {
+  const { inbox, presentation } = await fixture({
+    currentAuthority: (callNumber) => callNumber < 4 ? "authorized" : "denied",
+  });
+  await authorize(inbox);
+
+  assert.deepEqual(presentation.closedPaneIds, []);
+});
+
 test("unproven stop after authorization invalidation retains the failure reason", async () => {
   const { inbox, handle } = await fixture({
     worker: new UnprovenStopWorkerAdapter(),
@@ -861,6 +885,20 @@ test("a rejected Start decision fails with the fixed reason after Worker stop", 
   await handle.result().catch(() => undefined);
 
   assert.equal((await handle.read()).failureReason, "start_rejected");
+});
+
+test("a rejected Start decision retains its owned pane", async () => {
+  const { inbox, handle, presentation } = await fixture();
+  const startupReceipt = await handle.waitForStartupReceipt();
+  await inbox.decide({
+    operationId: handle.operationId,
+    decisionId: "decision-1",
+    kind: "reject",
+    receiptDigest: startupReceipt!.digest,
+  });
+  await handle.result().catch(() => undefined);
+
+  assert.deepEqual(presentation.closedPaneIds, []);
 });
 
 test("an unproven stop after rejection leaves the Operation unknown", async () => {

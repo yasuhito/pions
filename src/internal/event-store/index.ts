@@ -82,6 +82,7 @@ export interface EventStore {
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError>;
   listWaitingStartAuthorizations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
   listRecoverableOperations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
+  listPendingPresentationCleanups(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
 }
 
 export type { OperationState };

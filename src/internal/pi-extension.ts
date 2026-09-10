@@ -340,7 +340,7 @@ async function awaitOperation(
   signal?.addEventListener("abort", onAbort, { once: true });
 
   const settled: Promise<ResultOutcome> = operation.handle.result().then(
-    (result) => ({ type: "result", result }),
+    (completion) => ({ type: "result", result: completion.result }),
     (error: unknown) => ({ type: "failure", error }),
   );
   if (signal?.aborted) notifyInterrupted();

@@ -53,7 +53,9 @@ class FakeRuntime implements Runtime {
       operationId: "operation-1",
       read: () => Promise.reject(new Error("unused")),
       waitForStartupReceipt: () => Promise.reject(new Error("unused")),
-      result: () => outcome instanceof Error ? Promise.reject(outcome) : Promise.resolve(outcome),
+      result: () => outcome instanceof Error
+        ? Promise.reject(outcome)
+        : Promise.resolve({ result: outcome, cleanupDiagnostics: [] }),
       cancel: () => Promise.resolve({ cancellationEpoch: 1, state: "cancelled" }),
     };
   }
@@ -109,7 +111,7 @@ class PendingRuntime implements Runtime {
       operationId,
       read: () => Promise.reject(new Error("unused")),
       waitForStartupReceipt: () => Promise.reject(new Error("unused")),
-      result: () => result.promise,
+      result: () => result.promise.then((accepted) => ({ result: accepted, cleanupDiagnostics: [] })),
       cancel: async ({ scope }) => {
         this.cancellations.push({ operationId, scope });
         const response = await this.cancellationResponse;

@@ -190,6 +190,7 @@ export interface Presentation {
   create(operation: Operation): Effect.Effect<CreatedPresentation, unknown>;
   rollbackCreated(presentation: CreatedPresentation): Effect.Effect<void, unknown>;
   onWorkerStartFailure(operation: Operation): Effect.Effect<void, unknown>;
+  inspectOwnedPane(operation: Operation): Effect.Effect<"matching" | "missing", unknown>;
   closeOwnedPane(operation: Operation): Effect.Effect<void, unknown>;
   project(operation: Operation): Effect.Effect<void, unknown>;
 }

@@ -1,5 +1,6 @@
 import type {
   ArtifactWriterOwnership,
+  CleanupDiagnosticCode,
   ObservedWorkerConfig,
   OperationFailureReason,
   StartAuthorizationDecisionAttemptRecord,
@@ -105,8 +106,20 @@ export type OperationIntent =
       readonly evidence: Readonly<AgentRunEvidence>;
     }
   | {
-      readonly type: "presentation_cleanup_failed";
-      readonly reason: "pane_close_failed";
+      readonly type: "presentation_cleanup_started";
+      readonly cleanupId: string;
+      readonly paneId: string;
+    }
+  | {
+      readonly type: "presentation_cleanup_completed";
+      readonly cleanupId: string;
+      readonly paneId: string;
+    }
+  | {
+      readonly type: "presentation_cleanup_unconfirmed";
+      readonly cleanupId: string;
+      readonly paneId: string;
+      readonly reason: CleanupDiagnosticCode;
     }
   | { readonly type: "operation_blocked" }
   | { readonly type: "operation_unblocked" }
