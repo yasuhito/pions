@@ -613,7 +613,10 @@ test("a deadline crossed during pre-begin checks keeps the Worker stopped", asyn
   assert.equal((await handle.read()).failureReason, "start_authorization_timed_out");
 });
 
-async function expiredRequiredAuthorizationRecovery() {
+async function requiredAuthorizationRecovery(
+  recoveredAt: string,
+  currentAuthorization: CurrentStartAuthorization,
+) {
   const clock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], clock);
   const firstWorker = new PausedStartAcceptanceWorker();
@@ -626,7 +629,7 @@ async function expiredRequiredAuthorizationRecovery() {
   const recoveredWorker = new NotAcceptedRecoveryWorker();
   const recovered = makeTestRuntime({
     worker: recoveredWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, () => "2026-09-06T11:00:00.000Z")),
+    clock: new FakeClock(Array.from({ length: 40 }, () => recoveredAt)),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store,
@@ -635,6 +638,9 @@ async function expiredRequiredAuthorizationRecovery() {
         subjectId: "reviewer-1",
         currentAuthorization: async () => "authorized",
       }),
+    },
+    startAuthorizationAuthority: {
+      currentAuthorization: async () => currentAuthorization,
     },
     configuration: {
       cwd: "/test/workspace",
@@ -659,15 +665,39 @@ async function expiredRequiredAuthorizationRecovery() {
 }
 
 test("expired required authorization prevents recovery redispatch", async () => {
-  const { recoveredWorker } = await expiredRequiredAuthorizationRecovery();
+  const { recoveredWorker } = await requiredAuthorizationRecovery(
+    "2026-09-06T11:00:00.000Z",
+    "authorized",
+  );
 
   assert.equal(recoveredWorker.recoveredDeliveryCount, 0);
 });
 
 test("expired required authorization keeps its failure classification during recovery", async () => {
-  const { operation } = await expiredRequiredAuthorizationRecovery();
+  const { operation } = await requiredAuthorizationRecovery(
+    "2026-09-06T11:00:00.000Z",
+    "authorized",
+  );
 
   assert.equal(operation.failureReason, "start_authorization_timed_out");
+});
+
+test("revoked Start authorization prevents recovery redispatch", async () => {
+  const { recoveredWorker } = await requiredAuthorizationRecovery(
+    "2026-09-06T10:00:30.000Z",
+    "revoked",
+  );
+
+  assert.equal(recoveredWorker.recoveredDeliveryCount, 0);
+});
+
+test("revoked Start authorization keeps its failure classification during recovery", async () => {
+  const { operation } = await requiredAuthorizationRecovery(
+    "2026-09-06T10:00:30.000Z",
+    "revoked",
+  );
+
+  assert.equal(operation.failureReason, "start_authorization_invalidated");
 });
 
 test("resending the same decision is idempotent", async () => {

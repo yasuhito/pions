@@ -338,7 +338,7 @@ test("persisted Startup receipt omits authentication secrets", async (context) =
     extraReceiptFields: { capability: "worker-secret" },
   });
   const record = await readFile(
-    join(root, operationDirectoryKey("operation-1"), "events.v14.json"),
+    join(root, operationDirectoryKey("operation-1"), "events.v17.json"),
     "utf8",
   );
 

@@ -12,6 +12,7 @@ import {
   FakeClock,
   InMemoryEventStore,
   advanceTestOperationToRunning,
+  advanceTestOperationToStartDeliveryAuthority,
 } from "../src/internal/testing.js";
 import {
   effectiveConfig,
@@ -57,6 +58,25 @@ test("memory Event Store creates a queued Operation", async () => {
   assert.equal(snapshot.operation.state, "queued");
 });
 
+test("an Operation with Start delivery authority before delivery entry is recoverable", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await create(store);
+  await advanceTestOperationToStartDeliveryAuthority(store, "operation-1");
+
+  assert.equal((await Effect.runPromise(store.listRecoverableOperations())).length, 1);
+});
+
+test("a cancelling Operation with unconfirmed Worker stop is recoverable", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await running(store);
+  await Effect.runPromise(store.advance("operation-1", {
+    type: "cancellation_requested",
+    cancellationEpoch: 1,
+  }));
+
+  assert.equal((await Effect.runPromise(store.listRecoverableOperations())).length, 1);
+});
+
 test("file Event Store reconstructs a running Operation after restart", async (context) => {
   const directory = await root(context);
   await running(new PrivateFileEventStore(directory, clock()));
@@ -67,13 +87,13 @@ test("file Event Store reconstructs a running Operation after restart", async (c
 test("Operation identifiers are not used as record paths", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()), "../private-operation");
-  assert.equal((await readFile(join(directory, operationDirectoryKey("../private-operation"), "events.v14.json"))).byteLength > 0, true);
+  assert.equal((await readFile(join(directory, operationDirectoryKey("../private-operation"), "events.v17.json"))).byteLength > 0, true);
 });
 
 test("an unsupported record schema is rejected", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()));
-  const path = join(directory, operationDirectoryKey("operation-1"), "events.v14.json");
+  const path = join(directory, operationDirectoryKey("operation-1"), "events.v17.json");
   const record = JSON.parse(await readFile(path, "utf8"));
   record.schemaVersion = 11;
   await writeFile(path, JSON.stringify(record));
@@ -83,7 +103,7 @@ test("an unsupported record schema is rejected", async (context) => {
 test("an unsupported event schema is rejected", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()));
-  const path = join(directory, operationDirectoryKey("operation-1"), "events.v14.json");
+  const path = join(directory, operationDirectoryKey("operation-1"), "events.v17.json");
   const record = JSON.parse(await readFile(path, "utf8"));
   record.events[0].schemaVersion = 11;
   await writeFile(path, JSON.stringify(record));

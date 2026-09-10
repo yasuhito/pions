@@ -747,6 +747,13 @@ export interface StartAuthorizationAuthenticator {
   authenticate(credential: string): Promise<Readonly<AuthenticatedStartAuthorizer>>;
 }
 
+export interface StartAuthorizationAuthority {
+  currentAuthorization(
+    subjectId: string,
+    operationId: string,
+  ): Promise<CurrentStartAuthorization>;
+}
+
 export class StartAuthorizationAuthenticationError extends Error {
   override readonly name = "StartAuthorizationAuthenticationError";
 }

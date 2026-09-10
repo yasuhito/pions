@@ -332,6 +332,18 @@ test("Start delivery authority revocation records writer ownership independently
   );
 });
 
+test("a blocked Operation can revoke its Start delivery authority during recovery", () => {
+  const blocked = reduceOperation(runningOperation(), event(5, { type: "operation_blocked" }));
+  const revoked = reduceOperation(blocked, event(6, {
+    type: "start_delivery_authority_revoked",
+    successorDispatcherId: "dispatcher-2",
+    deliveryGeneration: 2,
+    writerOwnership: { pid: 1234, processStartToken: "writer-start" },
+  }));
+
+  assert.equal(revoked.startDeliveryHandoffs.at(-1)?.successorDispatcherId, "dispatcher-2");
+});
+
 test("a pending Start delivery handoff records the recovering writer ownership", () => {
   const revoked = reduceOperation(runningOperation(), event(5, {
     type: "start_delivery_authority_revoked",

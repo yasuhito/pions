@@ -564,6 +564,34 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }));
   };
 
+  const invalidateStartAuthorization = async (operationId: string): Promise<void> => {
+    const current = await runEffect(getOperation(operationId));
+    if (current.state !== "starting" || current.startGate !== "authorized") return;
+    await runEffect(advanceOperation(operationId, { type: "start_gate_closed", gate: "invalidated" }));
+    const record = records.get(operationId);
+    if (record !== undefined) {
+      await terminateBeforeStart(record, "start_authorization_invalidated");
+      return;
+    }
+    await runEffect(advanceOperation(operationId, {
+      type: "operation_unknown",
+      reason: "liveness-unproven",
+      failureReason: "start_authorization_invalidated",
+    }));
+  };
+
+  const recoveredStartAuthorizationIsCurrent = async (
+    operation: Operation,
+  ): Promise<boolean> => {
+    if (operation.startAuthorizationTiming.policy !== "required") return true;
+    const decision = operation.startAuthorizationDecision;
+    const authority = services.startAuthorizationAuthority;
+    if (decision === undefined || authority === undefined) return false;
+    return authority.currentAuthorization(decision.actorId, operation.operationId)
+      .then((authorization) => authorization === "authorized")
+      .catch(() => false);
+  };
+
   const verifyReviewSubject = async (
     operationId: string,
     policy: Readonly<StartupReceiptPolicy>,
@@ -891,6 +919,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               `Start authorization expired for Operation ${record.operationId}`,
             ));
           }
+          if (!(yield* Effect.promise(() => recoveredStartAuthorizationIsCurrent(current)))) {
+            yield* Effect.promise(() => invalidateStartAuthorization(record.operationId));
+            return yield* Effect.fail(new StartDeliveryAbortedError(
+              `Start authorization is no longer current for Operation ${record.operationId}`,
+            ));
+          }
           if (current.startAuthorizationTiming.policy === "required") {
             const receiptPolicy = current.startupReceiptPolicy;
             if (receiptPolicy === undefined) {
@@ -904,6 +938,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             });
           }
           yield* revalidateRequiredResourceProof(current);
+          const revalidated = yield* getOperation(record.operationId);
+          if (!(yield* Effect.promise(() => recoveredStartAuthorizationIsCurrent(revalidated)))) {
+            yield* Effect.promise(() => invalidateStartAuthorization(record.operationId));
+            return yield* Effect.fail(new StartDeliveryAbortedError(
+              `Start authorization is no longer current for Operation ${record.operationId}`,
+            ));
+          }
           yield* advanceAndProject(record.operationId, {
             type: "start_delivery_authority_acquired",
             instruction: {
@@ -1535,6 +1576,44 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     };
   };
 
+  const recoverCancellation = async (
+    record: OperationRecord,
+    operation: Operation,
+  ): Promise<void> => {
+    const dispatched = await runEffect(advanceOperation(operation.operationId, {
+      type: "cancel_dispatched",
+      cancellationEpoch: operation.cancellationEpoch,
+    }));
+    await runEffect(project(dispatched));
+    const evidence = await Promise.race([
+      record.worker === undefined
+        ? Promise.resolve(undefined)
+        : runEffect(record.worker.cancel(operation.cancellationEpoch, 1_000)),
+      runEffect(services.clock.sleep(1_000)).then(() => undefined),
+    ]).catch(() => undefined);
+    if (evidence === undefined) {
+      const unknown = await runEffect(advanceOperation(operation.operationId, {
+        type: "operation_unknown",
+        cancellationEpoch: operation.cancellationEpoch,
+        reason: "cancel-unproven",
+      }));
+      await settleTerminal(record, unknown);
+      return;
+    }
+    const acknowledged = await runEffect(advanceOperation(operation.operationId, {
+      type: "cancel_acknowledged",
+      cancellationEpoch: operation.cancellationEpoch,
+      proof: evidence.proof,
+    }));
+    await runEffect(project(acknowledged));
+    await services.resourceProofController?.safetyCleanup(operation.operationId).catch(() => undefined);
+    const cancelled = await runEffect(advanceOperation(operation.operationId, {
+      type: "operation_cancelled",
+      cancellationEpoch: operation.cancellationEpoch,
+    }));
+    await settleTerminal(record, cancelled);
+  };
+
   const recovery = runEffect(services.store.listRecoverableOperations().pipe(
     Effect.mapError((error) => persistenceError("runtime-recovery", error)),
   )).then((snapshots) => {
@@ -1550,7 +1629,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         worker: services.worker.recover(operation),
       };
       records.set(operation.operationId, record);
-      void execute(record, true);
+      if (operation.state === "cancelling") {
+        void recoverCancellation(record, operation).catch(record.rejectTerminal);
+      } else {
+        void execute(record, true);
+      }
     }
   });
   void recovery.catch(() => undefined);

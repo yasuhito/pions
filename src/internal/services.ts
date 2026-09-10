@@ -16,6 +16,7 @@ import type {
   ObservedWorkerConfig,
   OperationPersistenceError,
   StartAuthorizationAuthenticator,
+  StartAuthorizationAuthority,
   ResourceProofRejectedError,
   WorkerProducedResult,
   WorkerProfilePolicy,
@@ -203,6 +204,7 @@ export interface RuntimeServices {
   readonly artifactCredential: string;
   readonly synchronizeArtifactClock?: (timestamp: string) => void;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
+  readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
   readonly resourceProofController?: InternalResourceProofController;
   readonly configuration?: Readonly<{
     readonly cwd: string;

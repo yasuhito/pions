@@ -108,6 +108,30 @@ class InterruptedStartWorkerAdapter implements WorkerAdapter {
   }
 }
 
+class AuthorityOnlyWorkerAdapter extends InterruptedStartWorkerAdapter {
+  override open(operation: Operation): Worker {
+    return makeSingleRunWorker({
+      run: (hooks) => Effect.gen(function* () {
+        yield* hooks.workerLaunched();
+        yield* hooks.workerIdentified({
+          processId: 1234,
+          processInstanceId: "authority-only-worker",
+          processStartToken: "authority-only-worker-start",
+          piSessionId: "authority-only-pi",
+          observedConfig: {
+            model: { state: "observed", value: operation.effectiveConfig.model },
+            thinkingLevel: { state: "observed", value: operation.effectiveConfig.thinkingLevel },
+            tools: { state: "observed", value: operation.effectiveConfig.tools },
+            cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+          },
+        });
+        return yield* Effect.async<WorkerRunOutcome>(() => undefined);
+      }),
+      cancel: () => Effect.succeed(undefined),
+    });
+  }
+}
+
 class PausedHandoffWorkerAdapter extends InterruptedStartWorkerAdapter {
   revocationRecorded = false;
 
@@ -425,6 +449,44 @@ test("runtime startup adopts a recoverable Start delivery", async () => {
   assert.equal(handoff.acceptanceState, "accepted");
 });
 
+test("runtime recovery delivers a Start instruction acquired before delivery entry", async () => {
+  const store = new InMemoryEventStore();
+  const firstRuntime = makeTestRuntime({
+    worker: new AuthorityOnlyWorkerAdapter(),
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T10:05:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await firstRuntime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  while ((await handle.read()).startDeliveryAuthority === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await firstRuntime.close();
+  const recoveredWorker = new InterruptedStartWorkerAdapter();
+  const recoveredRuntime = makeTestRuntime({
+    worker: recoveredWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T11:05:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  while (recoveredWorker.recoveredDeliveryCount === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await recoveredRuntime.close();
+
+  assert.equal(recoveredWorker.recoveredDeliveryCount, 1);
+});
+
 test("runtime recovery redispatches only after a durable not-accepted result", async () => {
   const store = new InMemoryEventStore();
   const firstWorker = new InterruptedStartWorkerAdapter();
@@ -620,6 +682,50 @@ async function spawnCancellationTree() {
   await waitForReceiver();
   return { ...fixture, child, grandchild, root };
 }
+
+test("runtime startup resumes an interrupted Worker cancellation", async () => {
+  const store = new InMemoryEventStore();
+  const firstWorker = new ControlledWorkerAdapter();
+  const firstRuntime = makeTestRuntime({
+    worker: firstWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T10:30:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const handle = await firstRuntime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  while ((await handle.read()).state !== "running") {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  void handle.cancel({ scope: "subtree" });
+  while ((await handle.read()).state !== "cancelling") {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await firstRuntime.close();
+  const recoveredRuntime = makeTestRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      `2026-09-06T11:30:${String(index).padStart(2, "0")}.000Z`,
+    )),
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  const recoveredHandle = await recoveredRuntime.operation("operation-1");
+  while ((await recoveredHandle.read()).state === "cancelling") {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const operation = await recoveredHandle.read();
+  await recoveredRuntime.close();
+
+  assert.equal(operation.state, "cancelled");
+});
 
 test("subtree cancellation freezes new descendants before dispatch", async () => {
   const { clock, root, runtime } = await spawnCancellationTree();

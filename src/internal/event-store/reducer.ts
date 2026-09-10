@@ -548,7 +548,7 @@ export function reduceOperation(
         event.successorDispatcherId === pendingHandoff.successorDispatcherId &&
         event.deliveryGeneration === pendingHandoff.deliveryGeneration;
       if (
-        current.state !== "starting" && current.state !== "running" ||
+        current.state !== "starting" && current.state !== "running" && current.state !== "blocked" ||
         authority === undefined ||
         event.successorDispatcherId === authority.dispatcherId ||
         event.deliveryGeneration !== authority.deliveryGeneration + 1 ||

@@ -22,6 +22,7 @@ import type {
   ResourceCleanupAuthenticator,
   Runtime,
   StartAuthorizationAuthenticator,
+  StartAuthorizationAuthority,
   WorkerProfilePolicy,
 } from "../public.js";
 
@@ -32,6 +33,7 @@ export interface VisibleRuntimeOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly extensionEntryPath?: string;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
+  readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
   readonly resourceAuthorities?: ReadonlyArray<Readonly<ResourceAuthorityRegistration>>;
   readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
 }
@@ -89,6 +91,9 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     ...(options.startAuthorizationAuthenticator === undefined
       ? {}
       : { startAuthorizationAuthenticator: options.startAuthorizationAuthenticator }),
+    ...(options.startAuthorizationAuthority === undefined
+      ? {}
+      : { startAuthorizationAuthority: options.startAuthorizationAuthority }),
     ...(options.resourceAuthorities === undefined
       ? {}
       : {

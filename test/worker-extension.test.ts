@@ -44,7 +44,11 @@ const assistant = {
   timestamp: 1,
 };
 
-async function extensionResult(repeatBegin = false, reconnectAfterAcceptance = false) {
+async function extensionResult(
+  repeatBegin = false,
+  reconnectAfterAcceptance = false,
+  reconnectAfterCompletion = false,
+) {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-extension-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
@@ -103,6 +107,8 @@ async function extensionResult(repeatBegin = false, reconnectAfterAcceptance = f
   let accepted!: Socket;
   let reconnecting = false;
   let connectionInterrupted = false;
+  let completionConnectionInterrupted = false;
+  let instruction!: Parameters<HostProtocolPeer["begin"]>[0];
   let resolveStarted!: () => void;
   let workerProcessInstanceId = "";
   const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
@@ -141,11 +147,22 @@ async function extensionResult(repeatBegin = false, reconnectAfterAcceptance = f
           beginAcknowledgementCount += 1;
         }
         if (event.type === "result_received") {
-          shutdownCountBeforeAcknowledgement = shutdownCount;
-          resolveResult(event.result);
-          accepted.write(peer.acknowledgeResult(resultAcceptanceProof(
-            config.operationId,
-          )).bytes);
+          if (reconnectAfterCompletion && !completionConnectionInterrupted) {
+            completionConnectionInterrupted = true;
+            reconnecting = true;
+            accepted.destroy();
+            server.close(() => {
+              peer = new HostProtocolPeer({ operationId: config.operationId, capability });
+              peer.restoreStartDelivery(instruction);
+              server.listen(socketPath);
+            });
+          } else {
+            shutdownCountBeforeAcknowledgement = shutdownCount;
+            resolveResult(event.result);
+            accepted.write(peer.acknowledgeResult(resultAcceptanceProof(
+              config.operationId,
+            )).bytes);
+          }
         }
       }
     });
@@ -158,7 +175,7 @@ async function extensionResult(repeatBegin = false, reconnectAfterAcceptance = f
   try {
     await handlers.session_start[0]?.({}, context);
     await started;
-    const instruction = {
+    instruction = {
       dispatcherId: "pions-runtime",
       workerProcessInstanceId,
       receiptDigest: `sha256:${"e".repeat(64)}` as const,
@@ -201,6 +218,15 @@ test("Pi Worker extension injects a repeated begin prompt only once", async () =
 
 test("Pi Worker extension reconnects without reinjecting an accepted prompt", async () => {
   assert.equal((await extensionResult(false, true)).promptCount, 1);
+});
+
+test("Pi Worker extension recovers Result delivery after connection loss", async () => {
+  const delivery = await extensionResult(false, false, true);
+
+  assert.equal(
+    Buffer.from((delivery.delivery as { body: { bytes: Uint8Array } }).body.bytes).toString("utf8"),
+    "review finished",
+  );
 });
 
 test("Pi Worker extension acknowledges every repeated begin", async () => {

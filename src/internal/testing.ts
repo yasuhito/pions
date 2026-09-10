@@ -36,12 +36,12 @@ import type {
   Runtime,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
-import { automaticStartScopeDigest } from "./start-instruction.js";
+import { automaticStartScopeDigest, startInstructionReference } from "./start-instruction.js";
 
 type TestRuntimeServices = Omit<RuntimeServices, "artifacts" | "artifactCredential"> &
   Partial<Pick<RuntimeServices, "artifacts" | "artifactCredential">>;
 
-export async function advanceTestOperationToRunning(
+export async function advanceTestOperationToStartDeliveryAuthority(
   store: EventStore,
   operationId: string,
 ): Promise<void> {
@@ -79,6 +79,16 @@ export async function advanceTestOperationToRunning(
     type: "start_delivery_authority_acquired",
     instruction,
   }));
+}
+
+export async function advanceTestOperationToRunning(
+  store: EventStore,
+  operationId: string,
+): Promise<void> {
+  await advanceTestOperationToStartDeliveryAuthority(store, operationId);
+  const instruction = startInstructionReference(
+    (await Effect.runPromise(store.read(operationId))).operation.startDeliveryAuthority!,
+  );
   await Effect.runPromise(store.advance(operationId, { type: "start_delivery_entered", instruction }));
   await Effect.runPromise(store.advance(operationId, { type: "start_instruction_dispatched", instruction }));
   await Effect.runPromise(store.advance(operationId, {

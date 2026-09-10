@@ -499,9 +499,12 @@ export abstract class ValidatedEventStore implements EventStore {
           Effect.runPromise(this.read(operationId)),
         ));
         return snapshots.filter(({ operation }) =>
-          (operation.state === "starting" || operation.state === "running" || operation.state === "blocked") &&
+          (
+            operation.state === "starting" || operation.state === "running" ||
+            operation.state === "blocked" || operation.state === "cancelling"
+          ) &&
           operation.workerIdentity !== undefined &&
-          operation.startDeliveryEntry !== undefined &&
+          operation.startDeliveryAuthority !== undefined &&
           operation.workerStopConfirmedAt === undefined,
         );
       },
