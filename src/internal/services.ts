@@ -71,7 +71,7 @@ export interface WorkerRunHooks {
   ): Effect.Effect<void, OperationPersistenceError>;
   deliveryGenerationConfirmed(
     confirmation: Readonly<DeliveryGenerationConfirmation>,
-  ): Effect.Effect<void, OperationPersistenceError>;
+  ): Effect.Effect<void, OperationPersistenceError | ResourceProofRejectedError>;
   startDeliveryEntered(
     instruction: Readonly<StartInstruction>,
   ): Effect.Effect<void, OperationPersistenceError>;

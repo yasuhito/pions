@@ -280,7 +280,7 @@ test("a begin received at its deadline is rejected", () => {
   assert.equal(reception.startInstructions[0]?.status, "expired");
 });
 
-test("an expired begin returns a closed rejection to the dispatcher", () => {
+test("an expired begin returns a closed rejection to the Dispatcher", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer(() => "2026-09-06T10:01:00.000Z");
   host.receive(worker.send(identity));
@@ -378,7 +378,7 @@ test("a confirmed handoff revokes the old Dispatcher's Start delivery authority"
   assert.equal(violationReason(() => host.begin(instruction)), "authority_mismatch");
 });
 
-test("a dispatcher cannot complete handoff before Worker generation confirmation", () => {
+test("a Dispatcher cannot complete handoff before Worker generation confirmation", () => {
   const host = new HostProtocolPeer(authority);
 
   assert.equal(

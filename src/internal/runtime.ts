@@ -686,6 +686,31 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     return gate;
   };
 
+  const revalidateRequiredResourceProof = (operation: Operation) => {
+    const runtimeConfiguration = services.configuration ?? {
+      cwd: "/test/workspace",
+      profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
+    };
+    const resourcePolicy = runtimeConfiguration.profiles[operation.task.profile]?.resources;
+    if (resourcePolicy?.resourceProofPolicy !== "required") return Effect.void;
+    const controller = services.resourceProofController;
+    if (controller === undefined) {
+      return Effect.fail(new ResourceProofRejectedError(
+        "authority_unavailable",
+        "Required resource proof adapters are unavailable",
+      ));
+    }
+    return Effect.tryPromise({
+      try: () => controller.revalidate(operation.operationId),
+      catch: (error) => error instanceof ResourceProofRejectedError
+        ? error
+        : new ResourceProofRejectedError(
+            "validation_unknown",
+            error instanceof Error ? error.message : String(error),
+          ),
+    }).pipe(Effect.asVoid);
+  };
+
   const execute = async (record: OperationRecord, recovering = false): Promise<void> => {
     try {
       let operation = recovering
@@ -853,9 +878,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             }
             yield* Effect.tryPromise({
               try: () => verifyReviewSubject(record.operationId, receiptPolicy, true),
-              catch: () => new OperationPersistenceError(record.operationId, "write_failed"),
+              catch: (error) => error instanceof ResourceProofRejectedError
+                ? error
+                : new OperationPersistenceError(record.operationId, "write_failed"),
             });
           }
+          yield* revalidateRequiredResourceProof(current);
           yield* advanceAndProject(record.operationId, {
             type: "start_delivery_authority_acquired",
             instruction: {
@@ -867,12 +895,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 : { authorizationDecisionId: previousAuthority.authorizationDecisionId }),
               deliveryGeneration: confirmation.deliveryGeneration,
             },
-          });
-          yield* Effect.tryPromise({
-            try: async () => {
-              await services.resourceProofController?.revalidate(record.operationId);
-            },
-            catch: () => new OperationPersistenceError(record.operationId, "write_failed"),
           });
         }),
         startDeliveryEntered: (instruction) => advanceAndProject(record.operationId, {

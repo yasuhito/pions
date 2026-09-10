@@ -4,9 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { Effect } from "effect";
+
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
 import { EventStoreResourceEvidenceRepository } from "../src/internal/event-store-resource-evidence.js";
 import { makeResourceProofController } from "../src/internal/resource-controller.js";
+import type { Operation } from "../src/internal/event-store/index.js";
+import {
+  makeSingleRunWorker,
+  type Worker,
+  type WorkerAdapter,
+  type WorkerRunOutcome,
+} from "../src/internal/services.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
 import {
   FakeClock,
@@ -30,6 +39,64 @@ import type {
   ResourceAuthorityRegistration,
   ResourceProofEvidence,
 } from "../src/index.js";
+
+class InterruptedRequiredResourceWorker implements WorkerAdapter {
+  recoveredDeliveryCount = 0;
+  recoveryAttempted = false;
+
+  open(operation: Operation): Worker {
+    return makeSingleRunWorker({
+      run: (hooks) => Effect.gen(function* () {
+        yield* hooks.workerLaunched();
+        const instruction = yield* hooks.workerIdentified({
+          processId: 1234,
+          processInstanceId: "resource-worker",
+          processStartToken: "resource-worker-start",
+          piSessionId: "resource-pi",
+          observedConfig: {
+            model: { state: "observed", value: operation.effectiveConfig.model },
+            thinkingLevel: { state: "observed", value: operation.effectiveConfig.thinkingLevel },
+            tools: { state: "observed", value: operation.effectiveConfig.tools },
+            cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+          },
+        });
+        yield* hooks.startDeliveryEntered(instruction);
+        yield* hooks.startInstructionDispatched(instruction);
+        return yield* Effect.async<WorkerRunOutcome>(() => undefined);
+      }),
+      cancel: () => Effect.succeed({ proof: "worker-stop" }),
+    });
+  }
+
+  recover(operation: Operation): Worker {
+    this.recoveryAttempted = true;
+    return makeSingleRunWorker({
+      run: (hooks) => Effect.gen(this, function* () {
+        const identity = operation.workerIdentity!;
+        const instruction = yield* hooks.workerIdentified({
+          processId: identity.processId,
+          processInstanceId: identity.processInstanceId,
+          processStartToken: identity.processStartToken,
+          piSessionId: identity.piSessionId,
+          observedConfig: operation.observedConfig!,
+        });
+        yield* hooks.startDeliveryAuthorityRevoked(
+          instruction.dispatcherId,
+          instruction.deliveryGeneration,
+        );
+        yield* hooks.deliveryGenerationConfirmed({
+          dispatcherId: instruction.dispatcherId,
+          deliveryGeneration: instruction.deliveryGeneration,
+          acceptanceState: "not_accepted",
+        });
+        yield* hooks.startDeliveryEntered(instruction);
+        this.recoveredDeliveryCount += 1;
+        return { state: "liveness-unproven" } as const;
+      }),
+      cancel: () => Effect.succeed({ proof: "worker-stop" }),
+    });
+  }
+}
 
 const manifest = (read: PermissionManifest["read"]): PermissionManifest => ({
   tools: ["read", "bash"],
@@ -336,6 +403,25 @@ const controllerFixture = async () => {
   return { adapter, controller, registration, request };
 };
 
+function requiredRuntimeConfiguration(
+  request: Awaited<ReturnType<typeof controllerFixture>>["request"],
+) {
+  return {
+    cwd: request.workspace.normalizedPath,
+    profiles: {
+      protected: {
+        modelCandidates: [{ provider: "test", id: "test-model" }],
+        thinkingLevel: "medium" as const,
+        tools: ["read", "bash"],
+        resources: { resourceProofPolicy: "required" as const, ...request.requirements },
+        startAuthorization: { policy: "disabled" as const },
+        workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+        acceptedArtifactRetentionMs: 86_400_000,
+      },
+    },
+  };
+}
+
 test("a complete resource proof is persisted as held", async () => {
   const { controller, request } = await controllerFixture();
 
@@ -454,6 +540,60 @@ test("a required Runtime profile revalidates the acquisition before execution", 
   await handle.result();
 
   assert.equal(adapter.inspectCount, 1);
+});
+
+async function recoveryWithoutRequiredResourceAdapter() {
+  const { controller, request } = await controllerFixture();
+  const store = new InMemoryEventStore();
+  const firstRuntime = makeTestRuntime({
+    worker: new InterruptedRequiredResourceWorker(),
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString(),
+    )),
+    ids: new FakeIdGenerator([request.operationId]),
+    presentation: new FakePresentation(),
+    store,
+    resourceProofController: controller,
+    configuration: requiredRuntimeConfiguration(request),
+  });
+  const handle = await firstRuntime.spawn({
+    promptRef: "prompt",
+    profile: "protected",
+    idempotencyKey: "required-resource-recovery",
+  });
+  while ((await handle.read()).startDeliveryEntry === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await firstRuntime.close();
+  const recoveredWorker = new InterruptedRequiredResourceWorker();
+  const recoveredRuntime = makeTestRuntime({
+    worker: recoveredWorker,
+    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
+      new Date(Date.UTC(2099, 0, 1, 1, 0, index)).toISOString(),
+    )),
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+    configuration: requiredRuntimeConfiguration(request),
+  });
+  while (!recoveredWorker.recoveryAttempted || (await handle.read()).failureReason === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const operation = await handle.read();
+  await recoveredRuntime.close();
+  return { operation, recoveredWorker };
+}
+
+test("recovery without a required resource adapter does not redispatch begin", async () => {
+  const { recoveredWorker } = await recoveryWithoutRequiredResourceAdapter();
+
+  assert.equal(recoveredWorker.recoveredDeliveryCount, 0);
+});
+
+test("recovery without a required resource adapter records resource proof rejection", async () => {
+  const { operation } = await recoveryWithoutRequiredResourceAdapter();
+
+  assert.equal(operation.failureReason, "resource_proof_rejected");
 });
 
 test("resource evidence is reconstructed from a reopened Operation event store", async () => {
