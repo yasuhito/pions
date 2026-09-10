@@ -142,6 +142,11 @@ class AuthorityOnlyWorkerAdapter extends InterruptedStartWorkerAdapter {
 
 class PausedHandoffWorkerAdapter extends InterruptedStartWorkerAdapter {
   revocationRecorded = false;
+  private releaseHandoff: (() => void) | undefined;
+
+  override release(): void {
+    this.releaseHandoff?.();
+  }
 
   override recover(operation: Operation): Worker {
     return makeSingleRunWorker({
@@ -159,7 +164,9 @@ class PausedHandoffWorkerAdapter extends InterruptedStartWorkerAdapter {
           instruction.deliveryGeneration,
         );
         this.revocationRecorded = true;
-        return yield* Effect.async<WorkerRunOutcome>(() => undefined);
+        return yield* Effect.async<WorkerRunOutcome>((resume) => {
+          this.releaseHandoff = () => resume(Effect.succeed({ state: "liveness-unproven" }));
+        });
       }),
       cancel: () => Effect.succeed(undefined),
     });
@@ -586,6 +593,8 @@ test("runtime recovery resumes a Start delivery handoff interrupted after revoca
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   firstWorker.release();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  pausedWorker.release();
   await recoveredRuntime.close();
 
   assert.equal(recoveredWorker.recoveredDeliveryCount, 1);

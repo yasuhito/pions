@@ -43,10 +43,15 @@ import type {
 class InterruptedRequiredResourceWorker implements WorkerAdapter {
   recoveredDeliveryCount = 0;
   recoveryAttempted = false;
+  private releaseRun: (() => void) | undefined;
+
+  release(): void {
+    this.releaseRun?.();
+  }
 
   open(operation: Operation): Worker {
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(function* () {
+      run: (hooks) => Effect.gen(this, function* () {
         yield* hooks.workerLaunched();
         const instruction = yield* hooks.workerIdentified({
           processId: 1234,
@@ -62,7 +67,9 @@ class InterruptedRequiredResourceWorker implements WorkerAdapter {
         });
         yield* hooks.startDeliveryEntered(instruction);
         yield* hooks.startInstructionDispatched(instruction);
-        return yield* Effect.async<WorkerRunOutcome>(() => undefined);
+        return yield* Effect.async<WorkerRunOutcome>((resume) => {
+          this.releaseRun = () => resume(Effect.succeed({ state: "liveness-unproven" }));
+        });
       }),
       cancel: () => Effect.succeed({ proof: "worker-stop" }),
     });
@@ -545,8 +552,9 @@ test("a required Runtime profile revalidates the acquisition before execution", 
 async function recoveryWithoutRequiredResourceAdapter() {
   const { controller, request } = await controllerFixture();
   const store = new InMemoryEventStore();
+  const firstWorker = new InterruptedRequiredResourceWorker();
   const firstRuntime = makeTestRuntime({
-    worker: new InterruptedRequiredResourceWorker(),
+    worker: firstWorker,
     clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
       new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString(),
     )),
@@ -580,6 +588,7 @@ async function recoveryWithoutRequiredResourceAdapter() {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const operation = await handle.read();
+  firstWorker.release();
   await recoveredRuntime.close();
   return { operation, recoveredWorker };
 }
