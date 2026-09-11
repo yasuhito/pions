@@ -7,7 +7,10 @@ import { test, type TestContext } from "node:test";
 import { Effect } from "effect";
 
 import type { EventStore } from "../src/internal/event-store/index.js";
-import { operationDirectoryKey, PrivateFileEventStore } from "../src/internal/event-store/index.js";
+import {
+  operationDirectoryKey,
+  PrivateFileEventStore,
+} from "../src/internal/event-store/index.js";
 import {
   FakeClock,
   InMemoryEventStore,
@@ -21,11 +24,18 @@ import {
   workProductRequirements,
 } from "./worker-protocol-fixtures.js";
 
-const task = { promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" };
+const task = {
+  promptRef: "private://prompt/1",
+  profile: "coding",
+  idempotencyKey: "task-1",
+};
 function clock() {
-  return new FakeClock(Array.from({ length: 20 }, (_, index) =>
-    `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
-  ));
+  return new FakeClock(
+    Array.from(
+      { length: 20 },
+      (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
 }
 async function root(context: TestContext) {
   const path = join(tmpdir(), `pions-event-store-${crypto.randomUUID()}`);
@@ -34,22 +44,31 @@ async function root(context: TestContext) {
   return path;
 }
 async function create(store: EventStore, operationId = "operation-1") {
-  return Effect.runPromise(store.create({
-    operationId,
-    task,
-    requestedConfig,
-    effectiveConfig,
-    workProductRequirements,
-    resultRetentionPolicy: retentionPolicy(operationId),
-    lineage: { rootOperationId: operationId, depth: 0 },
-    startAuthorization: { configuredPolicy: "disabled", policy: "disabled", windowMs: 0, authorizedSubjectIds: [] },
-  }));
+  return Effect.runPromise(
+    store.create({
+      operationId,
+      task,
+      requestedConfig,
+      effectiveConfig,
+      workProductRequirements,
+      resultRetentionPolicy: retentionPolicy(operationId),
+      lineage: { rootOperationId: operationId, depth: 0 },
+      startAuthorization: {
+        configuredPolicy: "disabled",
+        policy: "disabled",
+        windowMs: 0,
+        authorizedSubjectIds: [],
+      },
+    })
+  );
 }
 async function running(store: EventStore, operationId = "operation-1") {
   await create(store, operationId);
   await advanceTestOperationToRunning(store, operationId);
 }
-async function failure(effect: Effect.Effect<unknown, { readonly code: string }>) {
+async function failure(
+  effect: Effect.Effect<unknown, { readonly code: string }>
+) {
   return Effect.runPromise(Effect.flip(effect));
 }
 
@@ -63,57 +82,114 @@ test("an Operation with Start delivery authority before delivery entry is recove
   await create(store);
   await advanceTestOperationToStartDeliveryAuthority(store, "operation-1");
 
-  assert.equal((await Effect.runPromise(store.listRecoverableOperations())).length, 1);
+  assert.equal(
+    (await Effect.runPromise(store.listRecoverableOperations())).length,
+    1
+  );
 });
 
 test("a cancelling Operation with unconfirmed Worker stop is recoverable", async () => {
   const store = new InMemoryEventStore([], clock());
   await running(store);
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "cancellation_requested",
-    cancellationEpoch: 1,
-  }));
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
 
-  assert.equal((await Effect.runPromise(store.listRecoverableOperations())).length, 1);
+  assert.equal(
+    (await Effect.runPromise(store.listRecoverableOperations())).length,
+    1
+  );
 });
 
 test("file Event Store reconstructs a running Operation after restart", async (context) => {
   const directory = await root(context);
   await running(new PrivateFileEventStore(directory, clock()));
   const reopened = new PrivateFileEventStore(directory, clock());
-  assert.equal((await Effect.runPromise(reopened.read("operation-1"))).operation.state, "running");
+  assert.equal(
+    (await Effect.runPromise(reopened.read("operation-1"))).operation.state,
+    "running"
+  );
 });
 
 test("Operation identifiers are not used as record paths", async (context) => {
   const directory = await root(context);
-  await create(new PrivateFileEventStore(directory, clock()), "../private-operation");
-  assert.equal((await readFile(join(directory, operationDirectoryKey("../private-operation"), "events.v19.json"))).byteLength > 0, true);
+  await create(
+    new PrivateFileEventStore(directory, clock()),
+    "../private-operation"
+  );
+  assert.equal(
+    (
+      await readFile(
+        join(
+          directory,
+          operationDirectoryKey("../private-operation"),
+          "events.v19.json"
+        )
+      )
+    ).byteLength > 0,
+    true
+  );
 });
 
 test("an unsupported record schema is rejected", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()));
-  const path = join(directory, operationDirectoryKey("operation-1"), "events.v19.json");
+  const path = join(
+    directory,
+    operationDirectoryKey("operation-1"),
+    "events.v19.json"
+  );
   const record = JSON.parse(await readFile(path, "utf8"));
   record.schemaVersion = 11;
   await writeFile(path, JSON.stringify(record));
-  assert.equal((await failure(new PrivateFileEventStore(directory, clock()).read("operation-1"))).code, "unsupported_schema");
+  assert.equal(
+    (
+      await failure(
+        new PrivateFileEventStore(directory, clock()).read("operation-1")
+      )
+    ).code,
+    "unsupported_schema"
+  );
 });
 
 test("an unsupported event schema is rejected", async (context) => {
   const directory = await root(context);
   await create(new PrivateFileEventStore(directory, clock()));
-  const path = join(directory, operationDirectoryKey("operation-1"), "events.v19.json");
+  const path = join(
+    directory,
+    operationDirectoryKey("operation-1"),
+    "events.v19.json"
+  );
   const record = JSON.parse(await readFile(path, "utf8"));
   record.events[0].schemaVersion = 11;
   await writeFile(path, JSON.stringify(record));
-  assert.equal((await failure(new PrivateFileEventStore(directory, clock()).read("operation-1"))).code, "unsupported_schema");
+  assert.equal(
+    (
+      await failure(
+        new PrivateFileEventStore(directory, clock()).read("operation-1")
+      )
+    ).code,
+    "unsupported_schema"
+  );
 });
 
 test("an old Event Store root is not initialized as the current schema", async (context) => {
   const directory = await root(context);
-  const operationDirectory = join(directory, operationDirectoryKey("operation-1"));
+  const operationDirectory = join(
+    directory,
+    operationDirectoryKey("operation-1")
+  );
   await mkdir(operationDirectory);
   await writeFile(join(operationDirectory, "events.v12.json"), "{}\n");
-  assert.equal((await failure(new PrivateFileEventStore(directory, clock()).read("operation-1"))).code, "unsupported_schema");
+  assert.equal(
+    (
+      await failure(
+        new PrivateFileEventStore(directory, clock()).read("operation-1")
+      )
+    ).code,
+    "unsupported_schema"
+  );
 });

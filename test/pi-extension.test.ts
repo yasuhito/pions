@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,7 +17,11 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
 } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 
 import {
   installPionsExtension,
@@ -42,7 +54,7 @@ class FakeRuntime implements Runtime {
       body: "review complete",
       byteCount: 15,
       digest: `sha256:${"ab".repeat(32)}`,
-    },
+    }
   ) {}
 
   async spawn(task: TaskSpec): Promise<OperationHandle> {
@@ -53,10 +65,12 @@ class FakeRuntime implements Runtime {
       operationId: "operation-1",
       read: () => Promise.reject(new Error("unused")),
       waitForStartupReceipt: () => Promise.reject(new Error("unused")),
-      result: () => outcome instanceof Error
-        ? Promise.reject(outcome)
-        : Promise.resolve({ result: outcome, cleanupDiagnostics: [] }),
-      cancel: () => Promise.resolve({ cancellationEpoch: 1, state: "cancelled" }),
+      result: () =>
+        outcome instanceof Error
+          ? Promise.reject(outcome)
+          : Promise.resolve({ result: outcome, cleanupDiagnostics: [] }),
+      cancel: () =>
+        Promise.resolve({ cancellationEpoch: 1, state: "cancelled" }),
     };
   }
 
@@ -92,12 +106,18 @@ function deferred<Value>() {
   return { promise, resolve, reject };
 }
 
-async function waitForOperation(runtime: PendingRuntime, operationId = "operation-1"): Promise<void> {
+async function waitForOperation(
+  runtime: PendingRuntime,
+  operationId = "operation-1"
+): Promise<void> {
   while (!runtime.results.has(operationId)) await new Promise(setImmediate);
 }
 
 class PendingRuntime implements Runtime {
-  readonly cancellations: Array<{ readonly operationId: string; readonly scope: "subtree" }> = [];
+  readonly cancellations: Array<{
+    readonly operationId: string;
+    readonly scope: "subtree";
+  }> = [];
   readonly results = new Map<string, ReturnType<typeof deferred<Result>>>();
   closeCount = 0;
   cancellationResponse: Promise<CancellationResult> = Promise.resolve({
@@ -115,14 +135,18 @@ class PendingRuntime implements Runtime {
       operationId,
       read: () => Promise.reject(new Error("unused")),
       waitForStartupReceipt: () => Promise.reject(new Error("unused")),
-      result: () => result.promise.then((accepted) => ({ result: accepted, cleanupDiagnostics: [] })),
+      result: () =>
+        result.promise.then((accepted) => ({
+          result: accepted,
+          cleanupDiagnostics: [],
+        })),
       cancel: async ({ scope }) => {
         this.cancellations.push({ operationId, scope });
         const response = await this.cancellationResponse;
         result.reject(
           response.state === "unknown"
             ? new OperationUnknownError(operationId, "cancel-unproven")
-            : new OperationCancelledError(operationId),
+            : new OperationCancelledError(operationId)
         );
         return response;
       },
@@ -161,8 +185,14 @@ interface RegisteredTool {
     params: { readonly task: string },
     signal: AbortSignal | undefined,
     onUpdate: undefined,
-    context: ExtensionContext,
-  ): Promise<{ readonly content: ReadonlyArray<{ readonly type: string; readonly text: string }>; readonly details?: unknown }>;
+    context: ExtensionContext
+  ): Promise<{
+    readonly content: ReadonlyArray<{
+      readonly type: string;
+      readonly text: string;
+    }>;
+    readonly details?: unknown;
+  }>;
 }
 
 async function fixture<TRuntime extends Runtime = FakeRuntime>(
@@ -170,26 +200,38 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   options: Omit<PionsExtensionOptions, "runtime" | "stateBaseDirectory"> & {
     readonly stateBaseDirectory?: string;
   } = {},
-  useDefaultStateDirectory = false,
+  useDefaultStateDirectory = false
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-extension-"));
   let registered: RegisteredTool | undefined;
-  const handlers = new Map<string, (event: unknown, context: ExtensionContext) => Promise<unknown> | unknown>();
+  const handlers = new Map<
+    string,
+    (event: unknown, context: ExtensionContext) => Promise<unknown> | unknown
+  >();
   const pi = {
     registerTool(tool: ToolDefinition) {
       registered = tool as unknown as RegisteredTool;
     },
-    on(event: string, handler: (event: unknown, context: ExtensionContext) => Promise<unknown> | unknown) {
+    on(
+      event: string,
+      handler: (
+        event: unknown,
+        context: ExtensionContext
+      ) => Promise<unknown> | unknown
+    ) {
       handlers.set(event, handler);
     },
   } as unknown as ExtensionAPI;
   installPionsExtension(pi, {
     ...(options.runtimeFactory === undefined ? { runtime } : {}),
     repositoryRoot: root,
-    ...(useDefaultStateDirectory ? {} : { stateBaseDirectory: join(root, "state") }),
+    ...(useDefaultStateDirectory
+      ? {}
+      : { stateBaseDirectory: join(root, "state") }),
     ...options,
   });
-  if (registered === undefined) throw new Error("pions_delegate was not registered");
+  if (registered === undefined)
+    throw new Error("pions_delegate was not registered");
   const tool = registered;
   const context = {
     cwd: root,
@@ -205,12 +247,15 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   const execute = (
     toolCallId = "tool-call-1",
     task = "Review the change",
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ) => tool.execute(toolCallId, { task }, signal, undefined, context);
   const shutdown = (reason: "quit" | "reload" | "new" | "resume" | "fork") => {
     const handler = handlers.get("session_shutdown");
-    if (handler === undefined) throw new Error("session_shutdown was not registered");
-    return Promise.resolve(handler({ type: "session_shutdown", reason }, context));
+    if (handler === undefined)
+      throw new Error("session_shutdown was not registered");
+    return Promise.resolve(
+      handler({ type: "session_shutdown", reason }, context)
+    );
   };
   return { context, execute, registered: tool, root, runtime, shutdown };
 }
@@ -230,7 +275,13 @@ test("pions_delegate requires only task input", async (context) => {
     type: "object",
     required: ["task"],
     additionalProperties: false,
-    properties: { task: { type: "string", minLength: 1, description: "Self-contained work to delegate" } },
+    properties: {
+      task: {
+        type: "string",
+        minLength: 1,
+        description: "Self-contained work to delegate",
+      },
+    },
   });
 });
 
@@ -238,14 +289,20 @@ test("pions_delegate description identifies subagent delegation", async (context
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.match(value.registered.description, /pions_delegate.*subagent|subagent.*pions_delegate/i);
+  assert.match(
+    value.registered.description,
+    /pions_delegate.*subagent|subagent.*pions_delegate/i
+  );
 });
 
 test("pions_delegate prompt guidance identifies isolated delegation", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.match(`${value.registered.promptSnippet} ${value.registered.promptGuidelines?.join(" ")}`, /pions_delegate.*independent context/i);
+  assert.match(
+    `${value.registered.promptSnippet} ${value.registered.promptGuidelines?.join(" ")}`,
+    /pions_delegate.*independent context/i
+  );
 });
 
 test("one tool execution starts one root Operation", async (context) => {
@@ -277,38 +334,53 @@ test("successful delegation returns Result diagnostics", async (context) => {
 
 test("a truncated tool Result stays within Pi's byte limit", async (context) => {
   const body = `${"x".repeat(99)}\n`.repeat(1_000);
-  const value = await fixture(new FakeRuntime({
-    body,
-    byteCount: Buffer.byteLength(body),
-    digest: `sha256:${"ab".repeat(32)}`,
-  }));
+  const value = await fixture(
+    new FakeRuntime({
+      body,
+      byteCount: Buffer.byteLength(body),
+      digest: `sha256:${"ab".repeat(32)}`,
+    })
+  );
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.ok(Buffer.byteLength((await value.execute()).content[0]?.text ?? "") <= DEFAULT_MAX_BYTES);
+  assert.ok(
+    Buffer.byteLength((await value.execute()).content[0]?.text ?? "") <=
+      DEFAULT_MAX_BYTES
+  );
 });
 
 test("a truncated tool Result stays within Pi's line limit", async (context) => {
   const body = "finding\n".repeat(3_000);
-  const value = await fixture(new FakeRuntime({
-    body,
-    byteCount: Buffer.byteLength(body),
-    digest: `sha256:${"ab".repeat(32)}`,
-  }));
+  const value = await fixture(
+    new FakeRuntime({
+      body,
+      byteCount: Buffer.byteLength(body),
+      digest: `sha256:${"ab".repeat(32)}`,
+    })
+  );
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.ok(((await value.execute()).content[0]?.text.split("\n").length ?? 0) <= DEFAULT_MAX_LINES);
+  assert.ok(
+    ((await value.execute()).content[0]?.text.split("\n").length ?? 0) <=
+      DEFAULT_MAX_LINES
+  );
 });
 
 test("a truncated tool Result identifies its complete persisted Operation", async (context) => {
   const body = "finding\n".repeat(3_000);
-  const value = await fixture(new FakeRuntime({
-    body,
-    byteCount: Buffer.byteLength(body),
-    digest: `sha256:${"ab".repeat(32)}`,
-  }));
+  const value = await fixture(
+    new FakeRuntime({
+      body,
+      byteCount: Buffer.byteLength(body),
+      digest: `sha256:${"ab".repeat(32)}`,
+    })
+  );
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.match((await value.execute()).content[0]?.text ?? "", /truncated.*Operation operation-1/is);
+  assert.match(
+    (await value.execute()).content[0]?.text ?? "",
+    /truncated.*Operation operation-1/is
+  );
 });
 
 test("delegation inherits the exact Pi model", async (context) => {
@@ -316,7 +388,10 @@ test("delegation inherits the exact Pi model", async (context) => {
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
 
-  assert.deepEqual(value.runtime.tasks[0]?.model, { provider: "anthropic", id: "claude-opus-5" });
+  assert.deepEqual(value.runtime.tasks[0]?.model, {
+    provider: "anthropic",
+    id: "claude-opus-5",
+  });
 });
 
 test("delegation inherits the exact Pi thinking level", async (context) => {
@@ -330,20 +405,29 @@ test("delegation inherits the exact Pi thinking level", async (context) => {
 test("project configuration overrides the review model", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "openai", id: "gpt-5.6-codex" } },
-  }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "openai", id: "gpt-5.6-codex" } },
+    })
+  );
   await value.execute();
 
-  assert.deepEqual(value.runtime.tasks[0]?.model, { provider: "openai", id: "gpt-5.6-codex" });
+  assert.deepEqual(value.runtime.tasks[0]?.model, {
+    provider: "openai",
+    id: "gpt-5.6-codex",
+  });
 });
 
 test("model-only project configuration inherits the Pi thinking level", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "openai", id: "gpt-5.6-codex" } },
-  }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "openai", id: "gpt-5.6-codex" } },
+    })
+  );
   await value.execute();
 
   assert.equal(value.runtime.tasks[0]?.thinkingLevel, "high");
@@ -352,16 +436,25 @@ test("model-only project configuration inherits the Pi thinking level", async (c
 test("thinking-only project configuration inherits the Pi model", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({ review: { thinkingLevel: "low" } }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ review: { thinkingLevel: "low" } })
+  );
   await value.execute();
 
-  assert.deepEqual(value.runtime.tasks[0]?.model, { provider: "anthropic", id: "claude-opus-5" });
+  assert.deepEqual(value.runtime.tasks[0]?.model, {
+    provider: "anthropic",
+    id: "claude-opus-5",
+  });
 });
 
 test("project configuration overrides the review thinking level", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({ review: { thinkingLevel: "low" } }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ review: { thinkingLevel: "low" } })
+  );
   await value.execute();
 
   assert.equal(value.runtime.tasks[0]?.thinkingLevel, "low");
@@ -370,17 +463,26 @@ test("project configuration overrides the review thinking level", async (context
 test("project configuration applies model and thinking level together", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: {
-      model: { provider: "anthropic", id: "claude-opus-5" },
-      thinkingLevel: "xhigh",
-    },
-  }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: {
+        model: { provider: "anthropic", id: "claude-opus-5" },
+        thinkingLevel: "xhigh",
+      },
+    })
+  );
   await value.execute();
 
   assert.deepEqual(
-    { model: value.runtime.tasks[0]?.model, thinkingLevel: value.runtime.tasks[0]?.thinkingLevel },
-    { model: { provider: "anthropic", id: "claude-opus-5" }, thinkingLevel: "xhigh" },
+    {
+      model: value.runtime.tasks[0]?.model,
+      thinkingLevel: value.runtime.tasks[0]?.thinkingLevel,
+    },
+    {
+      model: { provider: "anthropic", id: "claude-opus-5" },
+      thinkingLevel: "xhigh",
+    }
   );
 });
 
@@ -391,55 +493,77 @@ test("malformed project configuration is rejected", async (context) => {
 
   await assert.rejects(
     value.execute(),
-    (error) => error instanceof ProjectConfigurationError && error.reason === "invalid_json",
+    (error) =>
+      error instanceof ProjectConfigurationError &&
+      error.reason === "invalid_json"
   );
 });
 
 test("unknown project configuration keys are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({ review: { apiKey: "secret" } }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ review: { apiKey: "secret" } })
+  );
 
   await assert.rejects(
     value.execute(),
-    (error) => error instanceof ProjectConfigurationError && error.reason === "unknown_key",
+    (error) =>
+      error instanceof ProjectConfigurationError &&
+      error.reason === "unknown_key"
   );
 });
 
 test("invalid review model providers are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "not a provider", id: "model" } },
-  }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "not a provider", id: "model" } },
+    })
+  );
 
   await assert.rejects(
     value.execute(),
-    (error) => error instanceof ProjectConfigurationError && error.reason === "invalid_provider",
+    (error) =>
+      error instanceof ProjectConfigurationError &&
+      error.reason === "invalid_provider"
   );
 });
 
 test("invalid review model identifiers are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "anthropic", id: "" } },
-  }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "anthropic", id: "" } },
+    })
+  );
 
   await assert.rejects(
     value.execute(),
-    (error) => error instanceof ProjectConfigurationError && error.reason === "invalid_model_id",
+    (error) =>
+      error instanceof ProjectConfigurationError &&
+      error.reason === "invalid_model_id"
   );
 });
 
 test("invalid review thinking levels are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({ review: { thinkingLevel: "ultra" } }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ review: { thinkingLevel: "ultra" } })
+  );
 
   await assert.rejects(
     value.execute(),
-    (error) => error instanceof ProjectConfigurationError && error.reason === "invalid_thinking_level",
+    (error) =>
+      error instanceof ProjectConfigurationError &&
+      error.reason === "invalid_thinking_level"
   );
 });
 
@@ -455,28 +579,43 @@ test("invalid existing project configuration does not spawn a Worker", async (co
 test("an unavailable configured model returns a typed failure", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "anthropic", id: "missing" } },
-  }));
-  (value.context.modelRegistry as unknown as { find: () => undefined }).find = () => undefined;
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "anthropic", id: "missing" } },
+    })
+  );
+  (value.context.modelRegistry as unknown as { find: () => undefined }).find =
+    () => undefined;
 
   await assert.rejects(
     value.execute(),
-    (error) => error instanceof WorkerConfigurationError && error.reason === "model_not_found",
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "model_not_found"
   );
 });
 
 test("an unauthenticated configured model returns a typed failure", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "anthropic", id: "claude-opus-5" } },
-  }));
-  (value.context.modelRegistry as unknown as { hasConfiguredAuth: () => boolean }).hasConfiguredAuth = () => false;
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "anthropic", id: "claude-opus-5" } },
+    })
+  );
+  (
+    value.context.modelRegistry as unknown as {
+      hasConfiguredAuth: () => boolean;
+    }
+  ).hasConfiguredAuth = () => false;
 
   await assert.rejects(
     value.execute(),
-    (error) => error instanceof WorkerConfigurationError && error.reason === "model_auth_unavailable",
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "model_auth_unavailable"
   );
 });
 
@@ -484,9 +623,12 @@ test("a configured model mismatch reaches the parent unchanged", async (context)
   const failure = new OperationFailedError("operation-7", "model_mismatch");
   const value = await fixture(new FakeRuntime(failure));
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "anthropic", id: "claude-opus-5" } },
-  }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "anthropic", id: "claude-opus-5" } },
+    })
+  );
 
   await assert.rejects(value.execute(), (error) => error === failure);
 });
@@ -494,10 +636,14 @@ test("a configured model mismatch reaches the parent unchanged", async (context)
 test("configured model failure does not fall back to the delegating model", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(join(value.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "anthropic", id: "missing" } },
-  }));
-  (value.context.modelRegistry as unknown as { find: () => undefined }).find = () => undefined;
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "anthropic", id: "missing" } },
+    })
+  );
+  (value.context.modelRegistry as unknown as { find: () => undefined }).find =
+    () => undefined;
   await value.execute().catch(() => undefined);
 
   assert.equal(value.runtime.spawnCount, 0);
@@ -506,13 +652,19 @@ test("configured model failure does not fall back to the delegating model", asyn
 test("unsafe Claude bridge MCP configuration fails before an Operation is spawned", async (context) => {
   const runtime = new FakeRuntime();
   const harness = await fixture(runtime);
-  await writeFile(join(harness.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "claude-bridge", id: "claude-opus-5" } },
-  }));
+  await writeFile(
+    join(harness.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "claude-bridge", id: "claude-opus-5" } },
+    })
+  );
   await mkdir(join(harness.root, ".pi"));
-  await writeFile(join(harness.root, ".pi", "claude-bridge.json"), JSON.stringify({
-    provider: { strictMcpConfig: false },
-  }));
+  await writeFile(
+    join(harness.root, ".pi", "claude-bridge.json"),
+    JSON.stringify({
+      provider: { strictMcpConfig: false },
+    })
+  );
   context.after(() => rm(harness.root, { recursive: true, force: true }));
   await harness.execute().catch(() => undefined);
 
@@ -522,16 +674,26 @@ test("unsafe Claude bridge MCP configuration fails before an Operation is spawne
 test("a Claude bridge version mismatch fails before an Operation is spawned", async (context) => {
   const packageRoot = await mkdtemp(join(tmpdir(), "pions-bridge-version-"));
   const packagePath = join(packageRoot, "package.json");
-  await writeFile(packagePath, JSON.stringify({ name: "pi-claude-bridge", version: "9.9.9" }));
+  await writeFile(
+    packagePath,
+    JSON.stringify({ name: "pi-claude-bridge", version: "9.9.9" })
+  );
   const runtime = new FakeRuntime();
-  const harness = await fixture(runtime, { claudeBridgePackagePath: packagePath });
-  context.after(() => Promise.all([
-    rm(harness.root, { recursive: true, force: true }),
-    rm(packageRoot, { recursive: true, force: true }),
-  ]));
-  await writeFile(join(harness.root, ".pions.json"), JSON.stringify({
-    review: { model: { provider: "claude-bridge", id: "claude-opus-5" } },
-  }));
+  const harness = await fixture(runtime, {
+    claudeBridgePackagePath: packagePath,
+  });
+  context.after(() =>
+    Promise.all([
+      rm(harness.root, { recursive: true, force: true }),
+      rm(packageRoot, { recursive: true, force: true }),
+    ])
+  );
+  await writeFile(
+    join(harness.root, ".pions.json"),
+    JSON.stringify({
+      review: { model: { provider: "claude-bridge", id: "claude-opus-5" } },
+    })
+  );
 
   await assert.rejects(harness.execute(), /version 9\.9\.9.*expected 0\.7\.0/u);
 });
@@ -548,11 +710,16 @@ test("delegation resolves the default Worker extension from the Pions distributi
   context.after(() => rm(harness.root, { recursive: true, force: true }));
   await harness.execute();
 
-  assert.equal(extensionEntryPath, fileURLToPath(new URL("../src/worker-extension.js", import.meta.url)));
+  assert.equal(
+    extensionEntryPath,
+    fileURLToPath(new URL("../src/worker-extension.js", import.meta.url))
+  );
 });
 
 test("delegation reports the absolute path of a missing Worker extension before runtime creation", async (context) => {
-  const repository = await mkdtemp(join(tmpdir(), "pions-external-repository-"));
+  const repository = await mkdtemp(
+    join(tmpdir(), "pions-external-repository-")
+  );
   const harness = await fixture(new FakeRuntime(), {
     repositoryRoot: repository,
     extensionEntryPath: "missing-worker-extension.js",
@@ -563,7 +730,10 @@ test("delegation reports the absolute path of a missing Worker extension before 
   context.after(() => rm(harness.root, { recursive: true, force: true }));
   context.after(() => rm(repository, { recursive: true, force: true }));
 
-  await assert.rejects(harness.execute(), new RegExp(join(repository, "missing-worker-extension\\.js")));
+  await assert.rejects(
+    harness.execute(),
+    new RegExp(join(repository, "missing-worker-extension\\.js"))
+  );
 });
 
 test("delegation preserves an explicit Worker extension entry", async (context) => {
@@ -587,7 +757,9 @@ test("delegation preserves an explicit Worker extension entry", async (context) 
 });
 
 test("delegation validates a relative Worker extension from the Worker cwd", async (context) => {
-  const repository = await mkdtemp(join(tmpdir(), "pions-external-repository-"));
+  const repository = await mkdtemp(
+    join(tmpdir(), "pions-external-repository-")
+  );
   await writeFile(join(repository, "worker-extension.js"), "");
   let extensionEntryPath: string | undefined;
   const runtime = new FakeRuntime();
@@ -620,7 +792,10 @@ test("delegation revalidates the Worker extension before reusing a runtime", asy
   await harness.execute("first-call");
   await unlink(explicitEntryPath);
 
-  await assert.rejects(harness.execute("second-call"), /Pions Worker extension entry is unavailable/);
+  await assert.rejects(
+    harness.execute("second-call"),
+    /Pions Worker extension entry is unavailable/
+  );
 });
 
 test("delegation limits Worker tools to the review profile", async (context) => {
@@ -628,7 +803,13 @@ test("delegation limits Worker tools to the review profile", async (context) => 
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
 
-  assert.deepEqual(value.runtime.tasks[0]?.tools, ["read", "grep", "find", "ls", "bash"]);
+  assert.deepEqual(value.runtime.tasks[0]?.tools, [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "bash",
+  ]);
 });
 
 test("a later tool call inherits a newly selected Pi model", async (context) => {
@@ -642,7 +823,9 @@ test("a later tool call inherits a newly selected Pi model", async (context) => 
   });
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute("first-call");
-  (value.context as unknown as { model: { provider: string; id: string } }).model = {
+  (
+    value.context as unknown as { model: { provider: string; id: string } }
+  ).model = {
     provider: "openai",
     id: "gpt-5.6-codex",
   };
@@ -669,7 +852,10 @@ test("delegated task does not appear in TaskSpec metadata", async (context) => {
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute("tool-call-1", "secret review request");
 
-  assert.equal(JSON.stringify(value.runtime.tasks[0]).includes("secret review request"), false);
+  assert.equal(
+    JSON.stringify(value.runtime.tasks[0]).includes("secret review request"),
+    false
+  );
 });
 
 test("Worker prompt begins with a read-oriented role without naming review", async (context) => {
@@ -681,9 +867,9 @@ test("Worker prompt begins with a read-oriented role without naming review", asy
 
   assert.equal(
     (await readFile(promptRef, "utf8")).startsWith(
-      "You are a read-oriented Worker with an independent context.\n",
+      "You are a read-oriented Worker with an independent context.\n"
     ),
-    true,
+    true
   );
 });
 
@@ -693,7 +879,8 @@ test("Worker prompt instructions do not assign a review role", async (context) =
   await value.execute();
   const promptRef = value.runtime.tasks[0]?.promptRef;
   if (promptRef === undefined) throw new Error("promptRef missing");
-  const instructions = (await readFile(promptRef, "utf8")).split("\n\nTask:\n", 1)[0] ?? "";
+  const instructions =
+    (await readFile(promptRef, "utf8")).split("\n\nTask:\n", 1)[0] ?? "";
 
   assert.doesNotMatch(instructions, /\breview(?:er)?\b/i);
 });
@@ -705,7 +892,10 @@ test("Worker prompt states that bash policy is not isolation", async (context) =
   const promptRef = value.runtime.tasks[0]?.promptRef;
   if (promptRef === undefined) throw new Error("promptRef missing");
 
-  assert.match(await readFile(promptRef, "utf8"), /bash.*not.*technical isolation/is);
+  assert.match(
+    await readFile(promptRef, "utf8"),
+    /bash.*not.*technical isolation/is
+  );
 });
 
 test("the same Pi tool call derives the same idempotency key", async (context) => {
@@ -714,7 +904,10 @@ test("the same Pi tool call derives the same idempotency key", async (context) =
   await value.execute("same-call");
   await value.execute("same-call");
 
-  assert.equal(value.runtime.tasks[0]?.idempotencyKey, value.runtime.tasks[1]?.idempotencyKey);
+  assert.equal(
+    value.runtime.tasks[0]?.idempotencyKey,
+    value.runtime.tasks[1]?.idempotencyKey
+  );
 });
 
 test("different Pi tool calls derive different idempotency keys", async (context) => {
@@ -723,43 +916,72 @@ test("different Pi tool calls derive different idempotency keys", async (context
   await value.execute("first-call");
   await value.execute("second-call");
 
-  assert.notEqual(value.runtime.tasks[0]?.idempotencyKey, value.runtime.tasks[1]?.idempotencyKey);
+  assert.notEqual(
+    value.runtime.tasks[0]?.idempotencyKey,
+    value.runtime.tasks[1]?.idempotencyKey
+  );
 });
 
 test("XDG state directory is respected", async (context) => {
-  const value = await fixture(new FakeRuntime(), {
-    environment: { XDG_STATE_HOME: join(tmpdir(), "pions-xdg-test") },
-  }, true);
+  const value = await fixture(
+    new FakeRuntime(),
+    {
+      environment: { XDG_STATE_HOME: join(tmpdir(), "pions-xdg-test") },
+    },
+    true
+  );
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  context.after(() => rm(join(tmpdir(), "pions-xdg-test"), { recursive: true, force: true }));
+  context.after(() =>
+    rm(join(tmpdir(), "pions-xdg-test"), { recursive: true, force: true })
+  );
   await value.execute();
 
-  assert.equal(value.runtime.tasks[0]?.promptRef.startsWith(join(tmpdir(), "pions-xdg-test", "pions")), true);
+  assert.equal(
+    value.runtime.tasks[0]?.promptRef.startsWith(
+      join(tmpdir(), "pions-xdg-test", "pions")
+    ),
+    true
+  );
 });
 
 test("default state directory follows the user state convention", async (context) => {
   const home = join(tmpdir(), "pions-home-test");
-  const value = await fixture(new FakeRuntime(), {
-    environment: {},
-    homeDirectory: home,
-  }, true);
+  const value = await fixture(
+    new FakeRuntime(),
+    {
+      environment: {},
+      homeDirectory: home,
+    },
+    true
+  );
   context.after(() => rm(value.root, { recursive: true, force: true }));
   context.after(() => rm(home, { recursive: true, force: true }));
   await value.execute();
 
-  assert.equal(value.runtime.tasks[0]?.promptRef.startsWith(join(home, ".local", "state", "pions")), true);
+  assert.equal(
+    value.runtime.tasks[0]?.promptRef.startsWith(
+      join(home, ".local", "state", "pions")
+    ),
+    true
+  );
 });
 
 test("repository state identifier does not disclose the repository name", async (context) => {
   const repository = await mkdtemp(join(tmpdir(), "secret-repository-name-"));
   const stateBase = join(tmpdir(), "pions-opaque-state-test");
-  const value = await fixture(new FakeRuntime(), { repositoryRoot: repository, stateBaseDirectory: stateBase });
+  const value = await fixture(new FakeRuntime(), {
+    repositoryRoot: repository,
+    stateBaseDirectory: stateBase,
+  });
   context.after(() => rm(value.root, { recursive: true, force: true }));
   context.after(() => rm(repository, { recursive: true, force: true }));
   context.after(() => rm(stateBase, { recursive: true, force: true }));
   await value.execute();
 
-  assert.equal(value.runtime.tasks[0]?.promptRef.includes("secret-repository-name"), false);
+  assert.equal(
+    value.runtime.tasks[0]?.promptRef.includes("secret-repository-name"),
+    false
+  );
 });
 
 test("typed Worker failure reaches the parent unchanged", async (context) => {
@@ -771,7 +993,9 @@ test("typed Worker failure reaches the parent unchanged", async (context) => {
 });
 
 test("Worker failure is not retried", async (context) => {
-  const runtime = new FakeRuntime(new OperationFailedError("operation-7", "agent_failed"));
+  const runtime = new FakeRuntime(
+    new OperationFailedError("operation-7", "agent_failed")
+  );
   const value = await fixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute().catch(() => undefined);
@@ -792,7 +1016,11 @@ test("Pi interruption requests subtree cancellation once", async (context) => {
   const value = await fixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const controller = new AbortController();
-  const execution = value.execute("interrupted-call", "Review", controller.signal);
+  const execution = value.execute(
+    "interrupted-call",
+    "Review",
+    controller.signal
+  );
   void execution.catch(() => undefined);
   await waitForOperation(runtime);
   controller.abort();
@@ -808,7 +1036,11 @@ test("an Operation completed before interruption is not cancelled", async (conte
   const value = await fixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const controller = new AbortController();
-  const execution = value.execute("completed-call", "Review", controller.signal);
+  const execution = value.execute(
+    "completed-call",
+    "Review",
+    controller.signal
+  );
   await waitForOperation(runtime);
   runtime.results.get("operation-1")?.resolve({
     body: "done",
@@ -837,7 +1069,9 @@ test("unproven interrupted cancellation reaches the parent as unknown", async (c
 
   await assert.rejects(
     execution,
-    (error) => error instanceof OperationUnknownError && error.operationId === "operation-1",
+    (error) =>
+      error instanceof OperationUnknownError &&
+      error.operationId === "operation-1"
   );
 });
 
@@ -849,7 +1083,11 @@ test("failed interrupted cancellation is not reported as cancellation success", 
   const value = await fixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const controller = new AbortController();
-  const execution = value.execute("failed-cancel-call", "Review", controller.signal);
+  const execution = value.execute(
+    "failed-cancel-call",
+    "Review",
+    controller.signal
+  );
   await waitForOperation(runtime);
   controller.abort();
   cancellation.reject(failure);
@@ -908,7 +1146,9 @@ test("session shutdown closes every Runtime used by the extension instance", asy
   });
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute("first-call");
-  (value.context as unknown as { model: { provider: string; id: string } }).model = {
+  (
+    value.context as unknown as { model: { provider: string; id: string } }
+  ).model = {
     provider: "openai",
     id: "gpt-5.6-codex",
   };
@@ -916,7 +1156,10 @@ test("session shutdown closes every Runtime used by the extension instance", asy
 
   await value.shutdown("reload");
 
-  assert.equal(runtimes.reduce((count, runtime) => count + runtime.closeCount, 0), 2);
+  assert.equal(
+    runtimes.reduce((count, runtime) => count + runtime.closeCount, 0),
+    2
+  );
 });
 
 test("session shutdown closes the Runtime when cancellation classification fails", async (context) => {
@@ -944,7 +1187,9 @@ test("session shutdown waits for cancellation classification", async (context) =
   void value.execute("waiting-call").catch(() => undefined);
   await waitForOperation(runtime);
   let settled = false;
-  const shutdown = value.shutdown("quit").then(() => { settled = true; });
+  const shutdown = value.shutdown("quit").then(() => {
+    settled = true;
+  });
   await new Promise(setImmediate);
 
   assert.equal(settled, false);
@@ -984,7 +1229,7 @@ test("concurrent tool calls return distinct Operation identifiers", async (conte
 
   assert.notEqual(
     ((await first).details as PionsDelegateDetails).operationId,
-    ((await second).details as PionsDelegateDetails).operationId,
+    ((await second).details as PionsDelegateDetails).operationId
   );
 });
 
@@ -1001,13 +1246,19 @@ test("one concurrent failure does not discard the other accepted Result", async 
     byteCount: 16,
     digest: `sha256:${"ab".repeat(32)}`,
   });
-  runtime.results.get("operation-2")?.reject(new OperationFailedError("operation-2", "agent_failed"));
+  runtime.results
+    .get("operation-2")
+    ?.reject(new OperationFailedError("operation-2", "agent_failed"));
   const settled = await outcomes;
-  const acceptedOutcome = settled.find((outcome) => outcome.status === "fulfilled");
+  const acceptedOutcome = settled.find(
+    (outcome) => outcome.status === "fulfilled"
+  );
 
   assert.equal(
-    acceptedOutcome?.status === "fulfilled" ? acceptedOutcome.value.content[0]?.text : undefined,
-    "Standards review",
+    acceptedOutcome?.status === "fulfilled"
+      ? acceptedOutcome.value.content[0]?.text
+      : undefined,
+    "Standards review"
   );
 });
 
@@ -1018,7 +1269,9 @@ test("interruption and shutdown share one cancellation request", async (context)
   const value = await fixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const controller = new AbortController();
-  void value.execute("shared-call", "Review", controller.signal).catch(() => undefined);
+  void value
+    .execute("shared-call", "Review", controller.signal)
+    .catch(() => undefined);
   await waitForOperation(runtime);
   controller.abort();
   const shutdown = value.shutdown("quit");
@@ -1034,7 +1287,9 @@ test("a failed terminal Operation is no longer tracked at shutdown", async (cont
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const execution = value.execute("failed-call");
   await waitForOperation(runtime);
-  runtime.results.get("operation-1")?.reject(new OperationFailedError("operation-1", "agent_failed"));
+  runtime.results
+    .get("operation-1")
+    ?.reject(new OperationFailedError("operation-1", "agent_failed"));
   await execution.catch(() => undefined);
   await value.shutdown("quit");
 

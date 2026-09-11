@@ -19,22 +19,30 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import { retentionPolicy, workProductRequirements } from "./worker-protocol-fixtures.js";
+import {
+  retentionPolicy,
+  workProductRequirements,
+} from "./worker-protocol-fixtures.js";
 
-const timestamps = Array.from({ length: 40 }, (_, index) =>
-  `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
+const timestamps = Array.from(
+  { length: 40 },
+  (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
 );
 
-function fixture(options: {
-  readonly paneClosureFails?: boolean;
-  readonly paneInspection?: "matching" | "missing" | "unavailable";
-  readonly authenticator?: {
-    authenticate(credential: string): Promise<{
-      readonly subjectId: string;
-      currentAuthorization(operationId: string): Promise<"authorized" | "denied" | "revoked" | "unknown">;
-    }>;
-  };
-} = {}) {
+function fixture(
+  options: {
+    readonly paneClosureFails?: boolean;
+    readonly paneInspection?: "matching" | "missing" | "unavailable";
+    readonly authenticator?: {
+      authenticate(credential: string): Promise<{
+        readonly subjectId: string;
+        currentAuthorization(
+          operationId: string
+        ): Promise<"authorized" | "denied" | "revoked" | "unknown">;
+      }>;
+    };
+  } = {}
+) {
   const clock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], clock);
   const runtime = makeTestRuntime({
@@ -42,8 +50,12 @@ function fixture(options: {
     clock,
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation({
-      ...(options.paneClosureFails === undefined ? {} : { paneClosureFails: options.paneClosureFails }),
-      ...(options.paneInspection === undefined ? {} : { paneInspection: options.paneInspection }),
+      ...(options.paneClosureFails === undefined
+        ? {}
+        : { paneClosureFails: options.paneClosureFails }),
+      ...(options.paneInspection === undefined
+        ? {}
+        : { paneInspection: options.paneInspection }),
     }),
     store,
     ...(options.authenticator === undefined
@@ -58,78 +70,92 @@ async function recordWaitingOperation(
   operationId: string,
   options: {
     readonly extraReceiptFields?: Readonly<Record<string, unknown>>;
-  } = {},
+  } = {}
 ): Promise<void> {
-  const created = await Effect.runPromise(store.create({
-    operationId,
-    task: { promptRef: "private://prompt", profile: "coding", idempotencyKey: operationId },
-    requestedConfig: {},
-    effectiveConfig: {
-      model: { provider: "fake", id: "model" },
-      thinkingLevel: "high",
-      tools: ["read"],
-      cwd: "/work",
-      modelPolicy: {
-        candidates: [{ provider: "fake", id: "model" }],
-        attempted: [{ provider: "fake", id: "model" }],
-        maxAttempts: 1,
-        fallback: "forbidden",
-        aliases: [],
+  const created = await Effect.runPromise(
+    store.create({
+      operationId,
+      task: {
+        promptRef: "private://prompt",
+        profile: "coding",
+        idempotencyKey: operationId,
       },
-    },
-    workProductRequirements,
-    resultRetentionPolicy: retentionPolicy(operationId),
-    lineage: { rootOperationId: operationId, depth: 0 },
-    startAuthorization: {
-      configuredPolicy: "required",
-      policy: "required",
-      windowMs: 60_000,
-      authorizedSubjectIds: ["reviewer-1"],
-      receipt: {
-        workspace: {
-          workspaceId: `workspace:${operationId}`,
-          normalizedPath: `/work/${operationId}`,
-          baseRevision: "a".repeat(40),
-          owner: { state: "known", ownerId: "launcher-1" },
-          pionsMayDelete: false,
+      requestedConfig: {},
+      effectiveConfig: {
+        model: { provider: "fake", id: "model" },
+        thinkingLevel: "high",
+        tools: ["read"],
+        cwd: "/work",
+        modelPolicy: {
+          candidates: [{ provider: "fake", id: "model" }],
+          attempted: [{ provider: "fake", id: "model" }],
+          maxAttempts: 1,
+          fallback: "forbidden",
+          aliases: [],
         },
-        permissionManifest: {
-          manifestId: `manifest:${operationId}`,
-          digest: `sha256:${"cd".repeat(32)}`,
-        },
-        reviewSubject: {
-          artifactId: `artifact:${operationId}`,
-          byteCount: 10,
-          digest: `sha256:${"ef".repeat(32)}`,
-          format: "text/plain",
-          normalization: "utf8",
-        },
-        reviewSubjectVerification: "disabled",
       },
-    },
-  }));
-  await Effect.runPromise(store.advance(operationId, {
-    type: "presentation_owned",
-    presentation: { kind: "herdr_pane", paneId: "pane", ownedByPions: true },
-  }));
-  await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
-  await Effect.runPromise(store.advance(operationId, { type: "worker_launched" }));
-  const identified = await Effect.runPromise(store.advance(operationId, {
-    type: "worker_identified",
-    workerIdentity: {
-      processId: 1234,
-      processInstanceId: `process:${operationId}`,
-      processStartToken: `start:${operationId}`,
-      piSessionId: `session:${operationId}`,
-      paneId: "pane",
-    },
-    observedConfig: {
-      model: { state: "observed", value: { provider: "fake", id: "model" } },
-      thinkingLevel: { state: "observed", value: "high" },
-      tools: { state: "observed", value: ["read"] },
-      cwd: { state: "observed", value: "/work" },
-    },
-  }));
+      workProductRequirements,
+      resultRetentionPolicy: retentionPolicy(operationId),
+      lineage: { rootOperationId: operationId, depth: 0 },
+      startAuthorization: {
+        configuredPolicy: "required",
+        policy: "required",
+        windowMs: 60_000,
+        authorizedSubjectIds: ["reviewer-1"],
+        receipt: {
+          workspace: {
+            workspaceId: `workspace:${operationId}`,
+            normalizedPath: `/work/${operationId}`,
+            baseRevision: "a".repeat(40),
+            owner: { state: "known", ownerId: "launcher-1" },
+            pionsMayDelete: false,
+          },
+          permissionManifest: {
+            manifestId: `manifest:${operationId}`,
+            digest: `sha256:${"cd".repeat(32)}`,
+          },
+          reviewSubject: {
+            artifactId: `artifact:${operationId}`,
+            byteCount: 10,
+            digest: `sha256:${"ef".repeat(32)}`,
+            format: "text/plain",
+            normalization: "utf8",
+          },
+          reviewSubjectVerification: "disabled",
+        },
+      },
+    })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, {
+      type: "presentation_owned",
+      presentation: { kind: "herdr_pane", paneId: "pane", ownedByPions: true },
+    })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, { type: "operation_starting" })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, { type: "worker_launched" })
+  );
+  const identified = await Effect.runPromise(
+    store.advance(operationId, {
+      type: "worker_identified",
+      workerIdentity: {
+        processId: 1234,
+        processInstanceId: `process:${operationId}`,
+        processStartToken: `start:${operationId}`,
+        piSessionId: `session:${operationId}`,
+        paneId: "pane",
+      },
+      observedConfig: {
+        model: { state: "observed", value: { provider: "fake", id: "model" } },
+        thinkingLevel: { state: "observed", value: "high" },
+        tools: { state: "observed", value: ["read"] },
+        cwd: { state: "observed", value: "/work" },
+      },
+    })
+  );
   const operation = identified.operation;
   const receipt = {
     operationId,
@@ -160,11 +186,13 @@ async function recordWaitingOperation(
     authorizationPolicy: "required" as const,
     authorizationDeadline: created.operation.startAuthorizationTiming.deadline,
   };
-  await Effect.runPromise(store.advance(operationId, {
-    type: "startup_receipt_recorded",
-    gate: "waiting",
-    receipt: { ...receipt, ...options.extraReceiptFields },
-  }));
+  await Effect.runPromise(
+    store.advance(operationId, {
+      type: "startup_receipt_recorded",
+      gate: "waiting",
+      receipt: { ...receipt, ...options.extraReceiptFields },
+    })
+  );
 }
 
 test("OperationHandle reads the fixed creation timing", async () => {
@@ -210,8 +238,9 @@ test("Operation lookup returns integrity evidence after its handle is lost", asy
   await handle.result();
 
   assert.equal(
-    ((await (await runtime.operation(handle.operationId)).read()).resultAcceptance?.eventSequenceNumber ?? 0) > 0,
-    true,
+    ((await (await runtime.operation(handle.operationId)).read())
+      .resultAcceptance?.eventSequenceNumber ?? 0) > 0,
+    true
   );
 });
 
@@ -241,7 +270,10 @@ test("Operation lookup reconstructs a snapshot after the persistent store is reo
     store: new PrivateFileEventStore(root, reopenedClock),
   });
 
-  assert.equal((await (await reopened.operation("operation-1")).read()).state, "completed");
+  assert.equal(
+    (await (await reopened.operation("operation-1")).read()).state,
+    "completed"
+  );
 });
 
 test("Operation snapshot retrieves start instruction acceptance separately", async () => {
@@ -249,17 +281,19 @@ test("Operation snapshot retrieves start instruction acceptance separately", asy
   await recordWaitingOperation(store, "operation-1");
   const receiptDigest = (await Effect.runPromise(store.read("operation-1")))
     .operation.startupReceipt!.digest;
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "start_authorization_decided",
-    gate: "authorized",
-    decision: {
-      decisionId: "decision-1",
-      kind: "authorize",
-      actorId: "reviewer-1",
-      receiptDigest,
-      decidedAt: "2026-09-06T10:00:06.000Z",
-    },
-  }));
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "start_authorization_decided",
+      gate: "authorized",
+      decision: {
+        decisionId: "decision-1",
+        kind: "authorize",
+        actorId: "reviewer-1",
+        receiptDigest,
+        decidedAt: "2026-09-06T10:00:06.000Z",
+      },
+    })
+  );
   const instruction = {
     dispatcherId: "pions-runtime",
     workerProcessInstanceId: "process:operation-1",
@@ -267,32 +301,43 @@ test("Operation snapshot retrieves start instruction acceptance separately", asy
     authorizationDecisionId: "decision-1",
     deliveryGeneration: 1,
   };
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "start_delivery_authority_acquired",
-    instruction,
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "start_delivery_entered",
-    instruction,
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "start_instruction_dispatched",
-    instruction,
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "start_instruction_accepted",
-    instruction,
-    proof: "worker-durable-acceptance",
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "start_instruction_acknowledged",
-    instruction,
-    proof: "authenticated-worker-acknowledgement",
-  }));
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "start_delivery_authority_acquired",
+      instruction,
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "start_delivery_entered",
+      instruction,
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "start_instruction_dispatched",
+      instruction,
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "start_instruction_accepted",
+      instruction,
+      proof: "worker-durable-acceptance",
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "start_instruction_acknowledged",
+      instruction,
+      proof: "authenticated-worker-acknowledgement",
+    })
+  );
 
   assert.equal(
-    (await (await runtime.operation("operation-1")).read()).startInstructionAcceptance?.acceptedAt,
-    "2026-09-06T10:00:09.000Z",
+    (await (await runtime.operation("operation-1")).read())
+      .startInstructionAcceptance?.acceptedAt,
+    "2026-09-06T10:00:09.000Z"
   );
 });
 
@@ -305,7 +350,12 @@ test("Operation snapshot retrieves Result acceptance separately", async () => {
   });
   await handle.result();
 
-  assert.equal((await handle.read()).resultAcceptance?.acceptanceId.startsWith("pions.result-acceptance.v1:"), true);
+  assert.equal(
+    (await handle.read()).resultAcceptance?.acceptanceId.startsWith(
+      "pions.result-acceptance.v1:"
+    ),
+    true
+  );
 });
 
 test("Operation snapshot retrieves stop confirmation separately", async () => {
@@ -341,7 +391,9 @@ test("Operation snapshot retrieves cleanup diagnostics independently", async () 
   });
   await handle.result();
 
-  assert.deepEqual((await handle.read()).cleanupDiagnostics, [{ code: "pane_close_failed" }]);
+  assert.deepEqual((await handle.read()).cleanupDiagnostics, [
+    { code: "pane_close_failed" },
+  ]);
 });
 
 test("a missing pane identity is retained as an unconfirmed cleanup", async () => {
@@ -365,7 +417,9 @@ test("an unavailable pane identity is reported independently from Result accepta
   });
   await handle.result();
 
-  assert.deepEqual((await handle.read()).cleanupDiagnostics, [{ code: "pane_identity_unavailable" }]);
+  assert.deepEqual((await handle.read()).cleanupDiagnostics, [
+    { code: "pane_identity_unavailable" },
+  ]);
 });
 
 test("persisted Startup receipt omits authentication secrets", async (context) => {
@@ -377,7 +431,7 @@ test("persisted Startup receipt omits authentication secrets", async (context) =
   });
   const record = await readFile(
     join(root, operationDirectoryKey("operation-1"), "events.v19.json"),
-    "utf8",
+    "utf8"
   );
 
   assert.doesNotMatch(record, /worker-secret/);
@@ -389,7 +443,8 @@ test("Startup receipt omits other Operation authority", async () => {
     extraReceiptFields: { authority: { operationId: "other-operation" } },
   });
   const receipt = JSON.stringify(
-    (await (await runtime.operation("operation-1")).read()).startAuthorization.receipt,
+    (await (await runtime.operation("operation-1")).read()).startAuthorization
+      .receipt
   );
 
   assert.doesNotMatch(receipt, /other-operation/);
@@ -400,7 +455,10 @@ test("OperationReader waits for a Startup receipt through its read capability", 
   await recordWaitingOperation(store, "operation-1");
   const reader = await runtime.operation("operation-1");
 
-  assert.equal((await reader.waitForStartupReceipt())?.operationId, "operation-1");
+  assert.equal(
+    (await reader.waitForStartupReceipt())?.operationId,
+    "operation-1"
+  );
 });
 
 test("Operation lookup returns a persisted start authorization decision", async () => {
@@ -415,15 +473,18 @@ test("Operation lookup returns a persisted start authorization decision", async 
     receiptDigest,
     decidedAt: "2026-09-06T10:00:06.000Z",
   };
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "start_authorization_decided",
-    gate: "authorized",
-    decision,
-  }));
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "start_authorization_decided",
+      gate: "authorized",
+      decision,
+    })
+  );
 
   assert.deepEqual(
-    (await (await runtime.operation("operation-1")).read()).startAuthorization.decision,
-    { ...decision, decidedAt: "2026-09-06T10:00:06.000Z" },
+    (await (await runtime.operation("operation-1")).read()).startAuthorization
+      .decision,
+    { ...decision, decidedAt: "2026-09-06T10:00:06.000Z" }
   );
 });
 
@@ -432,22 +493,32 @@ test("an authenticated subject can recover its waiting Operations from persisten
     authenticator: {
       authenticate: async () => ({
         subjectId: "reviewer-1",
-        currentAuthorization: async (operationId) => operationId === "allowed" ? "authorized" : "denied",
+        currentAuthorization: async (operationId) =>
+          operationId === "allowed" ? "authorized" : "denied",
       }),
     },
   });
   await recordWaitingOperation(store, "allowed");
   await recordWaitingOperation(store, "other");
-  const inbox = await runtime.startAuthorizationInbox("authenticated-credential");
+  const inbox = await runtime.startAuthorizationInbox(
+    "authenticated-credential"
+  );
 
-  assert.deepEqual((await inbox.listWaiting()).map(({ operationId }) => operationId), ["allowed"]);
+  assert.deepEqual(
+    (await inbox.listWaiting()).map(({ operationId }) => operationId),
+    ["allowed"]
+  );
 });
 
 test("recovery expires the original deadline without extending it", async () => {
   const storeClock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], storeClock);
   await recordWaitingOperation(store, "operation-1");
-  const recoveredClock = new FakeClock(["2026-09-06T10:02:00.000Z", "2026-09-06T10:02:01.000Z", "2026-09-06T10:02:02.000Z"]);
+  const recoveredClock = new FakeClock([
+    "2026-09-06T10:02:00.000Z",
+    "2026-09-06T10:02:01.000Z",
+    "2026-09-06T10:02:02.000Z",
+  ]);
   const recovered = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock: recoveredClock,
@@ -463,7 +534,10 @@ test("recovery expires the original deadline without extending it", async () => 
   });
   await (await recovered.startAuthorizationInbox("credential")).listWaiting();
 
-  assert.equal((await (await recovered.operation("operation-1")).read()).state, "unknown");
+  assert.equal(
+    (await (await recovered.operation("operation-1")).read()).state,
+    "unknown"
+  );
 });
 
 test("waiting Operation recovery returns its fixed deadline", async () => {
@@ -476,7 +550,12 @@ test("waiting Operation recovery returns its fixed deadline", async () => {
     },
   });
   await recordWaitingOperation(store, "allowed");
-  const inbox = await runtime.startAuthorizationInbox("authenticated-credential");
+  const inbox = await runtime.startAuthorizationInbox(
+    "authenticated-credential"
+  );
 
-  assert.equal((await inbox.listWaiting())[0]?.deadline, "2026-09-06T10:01:00.000Z");
+  assert.equal(
+    (await inbox.listWaiting())[0]?.deadline,
+    "2026-09-06T10:01:00.000Z"
+  );
 });

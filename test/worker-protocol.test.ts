@@ -26,7 +26,14 @@ const identity = {
   processStartToken: "start-1",
 };
 const evidence = {
-  usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: 0 },
+  usage: {
+    input: 1,
+    output: 1,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 2,
+    cost: 0,
+  },
   toolUses: [],
 };
 
@@ -38,7 +45,8 @@ function produced(body = "finished") {
       formatId: "pions.result-body.v1",
       normalizationId: "identity.v1",
       expectedByteCount: bytes.byteLength,
-      expectedDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const,
+      expectedDigest:
+        `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const,
       bytes,
     },
     workProducts: [],
@@ -56,9 +64,10 @@ const instruction = {
 
 function acceptanceStore(): StartInstructionAcceptanceStore {
   let accepted: Readonly<StartInstruction> | "none" = "none";
-  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } = {
-    deliveryGeneration: 1,
-  };
+  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } =
+    {
+      deliveryGeneration: 1,
+    };
   return {
     load: () => accepted,
     save: (instruction) => {
@@ -81,7 +90,9 @@ function connected() {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   const reception = worker.receive(host.begin(instruction));
   const accepted = reception.startInstructions[0]!.instruction;
   host.receive(worker.send({ type: "begin_accepted", instruction: accepted }));
@@ -122,12 +133,17 @@ test("worker configuration uses the current protocol version", () => {
 test("a corrupt durable Start acceptance is rejected", () => {
   assert.equal(
     violationReason(() => decodeStartInstruction({ deliveryGeneration: 1 })),
-    "invalid_frame",
+    "invalid_frame"
   );
 });
 
 test("worker configuration round trips", () => {
-  const config = { ...authority, socketPath: "/tmp/socket", promptPath: "/tmp/prompt", effectiveConfig };
+  const config = {
+    ...authority,
+    socketPath: "/tmp/socket",
+    promptPath: "/tmp/prompt",
+    effectiveConfig,
+  };
 
   assert.deepEqual(decodeWorkerConfig(encodeWorkerConfig(config)), config);
 });
@@ -136,10 +152,15 @@ test("durable acceptance is observed before begin acknowledgement", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
-  const accepted = worker.receive(host.begin(instruction)).startInstructions[0]!;
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
+  const accepted = worker.receive(host.begin(instruction))
+    .startInstructions[0]!;
 
-  const events = host.receive(worker.send({ type: "begin_accepted", instruction: accepted.instruction }));
+  const events = host.receive(
+    worker.send({ type: "begin_accepted", instruction: accepted.instruction })
+  );
 
   assert.equal(events[0]?.type, "start_instruction_accepted");
 });
@@ -148,12 +169,21 @@ test("begin acknowledgement is a separate observation", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
-  const accepted = worker.receive(host.begin(instruction)).startInstructions[0]!;
-  host.receive(worker.send({ type: "begin_accepted", instruction: accepted.instruction }));
-  worker.receive(host.acknowledgeStartInstructionAcceptance(accepted.instruction));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
+  const accepted = worker.receive(host.begin(instruction))
+    .startInstructions[0]!;
+  host.receive(
+    worker.send({ type: "begin_accepted", instruction: accepted.instruction })
+  );
+  worker.receive(
+    host.acknowledgeStartInstructionAcceptance(accepted.instruction)
+  );
 
-  const events = host.receive(worker.send({ type: "begin_ack", instruction: accepted.instruction }));
+  const events = host.receive(
+    worker.send({ type: "begin_ack", instruction: accepted.instruction })
+  );
 
   assert.equal(events[0]?.type, "start_instruction_acknowledged");
 });
@@ -162,7 +192,9 @@ test("a repeated begin returns an acknowledgement without starting another promp
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   worker.receive(host.begin(instruction));
 
   const repeated = worker.receive(host.begin(instruction));
@@ -174,7 +206,9 @@ test("an interrupted begin frame is not accepted", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   const begin = host.begin(instruction);
 
   const reception = worker.receive(begin.subarray(0, begin.byteLength - 1));
@@ -186,7 +220,9 @@ test("a completed interrupted begin frame is accepted once", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   const begin = host.begin(instruction);
   worker.receive(begin.subarray(0, begin.byteLength - 1));
 
@@ -199,21 +235,26 @@ test("batched duplicate begins each produce a reception result", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
 
-  const reception = worker.receive(Buffer.concat([
-    host.begin(instruction),
-    host.begin(instruction),
-  ]));
+  const reception = worker.receive(
+    Buffer.concat([host.begin(instruction), host.begin(instruction)])
+  );
 
-  assert.deepEqual(reception.startInstructions.map(({ status }) => status), ["accepted", "duplicate"]);
+  assert.deepEqual(
+    reception.startInstructions.map(({ status }) => status),
+    ["accepted", "duplicate"]
+  );
 });
 
 test("a lost acknowledgement recovers the durable acceptance without reinjecting", () => {
   let accepted: Readonly<StartInstruction> | "none" = "none";
-  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } = {
-    deliveryGeneration: 1,
-  };
+  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } =
+    {
+      deliveryGeneration: 1,
+    };
   const store = {
     load: () => accepted,
     save: (value: Readonly<StartInstruction>) => {
@@ -229,12 +270,24 @@ test("a lost acknowledgement recovers the durable acceptance without reinjecting
   const host = new HostProtocolPeer(authority);
   const firstWorker = new WorkerProtocolPeer(authority, store);
   host.receive(firstWorker.send(identity));
-  host.receive(firstWorker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    firstWorker.send({
+      type: "started",
+      piSessionId: "session-1",
+      observedConfig,
+    })
+  );
   firstWorker.receive(host.begin(instruction));
   const recoveredWorker = new WorkerProtocolPeer(authority, store);
   const recoveredHost = new HostProtocolPeer(authority);
   recoveredHost.receive(recoveredWorker.send(identity));
-  recoveredHost.receive(recoveredWorker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  recoveredHost.receive(
+    recoveredWorker.send({
+      type: "started",
+      piSessionId: "session-1",
+      observedConfig,
+    })
+  );
 
   const reception = recoveredWorker.receive(recoveredHost.begin(instruction));
 
@@ -245,14 +298,18 @@ test("a repeated begin identity with different content is rejected as a conflict
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   worker.receive(host.begin(instruction));
   const replacement = JSON.parse(host.begin(instruction).toString("utf8")) as {
     instruction: { receiptDigest: string };
   };
   replacement.instruction.receiptDigest = `sha256:${"f".repeat(64)}`;
 
-  const reception = worker.receive(Buffer.from(`${JSON.stringify(replacement)}\n`, "utf8"));
+  const reception = worker.receive(
+    Buffer.from(`${JSON.stringify(replacement)}\n`, "utf8")
+  );
 
   assert.equal(reception.startInstructions[0]?.status, "conflict");
 });
@@ -261,29 +318,45 @@ test("a begin for another Worker instance returns a closed rejection", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
-  const mismatched = { ...instruction, workerProcessInstanceId: "c".repeat(64) };
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
+  const mismatched = {
+    ...instruction,
+    workerProcessInstanceId: "c".repeat(64),
+  };
   const reception = worker.receive(host.begin(mismatched));
 
-  const events = host.receive(worker.send({
-    type: "begin_rejected",
-    instruction: reception.startInstructions[0]!.instruction,
-    reason: "worker_mismatch",
-  }));
+  const events = host.receive(
+    worker.send({
+      type: "begin_rejected",
+      instruction: reception.startInstructions[0]!.instruction,
+      reason: "worker_mismatch",
+    })
+  );
 
-  assert.equal(events[0]?.type === "start_instruction_rejected" ? events[0].reason : undefined, "worker_mismatch");
+  assert.equal(
+    events[0]?.type === "start_instruction_rejected"
+      ? events[0].reason
+      : undefined,
+    "worker_mismatch"
+  );
 });
 
 test("a begin received at its deadline is rejected", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer(() => "2026-09-06T10:01:00.000Z");
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
 
-  const reception = worker.receive(host.begin({
-    ...instruction,
-    deadline: "2026-09-06T10:01:00.000Z",
-  }));
+  const reception = worker.receive(
+    host.begin({
+      ...instruction,
+      deadline: "2026-09-06T10:01:00.000Z",
+    })
+  );
 
   assert.equal(reception.startInstructions[0]?.status, "expired");
 });
@@ -292,17 +365,29 @@ test("an expired begin returns a closed rejection to the Dispatcher", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer(() => "2026-09-06T10:01:00.000Z");
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
-  const expiredInstruction = { ...instruction, deadline: "2026-09-06T10:01:00.000Z" };
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
+  const expiredInstruction = {
+    ...instruction,
+    deadline: "2026-09-06T10:01:00.000Z",
+  };
   const reception = worker.receive(host.begin(expiredInstruction));
 
-  const events = host.receive(worker.send({
-    type: "begin_rejected",
-    instruction: reception.startInstructions[0]!.instruction,
-    reason: "expired",
-  }));
+  const events = host.receive(
+    worker.send({
+      type: "begin_rejected",
+      instruction: reception.startInstructions[0]!.instruction,
+      reason: "expired",
+    })
+  );
 
-  assert.equal(events[0]?.type === "start_instruction_rejected" ? events[0].reason : undefined, "expired");
+  assert.equal(
+    events[0]?.type === "start_instruction_rejected"
+      ? events[0].reason
+      : undefined,
+    "expired"
+  );
 });
 
 test("a lost Worker acceptance record prevents begin execution", () => {
@@ -314,7 +399,9 @@ test("a lost Worker acceptance record prevents begin execution", () => {
     saveDeliveryAuthority: () => true,
   });
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
 
   const reception = worker.receive(host.begin(instruction));
 
@@ -330,9 +417,13 @@ test("generation recovery preserves unknown acceptance instead of redispatching"
     saveDeliveryAuthority: () => true,
   });
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
 
-  const update = worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
+  const update = worker.receive(
+    host.updateDeliveryGeneration(2, "dispatcher-2")
+  );
 
   assert.equal(update.generationUpdate?.acceptanceState, "unknown");
 });
@@ -341,10 +432,14 @@ test("a generation update reports a begin accepted immediately before the update
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   worker.receive(host.begin(instruction));
 
-  const update = worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
+  const update = worker.receive(
+    host.updateDeliveryGeneration(2, "dispatcher-2")
+  );
 
   assert.deepEqual(update.generationUpdate?.acceptedInstruction, instruction);
 });
@@ -353,18 +448,29 @@ test("a generation update acknowledgement includes the previously accepted begin
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   worker.receive(host.begin(instruction));
-  const update = worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
+  const update = worker.receive(
+    host.updateDeliveryGeneration(2, "dispatcher-2")
+  );
 
-  const events = host.receive(worker.send({
-    type: "generation_updated",
-    deliveryGeneration: 2,
-    acceptanceState: "accepted",
-    acceptedInstruction: update.generationUpdate!.acceptedInstruction!,
-  }));
+  const events = host.receive(
+    worker.send({
+      type: "generation_updated",
+      deliveryGeneration: 2,
+      acceptanceState: "accepted",
+      acceptedInstruction: update.generationUpdate!.acceptedInstruction!,
+    })
+  );
 
-  assert.deepEqual(events[0]?.type === "delivery_generation_updated" ? events[0].acceptedInstruction : undefined, instruction);
+  assert.deepEqual(
+    events[0]?.type === "delivery_generation_updated"
+      ? events[0].acceptedInstruction
+      : undefined,
+    instruction
+  );
 });
 
 test("a restarted Worker repeats confirmation for the same delivery authority", () => {
@@ -384,9 +490,13 @@ test("a restarted Worker repeats confirmation for the same delivery authority", 
   });
   const host = new HostProtocolPeer(authority);
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
 
-  const update = worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
+  const update = worker.receive(
+    host.updateDeliveryGeneration(2, "dispatcher-2")
+  );
 
   assert.deepEqual(update.generationUpdate, {
     deliveryGeneration: 2,
@@ -407,11 +517,15 @@ test("a restarted Worker rejects another Dispatcher in the durable generation", 
   });
   const host = new HostProtocolPeer(authority);
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
 
   assert.equal(
-    violationReason(() => worker.receive(host.updateDeliveryGeneration(2, "dispatcher-3"))),
-    "authority_mismatch",
+    violationReason(() =>
+      worker.receive(host.updateDeliveryGeneration(2, "dispatcher-3"))
+    ),
+    "authority_mismatch"
   );
 });
 
@@ -419,19 +533,28 @@ test("a confirmed handoff revokes the old Dispatcher's Start delivery authority"
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
-  const update = worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
-  host.receive(worker.send({
-    type: "generation_updated",
-    deliveryGeneration: 2,
-    acceptanceState: update.generationUpdate!.acceptanceState,
-    ...(update.generationUpdate?.acceptedInstruction === undefined
-      ? {}
-      : { acceptedInstruction: update.generationUpdate.acceptedInstruction }),
-  }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
+  const update = worker.receive(
+    host.updateDeliveryGeneration(2, "dispatcher-2")
+  );
+  host.receive(
+    worker.send({
+      type: "generation_updated",
+      deliveryGeneration: 2,
+      acceptanceState: update.generationUpdate!.acceptanceState,
+      ...(update.generationUpdate?.acceptedInstruction === undefined
+        ? {}
+        : { acceptedInstruction: update.generationUpdate.acceptedInstruction }),
+    })
+  );
   host.completeDispatcherHandoff("dispatcher-2");
 
-  assert.equal(violationReason(() => host.begin(instruction)), "authority_mismatch");
+  assert.equal(
+    violationReason(() => host.begin(instruction)),
+    "authority_mismatch"
+  );
 });
 
 test("a Dispatcher cannot complete handoff before Worker generation confirmation", () => {
@@ -439,7 +562,7 @@ test("a Dispatcher cannot complete handoff before Worker generation confirmation
 
   assert.equal(
     violationReason(() => host.completeDispatcherHandoff("dispatcher-2")),
-    "invalid_transition",
+    "invalid_transition"
   );
 });
 
@@ -447,28 +570,37 @@ test("a confirmed successor can deliver begin in the new generation", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
-  const update = worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
-  host.receive(worker.send({
-    type: "generation_updated",
-    deliveryGeneration: 2,
-    acceptanceState: update.generationUpdate!.acceptanceState,
-  }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
+  const update = worker.receive(
+    host.updateDeliveryGeneration(2, "dispatcher-2")
+  );
+  host.receive(
+    worker.send({
+      type: "generation_updated",
+      deliveryGeneration: 2,
+      acceptanceState: update.generationUpdate!.acceptanceState,
+    })
+  );
   host.completeDispatcherHandoff("dispatcher-2");
 
-  const reception = worker.receive(host.begin({
-    ...instruction,
-    dispatcherId: "dispatcher-2",
-    deliveryGeneration: 2,
-  }));
+  const reception = worker.receive(
+    host.begin({
+      ...instruction,
+      dispatcherId: "dispatcher-2",
+      deliveryGeneration: 2,
+    })
+  );
 
   assert.equal(reception.startInstructions[0]?.status, "accepted");
 });
 
 test("a restarted Worker rejects an old generation from durable state", () => {
-  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } = {
-    deliveryGeneration: 1,
-  };
+  let deliveryAuthority: { deliveryGeneration: number; dispatcherId?: string } =
+    {
+      deliveryGeneration: 1,
+    };
   const store = {
     load: () => "none" as const,
     save: () => true,
@@ -481,12 +613,24 @@ test("a restarted Worker rejects an old generation from durable state", () => {
   const firstHost = new HostProtocolPeer(authority);
   const firstWorker = new WorkerProtocolPeer(authority, store);
   firstHost.receive(firstWorker.send(identity));
-  firstHost.receive(firstWorker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  firstHost.receive(
+    firstWorker.send({
+      type: "started",
+      piSessionId: "session-1",
+      observedConfig,
+    })
+  );
   firstWorker.receive(firstHost.updateDeliveryGeneration(2, "dispatcher-2"));
   const recoveredHost = new HostProtocolPeer(authority);
   const recoveredWorker = new WorkerProtocolPeer(authority, store);
   recoveredHost.receive(recoveredWorker.send(identity));
-  recoveredHost.receive(recoveredWorker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  recoveredHost.receive(
+    recoveredWorker.send({
+      type: "started",
+      piSessionId: "session-1",
+      observedConfig,
+    })
+  );
 
   const reception = recoveredWorker.receive(recoveredHost.begin(instruction));
 
@@ -497,13 +641,15 @@ test("a Worker rejects cancellation from a revoked Start delivery authority", ()
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   worker.receive(host.begin(instruction));
   worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
 
   assert.equal(
     violationReason(() => worker.receive(host.requestCancellation()!)),
-    "authority_mismatch",
+    "authority_mismatch"
   );
 });
 
@@ -511,7 +657,9 @@ test("a Worker rejects old-generation begin after a generation update", () => {
   const host = new HostProtocolPeer(authority);
   const worker = workerPeer();
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   worker.receive(host.updateDeliveryGeneration(2, "dispatcher-2"));
 
   const reception = worker.receive(host.begin(instruction));
@@ -525,31 +673,45 @@ test("authenticated Artifact frames deliver a Worker-produced Result", () => {
 
   const events = host.receive(worker.send({ type: "done", ...evidence }));
 
-  assert.equal(events[0]?.type === "result_received" ? Buffer.from(events[0].result.body.bytes as Uint8Array).toString("utf8") : undefined, "finished");
+  assert.equal(
+    events[0]?.type === "result_received"
+      ? Buffer.from(events[0].result.body.bytes as Uint8Array).toString("utf8")
+      : undefined,
+    "finished"
+  );
 });
 
 test("work products retain their keys through the protocol", () => {
   const { host, worker } = connected();
   const result = produced();
   const bytes = Buffer.from("patch", "utf8");
-  host.receive(worker.send({
-    type: "artifacts",
-    result: {
-      ...result,
-      workProducts: [{
-        key: "patch",
-        formatId: "pions.opaque.v1",
-        normalizationId: "identity.v1",
-        expectedByteCount: bytes.byteLength,
-        expectedDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-        bytes,
-      }],
-    },
-  }));
+  host.receive(
+    worker.send({
+      type: "artifacts",
+      result: {
+        ...result,
+        workProducts: [
+          {
+            key: "patch",
+            formatId: "pions.opaque.v1",
+            normalizationId: "identity.v1",
+            expectedByteCount: bytes.byteLength,
+            expectedDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+            bytes,
+          },
+        ],
+      },
+    })
+  );
 
   const events = host.receive(worker.send({ type: "done", ...evidence }));
 
-  assert.equal(events[0]?.type === "result_received" ? events[0].result.workProducts[0]?.key : undefined, "patch");
+  assert.equal(
+    events[0]?.type === "result_received"
+      ? events[0].result.workProducts[0]?.key
+      : undefined,
+    "patch"
+  );
 });
 
 test("Result ACK contains the persisted acceptance identifier", () => {
@@ -559,7 +721,10 @@ test("Result ACK contains the persisted acceptance identifier", () => {
 
   const acknowledgement = host.acknowledgeResult(proof());
 
-  assert.equal(JSON.parse(acknowledgement.bytes.toString("utf8")).acceptanceId, proof().acceptanceId);
+  assert.equal(
+    JSON.parse(acknowledgement.bytes.toString("utf8")).acceptanceId,
+    proof().acceptanceId
+  );
 });
 
 test("worker recognizes a complete Result ACK", () => {
@@ -597,7 +762,10 @@ test("repeating the same Result ACK remains complete at the worker", () => {
 
 test("disconnecting during Artifact chunks emits no Result", () => {
   const { host, worker } = connected();
-  const frames = worker.send({ type: "artifacts", result: produced() }).toString("utf8").split("\n");
+  const frames = worker
+    .send({ type: "artifacts", result: produced() })
+    .toString("utf8")
+    .split("\n");
   const partialTransfer = Buffer.from(`${frames[0]}\n${frames[1]}\n`);
 
   const events = host.receive(partialTransfer);
@@ -609,7 +777,9 @@ test("an invalid acceptance request identifier is rejected before Result deliver
   const { host, worker } = connected();
   const result = { ...produced(), acceptanceRequestId: "invalid identifier" };
 
-  const reason = violationReason(() => host.receive(worker.send({ type: "artifacts", result })));
+  const reason = violationReason(() =>
+    host.receive(worker.send({ type: "artifacts", result }))
+  );
 
   assert.equal(reason, "invalid_frame");
 });
@@ -621,15 +791,28 @@ test("a stale Artifact frame sequence is rejected", () => {
   const first = `${frames[0]}\n`;
   host.receive(Buffer.from(first));
 
-  assert.equal(violationReason(() => host.receive(Buffer.from(first))), "sequence_mismatch");
+  assert.equal(
+    violationReason(() => host.receive(Buffer.from(first))),
+    "sequence_mismatch"
+  );
 });
 
 test("an unauthenticated Artifact frame is rejected", () => {
   const { host, worker } = connected();
-  const frame = JSON.parse(worker.send({ type: "artifacts", result: produced() }).toString("utf8").split("\n")[0]!);
+  const frame = JSON.parse(
+    worker
+      .send({ type: "artifacts", result: produced() })
+      .toString("utf8")
+      .split("\n")[0]!
+  );
   frame.capability = "e".repeat(64);
 
-  assert.equal(violationReason(() => host.receive(Buffer.from(`${JSON.stringify(frame)}\n`))), "authority_mismatch");
+  assert.equal(
+    violationReason(() =>
+      host.receive(Buffer.from(`${JSON.stringify(frame)}\n`))
+    ),
+    "authority_mismatch"
+  );
 });
 
 test("the removed result frame is rejected", () => {
@@ -643,15 +826,29 @@ test("the removed result frame is rejected", () => {
     body: "legacy",
   };
 
-  assert.equal(violationReason(() => host.receive(Buffer.from(`${JSON.stringify(frame)}\n`))), "invalid_frame");
+  assert.equal(
+    violationReason(() =>
+      host.receive(Buffer.from(`${JSON.stringify(frame)}\n`))
+    ),
+    "invalid_frame"
+  );
 });
 
 test("an Artifact exceeding the per-Artifact limit is rejected", () => {
   const host = new HostProtocolPeer(authority, { artifactBytes: 3 });
-  const worker = new WorkerProtocolPeer(authority, acceptanceStore(), { artifactBytes: 3 });
+  const worker = new WorkerProtocolPeer(authority, acceptanceStore(), {
+    artifactBytes: 3,
+  });
   host.receive(worker.send(identity));
-  host.receive(worker.send({ type: "started", piSessionId: "session-1", observedConfig }));
+  host.receive(
+    worker.send({ type: "started", piSessionId: "session-1", observedConfig })
+  );
   worker.receive(host.begin(instruction));
 
-  assert.equal(violationReason(() => worker.send({ type: "artifacts", result: produced("four") })), "artifact_too_large");
+  assert.equal(
+    violationReason(() =>
+      worker.send({ type: "artifacts", result: produced("four") })
+    ),
+    "artifact_too_large"
+  );
 });

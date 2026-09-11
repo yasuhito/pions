@@ -22,8 +22,14 @@ import type {
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
 
 export type ResultAcceptanceOutcome =
-  | { readonly state: "accepted"; readonly proof: Readonly<ResultAcceptanceProof> }
-  | { readonly state: "continuable"; readonly reason: "write_failed" | ArtifactFailureReason }
+  | {
+      readonly state: "accepted";
+      readonly proof: Readonly<ResultAcceptanceProof>;
+    }
+  | {
+      readonly state: "continuable";
+      readonly reason: "write_failed" | ArtifactFailureReason;
+    }
   | {
       readonly state: "failed";
       readonly terminal: true;
@@ -45,17 +51,20 @@ type ResultAcceptanceContinuableReason = Extract<
 
 function failedOrContinuable(
   terminal: boolean,
-  reason: ResultAcceptanceFailureReason,
+  reason: ResultAcceptanceFailureReason
 ): ResultAcceptanceOutcome {
   return terminal
     ? { state: "failed", terminal: true, reason }
-    : { state: "continuable", reason: reason as ResultAcceptanceContinuableReason };
+    : {
+        state: "continuable",
+        reason: reason as ResultAcceptanceContinuableReason,
+      };
 }
 
 export interface ResultAcceptance {
   accept(
     operationId: string,
-    result: Readonly<WorkerProducedResult>,
+    result: Readonly<WorkerProducedResult>
   ): Effect.Effect<ResultAcceptanceOutcome>;
 }
 
@@ -67,14 +76,17 @@ interface ResultAcceptanceDependencies {
   readonly synchronizeArtifactClock?: (timestamp: string) => void;
 }
 
-function deterministicIdentifier(prefix: string, ...parts: ReadonlyArray<string>): string {
+function deterministicIdentifier(
+  prefix: string,
+  ...parts: ReadonlyArray<string>
+): string {
   const digest = sha256Digest(parts.join("\u0000"));
   return `${prefix}.${digest.slice("sha256:".length)}`;
 }
 
 function acceptanceProof(
   operationId: string,
-  acceptance: Readonly<AcceptedResult>,
+  acceptance: Readonly<AcceptedResult>
 ): ResultAcceptanceProof {
   return {
     operationId,
@@ -88,11 +100,11 @@ async function acceptedResultOutcome(
   dependencies: ResultAcceptanceDependencies,
   operationId: string,
   acceptance: Readonly<AcceptedResult>,
-  eventEvidence: Readonly<ResultAcceptanceEventEvidence>,
+  eventEvidence: Readonly<ResultAcceptanceEventEvidence>
 ): Promise<ResultAcceptanceOutcome> {
   const status = await dependencies.artifacts.resultAcceptancePreparationStatus(
     dependencies.artifactCredential,
-    acceptance.preparationId,
+    acceptance.preparationId
   );
   if (status.kind === "failed") {
     return failedOrContinuable(status.terminal, status.reason);
@@ -103,15 +115,14 @@ async function acceptedResultOutcome(
   if (status.kind === "aborted") {
     return { state: "failed", terminal: true, reason: "conflict" };
   }
-  void dependencies.artifacts.finalizeResultAcceptance(
-    dependencies.artifactCredential,
-    eventEvidence,
-  ).catch(() => undefined);
+  void dependencies.artifacts
+    .finalizeResultAcceptance(dependencies.artifactCredential, eventEvidence)
+    .catch(() => undefined);
   return { state: "accepted", proof: acceptanceProof(operationId, acceptance) };
 }
 
 async function materializeArtifact(
-  artifact: Readonly<WorkerProducedArtifact>,
+  artifact: Readonly<WorkerProducedArtifact>
 ): Promise<Readonly<WorkerProducedArtifact> | undefined> {
   const chunks: Array<Buffer> = [];
   let byteCount = 0;
@@ -126,7 +137,11 @@ async function materializeArtifact(
     }
   }
   const bytes = Buffer.concat(chunks);
-  if (byteCount !== artifact.expectedByteCount || sha256Digest(bytes) !== artifact.expectedDigest) return undefined;
+  if (
+    byteCount !== artifact.expectedByteCount ||
+    sha256Digest(bytes) !== artifact.expectedDigest
+  )
+    return undefined;
   return { ...artifact, bytes };
 }
 
@@ -136,12 +151,17 @@ async function registerArtifact(
   acceptanceRequestId: string,
   slot: string,
   artifact: Readonly<WorkerProducedArtifact>,
-  deadline: string,
+  deadline: string
 ): Promise<Readonly<ArtifactMetadata> | ResultAcceptanceOutcome> {
-  const registrationId = deterministicIdentifier("registration", operationId, acceptanceRequestId, slot);
+  const registrationId = deterministicIdentifier(
+    "registration",
+    operationId,
+    acceptanceRequestId,
+    slot
+  );
   const status = await dependencies.artifacts.registrationStatus(
     dependencies.artifactCredential,
-    registrationId,
+    registrationId
   );
   const matches = (candidate: {
     readonly expectedByteCount?: number;
@@ -151,8 +171,11 @@ async function registerArtifact(
     readonly formatId: string;
     readonly normalizationId: string;
     readonly dependencies: ReadonlyArray<string>;
-  }) => (candidate.expectedByteCount ?? candidate.byteCount) === artifact.expectedByteCount &&
-    (candidate.digest ?? candidate.expectedDigest) === artifact.expectedDigest &&
+  }) =>
+    (candidate.expectedByteCount ?? candidate.byteCount) ===
+      artifact.expectedByteCount &&
+    (candidate.digest ?? candidate.expectedDigest) ===
+      artifact.expectedDigest &&
     candidate.formatId === artifact.formatId &&
     candidate.normalizationId === artifact.normalizationId &&
     candidate.dependencies.length === 0;
@@ -168,25 +191,29 @@ async function registerArtifact(
     const resumed = await dependencies.artifacts.transfer(
       dependencies.artifactCredential,
       registrationId,
-      artifact.bytes,
+      artifact.bytes
     );
     if (resumed.kind === "registered") return resumed.artifact;
-    if (resumed.kind === "continuable") return { state: "continuable", reason: resumed.reason };
+    if (resumed.kind === "continuable")
+      return { state: "continuable", reason: resumed.reason };
     return failedOrContinuable(resumed.terminal, resumed.reason);
   }
   if (status.reason !== "unauthorized") {
     return failedOrContinuable(status.terminal, status.reason);
   }
-  const started = await dependencies.artifacts.startRegistration(dependencies.artifactCredential, {
-    registrationId,
-    expectedByteCount: artifact.expectedByteCount,
-    expectedDigest: artifact.expectedDigest,
-    formatId: artifact.formatId,
-    normalizationId: artifact.normalizationId,
-    dependencies: [],
-    deadline,
-    recoveryBudget: 3,
-  });
+  const started = await dependencies.artifacts.startRegistration(
+    dependencies.artifactCredential,
+    {
+      registrationId,
+      expectedByteCount: artifact.expectedByteCount,
+      expectedDigest: artifact.expectedDigest,
+      formatId: artifact.formatId,
+      normalizationId: artifact.normalizationId,
+      dependencies: [],
+      deadline,
+      recoveryBudget: 3,
+    }
+  );
   if (started.kind === "failed") {
     return failedOrContinuable(started.terminal, started.reason);
   }
@@ -194,10 +221,11 @@ async function registerArtifact(
   const transferred = await dependencies.artifacts.transfer(
     dependencies.artifactCredential,
     registrationId,
-    artifact.bytes,
+    artifact.bytes
   );
   if (transferred.kind === "registered") return transferred.artifact;
-  if (transferred.kind === "continuable") return { state: "continuable", reason: transferred.reason };
+  if (transferred.kind === "continuable")
+    return { state: "continuable", reason: transferred.reason };
   return failedOrContinuable(transferred.terminal, transferred.reason);
 }
 
@@ -206,18 +234,28 @@ async function acceptPersistedResult(
   operationId: string,
   acceptance: Readonly<AcceptedResult>,
   requirements: Readonly<ResolvedWorkProductRequirements>,
-  produced: Readonly<WorkerProducedResult>,
+  produced: Readonly<WorkerProducedResult>
 ): Promise<ResultAcceptanceOutcome> {
   const accepted = acceptance;
   const materializedBody = await materializeArtifact(produced.body);
   if (materializedBody === undefined) {
-    return { state: "failed", terminal: true, reason: "input_integrity_mismatch" };
+    return {
+      state: "failed",
+      terminal: true,
+      reason: "input_integrity_mismatch",
+    };
   }
-  const materializedWorkProducts: Array<WorkerProducedResult["workProducts"][number]> = [];
+  const materializedWorkProducts: Array<
+    WorkerProducedResult["workProducts"][number]
+  > = [];
   for (const workProduct of produced.workProducts) {
     const artifact = await materializeArtifact(workProduct);
     if (artifact === undefined) {
-      return { state: "failed", terminal: true, reason: "input_integrity_mismatch" };
+      return {
+        state: "failed",
+        terminal: true,
+        reason: "input_integrity_mismatch",
+      };
     }
     materializedWorkProducts.push({ ...artifact, key: workProduct.key });
   }
@@ -230,14 +268,16 @@ async function acceptPersistedResult(
   for (const artifactId of accepted.artifactIds) {
     const retrieved = await dependencies.artifacts.retrieve(
       dependencies.artifactCredential,
-      artifactId,
+      artifactId
     );
     if (retrieved.kind !== "retrieved") {
       return failedOrContinuable(retrieved.terminal, retrieved.reason);
     }
     acceptedArtifacts.push(retrieved.artifact);
   }
-  const metadataById = new Map(acceptedArtifacts.map((artifact) => [artifact.artifactId, artifact]));
+  const metadataById = new Map(
+    acceptedArtifacts.map((artifact) => [artifact.artifactId, artifact])
+  );
   const signature = (artifact: {
     readonly byteCount?: number;
     readonly expectedByteCount?: number;
@@ -245,62 +285,88 @@ async function acceptPersistedResult(
     readonly expectedDigest?: string;
     readonly formatId: string;
     readonly normalizationId: string;
-  }) => JSON.stringify([
-    artifact.byteCount ?? artifact.expectedByteCount,
-    artifact.digest ?? artifact.expectedDigest,
-    artifact.formatId,
-    artifact.normalizationId,
-  ]);
+  }) =>
+    JSON.stringify([
+      artifact.byteCount ?? artifact.expectedByteCount,
+      artifact.digest ?? artifact.expectedDigest,
+      artifact.formatId,
+      artifact.normalizationId,
+    ]);
   const acceptedBody = metadataById.get(accepted.bodyArtifactId);
-  let contentMatches = acceptedBody !== undefined &&
+  let contentMatches =
+    acceptedBody !== undefined &&
     signature(acceptedBody) === signature(materialized.body) &&
-    accepted.workProducts.reduce((count, entry) => count + entry.artifactIds.length, 0) ===
-      materialized.workProducts.length;
+    accepted.workProducts.reduce(
+      (count, entry) => count + entry.artifactIds.length,
+      0
+    ) === materialized.workProducts.length;
   for (const entry of accepted.workProducts) {
     const acceptedSignatures = entry.artifactIds
       .map((artifactId) => metadataById.get(artifactId))
-      .filter((artifact): artifact is Readonly<ArtifactMetadata> => artifact !== undefined)
+      .filter(
+        (artifact): artifact is Readonly<ArtifactMetadata> =>
+          artifact !== undefined
+      )
       .map(signature)
       .sort();
     const replayedSignatures = materialized.workProducts
       .filter(({ key }) => key === entry.key)
       .map(signature)
       .sort();
-    contentMatches &&= JSON.stringify(acceptedSignatures) === JSON.stringify(replayedSignatures);
+    contentMatches &&=
+      JSON.stringify(acceptedSignatures) === JSON.stringify(replayedSignatures);
   }
   if (!contentMatches) {
     return {
       state: "failed",
       terminal: true,
-      reason: accepted.acceptanceRequestId === produced.acceptanceRequestId
-        ? "request_mismatch"
-        : "manifest_conflict",
+      reason:
+        accepted.acceptanceRequestId === produced.acceptanceRequestId
+          ? "request_mismatch"
+          : "manifest_conflict",
     };
   }
-  const joinedAcceptance = await Effect.runPromise(dependencies.store.prepareResultAcceptance({
-    preparationId: deterministicIdentifier("acceptance", operationId, produced.acceptanceRequestId),
-    operationId,
-    acceptanceRequestId: produced.acceptanceRequestId,
-    manifest: validateResultAcceptanceManifest({
-      formatId: accepted.manifestFormatId,
-      normalizationId: accepted.manifestNormalizationId,
-      bodyArtifactId: accepted.bodyArtifactId,
-      requirementSetId: accepted.requirementSetId,
-      requirementSetDigest: accepted.requirementsDigest,
-      workProducts: accepted.workProducts,
-    }, requirements, acceptedArtifacts),
-    requirements,
-  }));
+  const joinedAcceptance = await Effect.runPromise(
+    dependencies.store.prepareResultAcceptance({
+      preparationId: deterministicIdentifier(
+        "acceptance",
+        operationId,
+        produced.acceptanceRequestId
+      ),
+      operationId,
+      acceptanceRequestId: produced.acceptanceRequestId,
+      manifest: validateResultAcceptanceManifest(
+        {
+          formatId: accepted.manifestFormatId,
+          normalizationId: accepted.manifestNormalizationId,
+          bodyArtifactId: accepted.bodyArtifactId,
+          requirementSetId: accepted.requirementSetId,
+          requirementSetDigest: accepted.requirementsDigest,
+          workProducts: accepted.workProducts,
+        },
+        requirements,
+        acceptedArtifacts
+      ),
+      requirements,
+    })
+  );
   if (joinedAcceptance.kind !== "accepted") {
     return joinedAcceptance.kind === "continuable"
       ? { state: "continuable", reason: joinedAcceptance.reason }
-      : { state: "failed", terminal: true, reason: joinedAcceptance.kind === "failed" ? joinedAcceptance.reason : "corrupt_record" };
+      : {
+          state: "failed",
+          terminal: true,
+          reason:
+            joinedAcceptance.kind === "failed"
+              ? joinedAcceptance.reason
+              : "corrupt_record",
+        };
   }
   return acceptedResultOutcome(
     dependencies,
     operationId,
     joinedAcceptance.acceptance,
-    joinedAcceptance.eventEvidence,
+    joinedAcceptance.eventEvidence
   );
 }
 
@@ -309,7 +375,7 @@ async function registerAndPublishAcceptance(
   operationId: string,
   requirements: Readonly<ResolvedWorkProductRequirements>,
   retentionPolicyDigest: ArtifactDigest,
-  produced: Readonly<WorkerProducedResult>,
+  produced: Readonly<WorkerProducedResult>
 ): Promise<ResultAcceptanceOutcome> {
   const artifacts: Array<Readonly<ArtifactMetadata>> = [];
   const now = await Effect.runPromise(dependencies.clock.now());
@@ -321,7 +387,7 @@ async function registerAndPublishAcceptance(
     produced.acceptanceRequestId,
     "body",
     produced.body,
-    deadline,
+    deadline
   );
   if (!("artifactId" in body)) return body;
   artifacts.push(body);
@@ -333,7 +399,7 @@ async function registerAndPublishAcceptance(
       produced.acceptanceRequestId,
       `work-product.${workProduct.key}.${index}`,
       workProduct,
-      deadline,
+      deadline
     );
     if (!("artifactId" in registered)) return registered;
     artifacts.push(registered);
@@ -347,61 +413,77 @@ async function registerAndPublishAcceptance(
     bodyArtifactId: body.artifactId,
     requirementSetId: requirements.requirementSetId,
     requirementSetDigest: requirements.digest,
-    workProducts: [...grouped].map(([key, artifactIds]) => ({ key, artifactIds })),
+    workProducts: [...grouped].map(([key, artifactIds]) => ({
+      key,
+      artifactIds,
+    })),
   };
   let validated;
   try {
     validated = validateResultAcceptanceManifest(
       manifest,
       requirements,
-      artifacts,
+      artifacts
     );
   } catch (error) {
-    const reason = typeof error === "object" && error !== null && "reason" in error
-      ? error.reason as ResultAcceptanceManifestFailureReason
-      : "invalid_manifest";
+    const reason =
+      typeof error === "object" && error !== null && "reason" in error
+        ? (error.reason as ResultAcceptanceManifestFailureReason)
+        : "invalid_manifest";
     return { state: "failed", terminal: true, reason };
   }
-  const preparationId = deterministicIdentifier("acceptance", operationId, produced.acceptanceRequestId);
-  const reservation = await Effect.runPromise(dependencies.store.prepareResultAcceptance({
-    preparationId,
+  const preparationId = deterministicIdentifier(
+    "acceptance",
     operationId,
-    acceptanceRequestId: produced.acceptanceRequestId,
-    manifest: validated,
-    requirements: requirements,
-  }));
-  if (reservation.kind === "failed") return { state: "failed", terminal: true, reason: reservation.reason };
-  if (reservation.kind === "continuable") return { state: "continuable", reason: reservation.reason };
+    produced.acceptanceRequestId
+  );
+  const reservation = await Effect.runPromise(
+    dependencies.store.prepareResultAcceptance({
+      preparationId,
+      operationId,
+      acceptanceRequestId: produced.acceptanceRequestId,
+      manifest: validated,
+      requirements: requirements,
+    })
+  );
+  if (reservation.kind === "failed")
+    return { state: "failed", terminal: true, reason: reservation.reason };
+  if (reservation.kind === "continuable")
+    return { state: "continuable", reason: reservation.reason };
   if (reservation.kind === "accepted") {
     return acceptedResultOutcome(
       dependencies,
       operationId,
       reservation.acceptance,
-      reservation.eventEvidence,
+      reservation.eventEvidence
     );
   }
-  const prepared = await dependencies.artifacts.prepareResultAcceptance(dependencies.artifactCredential, {
-    preparationId: reservation.reservation.preparationId,
-    operationId,
-    acceptanceRequestId: reservation.reservation.acceptanceRequestId,
-    manifestDigest: reservation.reservation.manifestDigest,
-    requirementsDigest: reservation.reservation.requirementsDigest,
-    retentionPolicyDigest: retentionPolicyDigest,
-    manifest: reservation.reservation.manifest,
-  });
+  const prepared = await dependencies.artifacts.prepareResultAcceptance(
+    dependencies.artifactCredential,
+    {
+      preparationId: reservation.reservation.preparationId,
+      operationId,
+      acceptanceRequestId: reservation.reservation.acceptanceRequestId,
+      manifestDigest: reservation.reservation.manifestDigest,
+      requirementsDigest: reservation.reservation.requirementsDigest,
+      retentionPolicyDigest: retentionPolicyDigest,
+      manifest: reservation.reservation.manifest,
+    }
+  );
   if (prepared.kind === "failed") {
     return failedOrContinuable(prepared.terminal, prepared.reason);
   }
-  if (prepared.kind === "continuable") return { state: "continuable", reason: "transfer_incomplete" };
-  if (prepared.kind === "aborted") return { state: "failed", terminal: true, reason: "conflict" };
+  if (prepared.kind === "continuable")
+    return { state: "continuable", reason: "transfer_incomplete" };
+  if (prepared.kind === "aborted")
+    return { state: "failed", terminal: true, reason: "conflict" };
   const published = await Effect.runPromise(
-    dependencies.store.publishResultAcceptance(prepared.preparation.evidence),
+    dependencies.store.publishResultAcceptance(prepared.preparation.evidence)
   );
   if (published.kind === "failed") {
     const observedAt = await Effect.runPromise(dependencies.clock.now());
-    await dependencies.artifacts.abortResultAcceptance(
-      dependencies.artifactCredential,
-      {
+    await dependencies.artifacts
+      .abortResultAcceptance(dependencies.artifactCredential, {
         preparationId: reservation.reservation.preparationId,
         operationId,
         acceptanceRequestId: reservation.reservation.acceptanceRequestId,
@@ -409,16 +491,20 @@ async function registerAndPublishAcceptance(
         evidenceDigest: prepared.preparation.evidence.digest,
         state: "not_accepted",
         observedAt,
-      },
-    ).catch(() => undefined);
+      })
+      .catch(() => undefined);
     return { state: "failed", terminal: true, reason: published.reason };
   }
-  if (published.kind === "continuable") return { state: "continuable", reason: published.reason };
-  if (published.kind === "prepared") return { state: "continuable", reason: "write_failed" };
-  void dependencies.artifacts.finalizeResultAcceptance(
-    dependencies.artifactCredential,
-    published.eventEvidence,
-  ).catch(() => undefined);
+  if (published.kind === "continuable")
+    return { state: "continuable", reason: published.reason };
+  if (published.kind === "prepared")
+    return { state: "continuable", reason: "write_failed" };
+  void dependencies.artifacts
+    .finalizeResultAcceptance(
+      dependencies.artifactCredential,
+      published.eventEvidence
+    )
+    .catch(() => undefined);
   return {
     state: "accepted",
     proof: acceptanceProof(operationId, published.acceptance),
@@ -426,50 +512,64 @@ async function registerAndPublishAcceptance(
 }
 
 export function makeResultAcceptance(
-  dependencies: ResultAcceptanceDependencies,
+  dependencies: ResultAcceptanceDependencies
 ): ResultAcceptance {
   return {
-    accept: (operationId, produced) => Effect.promise(async () => {
-      const stored = await Effect.runPromise(Effect.either(dependencies.store.read(operationId)));
-      if (stored._tag === "Left") {
-        return {
-          state: "failed",
-          terminal: true,
-          reason: stored.left.code === "not_found"
-            ? "operation_not_found"
-            : stored.left.code === "unsupported_schema"
-            ? "unsupported_schema"
-            : "corrupt_record",
-        };
-      }
-      const snapshot = stored.right;
-      if (!IDENTIFIER.test(produced.acceptanceRequestId)) {
-        return { state: "failed", terminal: true, reason: "request_mismatch" };
-      }
-      const declaredByteCount = produced.body.expectedByteCount +
-        produced.workProducts.reduce((total, artifact) => total + artifact.expectedByteCount, 0);
-      if (
-        produced.body.expectedByteCount > snapshot.operation.workProductRequirements.body.maxByteCount ||
-        declaredByteCount > snapshot.operation.workProductRequirements.maxTotalByteCount
-      ) {
-        return { state: "failed", terminal: true, reason: "limit_exceeded" };
-      }
-      if (snapshot.operation.result !== undefined) {
-        return acceptPersistedResult(
+    accept: (operationId, produced) =>
+      Effect.promise(async () => {
+        const stored = await Effect.runPromise(
+          Effect.either(dependencies.store.read(operationId))
+        );
+        if (stored._tag === "Left") {
+          return {
+            state: "failed",
+            terminal: true,
+            reason:
+              stored.left.code === "not_found"
+                ? "operation_not_found"
+                : stored.left.code === "unsupported_schema"
+                  ? "unsupported_schema"
+                  : "corrupt_record",
+          };
+        }
+        const snapshot = stored.right;
+        if (!IDENTIFIER.test(produced.acceptanceRequestId)) {
+          return {
+            state: "failed",
+            terminal: true,
+            reason: "request_mismatch",
+          };
+        }
+        const declaredByteCount =
+          produced.body.expectedByteCount +
+          produced.workProducts.reduce(
+            (total, artifact) => total + artifact.expectedByteCount,
+            0
+          );
+        if (
+          produced.body.expectedByteCount >
+            snapshot.operation.workProductRequirements.body.maxByteCount ||
+          declaredByteCount >
+            snapshot.operation.workProductRequirements.maxTotalByteCount
+        ) {
+          return { state: "failed", terminal: true, reason: "limit_exceeded" };
+        }
+        if (snapshot.operation.result !== undefined) {
+          return acceptPersistedResult(
+            dependencies,
+            operationId,
+            snapshot.operation.result,
+            snapshot.operation.workProductRequirements,
+            produced
+          );
+        }
+        return registerAndPublishAcceptance(
           dependencies,
           operationId,
-          snapshot.operation.result,
           snapshot.operation.workProductRequirements,
-          produced,
+          snapshot.operation.resultRetentionPolicy.digest,
+          produced
         );
-      }
-      return registerAndPublishAcceptance(
-        dependencies,
-        operationId,
-        snapshot.operation.workProductRequirements,
-        snapshot.operation.resultRetentionPolicy.digest,
-        produced,
-      );
-    }),
+      }),
   };
 }

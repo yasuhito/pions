@@ -40,9 +40,11 @@ const CONFIG_FLAG = "pions-worker-config";
 function writeDurableJson(
   path: string,
   value: unknown,
-  replace: boolean,
+  replace: boolean
 ): boolean {
-  const writePath = replace ? `${path}.tmp-${process.pid}-${randomUUID()}` : path;
+  const writePath = replace
+    ? `${path}.tmp-${process.pid}-${randomUUID()}`
+    : path;
   let descriptor: number | undefined;
   try {
     descriptor = openSync(writePath, "wx", 0o600);
@@ -79,7 +81,10 @@ class FileStartInstructionAcceptanceStore implements StartInstructionAcceptanceS
       const value = JSON.parse(readFileSync(this.path, "utf8")) as unknown;
       return decodeStartInstruction(value);
     } catch (error) {
-      return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+      return typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
         ? "none"
         : "unknown";
     }
@@ -87,36 +92,57 @@ class FileStartInstructionAcceptanceStore implements StartInstructionAcceptanceS
 
   loadDeliveryAuthority(): Readonly<DurableDeliveryAuthority> | "unknown" {
     try {
-      const value = JSON.parse(readFileSync(`${this.path}.authority`, "utf8")) as unknown;
-      if (typeof value !== "object" || value === null || Array.isArray(value)) return "unknown";
-      const authority = value as { readonly deliveryGeneration?: unknown; readonly dispatcherId?: unknown };
+      const value = JSON.parse(
+        readFileSync(`${this.path}.authority`, "utf8")
+      ) as unknown;
+      if (typeof value !== "object" || value === null || Array.isArray(value))
+        return "unknown";
+      const authority = value as {
+        readonly deliveryGeneration?: unknown;
+        readonly dispatcherId?: unknown;
+      };
       if (
         !Number.isSafeInteger(authority.deliveryGeneration) ||
         (authority.deliveryGeneration as number) < 1 ||
         (authority.dispatcherId !== undefined &&
-          (typeof authority.dispatcherId !== "string" || authority.dispatcherId.length === 0))
-      ) return "unknown";
+          (typeof authority.dispatcherId !== "string" ||
+            authority.dispatcherId.length === 0))
+      )
+        return "unknown";
       return {
         deliveryGeneration: authority.deliveryGeneration as number,
-        ...(authority.dispatcherId === undefined ? {} : { dispatcherId: authority.dispatcherId as string }),
+        ...(authority.dispatcherId === undefined
+          ? {}
+          : { dispatcherId: authority.dispatcherId as string }),
       };
     } catch (error) {
-      return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+      return typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
         ? { deliveryGeneration: 1 }
         : "unknown";
     }
   }
 
-  saveDeliveryAuthority(authority: Readonly<DurableDeliveryAuthority>): boolean {
+  saveDeliveryAuthority(
+    authority: Readonly<DurableDeliveryAuthority>
+  ): boolean {
     const target = `${this.path}.authority`;
-    return writeDurableJson(target, authority, true) ||
-      isDeepStrictEqual(this.loadDeliveryAuthority(), authority);
+    return (
+      writeDurableJson(target, authority, true) ||
+      isDeepStrictEqual(this.loadDeliveryAuthority(), authority)
+    );
   }
 
   save(instruction: Readonly<StartInstruction>): boolean {
     if (writeDurableJson(this.path, instruction, false)) return true;
     const stored = this.load();
-    return stored !== "none" && stored !== "unknown" && isDeepStrictEqual(stored, instruction);
+    return (
+      stored !== "none" &&
+      stored !== "unknown" &&
+      isDeepStrictEqual(stored, instruction)
+    );
   }
 }
 
@@ -145,25 +171,29 @@ function assistantMessage(value: unknown): AssistantMessage | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const candidate = value as Partial<AssistantMessage>;
   return candidate.role === "assistant" &&
-      Array.isArray(candidate.content) &&
-      typeof candidate.stopReason === "string" &&
-      typeof candidate.usage?.input === "number" &&
-      typeof candidate.usage.output === "number" &&
-      typeof candidate.usage.cacheRead === "number" &&
-      typeof candidate.usage.cacheWrite === "number" &&
-      typeof candidate.usage.totalTokens === "number" &&
-      typeof candidate.usage.cost?.total === "number"
-    ? candidate as AssistantMessage
+    Array.isArray(candidate.content) &&
+    typeof candidate.stopReason === "string" &&
+    typeof candidate.usage?.input === "number" &&
+    typeof candidate.usage.output === "number" &&
+    typeof candidate.usage.cacheRead === "number" &&
+    typeof candidate.usage.cacheWrite === "number" &&
+    typeof candidate.usage.totalTokens === "number" &&
+    typeof candidate.usage.cost?.total === "number"
+    ? (candidate as AssistantMessage)
     : undefined;
 }
 
 function assistantText(message: AssistantMessage | undefined): string {
   if (message === undefined) return "";
-  return message.content.flatMap((part) => {
-    if (typeof part !== "object" || part === null) return [];
-    const text = part as { readonly type?: unknown; readonly text?: unknown };
-    return text.type === "text" && typeof text.text === "string" ? [text.text] : [];
-  }).join("\n");
+  return message.content
+    .flatMap((part) => {
+      if (typeof part !== "object" || part === null) return [];
+      const text = part as { readonly type?: unknown; readonly text?: unknown };
+      return text.type === "text" && typeof text.text === "string"
+        ? [text.text]
+        : [];
+    })
+    .join("\n");
 }
 
 function emptyUsage(): PiUsage {
@@ -204,12 +234,14 @@ class PiWorkerBridge {
 
   constructor(
     private readonly pi: ExtensionAPI,
-    private readonly config: Readonly<WorkerConfig>,
+    private readonly config: Readonly<WorkerConfig>
   ) {}
 
   async start(ctx: ExtensionContext): Promise<void> {
-    ctx.ui.setEditorComponent((tui, theme, keybindings) =>
-      new ObservationOnlyEditor(tui, theme, keybindings));
+    ctx.ui.setEditorComponent(
+      (tui, theme, keybindings) =>
+        new ObservationOnlyEditor(tui, theme, keybindings)
+    );
     this.context = ctx;
     await this.connectToHost(ctx);
   }
@@ -244,7 +276,8 @@ class PiWorkerBridge {
       this.completionSent = true;
       this.send({
         type: "failed",
-        errorMessage: this.finalAssistant?.errorMessage ??
+        errorMessage:
+          this.finalAssistant?.errorMessage ??
           "Pi agent_settled without a successful semantic Result",
         usage: this.usage,
         toolUses: this.toolUses,
@@ -281,10 +314,9 @@ class PiWorkerBridge {
         operationId: this.config.operationId,
         capability: this.config.capability,
       },
-      new FileStartInstructionAcceptanceStore(join(
-        dirname(this.config.promptPath),
-        "start-instruction.v14.json",
-      )),
+      new FileStartInstructionAcceptanceStore(
+        join(dirname(this.config.promptPath), "start-instruction.v14.json")
+      )
     );
     const socket = connect(this.config.socketPath);
     this.socket = socket;
@@ -305,15 +337,17 @@ class PiWorkerBridge {
       type: "started",
       piSessionId: ctx.sessionManager.getSessionId(),
       observedConfig: {
-        model: ctx.model === undefined
-          ? { state: "unavailable" }
-          : {
-              state: "observed",
-              value: { provider: ctx.model.provider, id: ctx.model.id },
-            },
-        thinkingLevel: ctx.thinkingLevel === undefined
-          ? { state: "unavailable" }
-          : { state: "observed", value: ctx.thinkingLevel },
+        model:
+          ctx.model === undefined
+            ? { state: "unavailable" }
+            : {
+                state: "observed",
+                value: { provider: ctx.model.provider, id: ctx.model.id },
+              },
+        thinkingLevel:
+          ctx.thinkingLevel === undefined
+            ? { state: "unavailable" }
+            : { state: "observed", value: ctx.thinkingLevel },
         tools: { state: "observed", value: this.pi.getActiveTools() },
         cwd: { state: "observed", value: ctx.cwd },
       },
@@ -325,9 +359,11 @@ class PiWorkerBridge {
     this.reconnecting = true;
     const retry = (): void => {
       setTimeout(() => {
-        void this.connectToHost(this.context!).then(() => {
-          this.reconnecting = false;
-        }).catch(() => retry());
+        void this.connectToHost(this.context!)
+          .then(() => {
+            this.reconnecting = false;
+          })
+          .catch(() => retry());
       }, 100).unref();
     };
     retry();
@@ -343,7 +379,10 @@ class PiWorkerBridge {
           acceptanceState: reception.generationUpdate.acceptanceState,
           ...(reception.generationUpdate.acceptedInstruction === undefined
             ? {}
-            : { acceptedInstruction: reception.generationUpdate.acceptedInstruction }),
+            : {
+                acceptedInstruction:
+                  reception.generationUpdate.acceptedInstruction,
+              }),
         });
         if (
           reception.generationUpdate.acceptanceState === "accepted" &&
@@ -359,8 +398,14 @@ class PiWorkerBridge {
         else this.settle(ctx);
       }
       for (const startInstruction of reception.startInstructions) {
-        if (startInstruction.status === "accepted" || startInstruction.status === "duplicate") {
-          this.send({ type: "begin_accepted", instruction: startInstruction.instruction });
+        if (
+          startInstruction.status === "accepted" ||
+          startInstruction.status === "duplicate"
+        ) {
+          this.send({
+            type: "begin_accepted",
+            instruction: startInstruction.instruction,
+          });
         } else {
           this.send({
             type: "begin_rejected",
@@ -372,7 +417,9 @@ class PiWorkerBridge {
       for (const instruction of reception.observedStartAcceptances) {
         this.send({ type: "begin_ack", instruction });
       }
-      const accepted = reception.startInstructions.find(({ status }) => status === "accepted");
+      const accepted = reception.startInstructions.find(
+        ({ status }) => status === "accepted"
+      );
       if (accepted !== undefined && !this.cancelled && !this.began) {
         this.began = true;
         void this.begin(ctx).catch((error) => {
@@ -380,7 +427,8 @@ class PiWorkerBridge {
           this.completionSent = true;
           this.send({
             type: "failed",
-            errorMessage: error instanceof Error ? error.message : String(error),
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
             usage: this.usage,
             toolUses: this.toolUses,
           });

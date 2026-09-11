@@ -43,9 +43,13 @@ export const profilePolicy: WorkerProfilePolicy = {
   workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
   acceptedArtifactRetentionMs: 86_400_000,
 };
-export const workProductRequirements = resolveWorkProductRequirements(profilePolicy);
+export const workProductRequirements =
+  resolveWorkProductRequirements(profilePolicy);
 export const retentionPolicy = (operationId: string) =>
-  resultAcceptanceRetentionPolicy(operationId, profilePolicy.acceptedArtifactRetentionMs);
+  resultAcceptanceRetentionPolicy(
+    operationId,
+    profilePolicy.acceptedArtifactRetentionMs
+  );
 
 export const piSessionId = "pi-session-1";
 export const agentRunEvidence: AgentRunEvidence = {
@@ -67,7 +71,7 @@ export function resultDigest(body: string): Result["digest"] {
 export function resultAcceptanceProof(
   operationId: string,
   _body = "finished",
-  eventSequenceNumber = 1,
+  eventSequenceNumber = 1
 ): ResultAcceptanceProof {
   return {
     operationId,

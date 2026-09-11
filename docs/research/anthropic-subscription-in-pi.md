@@ -14,12 +14,12 @@
 
 ## 認証・課金方式の整理
 
-| 方式 | 実際の認証主体 | 課金先 | Piでのモデル例 | 判断・根拠 |
-|---|---|---|---|---|
-| Anthropic APIキー | Pi → Anthropic Messages API | Claude Console/API従量課金 | `anthropic/claude-opus-5` | 公式・安定。Pro/Max枠ではない。[^pi-providers][^commercial-terms] |
-| Pi組み込みClaude OAuth | Pi → Anthropic（第三者ハーネス扱い） | `extra usage` | `anthropic/claude-opus-5` | 認証は公式実装だが定額枠目的には不適。[^pi-providers] |
-| `pi-claude-bridge` | Pi拡張 → Agent SDK → 未改変Claude Code | ログインしたClaudeプランの利用枠。プラン・機能により追加利用もあり得る | `claude-bridge/claude-opus-5` | 条件付き第一候補。[^bridge-readme][^anthropic-legal] |
-| OAuth互換・要求整形拡張 | PiがOAuthトークンを使い、Claude Code用要求へ整形 | 拡張がClaudeプラン枠として分類されることを期待 | 多くは`anthropic/claude-opus-5` | 規約・停止リスクが高く非推奨。[^gotgenes-source][^anthropic-legal] |
+| 方式                    | 実際の認証主体                                   | 課金先                                                                 | Piでのモデル例                  | 判断・根拠                                                         |
+| ----------------------- | ------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------ |
+| Anthropic APIキー       | Pi → Anthropic Messages API                      | Claude Console/API従量課金                                             | `anthropic/claude-opus-5`       | 公式・安定。Pro/Max枠ではない。[^pi-providers][^commercial-terms]  |
+| Pi組み込みClaude OAuth  | Pi → Anthropic（第三者ハーネス扱い）             | `extra usage`                                                          | `anthropic/claude-opus-5`       | 認証は公式実装だが定額枠目的には不適。[^pi-providers]              |
+| `pi-claude-bridge`      | Pi拡張 → Agent SDK → 未改変Claude Code           | ログインしたClaudeプランの利用枠。プラン・機能により追加利用もあり得る | `claude-bridge/claude-opus-5`   | 条件付き第一候補。[^bridge-readme][^anthropic-legal]               |
+| OAuth互換・要求整形拡張 | PiがOAuthトークンを使い、Claude Code用要求へ整形 | 拡張がClaudeプラン枠として分類されることを期待                         | 多くは`anthropic/claude-opus-5` | 規約・停止リスクが高く非推奨。[^gotgenes-source][^anthropic-legal] |
 
 PiはOAuthトークンを`~/.pi/agent/auth.json`へ保存し自動更新し、APIキーでは同ファイルの資格情報を環境変数より優先する。APIキーへ確実に切り替えるには、保存済みOAuth資格情報を`/logout anthropic`で除去する必要がある。認証ファイルは`0600`で作成されるが、同じユーザー権限で動く拡張は秘密情報へ到達できる。[^pi-providers][^pi-packages]
 
@@ -128,29 +128,55 @@ Pionsは`pi-claude-bridge` 0.7.0を依存関係とロックファイルで固定
 すべて参照日 2026-02-21。
 
 [^pi-providers]: [Pi公式: Providers](https://pi.dev/docs/latest/providers)（参照日: 2026-02-21）
+
 [^pi-models]: [Pi公式: Custom Models](https://pi.dev/docs/latest/models)（参照日: 2026-02-21）
+
 [^pi-packages]: [Pi公式: Pi Packages](https://pi.dev/docs/latest/packages)（参照日: 2026-02-21）
+
 [^pi-extensions]: [Pi公式: Extensions](https://pi.dev/docs/latest/extensions)（参照日: 2026-02-21）
+
 [^anthropic-auth]: [Anthropic公式: Claude Code Authentication](https://code.claude.com/docs/en/authentication)（参照日: 2026-02-21）
+
 [^agent-sdk-readme]: [Anthropic公式: Claude Agent SDK TypeScript README](https://github.com/anthropics/claude-agent-sdk-typescript#readme)（参照日: 2026-02-21）
+
 [^agent-sdk-hosting]: [Anthropic公式: Hosting the Agent SDK](https://code.claude.com/docs/en/agent-sdk/hosting)（参照日: 2026-02-21）
+
 [^anthropic-legal]: [Anthropic公式: Claude Code Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)（参照日: 2026-02-21）
+
 [^consumer-terms]: [Anthropic公式: Consumer Terms of Service](https://www.anthropic.com/legal/consumer-terms)（参照日: 2026-02-21）
+
 [^commercial-terms]: [Anthropic公式: Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms)（参照日: 2026-02-21）
+
 [^bridge-readme]: [`pi-claude-bridge` README](https://github.com/elidickinson/pi-claude-bridge#readme)（参照日: 2026-02-21）
+
 [^bridge-package]: [`pi-claude-bridge` package metadata](https://github.com/elidickinson/pi-claude-bridge/blob/main/package.json)（参照日: 2026-02-21）
+
 [^bridge-source]: [`pi-claude-bridge` provider source](https://github.com/elidickinson/pi-claude-bridge/blob/main/src/index.ts)（参照日: 2026-02-21）
+
 [^bridge-models]: [`pi-claude-bridge` model source](https://github.com/elidickinson/pi-claude-bridge/blob/main/src/models.ts)（参照日: 2026-02-21）
+
 [^bridge-repo]: [`pi-claude-bridge` repository metadata](https://api.github.com/repos/elidickinson/pi-claude-bridge)（参照日: 2026-02-21）
+
 [^gotgenes-readme]: [`@gotgenes/pi-anthropic-auth` README](https://github.com/gotgenes/pi-anthropic-auth#readme)（参照日: 2026-02-21）
+
 [^gotgenes-package]: [`@gotgenes/pi-anthropic-auth` package metadata](https://github.com/gotgenes/pi-anthropic-auth/blob/main/package.json)（参照日: 2026-02-21）
+
 [^gotgenes-source]: [`@gotgenes/pi-anthropic-auth` request shaping source](https://github.com/gotgenes/pi-anthropic-auth/blob/main/src/request-shaping.ts)（参照日: 2026-02-21）
+
 [^gotgenes-architecture]: [`@gotgenes/pi-anthropic-auth` architecture](https://github.com/gotgenes/pi-anthropic-auth/blob/main/docs/architecture.md)（参照日: 2026-02-21）
+
 [^gotgenes-repo]: [`@gotgenes/pi-anthropic-auth` repository metadata](https://api.github.com/repos/gotgenes/pi-anthropic-auth)（参照日: 2026-02-21）
+
 [^leohenon-readme]: [`pi-anthropic-oauth` README](https://github.com/leohenon/pi-anthropic-oauth#readme)（参照日: 2026-02-21）
+
 [^leohenon-repo]: [`pi-anthropic-oauth` repository metadata](https://api.github.com/repos/leohenon/pi-anthropic-oauth)（参照日: 2026-02-21）
+
 [^sylv-readme]: [`sylv-io/pi-anthropic-auth` README](https://github.com/sylv-io/pi-anthropic-auth#readme)（参照日: 2026-02-21）
+
 [^sylv-package]: [`sylv-io/pi-anthropic-auth` package metadata](https://github.com/sylv-io/pi-anthropic-auth/blob/main/package.json)（参照日: 2026-02-21）
+
 [^sylv-repo]: [`sylv-io/pi-anthropic-auth` repository metadata](https://api.github.com/repos/sylv-io/pi-anthropic-auth)（参照日: 2026-02-21）
+
 [^pions-extension]: [Pions: Pi拡張とモデル設定](https://github.com/yasuhito/pions/blob/main/docs/pi-extension.md)（参照日: 2026-02-21）
+
 [^pions-worker]: [Pions: 可視ワーカー起動実装](https://github.com/yasuhito/pions/blob/main/src/internal/visible-worker.ts)（参照日: 2026-02-21）

@@ -33,7 +33,7 @@ import type {
 } from "../src/public.js";
 
 const timestamps = Array.from({ length: 50 }, (_, index) =>
-  new Date(Date.UTC(2026, 8, 6, 10, 0, index)).toISOString(),
+  new Date(Date.UTC(2026, 8, 6, 10, 0, index)).toISOString()
 );
 
 const receipt = {
@@ -60,15 +60,20 @@ const receipt = {
 
 class PausedWorkerAdapter extends FakeWorkerAdapter {
   private release!: () => void;
-  private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+  private readonly gate = new Promise<void>((resolve) => {
+    this.release = resolve;
+  });
 
   resume(): void {
     this.release();
   }
 
-  protected override run(operation: Operation, hooks: Readonly<WorkerRunHooks>) {
+  protected override run(
+    operation: Operation,
+    hooks: Readonly<WorkerRunHooks>
+  ) {
     return Effect.promise(() => this.gate).pipe(
-      Effect.flatMap(() => super.run(operation, hooks)),
+      Effect.flatMap(() => super.run(operation, hooks))
     );
   }
 }
@@ -76,7 +81,9 @@ class PausedWorkerAdapter extends FakeWorkerAdapter {
 class PausedStartAcceptanceWorker extends FakeWorkerAdapter {
   cancellationCount = 0;
   private release!: () => void;
-  private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+  private readonly gate = new Promise<void>((resolve) => {
+    this.release = resolve;
+  });
 
   acknowledgeStart(): void {
     this.release();
@@ -84,18 +91,22 @@ class PausedStartAcceptanceWorker extends FakeWorkerAdapter {
 
   protected override cancel(
     operation: Operation,
-    cancellationEpoch: number,
+    cancellationEpoch: number
   ): Effect.Effect<WorkerCancellationEvidence | undefined> {
     this.cancellationCount += 1;
     return super.cancel(operation, cancellationEpoch);
   }
 
-  protected override run(operation: Operation, hooks: Readonly<WorkerRunHooks>) {
+  protected override run(
+    operation: Operation,
+    hooks: Readonly<WorkerRunHooks>
+  ) {
     return super.run(operation, {
       ...hooks,
-      startInstructionAccepted: (instruction) => Effect.promise(() => this.gate).pipe(
-        Effect.andThen(hooks.startInstructionAccepted(instruction)),
-      ),
+      startInstructionAccepted: (instruction) =>
+        Effect.promise(() => this.gate).pipe(
+          Effect.andThen(hooks.startInstructionAccepted(instruction))
+        ),
     });
   }
 }
@@ -107,28 +118,29 @@ class NotAcceptedRecoveryWorker extends FakeWorkerAdapter {
   override recover(operation: Operation): Worker {
     this.recoveryAttempted = true;
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(this, function* () {
-        const identity = operation.workerIdentity!;
-        const instruction = yield* hooks.workerIdentified({
-          processId: identity.processId,
-          processInstanceId: identity.processInstanceId,
-          processStartToken: identity.processStartToken,
-          piSessionId: identity.piSessionId,
-          observedConfig: operation.observedConfig!,
-        });
-        yield* hooks.startDeliveryAuthorityRevoked(
-          instruction.dispatcherId,
-          instruction.deliveryGeneration,
-        );
-        yield* hooks.deliveryGenerationConfirmed({
-          dispatcherId: instruction.dispatcherId,
-          deliveryGeneration: instruction.deliveryGeneration,
-          acceptanceState: "not_accepted",
-        });
-        yield* hooks.startDeliveryEntered(instruction);
-        this.recoveredDeliveryCount += 1;
-        return { state: "liveness-unproven" } as const;
-      }),
+      run: (hooks) =>
+        Effect.gen(this, function* () {
+          const identity = operation.workerIdentity!;
+          const instruction = yield* hooks.workerIdentified({
+            processId: identity.processId,
+            processInstanceId: identity.processInstanceId,
+            processStartToken: identity.processStartToken,
+            piSessionId: identity.piSessionId,
+            observedConfig: operation.observedConfig!,
+          });
+          yield* hooks.startDeliveryAuthorityRevoked(
+            instruction.dispatcherId,
+            instruction.deliveryGeneration
+          );
+          yield* hooks.deliveryGenerationConfirmed({
+            dispatcherId: instruction.dispatcherId,
+            deliveryGeneration: instruction.deliveryGeneration,
+            acceptanceState: "not_accepted",
+          });
+          yield* hooks.startDeliveryEntered(instruction);
+          this.recoveredDeliveryCount += 1;
+          return { state: "liveness-unproven" } as const;
+        }),
       cancel: () => Effect.succeed(undefined),
     });
   }
@@ -153,7 +165,9 @@ class UnreliableRecoveryClock extends FakeClock {
 class FailingReadStore extends InMemoryEventStore {
   failReads = false;
 
-  protected override readRecord(operationId: string): Promise<unknown | undefined> {
+  protected override readRecord(
+    operationId: string
+  ): Promise<unknown | undefined> {
     if (this.failReads) return Promise.reject(new Error("read failed"));
     return super.readRecord(operationId);
   }
@@ -162,7 +176,7 @@ class FailingReadStore extends InMemoryEventStore {
 class UnprovenStopWorkerAdapter extends FakeWorkerAdapter {
   protected override cancel(
     _operation: Operation,
-    _cancellationEpoch: number,
+    _cancellationEpoch: number
   ): Effect.Effect<WorkerCancellationEvidence | undefined> {
     return Effect.succeed(undefined);
   }
@@ -170,7 +184,7 @@ class UnprovenStopWorkerAdapter extends FakeWorkerAdapter {
 
 function profile(
   policy: WorkerProfilePolicy["startAuthorization"],
-  intendedUse: WorkerProfilePolicy["intendedUse"] = "reader",
+  intendedUse: WorkerProfilePolicy["intendedUse"] = "reader"
 ): WorkerProfilePolicy {
   return {
     intendedUse,
@@ -184,17 +198,24 @@ function profile(
   };
 }
 
-async function fixture(options: {
-  readonly policy?: WorkerProfilePolicy["startAuthorization"];
-  readonly intendedUse?: WorkerProfilePolicy["intendedUse"];
-  readonly currentAuthority?: CurrentStartAuthorization | ((callNumber: number) => CurrentStartAuthorization);
-  readonly beforeCurrentAuthorization?: (callNumber: number, clock: FakeClock) => void;
-  readonly authenticationFails?: boolean;
-  readonly worker?: FakeWorkerAdapter;
-  readonly beforeReceipt?: () => void;
-  readonly store?: InMemoryEventStore;
-  readonly clock?: FakeClock;
-} = {}): Promise<{
+async function fixture(
+  options: {
+    readonly policy?: WorkerProfilePolicy["startAuthorization"];
+    readonly intendedUse?: WorkerProfilePolicy["intendedUse"];
+    readonly currentAuthority?:
+      | CurrentStartAuthorization
+      | ((callNumber: number) => CurrentStartAuthorization);
+    readonly beforeCurrentAuthorization?: (
+      callNumber: number,
+      clock: FakeClock
+    ) => void;
+    readonly authenticationFails?: boolean;
+    readonly worker?: FakeWorkerAdapter;
+    readonly beforeReceipt?: () => void;
+    readonly store?: InMemoryEventStore;
+    readonly clock?: FakeClock;
+  } = {}
+): Promise<{
   readonly runtime: Runtime;
   readonly inbox: StartAuthorizationInbox;
   readonly clock: FakeClock;
@@ -214,7 +235,8 @@ async function fixture(options: {
     store: options.store ?? new InMemoryEventStore(trace, clock),
     startAuthorizationAuthenticator: {
       authenticate: async () => {
-        if (options.authenticationFails === true) throw new Error("credential rejected");
+        if (options.authenticationFails === true)
+          throw new Error("credential rejected");
         return {
           subjectId: "reviewer-1",
           currentAuthorization: async () => {
@@ -222,7 +244,7 @@ async function fixture(options: {
             options.beforeCurrentAuthorization?.(authorizationChecks, clock);
             return typeof options.currentAuthority === "function"
               ? options.currentAuthority(authorizationChecks)
-              : options.currentAuthority ?? "authorized";
+              : (options.currentAuthority ?? "authorized");
           },
         };
       },
@@ -230,12 +252,15 @@ async function fixture(options: {
     configuration: {
       cwd: "/test/workspace",
       profiles: {
-        review: profile(options.policy ?? {
-          policy: "required",
-          windowMs: 60_000,
-          authorizedSubjectIds: ["reviewer-1"],
-          receipt,
-        }, options.intendedUse),
+        review: profile(
+          options.policy ?? {
+            policy: "required",
+            windowMs: 60_000,
+            authorizedSubjectIds: ["reviewer-1"],
+            receipt,
+          },
+          options.intendedUse
+        ),
       },
     },
   });
@@ -314,7 +339,10 @@ test("Start delivery authority acquisition is persisted independently", async ()
   await authorize(inbox);
   await handle.result();
 
-  assert.equal((await handle.read()).startDeliveryAuthority?.dispatcherId, "pions-runtime");
+  assert.equal(
+    (await handle.read()).startDeliveryAuthority?.dispatcherId,
+    "pions-runtime"
+  );
 });
 
 test("Start delivery entry is persisted independently", async () => {
@@ -322,7 +350,10 @@ test("Start delivery entry is persisted independently", async () => {
   await authorize(inbox);
   await handle.result();
 
-  assert.equal((await handle.read()).startDeliveryEntry?.dispatcherId, "pions-runtime");
+  assert.equal(
+    (await handle.read()).startDeliveryEntry?.dispatcherId,
+    "pions-runtime"
+  );
 });
 
 test("Worker durable Start acceptance is persisted independently", async () => {
@@ -330,7 +361,10 @@ test("Worker durable Start acceptance is persisted independently", async () => {
   await authorize(inbox);
   await handle.result();
 
-  assert.equal((await handle.read()).startInstructionAcceptance?.proof, "worker-durable-acceptance");
+  assert.equal(
+    (await handle.read()).startInstructionAcceptance?.proof,
+    "worker-durable-acceptance"
+  );
 });
 
 test("Worker begin acknowledgement is persisted independently", async () => {
@@ -338,7 +372,10 @@ test("Worker begin acknowledgement is persisted independently", async () => {
   await authorize(inbox);
   await handle.result();
 
-  assert.equal((await handle.read()).startInstructionAcknowledgement?.proof, "authenticated-worker-acknowledgement");
+  assert.equal(
+    (await handle.read()).startInstructionAcknowledgement?.proof,
+    "authenticated-worker-acknowledgement"
+  );
 });
 
 test("coordinator disconnection alone leaves the Start gate waiting", async () => {
@@ -356,7 +393,7 @@ test("the authorization decision is persisted before Worker execution begins", a
   assert.equal(
     trace.findIndex((entry) => entry.includes("start_authorization_decided")) <
       trace.indexOf("worker-protocol:receive-result"),
-    true,
+    true
   );
 });
 
@@ -364,47 +401,61 @@ test("a retained and verified Review subject can pass both Start checks", async 
   const root = await mkdtemp(join(tmpdir(), "pions-start-review-"));
   const clock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], clock);
-  const artifactServices = runtimeArtifactStore(root, store, () => new Date("2026-09-06T10:00:00.000Z"));
+  const artifactServices = runtimeArtifactStore(
+    root,
+    store,
+    () => new Date("2026-09-06T10:00:00.000Z")
+  );
   context.after(async () => {
     await artifactServices.artifacts.close();
     await rm(root, { recursive: true, force: true });
   });
   const dependencyBytes = Buffer.from("review base", "utf8");
-  const dependencyDigest = `sha256:${createHash("sha256").update(dependencyBytes).digest("hex")}` as const;
-  await artifactServices.artifacts.startRegistration(artifactServices.credential, {
-    registrationId: "review-dependency-registration-1",
-    expectedByteCount: dependencyBytes.byteLength,
-    expectedDigest: dependencyDigest,
-    formatId: "pions.opaque.v1",
-    normalizationId: "identity.v1",
-    dependencies: [],
-    deadline: "2026-09-06T10:01:00.000Z",
-    recoveryBudget: 1,
-  });
+  const dependencyDigest =
+    `sha256:${createHash("sha256").update(dependencyBytes).digest("hex")}` as const;
+  await artifactServices.artifacts.startRegistration(
+    artifactServices.credential,
+    {
+      registrationId: "review-dependency-registration-1",
+      expectedByteCount: dependencyBytes.byteLength,
+      expectedDigest: dependencyDigest,
+      formatId: "pions.opaque.v1",
+      normalizationId: "identity.v1",
+      dependencies: [],
+      deadline: "2026-09-06T10:01:00.000Z",
+      recoveryBudget: 1,
+    }
+  );
   const dependencyRegistration = await artifactServices.artifacts.transfer(
     artifactServices.credential,
     "review-dependency-registration-1",
-    dependencyBytes,
+    dependencyBytes
   );
-  if (dependencyRegistration.kind !== "registered") throw new Error("Review dependency registration failed");
+  if (dependencyRegistration.kind !== "registered")
+    throw new Error("Review dependency registration failed");
   const bytes = Buffer.from("review input", "utf8");
-  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
-  await artifactServices.artifacts.startRegistration(artifactServices.credential, {
-    registrationId: "review-registration-1",
-    expectedByteCount: bytes.byteLength,
-    expectedDigest: digest,
-    formatId: "pions.opaque.v1",
-    normalizationId: "identity.v1",
-    dependencies: [dependencyRegistration.artifact.artifactId],
-    deadline: "2026-09-06T10:01:00.000Z",
-    recoveryBudget: 1,
-  });
+  const digest =
+    `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+  await artifactServices.artifacts.startRegistration(
+    artifactServices.credential,
+    {
+      registrationId: "review-registration-1",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: digest,
+      formatId: "pions.opaque.v1",
+      normalizationId: "identity.v1",
+      dependencies: [dependencyRegistration.artifact.artifactId],
+      deadline: "2026-09-06T10:01:00.000Z",
+      recoveryBudget: 1,
+    }
+  );
   const registration = await artifactServices.artifacts.transfer(
     artifactServices.credential,
     "review-registration-1",
-    bytes,
+    bytes
   );
-  if (registration.kind !== "registered") throw new Error("Review subject registration failed");
+  if (registration.kind !== "registered")
+    throw new Error("Review subject registration failed");
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock,
@@ -423,22 +474,25 @@ test("a retained and verified Review subject can pass both Start checks", async 
     configuration: {
       cwd: "/test/workspace",
       profiles: {
-        review: profile({
-          policy: "required",
-          windowMs: 60_000,
-          authorizedSubjectIds: ["reviewer-1"],
-          receipt: {
-            ...receipt,
-            reviewSubjectVerification: "required",
-            reviewSubject: {
-              artifactId: registration.artifact.artifactId,
-              byteCount: registration.artifact.byteCount,
-              digest: registration.artifact.digest,
-              format: registration.artifact.formatId,
-              normalization: registration.artifact.normalizationId,
+        review: profile(
+          {
+            policy: "required",
+            windowMs: 60_000,
+            authorizedSubjectIds: ["reviewer-1"],
+            receipt: {
+              ...receipt,
+              reviewSubjectVerification: "required",
+              reviewSubject: {
+                artifactId: registration.artifact.artifactId,
+                byteCount: registration.artifact.byteCount,
+                digest: registration.artifact.digest,
+                format: registration.artifact.formatId,
+                normalization: registration.artifact.normalizationId,
+              },
             },
           },
-        }, "formal_reviewer"),
+          "formal_reviewer"
+        ),
       },
     },
   });
@@ -451,36 +505,48 @@ test("a retained and verified Review subject can pass both Start checks", async 
   await authorize(await runtime.startAuthorizationInbox("credential"));
   await handle.result().catch(() => undefined);
 
-  assert.equal((await handle.read()).startInstructionDelivery?.authorizationDecisionId, "decision-1");
+  assert.equal(
+    (await handle.read()).startInstructionDelivery?.authorizationDecisionId,
+    "decision-1"
+  );
 });
 
 test("a formal reviewer does not begin when its Review subject fails immediate revalidation", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pions-start-revalidation-"));
   const clock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], clock);
-  const artifactServices = runtimeArtifactStore(root, store, () => new Date("2026-09-06T10:00:00.000Z"));
+  const artifactServices = runtimeArtifactStore(
+    root,
+    store,
+    () => new Date("2026-09-06T10:00:00.000Z")
+  );
   context.after(async () => {
     await artifactServices.artifacts.close();
     await rm(root, { recursive: true, force: true });
   });
   const bytes = Buffer.from("review input", "utf8");
-  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
-  await artifactServices.artifacts.startRegistration(artifactServices.credential, {
-    registrationId: "review-registration-1",
-    expectedByteCount: bytes.byteLength,
-    expectedDigest: digest,
-    formatId: "pions.opaque.v1",
-    normalizationId: "identity.v1",
-    dependencies: [],
-    deadline: "2026-09-06T10:01:00.000Z",
-    recoveryBudget: 1,
-  });
+  const digest =
+    `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+  await artifactServices.artifacts.startRegistration(
+    artifactServices.credential,
+    {
+      registrationId: "review-registration-1",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: digest,
+      formatId: "pions.opaque.v1",
+      normalizationId: "identity.v1",
+      dependencies: [],
+      deadline: "2026-09-06T10:01:00.000Z",
+      recoveryBudget: 1,
+    }
+  );
   const registration = await artifactServices.artifacts.transfer(
     artifactServices.credential,
     "review-registration-1",
-    bytes,
+    bytes
   );
-  if (registration.kind !== "registered") throw new Error("Review subject registration failed");
+  if (registration.kind !== "registered")
+    throw new Error("Review subject registration failed");
   let retrievalCount = 0;
   const artifacts: ArtifactStore = new Proxy(artifactServices.artifacts, {
     get(target, property) {
@@ -488,7 +554,11 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
         return async (credential: string, bindingId: string) => {
           retrievalCount += 1;
           if (retrievalCount === 2) {
-            return { kind: "failed", terminal: false, reason: "storage_inspection_unavailable" } as const;
+            return {
+              kind: "failed",
+              terminal: false,
+              reason: "storage_inspection_unavailable",
+            } as const;
           }
           return target.retrieveForUseBinding(credential, bindingId);
         };
@@ -515,22 +585,25 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
     configuration: {
       cwd: "/test/workspace",
       profiles: {
-        review: profile({
-          policy: "required",
-          windowMs: 60_000,
-          authorizedSubjectIds: ["reviewer-1"],
-          receipt: {
-            ...receipt,
-            reviewSubjectVerification: "required",
-            reviewSubject: {
-              artifactId: registration.artifact.artifactId,
-              byteCount: registration.artifact.byteCount,
-              digest: registration.artifact.digest,
-              format: registration.artifact.formatId,
-              normalization: registration.artifact.normalizationId,
+        review: profile(
+          {
+            policy: "required",
+            windowMs: 60_000,
+            authorizedSubjectIds: ["reviewer-1"],
+            receipt: {
+              ...receipt,
+              reviewSubjectVerification: "required",
+              reviewSubject: {
+                artifactId: registration.artifact.artifactId,
+                byteCount: registration.artifact.byteCount,
+                digest: registration.artifact.digest,
+                format: registration.artifact.formatId,
+                normalization: registration.artifact.normalizationId,
+              },
             },
           },
-        }, "formal_reviewer"),
+          "formal_reviewer"
+        ),
       },
     },
   });
@@ -565,7 +638,10 @@ test("an optional policy resolved as disabled keeps automatic start", async () =
   });
   await handle.result();
 
-  assert.equal((await handle.read()).startAuthorization.timing.policy, "disabled");
+  assert.equal(
+    (await handle.read()).startAuthorization.timing.policy,
+    "disabled"
+  );
 });
 
 test("the resolved optional policy is fixed at Operation creation", async () => {
@@ -579,7 +655,10 @@ test("the resolved optional policy is fixed at Operation creation", async () => 
     },
   });
 
-  assert.equal((await handle.read()).startAuthorization.timing.policy, "required");
+  assert.equal(
+    (await handle.read()).startAuthorization.timing.policy,
+    "required"
+  );
 });
 
 test("a resolved required policy is not disabled by later profile mutation", async () => {
@@ -600,7 +679,10 @@ test("a resolved required policy is not disabled by later profile mutation", asy
     },
   });
 
-  assert.equal((await handle.waitForStartupReceipt())?.authorizationPolicy, "required");
+  assert.equal(
+    (await handle.waitForStartupReceipt())?.authorizationPolicy,
+    "required"
+  );
 });
 
 test("a receipt completed after its deadline is never published as waiting", async () => {
@@ -639,7 +721,10 @@ test("a subject outside the fixed authorization scope is rejected", async () => 
     receiptDigest: startupReceipt!.digest,
   });
 
-  assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "fixed_scope_denied");
+  assert.equal(
+    outcome.status === "rejected" ? outcome.reason : "accepted",
+    "fixed_scope_denied"
+  );
 });
 
 test("an out-of-scope inbox cannot expire another subject's Operation", async () => {
@@ -691,7 +776,10 @@ test("a subject without current authority is rejected", async () => {
     receiptDigest: startupReceipt!.digest,
   });
 
-  assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "current_authority_denied");
+  assert.equal(
+    outcome.status === "rejected" ? outcome.reason : "accepted",
+    "current_authority_denied"
+  );
 });
 
 test("a revoked subject is rejected distinctly", async () => {
@@ -704,7 +792,10 @@ test("a revoked subject is rejected distinctly", async () => {
     receiptDigest: startupReceipt!.digest,
   });
 
-  assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "authority_revoked");
+  assert.equal(
+    outcome.status === "rejected" ? outcome.reason : "accepted",
+    "authority_revoked"
+  );
 });
 
 test("an unknown current authority is rejected distinctly", async () => {
@@ -717,7 +808,10 @@ test("an unknown current authority is rejected distinctly", async () => {
     receiptDigest: startupReceipt!.digest,
   });
 
-  assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "authority_unknown");
+  assert.equal(
+    outcome.status === "rejected" ? outcome.reason : "accepted",
+    "authority_unknown"
+  );
 });
 
 test("a deadline crossed during pre-begin checks keeps the Worker stopped", async () => {
@@ -729,7 +823,10 @@ test("a deadline crossed during pre-begin checks keeps the Worker stopped", asyn
   await authorize(inbox);
   await handle.result().catch(() => undefined);
 
-  assert.equal((await handle.read()).failureReason, "start_authorization_timed_out");
+  assert.equal(
+    (await handle.read()).failureReason,
+    "start_authorization_timed_out"
+  );
 });
 
 test("an expired Start authorization retains its owned pane", async () => {
@@ -746,7 +843,7 @@ test("an expired Start authorization retains its owned pane", async () => {
 
 async function requiredAuthorizationRecovery(
   recoveredAt: string,
-  currentAuthorization: CurrentStartAuthorization,
+  currentAuthorization: CurrentStartAuthorization
 ) {
   const clock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], clock);
@@ -786,7 +883,11 @@ async function requiredAuthorizationRecovery(
     },
   });
   for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    if (recoveredWorker.recoveryAttempted && (await first.handle.read()).failureReason !== undefined) break;
+    if (
+      recoveredWorker.recoveryAttempted &&
+      (await first.handle.read()).failureReason !== undefined
+    )
+      break;
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const operation = await first.handle.read();
@@ -798,7 +899,7 @@ async function requiredAuthorizationRecovery(
 test("expired required authorization prevents recovery redispatch", async () => {
   const { recoveredWorker } = await requiredAuthorizationRecovery(
     "2026-09-06T11:00:00.000Z",
-    "authorized",
+    "authorized"
   );
 
   assert.equal(recoveredWorker.recoveredDeliveryCount, 0);
@@ -807,7 +908,7 @@ test("expired required authorization prevents recovery redispatch", async () => 
 test("expired required authorization keeps its failure classification during recovery", async () => {
   const { operation } = await requiredAuthorizationRecovery(
     "2026-09-06T11:00:00.000Z",
-    "authorized",
+    "authorized"
   );
 
   assert.equal(operation.failureReason, "start_authorization_timed_out");
@@ -816,7 +917,7 @@ test("expired required authorization keeps its failure classification during rec
 test("revoked Start authorization prevents recovery redispatch", async () => {
   const { recoveredWorker } = await requiredAuthorizationRecovery(
     "2026-09-06T10:00:30.000Z",
-    "revoked",
+    "revoked"
   );
 
   assert.equal(recoveredWorker.recoveredDeliveryCount, 0);
@@ -825,7 +926,7 @@ test("revoked Start authorization prevents recovery redispatch", async () => {
 test("revoked Start authorization keeps its failure classification during recovery", async () => {
   const { operation } = await requiredAuthorizationRecovery(
     "2026-09-06T10:00:30.000Z",
-    "revoked",
+    "revoked"
   );
 
   assert.equal(operation.failureReason, "start_authorization_invalidated");
@@ -881,7 +982,10 @@ test("the same decision ID with different content is a conflict", async () => {
     receiptDigest: startupReceipt!.digest,
   });
 
-  assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "decision_id_conflict");
+  assert.equal(
+    outcome.status === "rejected" ? outcome.reason : "accepted",
+    "decision_id_conflict"
+  );
 });
 
 test("a decision read failure is not reported as a missing Operation", async () => {
@@ -889,12 +993,15 @@ test("a decision read failure is not reported as a missing Operation", async () 
   const { inbox } = await fixture({ store });
   store.failReads = true;
 
-  await assert.rejects(inbox.decide({
-    operationId: "operation-1",
-    decisionId: "decision-1",
-    kind: "authorize",
-    receiptDigest: "sha256:receipt",
-  }), /persistence failed/u);
+  await assert.rejects(
+    inbox.decide({
+      operationId: "operation-1",
+      decisionId: "decision-1",
+      kind: "authorize",
+      receiptDigest: "sha256:receipt",
+    }),
+    /persistence failed/u
+  );
 });
 
 test("another decision ID with an old receipt is rejected distinctly", async () => {
@@ -908,7 +1015,10 @@ test("another decision ID with an old receipt is rejected distinctly", async () 
     receiptDigest: "sha256:old-receipt",
   });
 
-  assert.equal(outcome.status === "rejected" ? outcome.reason : "accepted", "receipt_mismatch");
+  assert.equal(
+    outcome.status === "rejected" ? outcome.reason : "accepted",
+    "receipt_mismatch"
+  );
 });
 
 test("repeating the same conflicting attempt appends one authorization audit event", async () => {
@@ -924,7 +1034,10 @@ test("repeating the same conflicting attempt appends one authorization audit eve
   await inbox.decide(conflict);
   await inbox.decide(conflict);
 
-  assert.equal((await handle.read()).startAuthorization.rejectedDecisions.length, 1);
+  assert.equal(
+    (await handle.read()).startAuthorization.rejectedDecisions.length,
+    1
+  );
 });
 
 test("a conflicting decision is retained in the authorization audit", async () => {
@@ -943,7 +1056,10 @@ test("a conflicting decision is retained in the authorization audit", async () =
     receiptDigest: startupReceipt!.digest,
   });
 
-  assert.equal((await handle.read()).startAuthorization.rejectedDecisions[0]?.reason, "decision_id_conflict");
+  assert.equal(
+    (await handle.read()).startAuthorization.rejectedDecisions[0]?.reason,
+    "decision_id_conflict"
+  );
 });
 
 test("authorization audit entries are immutable", async () => {
@@ -956,22 +1072,32 @@ test("authorization audit entries are immutable", async () => {
     receiptDigest: "sha256:different",
   });
 
-  assert.equal(Object.isFrozen((await handle.read()).startAuthorization.rejectedDecisions[0]), true);
+  assert.equal(
+    Object.isFrozen(
+      (await handle.read()).startAuthorization.rejectedDecisions[0]
+    ),
+    true
+  );
 });
 
 test("authority loss during pre-begin revalidation invalidates the Operation", async () => {
   const { inbox, handle } = await fixture({
-    currentAuthority: (callNumber) => callNumber < 4 ? "authorized" : "denied",
+    currentAuthority: (callNumber) =>
+      callNumber < 4 ? "authorized" : "denied",
   });
 
   await authorize(inbox);
 
-  assert.equal((await handle.read()).failureReason, "start_authorization_invalidated");
+  assert.equal(
+    (await handle.read()).failureReason,
+    "start_authorization_invalidated"
+  );
 });
 
 test("an invalidated Start authorization retains its owned pane", async () => {
   const { inbox, presentation } = await fixture({
-    currentAuthority: (callNumber) => callNumber < 4 ? "authorized" : "denied",
+    currentAuthority: (callNumber) =>
+      callNumber < 4 ? "authorized" : "denied",
   });
   await authorize(inbox);
 
@@ -981,12 +1107,16 @@ test("an invalidated Start authorization retains its owned pane", async () => {
 test("unproven stop after authorization invalidation retains the failure reason", async () => {
   const { inbox, handle } = await fixture({
     worker: new UnprovenStopWorkerAdapter(),
-    currentAuthority: (callNumber) => callNumber < 4 ? "authorized" : "denied",
+    currentAuthority: (callNumber) =>
+      callNumber < 4 ? "authorized" : "denied",
   });
 
   await authorize(inbox);
 
-  assert.equal((await handle.read()).failureReason, "start_authorization_invalidated");
+  assert.equal(
+    (await handle.read()).failureReason,
+    "start_authorization_invalidated"
+  );
 });
 
 test("a rejected Start decision fails with the fixed reason after Worker stop", async () => {
@@ -1018,7 +1148,9 @@ test("a rejected Start decision retains its owned pane", async () => {
 });
 
 test("an unproven stop after rejection leaves the Operation unknown", async () => {
-  const { inbox, handle } = await fixture({ worker: new UnprovenStopWorkerAdapter() });
+  const { inbox, handle } = await fixture({
+    worker: new UnprovenStopWorkerAdapter(),
+  });
   const startupReceipt = await handle.waitForStartupReceipt();
   await inbox.decide({
     operationId: handle.operationId,
@@ -1056,7 +1188,14 @@ test("a recovered authorization decision without a Worker leaves the Operation u
     },
     configuration: {
       cwd: "/test/workspace",
-      profiles: { review: profile({ policy: "required", windowMs: 60_000, authorizedSubjectIds: ["reviewer-1"], receipt }) },
+      profiles: {
+        review: profile({
+          policy: "required",
+          windowMs: 60_000,
+          authorizedSubjectIds: ["reviewer-1"],
+          receipt,
+        }),
+      },
     },
   });
   const inbox = await recovered.startAuthorizationInbox("credential");
@@ -1068,7 +1207,10 @@ test("a recovered authorization decision without a Worker leaves the Operation u
     receiptDigest: startupReceipt!.digest,
   });
 
-  assert.equal((await (await recovered.operation(handle.operationId)).read()).state, "unknown");
+  assert.equal(
+    (await (await recovered.operation(handle.operationId)).read()).state,
+    "unknown"
+  );
 });
 
 test("recovery with an unreliable elapsed-time source expires the authorization", async () => {
@@ -1088,18 +1230,30 @@ test("recovery with an unreliable elapsed-time source expires the authorization"
     },
     configuration: {
       cwd: "/test/workspace",
-      profiles: { review: profile({ policy: "required", windowMs: 60_000, authorizedSubjectIds: ["reviewer-1"], receipt }) },
+      profiles: {
+        review: profile({
+          policy: "required",
+          windowMs: 60_000,
+          authorizedSubjectIds: ["reviewer-1"],
+          receipt,
+        }),
+      },
     },
   });
   const inbox = await recovered.startAuthorizationInbox("credential");
 
   await inbox.listWaiting();
 
-  assert.equal((await (await recovered.operation("operation-1")).read()).state, "unknown");
+  assert.equal(
+    (await (await recovered.operation("operation-1")).read()).state,
+    "unknown"
+  );
 });
 
 test("an unproven stop after authorization timeout leaves the Operation unknown", async () => {
-  const { clock, handle } = await fixture({ worker: new UnprovenStopWorkerAdapter() });
+  const { clock, handle } = await fixture({
+    worker: new UnprovenStopWorkerAdapter(),
+  });
   clock.advanceBy(60_000);
 
   await handle.result().catch(() => undefined);
@@ -1112,5 +1266,8 @@ test("an elapsed authorization deadline fails with the fixed reason", async () =
   clock.advanceBy(60_000);
   await handle.result().catch(() => undefined);
 
-  assert.equal((await handle.read()).failureReason, "start_authorization_timed_out");
+  assert.equal(
+    (await handle.read()).failureReason,
+    "start_authorization_timed_out"
+  );
 });

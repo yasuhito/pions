@@ -60,7 +60,9 @@ export type OperationIntent =
     }
   | {
       readonly type: "start_authorization_decision_rejected";
-      readonly attempt: Readonly<Omit<StartAuthorizationDecisionAttemptRecord, "attemptedAt">>;
+      readonly attempt: Readonly<
+        Omit<StartAuthorizationDecisionAttemptRecord, "attemptedAt">
+      >;
     }
   | {
       readonly type: "start_delivery_authority_acquired";
@@ -95,13 +97,27 @@ export type OperationIntent =
   | {
       readonly type: "start_instruction_acknowledged";
       readonly instruction: Readonly<StartInstructionReference>;
-      readonly proof: "authenticated-worker-acknowledgement" | "authenticated-generation-acknowledgement";
+      readonly proof:
+        | "authenticated-worker-acknowledgement"
+        | "authenticated-generation-acknowledgement";
     }
   | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
-  | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
-  | { readonly type: "retry_clearance_recorded"; readonly clearance: Readonly<RetryClearanceEvidence> }
-  | { readonly type: "revision_reserved"; readonly reservation: Readonly<RevisionReservation> }
-  | { readonly type: "revision_result_adopted"; readonly adoption: Readonly<RevisionResultAdoptionRecord> }
+  | {
+      readonly type: "resource_evidence_recorded";
+      readonly record: Readonly<PersistedResourceRecord>;
+    }
+  | {
+      readonly type: "retry_clearance_recorded";
+      readonly clearance: Readonly<RetryClearanceEvidence>;
+    }
+  | {
+      readonly type: "revision_reserved";
+      readonly reservation: Readonly<RevisionReservation>;
+    }
+  | {
+      readonly type: "revision_result_adopted";
+      readonly adoption: Readonly<RevisionResultAdoptionRecord>;
+    }
   | {
       readonly type: "worker_identified";
       readonly workerIdentity: Readonly<WorkerIdentity>;
@@ -161,7 +177,10 @@ export type OperationIntent =
   | {
       readonly type: "operation_unknown";
       readonly reason: "liveness-unproven";
-      readonly failureReason?: "start_rejected" | "start_authorization_timed_out" | "start_authorization_invalidated";
+      readonly failureReason?:
+        | "start_rejected"
+        | "start_authorization_timed_out"
+        | "start_authorization_invalidated";
     }
   | {
       readonly type: "operation_failed";

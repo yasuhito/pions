@@ -17,7 +17,10 @@ import {
 } from "./result-acceptance-manifest.js";
 import { resultAcceptanceRetentionPolicy } from "./result-acceptance-transaction.js";
 import { revisionSeriesOrigin } from "./revision-series.js";
-import { permissionManifestDocument, validateWorkspaceScope } from "./resource-proof.js";
+import {
+  permissionManifestDocument,
+  validateWorkspaceScope,
+} from "./resource-proof.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
   RequestedWorkerConfigSchema,
@@ -86,7 +89,10 @@ const TaskSpecSchema = Schema.Struct({
 class RuntimeError extends Error {
   override readonly name = "RuntimeError";
 
-  constructor(readonly code: "operation_failed", message: string) {
+  constructor(
+    readonly code: "operation_failed",
+    message: string
+  ) {
     super(message);
   }
 }
@@ -115,16 +121,23 @@ function deferredResult(): {
 } {
   let resolve!: (completion: Readonly<OperationCompletion>) => void;
   let reject!: (error: unknown) => void;
-  const promise = new Promise<Readonly<OperationCompletion>>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
+  const promise = new Promise<Readonly<OperationCompletion>>(
+    (resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    }
+  );
   void promise.catch(() => undefined);
   return { promise, resolve, reject };
 }
 
 function isTerminal(operation: Operation): boolean {
-  return operation.state === "completed" || operation.state === "failed" || operation.state === "cancelled" || operation.state === "unknown";
+  return (
+    operation.state === "completed" ||
+    operation.state === "failed" ||
+    operation.state === "cancelled" ||
+    operation.state === "unknown"
+  );
 }
 
 export function makeRuntime(services: RuntimeServices): Runtime {
@@ -143,23 +156,29 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       : { synchronizeArtifactClock: artifactServices.synchronizeClock }),
   });
   const records = new Map<string, OperationRecord>();
-  const volatileCleanupDiagnostics = new Map<string, Set<CleanupDiagnosticCode>>();
+  const volatileCleanupDiagnostics = new Map<
+    string,
+    Set<CleanupDiagnosticCode>
+  >();
   const spawnsByParent = new Map<
     string | undefined,
     Map<string, Promise<OperationHandle>>
   >();
   const cancellations = new Map<string, Promise<CancellationResult>>();
   const cancellingSubtreeRoots = new Set<string>();
-  const startGateWaiters = new Map<string, {
-    readonly resolve: (instruction: Readonly<StartInstruction>) => void;
-    readonly reject: (error: unknown) => void;
-  }>();
+  const startGateWaiters = new Map<
+    string,
+    {
+      readonly resolve: (instruction: Readonly<StartInstruction>) => void;
+      readonly reject: (error: unknown) => void;
+    }
+  >();
   const authorizationMutationTails = new Map<string, Promise<void>>();
   const authorizationMonotonicDeadlines = new Map<string, number>();
   let treeMutationTail = Promise.resolve();
 
   const serializeTreeMutation = async <Value>(
-    mutation: () => Promise<Value>,
+    mutation: () => Promise<Value>
   ): Promise<Value> => {
     const previous = treeMutationTail;
     let release!: () => void;
@@ -176,11 +195,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const serializeAuthorizationMutation = async <Value>(
     operationId: string,
-    mutation: () => Promise<Value>,
+    mutation: () => Promise<Value>
   ): Promise<Value> => {
-    const previous = authorizationMutationTails.get(operationId) ?? Promise.resolve();
+    const previous =
+      authorizationMutationTails.get(operationId) ?? Promise.resolve();
     let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     authorizationMutationTails.set(operationId, current);
     await previous;
     try {
@@ -195,43 +217,44 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const persistenceError = (
     operationId: string,
-    error: StoreError,
+    error: StoreError
   ): OperationPersistenceError =>
     new OperationPersistenceError(
       operationId,
-      error.code === "not_found" ? "corrupt_record" : error.code,
+      error.code === "not_found" ? "corrupt_record" : error.code
     );
 
   const advanceOperation = (
     operationId: string,
-    intent: OperationIntent,
+    intent: OperationIntent
   ): Effect.Effect<Operation, OperationPersistenceError> =>
     services.store.advance(operationId, intent).pipe(
       Effect.map((snapshot) => snapshot.operation),
-      Effect.mapError((error) => persistenceError(operationId, error)),
+      Effect.mapError((error) => persistenceError(operationId, error))
     );
 
   const advanceAndProject = (
     operationId: string,
-    intent: OperationIntent,
+    intent: OperationIntent
   ): Effect.Effect<void, OperationPersistenceError> =>
     advanceOperation(operationId, intent).pipe(
       Effect.tap((operation) => project(operation)),
-      Effect.asVoid,
+      Effect.asVoid
     );
 
   const publicSnapshot = (
-    stored: Readonly<StoredOperationSnapshot>,
+    stored: Readonly<StoredOperationSnapshot>
   ): Readonly<PublicOperationSnapshot> => {
     const operation = stored.operation;
-    const resultAcceptance = operation.result === undefined
-      ? undefined
-      : {
-          acceptedAt: operation.result.acceptedAt,
-          acceptanceId: operation.result.acceptanceId,
-          manifestDigest: operation.result.manifestDigest,
-          eventSequenceNumber: operation.result.eventSequenceNumber,
-        };
+    const resultAcceptance =
+      operation.result === undefined
+        ? undefined
+        : {
+            acceptedAt: operation.result.acceptedAt,
+            acceptanceId: operation.result.acceptanceId,
+            manifestDigest: operation.result.manifestDigest,
+            eventSequenceNumber: operation.result.eventSequenceNumber,
+          };
     return Object.freeze({
       operationId: operation.operationId,
       version: Object.freeze({ ...stored.version }),
@@ -242,14 +265,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       startAuthorization: Object.freeze({
         timing: Object.freeze({
           ...operation.startAuthorizationTiming,
-          authorizedSubjectIds: Object.freeze([...operation.startAuthorizationTiming.authorizedSubjectIds]),
+          authorizedSubjectIds: Object.freeze([
+            ...operation.startAuthorizationTiming.authorizedSubjectIds,
+          ]),
         }),
         gate: operation.startGate,
-        ...(operation.startupReceipt === undefined ? {} : { receipt: operation.startupReceipt }),
+        ...(operation.startupReceipt === undefined
+          ? {}
+          : { receipt: operation.startupReceipt }),
         ...(operation.startAuthorizationDecision === undefined
           ? {}
           : { decision: operation.startAuthorizationDecision }),
-        rejectedDecisions: Object.freeze(operation.rejectedStartAuthorizationDecisions),
+        rejectedDecisions: Object.freeze(
+          operation.rejectedStartAuthorizationDecisions
+        ),
       }),
       ...(operation.startDeliveryAuthority === undefined
         ? {}
@@ -265,14 +294,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         : { startInstructionAcceptance: operation.startInstructionAcceptance }),
       ...(operation.startInstructionAcknowledgement === undefined
         ? {}
-        : { startInstructionAcknowledgement: operation.startInstructionAcknowledgement }),
+        : {
+            startInstructionAcknowledgement:
+              operation.startInstructionAcknowledgement,
+          }),
       startDeliveryHandoffs: operation.startDeliveryHandoffs,
       ...(resultAcceptance === undefined
         ? {}
         : { resultAcceptance: Object.freeze(resultAcceptance) }),
       ...(operation.workerStopConfirmedAt === undefined
         ? {}
-        : { stopConfirmation: Object.freeze({ confirmedAt: operation.workerStopConfirmedAt, proof: "worker-stop" as const }) }),
+        : {
+            stopConfirmation: Object.freeze({
+              confirmedAt: operation.workerStopConfirmedAt,
+              proof: "worker-stop" as const,
+            }),
+          }),
       ...(operation.presentationCleanup === undefined
         ? {}
         : {
@@ -286,9 +323,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 : { finishedAt: operation.presentationCleanup.finishedAt }),
             }),
           }),
-      cleanupDiagnostics: Object.freeze(operation.presentationCleanup?.diagnostic === undefined
-        ? []
-        : [Object.freeze({ code: operation.presentationCleanup.diagnostic })]),
+      cleanupDiagnostics: Object.freeze(
+        operation.presentationCleanup?.diagnostic === undefined
+          ? []
+          : [Object.freeze({ code: operation.presentationCleanup.diagnostic })]
+      ),
       ...(operation.resourceEvidenceRecord === undefined
         ? {}
         : {
@@ -304,29 +343,36 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   };
 
   const readStoredSnapshot = (operationId: string) =>
-    runEffect(services.store.read(operationId).pipe(
-      Effect.mapError((error) => persistenceError(operationId, error)),
-    ));
+    runEffect(
+      services.store
+        .read(operationId)
+        .pipe(Effect.mapError((error) => persistenceError(operationId, error)))
+    );
 
   const getOperation = (operationId: string) =>
     services.store.read(operationId).pipe(
       Effect.map((snapshot) => snapshot.operation),
-      Effect.mapError((error) => persistenceError(operationId, error)),
+      Effect.mapError((error) => persistenceError(operationId, error))
     );
 
   const project = (operation: Operation): Effect.Effect<void> =>
-    Effect.catchAllCause(services.presentation.project(operation), () => Effect.void);
+    Effect.catchAllCause(
+      services.presentation.project(operation),
+      () => Effect.void
+    );
 
   const readResult = (
-    operationId: string,
+    operationId: string
   ): Effect.Effect<Result, OperationPersistenceError | ResultRetrievalError> =>
     Effect.gen(function* () {
-      const snapshot = yield* services.store.read(operationId).pipe(
-        Effect.mapError((error) => persistenceError(operationId, error)),
-      );
+      const snapshot = yield* services.store
+        .read(operationId)
+        .pipe(Effect.mapError((error) => persistenceError(operationId, error)));
       const accepted = snapshot.operation.result;
       if (accepted === undefined) {
-        return yield* Effect.fail(new OperationPersistenceError(operationId, "incomplete_record"));
+        return yield* Effect.fail(
+          new OperationPersistenceError(operationId, "incomplete_record")
+        );
       }
       const manifest = resultAcceptanceManifestDocument({
         formatId: accepted.manifestFormatId,
@@ -337,17 +383,26 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         workProducts: accepted.workProducts,
       });
       if (manifest.digest !== accepted.manifestDigest) {
-        return yield* Effect.fail(new ResultRetrievalError(operationId, "stored_artifact_corrupt"));
+        return yield* Effect.fail(
+          new ResultRetrievalError(operationId, "stored_artifact_corrupt")
+        );
       }
       const retrieved = yield* Effect.tryPromise({
-        try: () => artifactServices.artifacts.retrieve(
-          artifactServices.credential,
-          accepted.bodyArtifactId,
-        ),
-        catch: () => new ResultRetrievalError(operationId, "storage_inspection_unavailable"),
+        try: () =>
+          artifactServices.artifacts.retrieve(
+            artifactServices.credential,
+            accepted.bodyArtifactId
+          ),
+        catch: () =>
+          new ResultRetrievalError(
+            operationId,
+            "storage_inspection_unavailable"
+          ),
       });
       if (retrieved.kind !== "retrieved") {
-        return yield* Effect.fail(new ResultRetrievalError(operationId, retrieved.reason));
+        return yield* Effect.fail(
+          new ResultRetrievalError(operationId, retrieved.reason)
+        );
       }
       const bytes = Buffer.from(retrieved.bytes);
       return {
@@ -357,7 +412,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       } as Result;
     });
 
-  const runEffect = async <Value>(effect: Effect.Effect<Value, unknown>): Promise<Value> => {
+  const runEffect = async <Value>(
+    effect: Effect.Effect<Value, unknown>
+  ): Promise<Value> => {
     const exit = await Effect.runPromiseExit(effect);
     if (Exit.isSuccess(exit)) return exit.value;
     const failure = Cause.failureOption(exit.cause);
@@ -367,21 +424,26 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const noteVolatileCleanupDiagnostic = (
     operationId: string,
-    code: CleanupDiagnosticCode,
+    code: CleanupDiagnosticCode
   ): void => {
-    const diagnostics = volatileCleanupDiagnostics.get(operationId) ?? new Set<CleanupDiagnosticCode>();
+    const diagnostics =
+      volatileCleanupDiagnostics.get(operationId) ??
+      new Set<CleanupDiagnosticCode>();
     diagnostics.add(code);
     volatileCleanupDiagnostics.set(operationId, diagnostics);
   };
 
   const performPresentationCleanup = async (
     initial: Operation,
-    directResponseAvailable: boolean,
+    directResponseAvailable: boolean
   ): Promise<void> => {
     if (
-      initial.state !== "completed" || initial.result === undefined ||
-      initial.workerStopConfirmedAt === undefined || initial.presentation === undefined
-    ) return;
+      initial.state !== "completed" ||
+      initial.result === undefined ||
+      initial.workerStopConfirmedAt === undefined ||
+      initial.presentation === undefined
+    )
+      return;
 
     const paneId = initial.presentation.paneId;
     let operation = initial;
@@ -389,32 +451,44 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     if (cleanup === undefined) {
       const cleanupId = `presentation-cleanup:${operation.operationId}`;
       try {
-        operation = await runEffect(advanceOperation(operation.operationId, {
-          type: "presentation_cleanup_started",
-          cleanupId,
-          paneId,
-        }));
+        operation = await runEffect(
+          advanceOperation(operation.operationId, {
+            type: "presentation_cleanup_started",
+            cleanupId,
+            paneId,
+          })
+        );
         cleanup = operation.presentationCleanup;
       } catch {
         if (directResponseAvailable) {
-          noteVolatileCleanupDiagnostic(operation.operationId, "cleanup_record_unavailable");
+          noteVolatileCleanupDiagnostic(
+            operation.operationId,
+            "cleanup_record_unavailable"
+          );
         }
         return;
       }
     }
     if (cleanup?.state !== "pending") return;
 
-    const finishUnconfirmed = async (code: CleanupDiagnosticCode): Promise<void> => {
+    const finishUnconfirmed = async (
+      code: CleanupDiagnosticCode
+    ): Promise<void> => {
       try {
-        await runEffect(advanceOperation(operation.operationId, {
-          type: "presentation_cleanup_unconfirmed",
-          cleanupId: cleanup.cleanupId,
-          paneId: cleanup.paneId,
-          reason: code,
-        }));
+        await runEffect(
+          advanceOperation(operation.operationId, {
+            type: "presentation_cleanup_unconfirmed",
+            cleanupId: cleanup.cleanupId,
+            paneId: cleanup.paneId,
+            reason: code,
+          })
+        );
       } catch {
         if (directResponseAvailable) {
-          noteVolatileCleanupDiagnostic(operation.operationId, "cleanup_record_unavailable");
+          noteVolatileCleanupDiagnostic(
+            operation.operationId,
+            "cleanup_record_unavailable"
+          );
           noteVolatileCleanupDiagnostic(operation.operationId, code);
         }
       }
@@ -422,7 +496,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
     let identity: "matching" | "missing";
     try {
-      identity = await runEffect(services.presentation.inspectOwnedPane(operation));
+      identity = await runEffect(
+        services.presentation.inspectOwnedPane(operation)
+      );
     } catch {
       await finishUnconfirmed("pane_identity_unavailable");
       return;
@@ -439,21 +515,26 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       return;
     }
     try {
-      await runEffect(advanceOperation(operation.operationId, {
-        type: "presentation_cleanup_completed",
-        cleanupId: cleanup.cleanupId,
-        paneId: cleanup.paneId,
-      }));
+      await runEffect(
+        advanceOperation(operation.operationId, {
+          type: "presentation_cleanup_completed",
+          cleanupId: cleanup.cleanupId,
+          paneId: cleanup.paneId,
+        })
+      );
     } catch {
       if (directResponseAvailable) {
-        noteVolatileCleanupDiagnostic(operation.operationId, "cleanup_record_unavailable");
+        noteVolatileCleanupDiagnostic(
+          operation.operationId,
+          "cleanup_record_unavailable"
+        );
       }
     }
   };
 
   const settleTerminal = async (
     record: OperationRecord,
-    operation: Operation,
+    operation: Operation
   ): Promise<void> => {
     await runEffect(project(operation));
     authorizationMonotonicDeadlines.delete(record.operationId);
@@ -462,20 +543,29 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await performPresentationCleanup(operation, true);
       const result = await runEffect(readResult(record.operationId));
       const cleanupSnapshot = await readPublicSnapshot(record.operationId);
-      const volatileDiagnostics = [...(volatileCleanupDiagnostics.get(record.operationId) ?? [])]
-        .filter((code) => !cleanupSnapshot.cleanupDiagnostics.some((diagnostic) => diagnostic.code === code))
+      const volatileDiagnostics = [
+        ...(volatileCleanupDiagnostics.get(record.operationId) ?? []),
+      ]
+        .filter(
+          (code) =>
+            !cleanupSnapshot.cleanupDiagnostics.some(
+              (diagnostic) => diagnostic.code === code
+            )
+        )
         .map((code) => Object.freeze({ code }));
       volatileCleanupDiagnostics.delete(record.operationId);
-      record.resolveTerminal(Object.freeze({
-        result,
-        ...(cleanupSnapshot.presentationCleanup === undefined
-          ? {}
-          : { presentationCleanup: cleanupSnapshot.presentationCleanup }),
-        cleanupDiagnostics: Object.freeze([
-          ...cleanupSnapshot.cleanupDiagnostics,
-          ...volatileDiagnostics,
-        ]),
-      }));
+      record.resolveTerminal(
+        Object.freeze({
+          result,
+          ...(cleanupSnapshot.presentationCleanup === undefined
+            ? {}
+            : { presentationCleanup: cleanupSnapshot.presentationCleanup }),
+          cleanupDiagnostics: Object.freeze([
+            ...cleanupSnapshot.cleanupDiagnostics,
+            ...volatileDiagnostics,
+          ]),
+        })
+      );
     } else if (operation.state === "cancelled") {
       record.rejectTerminal(new OperationCancelledError(record.operationId));
     } else if (operation.state === "unknown") {
@@ -484,8 +574,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           record.operationId,
           operation.terminalReason === "liveness-unproven"
             ? "liveness-unproven"
-            : "cancel-unproven",
-        ),
+            : "cancel-unproven"
+        )
       );
     } else {
       const reason =
@@ -506,7 +596,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         operation.terminalReason === "descendant_failed"
           ? operation.terminalReason
           : "descendant_failed";
-      record.rejectTerminal(new OperationFailedError(record.operationId, reason));
+      record.rejectTerminal(
+        new OperationFailedError(record.operationId, reason)
+      );
     }
 
     const parentId = operation.lineage.parentOperationId;
@@ -521,7 +613,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         type: "child_settled",
         childOperationId: record.operationId,
         outcome: operation.state === "completed" ? "succeeded" : "failed",
-      }),
+      })
     );
     await runEffect(project(parentAfterChild));
     await tryFinalize(parent);
@@ -550,8 +642,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         record.operationId,
         failureReason === undefined
           ? { type: "operation_completed" }
-          : { type: "operation_failed", reason: failureReason },
-      ),
+          : { type: "operation_failed", reason: failureReason }
+      )
     );
     await settleTerminal(record, terminal);
   };
@@ -575,7 +667,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   };
 
-  const resolvedStartAuthorization = (profile: Readonly<WorkerProfilePolicy>) => {
+  const resolvedStartAuthorization = (
+    profile: Readonly<WorkerProfilePolicy>
+  ) => {
     const configured = profile.startAuthorization;
     if (configured.policy === "disabled") {
       return {
@@ -585,7 +679,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         authorizedSubjectIds: [],
       };
     }
-    if (configured.policy === "optional" && configured.resolution === "disabled") {
+    if (
+      configured.policy === "optional" &&
+      configured.resolution === "disabled"
+    ) {
       return {
         configuredPolicy: "optional" as const,
         policy: "disabled" as const,
@@ -604,38 +701,50 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const terminateBeforeStart = async (
     record: OperationRecord,
-    reason: OperationFailureReason,
+    reason: OperationFailureReason
   ): Promise<void> => {
     const current = await runEffect(getOperation(record.operationId));
-    const stopped = record.worker === undefined
-      ? undefined
-      : await runEffect(record.worker.cancel(current.cancellationEpoch + 1, 1_000)).catch(() => undefined);
+    const stopped =
+      record.worker === undefined
+        ? undefined
+        : await runEffect(
+            record.worker.cancel(current.cancellationEpoch + 1, 1_000)
+          ).catch(() => undefined);
     const waiter = startGateWaiters.get(record.operationId);
     startGateWaiters.delete(record.operationId);
     if (stopped === undefined) {
-      const unknown = await runEffect(advanceOperation(record.operationId, {
-        type: "operation_unknown",
-        reason: "liveness-unproven",
-        ...(reason === "start_rejected" || reason === "start_authorization_timed_out" ||
-            reason === "start_authorization_invalidated"
-          ? { failureReason: reason }
-          : {}),
-      }));
+      const unknown = await runEffect(
+        advanceOperation(record.operationId, {
+          type: "operation_unknown",
+          reason: "liveness-unproven",
+          ...(reason === "start_rejected" ||
+          reason === "start_authorization_timed_out" ||
+          reason === "start_authorization_invalidated"
+            ? { failureReason: reason }
+            : {}),
+        })
+      );
       await settleTerminal(record, unknown);
       waiter?.reject(new Error(reason));
       return;
     }
-    let operation = await runEffect(advanceOperation(record.operationId, {
-      type: "worker_stop_confirmed",
-      proof: stopped.proof,
-    }));
+    let operation = await runEffect(
+      advanceOperation(record.operationId, {
+        type: "worker_stop_confirmed",
+        proof: stopped.proof,
+      })
+    );
     await runEffect(project(operation));
-    await services.resourceProofController?.safetyCleanup(record.operationId).catch(() => undefined);
-    operation = await runEffect(advanceOperation(record.operationId, {
-      type: "self_settled",
-      outcome: "failed",
-      reason,
-    }));
+    await services.resourceProofController
+      ?.safetyCleanup(record.operationId)
+      .catch(() => undefined);
+    operation = await runEffect(
+      advanceOperation(record.operationId, {
+        type: "self_settled",
+        outcome: "failed",
+        reason,
+      })
+    );
     await runEffect(project(operation));
     await tryFinalize(record);
     waiter?.reject(new Error(reason));
@@ -644,58 +753,81 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const authorizationDeadlineElapsed = (
     operationId: string,
     deadline: string,
-    observedAt: string,
+    observedAt: string
   ): boolean => {
     if (Date.parse(observedAt) >= Date.parse(deadline)) return true;
     if (!records.has(operationId)) return false;
     const monotonicDeadline = authorizationMonotonicDeadlines.get(operationId);
-    return monotonicDeadline === undefined ||
-      services.clock.monotonicMilliseconds() >= monotonicDeadline;
+    return (
+      monotonicDeadline === undefined ||
+      services.clock.monotonicMilliseconds() >= monotonicDeadline
+    );
   };
 
-  const expireStartAuthorization = async (operationId: string): Promise<void> => {
+  const expireStartAuthorization = async (
+    operationId: string
+  ): Promise<void> => {
     const current = await runEffect(getOperation(operationId));
     if (
       current.state !== "starting" ||
       (current.startGate !== "waiting" && current.startGate !== "authorized")
-    ) return;
-    await runEffect(advanceOperation(operationId, { type: "start_gate_closed", gate: "expired" }));
+    )
+      return;
+    await runEffect(
+      advanceOperation(operationId, {
+        type: "start_gate_closed",
+        gate: "expired",
+      })
+    );
     const record = records.get(operationId);
     if (record !== undefined) {
       await terminateBeforeStart(record, "start_authorization_timed_out");
       return;
     }
-    await runEffect(advanceOperation(operationId, {
-      type: "operation_unknown",
-      reason: "liveness-unproven",
-      failureReason: "start_authorization_timed_out",
-    }));
+    await runEffect(
+      advanceOperation(operationId, {
+        type: "operation_unknown",
+        reason: "liveness-unproven",
+        failureReason: "start_authorization_timed_out",
+      })
+    );
   };
 
-  const invalidateStartAuthorization = async (operationId: string): Promise<void> => {
+  const invalidateStartAuthorization = async (
+    operationId: string
+  ): Promise<void> => {
     const current = await runEffect(getOperation(operationId));
-    if (current.state !== "starting" || current.startGate !== "authorized") return;
-    await runEffect(advanceOperation(operationId, { type: "start_gate_closed", gate: "invalidated" }));
+    if (current.state !== "starting" || current.startGate !== "authorized")
+      return;
+    await runEffect(
+      advanceOperation(operationId, {
+        type: "start_gate_closed",
+        gate: "invalidated",
+      })
+    );
     const record = records.get(operationId);
     if (record !== undefined) {
       await terminateBeforeStart(record, "start_authorization_invalidated");
       return;
     }
-    await runEffect(advanceOperation(operationId, {
-      type: "operation_unknown",
-      reason: "liveness-unproven",
-      failureReason: "start_authorization_invalidated",
-    }));
+    await runEffect(
+      advanceOperation(operationId, {
+        type: "operation_unknown",
+        reason: "liveness-unproven",
+        failureReason: "start_authorization_invalidated",
+      })
+    );
   };
 
   const recoveredStartAuthorizationIsCurrent = async (
-    operation: Operation,
+    operation: Operation
   ): Promise<boolean> => {
     if (operation.startAuthorizationTiming.policy !== "required") return true;
     const decision = operation.startAuthorizationDecision;
     const authority = services.startAuthorizationAuthority;
     if (decision === undefined || authority === undefined) return false;
-    return authority.currentAuthorization(decision.actorId, operation.operationId)
+    return authority
+      .currentAuthorization(decision.actorId, operation.operationId)
       .then((authorization) => authorization === "authorized")
       .catch(() => false);
   };
@@ -703,39 +835,53 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const verifyReviewSubject = async (
     operationId: string,
     policy: Readonly<StartupReceiptPolicy>,
-    prepare: boolean,
+    prepare: boolean
   ): Promise<void> => {
     if (policy.reviewSubjectVerification === "disabled") return;
     const bindingId = `${operationId}.review-subject`;
     if (prepare) {
-      const binding = await services.artifacts.prepareUseBinding(services.artifactCredential, {
-        bindingId,
-        operationId,
-        artifactId: policy.reviewSubject.artifactId,
-        purpose: "review_subject",
-        decisionId: `${operationId}.start-authorization`,
-        authorityBasis: "fixed-start-authorization-policy",
-      });
+      const binding = await services.artifacts.prepareUseBinding(
+        services.artifactCredential,
+        {
+          bindingId,
+          operationId,
+          artifactId: policy.reviewSubject.artifactId,
+          purpose: "review_subject",
+          decisionId: `${operationId}.start-authorization`,
+          authorityBasis: "fixed-start-authorization-policy",
+        }
+      );
       if (binding.kind !== "available") {
-        throw new ResourceProofRejectedError("binding_mismatch", "Review subject could not be retained");
+        throw new ResourceProofRejectedError(
+          "binding_mismatch",
+          "Review subject could not be retained"
+        );
       }
     }
-    const retrieval = await services.artifacts.retrieveForUseBinding(services.artifactCredential, bindingId);
+    const retrieval = await services.artifacts.retrieveForUseBinding(
+      services.artifactCredential,
+      bindingId
+    );
     const subject = policy.reviewSubject;
     if (
-      retrieval.kind !== "retrieved" || retrieval.integrity !== "verified" ||
+      retrieval.kind !== "retrieved" ||
+      retrieval.integrity !== "verified" ||
       retrieval.artifact.artifactId !== subject.artifactId ||
-      retrieval.artifact.byteCount !== subject.byteCount || retrieval.artifact.digest !== subject.digest ||
+      retrieval.artifact.byteCount !== subject.byteCount ||
+      retrieval.artifact.digest !== subject.digest ||
       retrieval.artifact.formatId !== subject.format ||
       retrieval.artifact.normalizationId !== subject.normalization
     ) {
-      throw new ResourceProofRejectedError("binding_mismatch", "Review subject integrity could not be verified");
+      throw new ResourceProofRejectedError(
+        "binding_mismatch",
+        "Review subject integrity could not be verified"
+      );
     }
   };
 
   const waitAtStartGate = async (
     record: OperationRecord,
-    identified: Operation,
+    identified: Operation
   ): Promise<Readonly<StartInstruction>> => {
     const authorization = identified.startAuthorizationTiming;
     if (authorization.policy === "disabled") {
@@ -745,61 +891,81 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         receiptDigest: automaticStartScopeDigest(identified),
         deliveryGeneration: 1,
       };
-      await runEffect(advanceAndProject(record.operationId, {
-        type: "start_delivery_authority_acquired",
-        instruction: startInstructionReference(instruction),
-      }));
+      await runEffect(
+        advanceAndProject(record.operationId, {
+          type: "start_delivery_authority_acquired",
+          instruction: startInstructionReference(instruction),
+        })
+      );
       return instruction;
     }
     const receiptPolicy = identified.startupReceiptPolicy;
     if (receiptPolicy === undefined) {
-      throw new ResourceProofRejectedError("binding_mismatch", "Fixed Startup receipt policy is unavailable");
+      throw new ResourceProofRejectedError(
+        "binding_mismatch",
+        "Fixed Startup receipt policy is unavailable"
+      );
     }
     const latest = await runEffect(getOperation(record.operationId));
     const resource = latest.resourceEvidenceRecord;
-    const resourceGeneration = resource?.snapshot.validations.at(-1)?.generation;
-    const resourceEvidence = resource?.snapshot.state === "held" &&
-        resource.snapshot.proof !== undefined && resource.snapshot.workspaceProof !== undefined
-      ? {
-          startAttemptId: resource.request.startAttemptId,
-          acquisitionId: resource.snapshot.acquisitionId,
-          requestDigest: resource.snapshot.requestDigest,
-          proofDigest: resource.snapshot.proof.digest,
-          workspaceProofDigest: resource.snapshot.workspaceProof.digest,
-          acquisitionState: "held" as const,
-          ...(resourceGeneration === undefined ? {} : { generation: resourceGeneration }),
-        }
-      : undefined;
+    const resourceGeneration =
+      resource?.snapshot.validations.at(-1)?.generation;
+    const resourceEvidence =
+      resource?.snapshot.state === "held" &&
+      resource.snapshot.proof !== undefined &&
+      resource.snapshot.workspaceProof !== undefined
+        ? {
+            startAttemptId: resource.request.startAttemptId,
+            acquisitionId: resource.snapshot.acquisitionId,
+            requestDigest: resource.snapshot.requestDigest,
+            proofDigest: resource.snapshot.proof.digest,
+            workspaceProofDigest: resource.snapshot.workspaceProof.digest,
+            acquisitionState: "held" as const,
+            ...(resourceGeneration === undefined
+              ? {}
+              : { generation: resourceGeneration }),
+          }
+        : undefined;
     if (resource !== undefined) {
-      const manifestDigest = permissionManifestDocument(resource.request.effectiveManifest).digest;
+      const manifestDigest = permissionManifestDocument(
+        resource.request.effectiveManifest
+      ).digest;
       if (
         resourceEvidence === undefined ||
-        !isDeepStrictEqual(receiptPolicy.workspace, resource.request.workspace) ||
+        !isDeepStrictEqual(
+          receiptPolicy.workspace,
+          resource.request.workspace
+        ) ||
         receiptPolicy.permissionManifest.digest !== manifestDigest
       ) {
-        throw new ResourceProofRejectedError("binding_mismatch", "Startup receipt differs from fixed resource evidence");
+        throw new ResourceProofRejectedError(
+          "binding_mismatch",
+          "Startup receipt differs from fixed resource evidence"
+        );
       }
     }
     await verifyReviewSubject(record.operationId, receiptPolicy, true);
-    const waiting = await runEffect(advanceOperation(record.operationId, {
-      type: "startup_receipt_recorded",
-      gate: "waiting",
-      receipt: {
-        operationId: identified.operationId,
-        workerIdentity: latest.workerIdentity!,
-        requestedConfig: latest.requestedConfig,
-        effectiveConfig: latest.effectiveConfig,
-        observedConfig: latest.observedConfig!,
-        workspace: receiptPolicy.workspace,
-        permissionManifest: receiptPolicy.permissionManifest,
-        ...(resourceEvidence === undefined ? {} : { resourceEvidence }),
-        reviewSubject: receiptPolicy.reviewSubject,
-        reviewSubjectVerification: receiptPolicy.reviewSubjectVerification,
-        configuredAuthorizationPolicy: authorization.configuredPolicy,
-        authorizationPolicy: "required",
-        authorizationDeadline: latest.startAuthorizationTiming.deadline,
-      },
-    }));
+    const waiting = await runEffect(
+      advanceOperation(record.operationId, {
+        type: "startup_receipt_recorded",
+        gate: "waiting",
+        receipt: {
+          operationId: identified.operationId,
+          workerIdentity: latest.workerIdentity!,
+          requestedConfig: latest.requestedConfig,
+          effectiveConfig: latest.effectiveConfig,
+          observedConfig: latest.observedConfig!,
+          workspace: receiptPolicy.workspace,
+          permissionManifest: receiptPolicy.permissionManifest,
+          ...(resourceEvidence === undefined ? {} : { resourceEvidence }),
+          reviewSubject: receiptPolicy.reviewSubject,
+          reviewSubjectVerification: receiptPolicy.reviewSubjectVerification,
+          configuredAuthorizationPolicy: authorization.configuredPolicy,
+          authorizationPolicy: "required",
+          authorizationDeadline: latest.startAuthorizationTiming.deadline,
+        },
+      })
+    );
     await runEffect(project(waiting));
     if (waiting.startGate === "expired") {
       await terminateBeforeStart(record, "start_authorization_timed_out");
@@ -811,15 +977,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     });
     void (async () => {
       const observedAt = await runEffect(services.clock.now());
-      const wallRemaining = Date.parse(latest.startAuthorizationTiming.deadline) - Date.parse(observedAt);
-      const monotonicRemaining = (authorizationMonotonicDeadlines.get(record.operationId) ?? -Infinity) -
+      const wallRemaining =
+        Date.parse(latest.startAuthorizationTiming.deadline) -
+        Date.parse(observedAt);
+      const monotonicRemaining =
+        (authorizationMonotonicDeadlines.get(record.operationId) ?? -Infinity) -
         services.clock.monotonicMilliseconds();
       const remaining = Math.min(wallRemaining, monotonicRemaining);
       if (remaining > 0) await runEffect(services.clock.sleep(remaining));
       await serializeAuthorizationMutation(record.operationId, () =>
         expireStartAuthorization(record.operationId)
       );
-    })().catch((error) => startGateWaiters.get(record.operationId)?.reject(error));
+    })().catch((error) =>
+      startGateWaiters.get(record.operationId)?.reject(error)
+    );
     return gate;
   };
 
@@ -828,271 +999,393 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       cwd: "/test/workspace",
       profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
     };
-    const resourcePolicy = runtimeConfiguration.profiles[operation.task.profile]?.resources;
+    const resourcePolicy =
+      runtimeConfiguration.profiles[operation.task.profile]?.resources;
     if (resourcePolicy?.resourceProofPolicy !== "required") return Effect.void;
     const controller = services.resourceProofController;
     if (controller === undefined) {
-      return Effect.fail(new ResourceProofRejectedError(
-        "authority_unavailable",
-        "Required resource proof adapters are unavailable",
-      ));
+      return Effect.fail(
+        new ResourceProofRejectedError(
+          "authority_unavailable",
+          "Required resource proof adapters are unavailable"
+        )
+      );
     }
     return Effect.tryPromise({
       try: () => controller.revalidate(operation.operationId),
-      catch: (error) => error instanceof ResourceProofRejectedError
-        ? error
-        : new ResourceProofRejectedError(
-            "validation_unknown",
-            error instanceof Error ? error.message : String(error),
-          ),
+      catch: (error) =>
+        error instanceof ResourceProofRejectedError
+          ? error
+          : new ResourceProofRejectedError(
+              "validation_unknown",
+              error instanceof Error ? error.message : String(error)
+            ),
     }).pipe(Effect.asVoid);
   };
 
-  const execute = async (record: OperationRecord, recovering = false): Promise<void> => {
+  const execute = async (
+    record: OperationRecord,
+    recovering = false
+  ): Promise<void> => {
     try {
       let operation = recovering
         ? await runEffect(getOperation(record.operationId))
-        : await runEffect(advanceOperation(record.operationId, { type: "operation_starting" }));
+        : await runEffect(
+            advanceOperation(record.operationId, { type: "operation_starting" })
+          );
       if (!recovering) await runEffect(project(operation));
 
       const worker = record.worker;
       if (worker === undefined) {
         throw new Error("Worker was not opened");
       }
-      const workerOutcome = await runEffect(worker.run({
-        workerLaunched: () => recovering
-          ? Effect.void
-          : advanceAndProject(record.operationId, { type: "worker_launched" }),
-        workerIdentified: (workerIdentity) => recovering
-          ? Effect.tryPromise({
-              try: async () => {
-                const current = await runEffect(getOperation(record.operationId));
-                const existingIdentity = current.workerIdentity;
-                const previous = current.startDeliveryAuthority;
-                if (
-                  existingIdentity === undefined ||
-                  previous === undefined ||
-                  existingIdentity.processInstanceId !== workerIdentity.processInstanceId ||
-                  existingIdentity.processStartToken !== workerIdentity.processStartToken
-                ) {
-                  throw new OperationPersistenceError(record.operationId, "corrupt_record");
-                }
-                const pendingHandoff = current.startDeliveryHandoffs.at(-1);
-                const resumesHandoff =
-                  pendingHandoff !== undefined &&
-                  pendingHandoff.deliveryGeneration === previous.deliveryGeneration + 1;
-                const deliveryGeneration = resumesHandoff
-                  ? pendingHandoff.deliveryGeneration
-                  : previous.deliveryGeneration + 1;
-                const dispatcherId = resumesHandoff
-                  ? pendingHandoff.successorDispatcherId
-                  : `${RUNTIME_ACTOR_ID}-recovery-${deliveryGeneration}`;
-                return {
-                  dispatcherId,
-                  workerProcessInstanceId: previous.workerProcessInstanceId,
-                  receiptDigest: previous.receiptDigest,
-                  ...(previous.authorizationDecisionId === undefined
-                    ? {}
-                    : { authorizationDecisionId: previous.authorizationDecisionId }),
+      const workerOutcome = await runEffect(
+        worker.run({
+          workerLaunched: () =>
+            recovering
+              ? Effect.void
+              : advanceAndProject(record.operationId, {
+                  type: "worker_launched",
+                }),
+          workerIdentified: (workerIdentity) =>
+            recovering
+              ? Effect.tryPromise({
+                  try: async () => {
+                    const current = await runEffect(
+                      getOperation(record.operationId)
+                    );
+                    const existingIdentity = current.workerIdentity;
+                    const previous = current.startDeliveryAuthority;
+                    if (
+                      existingIdentity === undefined ||
+                      previous === undefined ||
+                      existingIdentity.processInstanceId !==
+                        workerIdentity.processInstanceId ||
+                      existingIdentity.processStartToken !==
+                        workerIdentity.processStartToken
+                    ) {
+                      throw new OperationPersistenceError(
+                        record.operationId,
+                        "corrupt_record"
+                      );
+                    }
+                    const pendingHandoff = current.startDeliveryHandoffs.at(-1);
+                    const resumesHandoff =
+                      pendingHandoff !== undefined &&
+                      pendingHandoff.deliveryGeneration ===
+                        previous.deliveryGeneration + 1;
+                    const deliveryGeneration = resumesHandoff
+                      ? pendingHandoff.deliveryGeneration
+                      : previous.deliveryGeneration + 1;
+                    const dispatcherId = resumesHandoff
+                      ? pendingHandoff.successorDispatcherId
+                      : `${RUNTIME_ACTOR_ID}-recovery-${deliveryGeneration}`;
+                    return {
+                      dispatcherId,
+                      workerProcessInstanceId: previous.workerProcessInstanceId,
+                      receiptDigest: previous.receiptDigest,
+                      ...(previous.authorizationDecisionId === undefined
+                        ? {}
+                        : {
+                            authorizationDecisionId:
+                              previous.authorizationDecisionId,
+                          }),
+                      deliveryGeneration,
+                      ...(current.startAuthorizationTiming.policy === "required"
+                        ? {
+                            deadline: current.startAuthorizationTiming.deadline,
+                          }
+                        : {}),
+                    };
+                  },
+                  catch: (error) =>
+                    error instanceof OperationPersistenceError
+                      ? error
+                      : new OperationPersistenceError(
+                          record.operationId,
+                          "write_failed"
+                        ),
+                })
+              : advanceOperation(record.operationId, {
+                  type: "worker_identified",
+                  workerIdentity: {
+                    processId: workerIdentity.processId,
+                    processInstanceId: workerIdentity.processInstanceId,
+                    processStartToken: workerIdentity.processStartToken,
+                    piSessionId: workerIdentity.piSessionId,
+                    paneId: operation.presentation?.paneId ?? "",
+                  },
+                  observedConfig: workerIdentity.observedConfig,
+                }).pipe(
+                  Effect.tap((identified) => project(identified)),
+                  Effect.tap((identified) => {
+                    const runtimeConfiguration = services.configuration ?? {
+                      cwd: "/test/workspace",
+                      profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
+                    };
+                    const resourcePolicy =
+                      runtimeConfiguration.profiles[identified.task.profile]
+                        ?.resources;
+                    if (resourcePolicy?.resourceProofPolicy !== "required")
+                      return Effect.void;
+                    const controller = services.resourceProofController;
+                    if (controller === undefined) {
+                      return Effect.fail(
+                        new ResourceProofRejectedError(
+                          "authority_unavailable",
+                          "Required resource proof adapters are unavailable"
+                        )
+                      );
+                    }
+                    return Effect.tryPromise({
+                      try: async () => {
+                        await controller.prepare({
+                          operationId: identified.operationId,
+                          workerProcessInstanceId:
+                            workerIdentity.processInstanceId,
+                          startAttemptId: `${identified.operationId}:start:1`,
+                          workspace: resourcePolicy.workspace,
+                          requestedManifest: resourcePolicy.permissionManifest,
+                          effectiveManifest: resourcePolicy.permissionManifest,
+                          requirements: resourcePolicy,
+                        });
+                        await controller.revalidate(identified.operationId);
+                      },
+                      catch: (error) =>
+                        error instanceof ResourceProofRejectedError
+                          ? error
+                          : new ResourceProofRejectedError(
+                              "validation_unknown",
+                              error instanceof Error
+                                ? error.message
+                                : String(error)
+                            ),
+                    });
+                  }),
+                  Effect.flatMap((identified) =>
+                    Effect.tryPromise({
+                      try: () => waitAtStartGate(record, identified),
+                      catch: (error) =>
+                        error instanceof OperationPersistenceError ||
+                        error instanceof ResourceProofRejectedError
+                          ? error
+                          : new OperationPersistenceError(
+                              record.operationId,
+                              "write_failed"
+                            ),
+                    })
+                  )
+                ),
+          startDeliveryAuthorityRevoked: (
+            successorDispatcherId,
+            deliveryGeneration
+          ) =>
+            Effect.tryPromise({
+              try: () => services.artifacts.writerOwnership(),
+              catch: () =>
+                new OperationPersistenceError(
+                  record.operationId,
+                  "write_failed"
+                ),
+            }).pipe(
+              Effect.flatMap((writerOwnership) =>
+                advanceAndProject(record.operationId, {
+                  type: "start_delivery_authority_revoked",
+                  successorDispatcherId,
                   deliveryGeneration,
-                  ...(current.startAuthorizationTiming.policy === "required"
-                    ? { deadline: current.startAuthorizationTiming.deadline }
-                    : {}),
-                };
-              },
-              catch: (error) => error instanceof OperationPersistenceError
-                ? error
-                : new OperationPersistenceError(record.operationId, "write_failed"),
-            })
-          : advanceOperation(record.operationId, {
-          type: "worker_identified",
-          workerIdentity: {
-            processId: workerIdentity.processId,
-            processInstanceId: workerIdentity.processInstanceId,
-            processStartToken: workerIdentity.processStartToken,
-            piSessionId: workerIdentity.piSessionId,
-            paneId: operation.presentation?.paneId ?? "",
-          },
-          observedConfig: workerIdentity.observedConfig,
-        }).pipe(
-          Effect.tap((identified) => project(identified)),
-          Effect.tap((identified) => {
-            const runtimeConfiguration = services.configuration ?? {
-              cwd: "/test/workspace",
-              profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
-            };
-            const resourcePolicy = runtimeConfiguration.profiles[identified.task.profile]?.resources;
-            if (resourcePolicy?.resourceProofPolicy !== "required") return Effect.void;
-            const controller = services.resourceProofController;
-            if (controller === undefined) {
-              return Effect.fail(new ResourceProofRejectedError(
-                "authority_unavailable",
-                "Required resource proof adapters are unavailable",
-              ));
-            }
-            return Effect.tryPromise({
-              try: async () => {
-                await controller.prepare({
-                  operationId: identified.operationId,
-                  workerProcessInstanceId: workerIdentity.processInstanceId,
-                  startAttemptId: `${identified.operationId}:start:1`,
-                  workspace: resourcePolicy.workspace,
-                  requestedManifest: resourcePolicy.permissionManifest,
-                  effectiveManifest: resourcePolicy.permissionManifest,
-                  requirements: resourcePolicy,
+                  writerOwnership,
+                })
+              )
+            ),
+          deliveryGenerationConfirmed: (confirmation) =>
+            Effect.gen(function* () {
+              yield* advanceAndProject(record.operationId, {
+                type: "start_delivery_generation_confirmed",
+                dispatcherId: confirmation.dispatcherId,
+                deliveryGeneration: confirmation.deliveryGeneration,
+                acceptanceState: confirmation.acceptanceState,
+                ...(confirmation.acceptedInstruction === undefined
+                  ? {}
+                  : {
+                      acceptedInstruction: startInstructionReference(
+                        confirmation.acceptedInstruction
+                      ),
+                    }),
+              });
+              const current = yield* getOperation(record.operationId);
+              if (confirmation.acceptanceState === "accepted") {
+                const accepted = confirmation.acceptedInstruction;
+                if (accepted === undefined) {
+                  return yield* Effect.fail(
+                    new OperationPersistenceError(
+                      record.operationId,
+                      "corrupt_record"
+                    )
+                  );
+                }
+                if (current.startInstructionAcceptance === undefined) {
+                  yield* advanceAndProject(record.operationId, {
+                    type: "start_instruction_accepted",
+                    instruction: startInstructionReference(accepted),
+                    proof: "worker-durable-acceptance",
+                  });
+                }
+                const acceptedCurrent = yield* getOperation(record.operationId);
+                if (
+                  acceptedCurrent.startInstructionAcknowledgement === undefined
+                ) {
+                  yield* advanceAndProject(record.operationId, {
+                    type: "start_instruction_acknowledged",
+                    instruction: startInstructionReference(accepted),
+                    proof: "authenticated-generation-acknowledgement",
+                  });
+                }
+                return;
+              }
+              if (confirmation.acceptanceState === "unknown") return;
+              const workerIdentity = current.workerIdentity;
+              const previousAuthority = current.startDeliveryAuthority;
+              if (current.state !== "starting") {
+                return yield* Effect.fail(
+                  new StartDeliveryAbortedError(
+                    `Start delivery was aborted for Operation ${record.operationId}`
+                  )
+                );
+              }
+              if (
+                workerIdentity === undefined ||
+                previousAuthority === undefined ||
+                (current.startGate !== "not_required" &&
+                  current.startGate !== "authorized")
+              ) {
+                return yield* Effect.fail(
+                  new OperationPersistenceError(
+                    record.operationId,
+                    "corrupt_record"
+                  )
+                );
+              }
+              if (
+                current.startAuthorizationTiming.policy === "required" &&
+                Date.parse(yield* services.clock.now()) >=
+                  Date.parse(current.startAuthorizationTiming.deadline)
+              ) {
+                yield* Effect.promise(() =>
+                  expireStartAuthorization(record.operationId)
+                );
+                return yield* Effect.fail(
+                  new StartDeliveryAbortedError(
+                    `Start authorization expired for Operation ${record.operationId}`
+                  )
+                );
+              }
+              if (
+                !(yield* Effect.promise(() =>
+                  recoveredStartAuthorizationIsCurrent(current)
+                ))
+              ) {
+                yield* Effect.promise(() =>
+                  invalidateStartAuthorization(record.operationId)
+                );
+                return yield* Effect.fail(
+                  new StartDeliveryAbortedError(
+                    `Start authorization is no longer current for Operation ${record.operationId}`
+                  )
+                );
+              }
+              if (current.startAuthorizationTiming.policy === "required") {
+                const receiptPolicy = current.startupReceiptPolicy;
+                if (receiptPolicy === undefined) {
+                  return yield* Effect.fail(
+                    new OperationPersistenceError(
+                      record.operationId,
+                      "corrupt_record"
+                    )
+                  );
+                }
+                yield* Effect.tryPromise({
+                  try: () =>
+                    verifyReviewSubject(
+                      record.operationId,
+                      receiptPolicy,
+                      true
+                    ),
+                  catch: (error) =>
+                    error instanceof ResourceProofRejectedError
+                      ? error
+                      : new OperationPersistenceError(
+                          record.operationId,
+                          "write_failed"
+                        ),
                 });
-                await controller.revalidate(identified.operationId);
-              },
-              catch: (error) => error instanceof ResourceProofRejectedError
-                ? error
-                : new ResourceProofRejectedError(
-                    "validation_unknown",
-                    error instanceof Error ? error.message : String(error),
-                  ),
-            });
-          }),
-          Effect.flatMap((identified) => Effect.tryPromise({
-            try: () => waitAtStartGate(record, identified),
-            catch: (error) => error instanceof OperationPersistenceError || error instanceof ResourceProofRejectedError
-              ? error
-              : new OperationPersistenceError(record.operationId, "write_failed"),
-          })),
-        ),
-        startDeliveryAuthorityRevoked: (successorDispatcherId, deliveryGeneration) =>
-          Effect.tryPromise({
-            try: () => services.artifacts.writerOwnership(),
-            catch: () => new OperationPersistenceError(record.operationId, "write_failed"),
-          }).pipe(
-            Effect.flatMap((writerOwnership) => advanceAndProject(record.operationId, {
-              type: "start_delivery_authority_revoked",
-              successorDispatcherId,
-              deliveryGeneration,
-              writerOwnership,
-            })),
-          ),
-        deliveryGenerationConfirmed: (confirmation) => Effect.gen(function* () {
-          yield* advanceAndProject(record.operationId, {
-            type: "start_delivery_generation_confirmed",
-            dispatcherId: confirmation.dispatcherId,
-            deliveryGeneration: confirmation.deliveryGeneration,
-            acceptanceState: confirmation.acceptanceState,
-            ...(confirmation.acceptedInstruction === undefined
-              ? {}
-              : { acceptedInstruction: startInstructionReference(confirmation.acceptedInstruction) }),
-          });
-          const current = yield* getOperation(record.operationId);
-          if (confirmation.acceptanceState === "accepted") {
-            const accepted = confirmation.acceptedInstruction;
-            if (accepted === undefined) {
-              return yield* Effect.fail(new OperationPersistenceError(record.operationId, "corrupt_record"));
-            }
-            if (current.startInstructionAcceptance === undefined) {
+              }
+              yield* revalidateRequiredResourceProof(current);
+              const revalidated = yield* getOperation(record.operationId);
+              if (
+                !(yield* Effect.promise(() =>
+                  recoveredStartAuthorizationIsCurrent(revalidated)
+                ))
+              ) {
+                yield* Effect.promise(() =>
+                  invalidateStartAuthorization(record.operationId)
+                );
+                return yield* Effect.fail(
+                  new StartDeliveryAbortedError(
+                    `Start authorization is no longer current for Operation ${record.operationId}`
+                  )
+                );
+              }
               yield* advanceAndProject(record.operationId, {
-                type: "start_instruction_accepted",
-                instruction: startInstructionReference(accepted),
-                proof: "worker-durable-acceptance",
+                type: "start_delivery_authority_acquired",
+                instruction: {
+                  dispatcherId: confirmation.dispatcherId,
+                  workerProcessInstanceId: workerIdentity.processInstanceId,
+                  receiptDigest: previousAuthority.receiptDigest,
+                  ...(previousAuthority.authorizationDecisionId === undefined
+                    ? {}
+                    : {
+                        authorizationDecisionId:
+                          previousAuthority.authorizationDecisionId,
+                      }),
+                  deliveryGeneration: confirmation.deliveryGeneration,
+                },
               });
-            }
-            const acceptedCurrent = yield* getOperation(record.operationId);
-            if (acceptedCurrent.startInstructionAcknowledgement === undefined) {
-              yield* advanceAndProject(record.operationId, {
-                type: "start_instruction_acknowledged",
-                instruction: startInstructionReference(accepted),
-                proof: "authenticated-generation-acknowledgement",
-              });
-            }
-            return;
-          }
-          if (confirmation.acceptanceState === "unknown") return;
-          const workerIdentity = current.workerIdentity;
-          const previousAuthority = current.startDeliveryAuthority;
-          if (current.state !== "starting") {
-            return yield* Effect.fail(new StartDeliveryAbortedError(
-              `Start delivery was aborted for Operation ${record.operationId}`,
-            ));
-          }
-          if (
-            workerIdentity === undefined ||
-            previousAuthority === undefined ||
-            current.startGate !== "not_required" && current.startGate !== "authorized"
-          ) {
-            return yield* Effect.fail(new OperationPersistenceError(record.operationId, "corrupt_record"));
-          }
-          if (
-            current.startAuthorizationTiming.policy === "required" &&
-            Date.parse(yield* services.clock.now()) >= Date.parse(current.startAuthorizationTiming.deadline)
-          ) {
-            yield* Effect.promise(() => expireStartAuthorization(record.operationId));
-            return yield* Effect.fail(new StartDeliveryAbortedError(
-              `Start authorization expired for Operation ${record.operationId}`,
-            ));
-          }
-          if (!(yield* Effect.promise(() => recoveredStartAuthorizationIsCurrent(current)))) {
-            yield* Effect.promise(() => invalidateStartAuthorization(record.operationId));
-            return yield* Effect.fail(new StartDeliveryAbortedError(
-              `Start authorization is no longer current for Operation ${record.operationId}`,
-            ));
-          }
-          if (current.startAuthorizationTiming.policy === "required") {
-            const receiptPolicy = current.startupReceiptPolicy;
-            if (receiptPolicy === undefined) {
-              return yield* Effect.fail(new OperationPersistenceError(record.operationId, "corrupt_record"));
-            }
-            yield* Effect.tryPromise({
-              try: () => verifyReviewSubject(record.operationId, receiptPolicy, true),
-              catch: (error) => error instanceof ResourceProofRejectedError
-                ? error
-                : new OperationPersistenceError(record.operationId, "write_failed"),
-            });
-          }
-          yield* revalidateRequiredResourceProof(current);
-          const revalidated = yield* getOperation(record.operationId);
-          if (!(yield* Effect.promise(() => recoveredStartAuthorizationIsCurrent(revalidated)))) {
-            yield* Effect.promise(() => invalidateStartAuthorization(record.operationId));
-            return yield* Effect.fail(new StartDeliveryAbortedError(
-              `Start authorization is no longer current for Operation ${record.operationId}`,
-            ));
-          }
-          yield* advanceAndProject(record.operationId, {
-            type: "start_delivery_authority_acquired",
-            instruction: {
-              dispatcherId: confirmation.dispatcherId,
-              workerProcessInstanceId: workerIdentity.processInstanceId,
-              receiptDigest: previousAuthority.receiptDigest,
-              ...(previousAuthority.authorizationDecisionId === undefined
-                ? {}
-                : { authorizationDecisionId: previousAuthority.authorizationDecisionId }),
-              deliveryGeneration: confirmation.deliveryGeneration,
-            },
-          });
-        }),
-        startDeliveryEntered: (instruction) => advanceAndProject(record.operationId, {
-          type: "start_delivery_entered",
-          instruction: startInstructionReference(instruction),
-        }),
-        startInstructionDispatched: (instruction) => advanceAndProject(record.operationId, {
-          type: "start_instruction_dispatched",
-          instruction: startInstructionReference(instruction),
-        }),
-        startInstructionAccepted: (instruction) => advanceAndProject(record.operationId, {
-          type: "start_instruction_accepted",
-          instruction: startInstructionReference(instruction),
-          proof: "worker-durable-acceptance",
-        }),
-        startInstructionAcknowledged: (instruction) => advanceAndProject(record.operationId, {
-          type: "start_instruction_acknowledged",
-          instruction: startInstructionReference(instruction),
-          proof: "authenticated-worker-acknowledgement",
-        }),
-        acceptResult: (result) => resultAcceptance.accept(record.operationId, result),
-      }));
+            }),
+          startDeliveryEntered: (instruction) =>
+            advanceAndProject(record.operationId, {
+              type: "start_delivery_entered",
+              instruction: startInstructionReference(instruction),
+            }),
+          startInstructionDispatched: (instruction) =>
+            advanceAndProject(record.operationId, {
+              type: "start_instruction_dispatched",
+              instruction: startInstructionReference(instruction),
+            }),
+          startInstructionAccepted: (instruction) =>
+            advanceAndProject(record.operationId, {
+              type: "start_instruction_accepted",
+              instruction: startInstructionReference(instruction),
+              proof: "worker-durable-acceptance",
+            }),
+          startInstructionAcknowledged: (instruction) =>
+            advanceAndProject(record.operationId, {
+              type: "start_instruction_acknowledged",
+              instruction: startInstructionReference(instruction),
+              proof: "authenticated-worker-acknowledgement",
+            }),
+          acceptResult: (result) =>
+            resultAcceptance.accept(record.operationId, result),
+        })
+      );
       if (workerOutcome.successfulExitConfirmed === true) {
         const current = await runEffect(getOperation(record.operationId));
         if (!isTerminal(current) && current.state !== "cancelling") {
-          await runEffect(advanceAndProject(record.operationId, {
-            type: "worker_stop_confirmed",
-            proof: "worker-stop",
-          }));
+          await runEffect(
+            advanceAndProject(record.operationId, {
+              type: "worker_stop_confirmed",
+              proof: "worker-stop",
+            })
+          );
           operation = await runEffect(getOperation(record.operationId));
         }
       }
@@ -1100,20 +1393,24 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         const current = await runEffect(getOperation(record.operationId));
         if (isTerminal(current) || current.state === "cancelling") return;
         if (workerOutcome.state === "process-exited-without-result") {
-          await services.resourceProofController?.safetyCleanup(record.operationId).catch(() => undefined);
+          await services.resourceProofController
+            ?.safetyCleanup(record.operationId)
+            .catch(() => undefined);
         } else if (
           workerOutcome.state === "liveness-unproven" ||
           workerOutcome.state === "worker_protocol_failed" ||
           workerOutcome.state === "agent_failed"
         ) {
-          await services.resourceProofController?.markCleanupUnresolved(record.operationId).catch(() => undefined);
+          await services.resourceProofController
+            ?.markCleanupUnresolved(record.operationId)
+            .catch(() => undefined);
         }
         if (workerOutcome.state === "liveness-unproven") {
           operation = await runEffect(
             advanceOperation(record.operationId, {
               type: "operation_unknown",
               reason: "liveness-unproven",
-            }),
+            })
           );
           await settleTerminal(record, operation);
           return;
@@ -1122,8 +1419,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await runEffect(
             Effect.catchAllCause(
               services.presentation.onWorkerStartFailure(current),
-              () => Effect.void,
-            ),
+              () => Effect.void
+            )
           );
         }
         if (workerOutcome.state === "agent_failed") {
@@ -1131,7 +1428,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             advanceOperation(record.operationId, {
               type: "agent_settled",
               evidence: workerOutcome.evidence,
-            }),
+            })
           );
           await runEffect(project(operation));
         }
@@ -1140,7 +1437,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             type: "self_settled",
             outcome: "failed",
             reason: workerOutcome.state,
-          }),
+          })
         );
         await runEffect(project(operation));
         await tryFinalize(record);
@@ -1151,9 +1448,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           cwd: "/test/workspace",
           profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
         };
-        const resources = runtimeConfiguration.profiles[operation.task.profile]?.resources;
-        if (resources?.resourceProofPolicy === "required" && resources.cleanupPolicy === "automatic") {
-          await services.resourceProofController?.automaticCleanup(record.operationId).catch(() => undefined);
+        const resources =
+          runtimeConfiguration.profiles[operation.task.profile]?.resources;
+        if (
+          resources?.resourceProofPolicy === "required" &&
+          resources.cleanupPolicy === "automatic"
+        ) {
+          await services.resourceProofController
+            ?.automaticCleanup(record.operationId)
+            .catch(() => undefined);
         }
       }
 
@@ -1161,43 +1464,57 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         advanceOperation(record.operationId, {
           type: "agent_settled",
           evidence: workerOutcome.evidence,
-        }),
+        })
       );
       await runEffect(project(operation));
       operation = await runEffect(
         advanceOperation(record.operationId, {
           type: "self_settled",
           outcome: "succeeded",
-        }),
+        })
       );
       await runEffect(project(operation));
       await tryFinalize(record);
     } catch (error) {
-      const current = await runEffect(getOperation(record.operationId)).catch(() => undefined);
+      const current = await runEffect(getOperation(record.operationId)).catch(
+        () => undefined
+      );
       if (
         current !== undefined &&
         (isTerminal(current) || current.state === "cancelling")
       ) {
         return;
       }
-      if (error instanceof ResourceProofRejectedError && current !== undefined) {
-        const stopped = record.worker === undefined
-          ? undefined
-          : await runEffect(record.worker.cancel(current.cancellationEpoch + 1, 1_000)).catch(() => undefined);
+      if (
+        error instanceof ResourceProofRejectedError &&
+        current !== undefined
+      ) {
+        const stopped =
+          record.worker === undefined
+            ? undefined
+            : await runEffect(
+                record.worker.cancel(current.cancellationEpoch + 1, 1_000)
+              ).catch(() => undefined);
         if (stopped === undefined) {
-          const unknown = await runEffect(advanceOperation(record.operationId, {
-            type: "operation_unknown",
-            reason: "liveness-unproven",
-          }));
+          const unknown = await runEffect(
+            advanceOperation(record.operationId, {
+              type: "operation_unknown",
+              reason: "liveness-unproven",
+            })
+          );
           await settleTerminal(record, unknown);
           return;
         }
-        await services.resourceProofController?.safetyCleanup(record.operationId).catch(() => undefined);
-        const failed = await runEffect(advanceOperation(record.operationId, {
-          type: "self_settled",
-          outcome: "failed",
-          reason: "resource_proof_rejected",
-        }));
+        await services.resourceProofController
+          ?.safetyCleanup(record.operationId)
+          .catch(() => undefined);
+        const failed = await runEffect(
+          advanceOperation(record.operationId, {
+            type: "self_settled",
+            outcome: "failed",
+            reason: "resource_proof_rejected",
+          })
+        );
         await runEffect(project(failed));
         await tryFinalize(record);
         return;
@@ -1207,13 +1524,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           ? error
           : new RuntimeError(
               "operation_failed",
-              error instanceof Error ? error.message : String(error),
-            ),
+              error instanceof Error ? error.message : String(error)
+            )
       );
     }
   };
 
-  const countLiveDescendants = async (rootOperationId: string): Promise<number> => {
+  const countLiveDescendants = async (
+    rootOperationId: string
+  ): Promise<number> => {
     let count = 0;
     for (const active of records.values()) {
       const operation = await runEffect(getOperation(active.operationId));
@@ -1231,18 +1550,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const createOperationUnlocked = async (
     taskInput: TaskSpec,
     options: SpawnOptions | undefined,
-    revisionReservation?: Readonly<RevisionReservation>,
+    revisionReservation?: Readonly<RevisionReservation>
   ): Promise<OperationRecord> => {
     await runEffect(services.presentation.preflight());
     const decodedTask = await Effect.runPromise(
-      Schema.decodeUnknown(TaskSpecSchema)(taskInput),
+      Schema.decodeUnknown(TaskSpecSchema)(taskInput)
     );
     const task: TaskSpec = {
       promptRef: decodedTask.promptRef,
       profile: decodedTask.profile,
       idempotencyKey: decodedTask.idempotencyKey,
       ...(decodedTask.model === undefined ? {} : { model: decodedTask.model }),
-      ...(decodedTask.thinkingLevel === undefined ? {} : { thinkingLevel: decodedTask.thinkingLevel }),
+      ...(decodedTask.thinkingLevel === undefined
+        ? {}
+        : { thinkingLevel: decodedTask.thinkingLevel }),
       ...(decodedTask.tools === undefined ? {} : { tools: decodedTask.tools }),
       ...(decodedTask.cwd === undefined ? {} : { cwd: decodedTask.cwd }),
     };
@@ -1252,9 +1573,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     if (parentId !== undefined && parent === undefined) {
       throw new SpawnRejectedError("parent_not_found", parentId);
     }
-    const parentOperation = parent === undefined
-      ? undefined
-      : await runEffect(getOperation(parent.operationId));
+    const parentOperation =
+      parent === undefined
+        ? undefined
+        : await runEffect(getOperation(parent.operationId));
     if (parent !== undefined && parentOperation !== undefined) {
       let cancellationInProgress = parentOperation.spawnFrozen;
       for (const cancellingRootId of cancellingSubtreeRoots) {
@@ -1266,26 +1588,37 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (cancellationInProgress) {
         throw new SpawnRejectedError(
           "cancellation_in_progress",
-          parent.operationId,
+          parent.operationId
         );
       }
-      if (isTerminal(parentOperation) || parentOperation.selfOutcome !== undefined) {
+      if (
+        isTerminal(parentOperation) ||
+        parentOperation.selfOutcome !== undefined
+      ) {
         throw new SpawnRejectedError("parent_terminal", parent.operationId);
       }
       if (parentOperation.lineage.depth + 1 > MAX_DEPTH) {
-        throw new SpawnRejectedError("depth_limit_exceeded", parent.operationId);
+        throw new SpawnRejectedError(
+          "depth_limit_exceeded",
+          parent.operationId
+        );
       }
       if (
         parentOperation.childOperationIds.length + parent.pendingAdmissions >=
         MAX_CHILDREN_PER_OPERATION
       ) {
-        throw new SpawnRejectedError("child_limit_exceeded", parent.operationId);
+        throw new SpawnRejectedError(
+          "child_limit_exceeded",
+          parent.operationId
+        );
       }
-      const live = await countLiveDescendants(parentOperation.lineage.rootOperationId);
+      const live = await countLiveDescendants(
+        parentOperation.lineage.rootOperationId
+      );
       if (live >= MAX_LIVE_DESCENDANTS_PER_ROOT) {
         throw new SpawnRejectedError(
           "live_descendant_limit_exceeded",
-          parent.operationId,
+          parent.operationId
         );
       }
       parent.pendingAdmissions += 1;
@@ -1300,21 +1633,27 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     const configuredProfile = runtimeConfiguration.profiles[task.profile];
     if (configuredProfile === undefined) {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
-      throw new WorkerConfigurationError("unsupported_capability", "Unknown Worker profile");
+      throw new WorkerConfigurationError(
+        "unsupported_capability",
+        "Unknown Worker profile"
+      );
     }
     try {
       effectiveConfig = resolveWorkerConfig({
         requested: requestedConfig,
         profile: configuredProfile,
         runtimeCwd: runtimeConfiguration.cwd,
-        ...(parentOperation === undefined ? {} : { parent: parentOperation.effectiveConfig }),
+        ...(parentOperation === undefined
+          ? {}
+          : { parent: parentOperation.effectiveConfig }),
       });
     } catch (error) {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
       throw error;
     }
 
-    const workProductRequirements = resolveWorkProductRequirements(configuredProfile);
+    const workProductRequirements =
+      resolveWorkProductRequirements(configuredProfile);
     if (
       services.worker.producesWorkProducts !== true &&
       workProductRequirements.workProducts.some(({ minCount }) => minCount > 0)
@@ -1322,21 +1661,30 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
       throw new WorkerConfigurationError(
         "unsupported_capability",
-        "The Worker adapter cannot produce required work products",
+        "The Worker adapter cannot produce required work products"
       );
     }
 
     const resourcePolicy = configuredProfile.resources;
     const resourceAdmissionRejected =
-      resourcePolicy.resourceProofPolicy === "required" && services.resourceProofController === undefined;
+      resourcePolicy.resourceProofPolicy === "required" &&
+      services.resourceProofController === undefined;
     if (resourcePolicy.resourceProofPolicy === "required") {
-      await validateWorkspaceScope(resourcePolicy.workspace.normalizedPath, resourcePolicy.permissionManifest.read);
-      await validateWorkspaceScope(resourcePolicy.workspace.normalizedPath, resourcePolicy.permissionManifest.write);
+      await validateWorkspaceScope(
+        resourcePolicy.workspace.normalizedPath,
+        resourcePolicy.permissionManifest.read
+      );
+      await validateWorkspaceScope(
+        resourcePolicy.workspace.normalizedPath,
+        resourcePolicy.permissionManifest.write
+      );
     }
 
     let operationId: string;
     try {
-      operationId = revisionReservation?.operationId ?? await Effect.runPromise(services.ids.nextOperationId());
+      operationId =
+        revisionReservation?.operationId ??
+        (await Effect.runPromise(services.ids.nextOperationId()));
     } catch (error) {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
       throw error;
@@ -1352,7 +1700,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           };
     const deferred = deferredResult();
     const authorization = resolvedStartAuthorization(configuredProfile);
-    const authorizationMonotonicDeadline = services.clock.monotonicMilliseconds() + authorization.windowMs;
+    const authorizationMonotonicDeadline =
+      services.clock.monotonicMilliseconds() + authorization.windowMs;
     const record: OperationRecord = {
       operationId,
       terminalPromise: deferred.promise,
@@ -1366,73 +1715,86 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         advanceOperation(parent.operationId, {
           type: "child_attached",
           childOperationId: operationId,
-        }),
+        })
       );
       parent.pendingAdmissions -= 1;
       await runEffect(project(updatedParent));
     }
 
     records.set(operationId, record);
-    authorizationMonotonicDeadlines.set(operationId, authorizationMonotonicDeadline);
+    authorizationMonotonicDeadlines.set(
+      operationId,
+      authorizationMonotonicDeadline
+    );
     let operation = await runEffect(
-      services.store.create({
-        operationId,
-        task,
-        requestedConfig,
-        effectiveConfig,
-        workProductRequirements,
-        resultRetentionPolicy: resultAcceptanceRetentionPolicy(
+      services.store
+        .create({
           operationId,
-          configuredProfile.acceptedArtifactRetentionMs,
-        ),
-        lineage,
-        ...(revisionReservation === undefined
-          ? {}
-          : {
-              revisionMembership: {
-                seriesId: revisionReservation.seriesId,
-                revisionNumber: revisionReservation.revisionNumber,
-                attemptNumber: revisionReservation.attemptNumber,
-              },
-            }),
-        startAuthorization: authorization,
-      }).pipe(
-        Effect.map((snapshot) => snapshot.operation),
-        Effect.mapError((error) => persistenceError(operationId, error)),
-      ),
+          task,
+          requestedConfig,
+          effectiveConfig,
+          workProductRequirements,
+          resultRetentionPolicy: resultAcceptanceRetentionPolicy(
+            operationId,
+            configuredProfile.acceptedArtifactRetentionMs
+          ),
+          lineage,
+          ...(revisionReservation === undefined
+            ? {}
+            : {
+                revisionMembership: {
+                  seriesId: revisionReservation.seriesId,
+                  revisionNumber: revisionReservation.revisionNumber,
+                  attemptNumber: revisionReservation.attemptNumber,
+                },
+              }),
+          startAuthorization: authorization,
+        })
+        .pipe(
+          Effect.map((snapshot) => snapshot.operation),
+          Effect.mapError((error) => persistenceError(operationId, error))
+        )
     );
     await runEffect(project(operation));
 
     if (resourceAdmissionRejected) {
-      operation = await runEffect(advanceOperation(operationId, { type: "operation_starting" }));
-      operation = await runEffect(advanceOperation(operationId, {
-        type: "self_settled",
-        outcome: "failed",
-        reason: "resource_proof_rejected",
-      }));
-      operation = await runEffect(advanceOperation(operationId, {
-        type: "operation_failed",
-        reason: "resource_proof_rejected",
-      }));
+      await runEffect(
+        advanceOperation(operationId, { type: "operation_starting" })
+      );
+      await runEffect(
+        advanceOperation(operationId, {
+          type: "self_settled",
+          outcome: "failed",
+          reason: "resource_proof_rejected",
+        })
+      );
+      operation = await runEffect(
+        advanceOperation(operationId, {
+          type: "operation_failed",
+          reason: "resource_proof_rejected",
+        })
+      );
       record.executionRejected = true;
       await settleTerminal(record, operation);
       return record;
     }
 
-    const createdPresentation = await runEffect(services.presentation.create(operation));
+    const createdPresentation = await runEffect(
+      services.presentation.create(operation)
+    );
     try {
       operation = await runEffect(
         advanceOperation(operationId, {
           type: "presentation_owned",
           presentation: { ...createdPresentation, ownedByPions: true },
-        }),
+        })
       );
     } catch (error) {
       await runEffect(
         Effect.catchAllCause(
           services.presentation.rollbackCreated(createdPresentation),
-          () => Effect.void,
-        ),
+          () => Effect.void
+        )
       );
       records.delete(operationId);
       throw error;
@@ -1444,13 +1806,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const createOperation = (
     taskInput: TaskSpec,
-    options: SpawnOptions | undefined,
+    options: SpawnOptions | undefined
   ): Promise<OperationRecord> =>
     serializeTreeMutation(() => createOperationUnlocked(taskInput, options));
 
   const isAncestor = async (
     possibleAncestorId: string,
-    operationId: string,
+    operationId: string
   ): Promise<boolean> => {
     let currentId: string | undefined = operationId;
     while (currentId !== undefined) {
@@ -1470,7 +1832,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const collectPostOrder = async (
     record: OperationRecord,
-    postOrder: Array<CancellationNode>,
+    postOrder: Array<CancellationNode>
   ): Promise<void> => {
     const operation = await runEffect(getOperation(record.operationId));
     if (isTerminal(operation)) return;
@@ -1488,10 +1850,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const beginCancellation = async (
     root: OperationRecord,
-    options: CancelOptions,
+    options: CancelOptions
   ): Promise<CancellationResult> => {
     const rootOperation = await runEffect(getOperation(root.operationId));
-    const epoch = options.cancellationEpoch ?? rootOperation.cancellationEpoch + 1;
+    const epoch =
+      options.cancellationEpoch ?? rootOperation.cancellationEpoch + 1;
     if (epoch <= rootOperation.cancellationEpoch) {
       throw new CancellationRejectedError("stale_epoch", epoch);
     }
@@ -1500,8 +1863,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     for (const rootId of cancellingSubtreeRoots) {
       if (rootId === root.operationId) continue;
       if (
-        await isAncestor(rootId, root.operationId) ||
-        await isAncestor(root.operationId, rootId)
+        (await isAncestor(rootId, root.operationId)) ||
+        (await isAncestor(root.operationId, rootId))
       ) {
         overlapsCancellation = true;
         break;
@@ -1514,44 +1877,45 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     ) {
       throw new CancellationRejectedError("future_epoch", epoch);
     }
-    const cancellation: Promise<CancellationResult> = serializeTreeMutation(async () => {
-      const postOrder: Array<CancellationNode> = [];
-      await collectPostOrder(root, postOrder);
-      for (const { record } of postOrder) {
-        const operation = await runEffect(
-          advanceOperation(record.operationId, {
-            type: "cancellation_requested",
-            cancellationEpoch: epoch,
-          }),
-        );
-        await runEffect(project(operation));
-        const startGateWaiter = startGateWaiters.get(record.operationId);
-        if (startGateWaiter !== undefined) {
-          startGateWaiters.delete(record.operationId);
-          startGateWaiter.reject(new OperationCancelledError(record.operationId));
+    const cancellation: Promise<CancellationResult> = serializeTreeMutation(
+      async () => {
+        const postOrder: Array<CancellationNode> = [];
+        await collectPostOrder(root, postOrder);
+        for (const { record } of postOrder) {
+          const operation = await runEffect(
+            advanceOperation(record.operationId, {
+              type: "cancellation_requested",
+              cancellationEpoch: epoch,
+            })
+          );
+          await runEffect(project(operation));
+          const startGateWaiter = startGateWaiters.get(record.operationId);
+          if (startGateWaiter !== undefined) {
+            startGateWaiters.delete(record.operationId);
+            startGateWaiter.reject(
+              new OperationCancelledError(record.operationId)
+            );
+          }
         }
+        return postOrder;
       }
-      return postOrder;
-    }).then(async (postOrder) => {
-      const responses: Array<
-        Promise<WorkerCancellationEvidence | undefined>
-      > = [];
+    ).then(async (postOrder) => {
+      const responses: Array<Promise<WorkerCancellationEvidence | undefined>> =
+        [];
       const timeoutMs = options.timeoutMs ?? 1_000;
       for (const { record } of postOrder) {
         const operation = await runEffect(
           advanceOperation(record.operationId, {
             type: "cancel_dispatched",
             cancellationEpoch: epoch,
-          }),
+          })
         );
         await runEffect(project(operation));
         const response = Promise.race([
           record.worker === undefined
             ? Promise.resolve(undefined)
             : runEffect(record.worker.cancel(epoch, timeoutMs)),
-          runEffect(services.clock.sleep(timeoutMs)).then(
-            () => undefined,
-          ),
+          runEffect(services.clock.sleep(timeoutMs)).then(() => undefined),
         ]).catch(() => undefined);
         responses.push(response);
       }
@@ -1563,7 +1927,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         const node = postOrder[index];
         if (node === undefined) continue;
         const descendantUnproven = node.childOperationIds.some((childId) =>
-          unprovenSubtrees.has(childId),
+          unprovenSubtrees.has(childId)
         );
         const response = evidence[index];
         const unproven = response === undefined || descendantUnproven;
@@ -1575,10 +1939,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               type: "cancel_acknowledged",
               cancellationEpoch: epoch,
               proof: response.proof,
-            }),
+            })
           );
           await runEffect(project(acknowledged));
-          await services.resourceProofController?.safetyCleanup(node.record.operationId).catch(() => undefined);
+          await services.resourceProofController
+            ?.safetyCleanup(node.record.operationId)
+            .catch(() => undefined);
         }
 
         const terminal = unproven
@@ -1587,13 +1953,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 type: "operation_unknown",
                 cancellationEpoch: epoch,
                 reason: "cancel-unproven",
-              }),
+              })
             )
           : await runEffect(
               advanceOperation(node.record.operationId, {
                 type: "operation_cancelled",
                 cancellationEpoch: epoch,
-              }),
+              })
             );
         await settleTerminal(node.record, terminal);
         if (node.record === root) {
@@ -1614,11 +1980,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const cancelSubtree = (
     operationId: string,
-    options: CancelOptions,
+    options: CancelOptions
   ): Promise<CancellationResult> => {
     const record = records.get(operationId);
     if (record === undefined) {
-      return Promise.reject(new Error(`Operation not admitted: ${operationId}`));
+      return Promise.reject(
+        new Error(`Operation not admitted: ${operationId}`)
+      );
     }
     const requestedEpoch = options.cancellationEpoch;
     if (requestedEpoch !== undefined) {
@@ -1635,16 +2003,18 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         Promise.reject(
           new CancellationRejectedError(
             "future_epoch",
-            operation.cancellationEpoch + 2,
-          ),
-        ),
+            operation.cancellationEpoch + 2
+          )
+        )
       );
     }
     cancellingSubtreeRoots.add(operationId);
     return beginCancellation(record, options);
   };
 
-  const readPublicSnapshot = async (operationId: string): Promise<Readonly<PublicOperationSnapshot>> =>
+  const readPublicSnapshot = async (
+    operationId: string
+  ): Promise<Readonly<PublicOperationSnapshot>> =>
     publicSnapshot(await readStoredSnapshot(operationId));
 
   const createReader = (operationId: string): OperationReader => ({
@@ -1655,8 +2025,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         const snapshot = await readPublicSnapshot(operationId);
         const receipt = snapshot.startAuthorization.receipt;
         if (receipt !== undefined) return receipt;
-        if (snapshot.state === "completed" || snapshot.state === "failed" ||
-            snapshot.state === "cancelled" || snapshot.state === "unknown") {
+        if (
+          snapshot.state === "completed" ||
+          snapshot.state === "failed" ||
+          snapshot.state === "cancelled" ||
+          snapshot.state === "unknown"
+        ) {
           return undefined;
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -1666,7 +2040,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const createHandle = async (
     task: TaskSpec,
-    options: SpawnOptions | undefined,
+    options: SpawnOptions | undefined
   ): Promise<OperationHandle> => {
     const record = await createOperation(task, options);
     if (record.executionRejected !== true) void execute(record);
@@ -1680,12 +2054,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const recoverCancellation = async (
     record: OperationRecord,
-    operation: Operation,
+    operation: Operation
   ): Promise<void> => {
-    const dispatched = await runEffect(advanceOperation(operation.operationId, {
-      type: "cancel_dispatched",
-      cancellationEpoch: operation.cancellationEpoch,
-    }));
+    const dispatched = await runEffect(
+      advanceOperation(operation.operationId, {
+        type: "cancel_dispatched",
+        cancellationEpoch: operation.cancellationEpoch,
+      })
+    );
     await runEffect(project(dispatched));
     const evidence = await Promise.race([
       record.worker === undefined
@@ -1694,31 +2070,43 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       runEffect(services.clock.sleep(1_000)).then(() => undefined),
     ]).catch(() => undefined);
     if (evidence === undefined) {
-      const unknown = await runEffect(advanceOperation(operation.operationId, {
-        type: "operation_unknown",
-        cancellationEpoch: operation.cancellationEpoch,
-        reason: "cancel-unproven",
-      }));
+      const unknown = await runEffect(
+        advanceOperation(operation.operationId, {
+          type: "operation_unknown",
+          cancellationEpoch: operation.cancellationEpoch,
+          reason: "cancel-unproven",
+        })
+      );
       await settleTerminal(record, unknown);
       return;
     }
-    const acknowledged = await runEffect(advanceOperation(operation.operationId, {
-      type: "cancel_acknowledged",
-      cancellationEpoch: operation.cancellationEpoch,
-      proof: evidence.proof,
-    }));
+    const acknowledged = await runEffect(
+      advanceOperation(operation.operationId, {
+        type: "cancel_acknowledged",
+        cancellationEpoch: operation.cancellationEpoch,
+        proof: evidence.proof,
+      })
+    );
     await runEffect(project(acknowledged));
-    await services.resourceProofController?.safetyCleanup(operation.operationId).catch(() => undefined);
-    const cancelled = await runEffect(advanceOperation(operation.operationId, {
-      type: "operation_cancelled",
-      cancellationEpoch: operation.cancellationEpoch,
-    }));
+    await services.resourceProofController
+      ?.safetyCleanup(operation.operationId)
+      .catch(() => undefined);
+    const cancelled = await runEffect(
+      advanceOperation(operation.operationId, {
+        type: "operation_cancelled",
+        cancellationEpoch: operation.cancellationEpoch,
+      })
+    );
     await settleTerminal(record, cancelled);
   };
 
-  const workerRecovery = runEffect(services.store.listRecoverableOperations().pipe(
-    Effect.mapError((error) => persistenceError("runtime-recovery", error)),
-  )).then((snapshots) => {
+  const workerRecovery = runEffect(
+    services.store
+      .listRecoverableOperations()
+      .pipe(
+        Effect.mapError((error) => persistenceError("runtime-recovery", error))
+      )
+  ).then((snapshots) => {
     for (const { operation } of snapshots) {
       if (records.has(operation.operationId)) continue;
       const deferred = deferredResult();
@@ -1732,15 +2120,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       };
       records.set(operation.operationId, record);
       if (operation.state === "cancelling") {
-        void recoverCancellation(record, operation).catch(record.rejectTerminal);
+        void recoverCancellation(record, operation).catch(
+          record.rejectTerminal
+        );
       } else {
         void execute(record, true);
       }
     }
   });
-  const revisionRecovery = runEffect(services.store.listPendingRevisionReservations().pipe(
-    Effect.mapError((error) => persistenceError("revision-reservation-recovery", error)),
-  )).then(async (reservations) => {
+  const revisionRecovery = runEffect(
+    services.store
+      .listPendingRevisionReservations()
+      .pipe(
+        Effect.mapError((error) =>
+          persistenceError("revision-reservation-recovery", error)
+        )
+      )
+  ).then(async (reservations) => {
     for (const reservation of reservations) {
       const record = await serializeTreeMutation(() =>
         createOperationUnlocked(reservation.task, undefined, reservation)
@@ -1748,12 +2144,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (record.executionRejected !== true) void execute(record);
     }
   });
-  const cleanupRecovery = runEffect(services.store.listPendingPresentationCleanups().pipe(
-    Effect.mapError((error) => persistenceError("presentation-cleanup-recovery", error)),
-  )).then(async (snapshots) => {
-    for (const { operation } of snapshots) await performPresentationCleanup(operation, false);
+  const cleanupRecovery = runEffect(
+    services.store
+      .listPendingPresentationCleanups()
+      .pipe(
+        Effect.mapError((error) =>
+          persistenceError("presentation-cleanup-recovery", error)
+        )
+      )
+  ).then(async (snapshots) => {
+    for (const { operation } of snapshots)
+      await performPresentationCleanup(operation, false);
   });
-  const recovery = Promise.all([workerRecovery, revisionRecovery, cleanupRecovery]);
+  const recovery = Promise.all([
+    workerRecovery,
+    revisionRecovery,
+    cleanupRecovery,
+  ]);
   void recovery.catch(() => undefined);
 
   return {
@@ -1786,66 +2193,112 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     async revisions(credential: string): Promise<RevisionCoordinator> {
       const authenticator = services.revisionAuthenticator;
       if (authenticator === undefined) {
-        throw new RevisionAuthenticationError("Revision authentication is unavailable");
+        throw new RevisionAuthenticationError(
+          "Revision authentication is unavailable"
+        );
       }
-      const principal = await authenticator.authenticate(credential).catch((error) => {
-        throw error instanceof RevisionAuthenticationError
-          ? error
-          : new RevisionAuthenticationError("Revision authentication failed");
-      });
+      const principal = await authenticator
+        .authenticate(credential)
+        .catch((error) => {
+          throw error instanceof RevisionAuthenticationError
+            ? error
+            : new RevisionAuthenticationError("Revision authentication failed");
+        });
       const reserveOperation = async (
-        request: Parameters<RevisionCoordinator["reserveRevision"]>[0] | Parameters<RevisionCoordinator["reserveRetry"]>[0],
-        kind: "revision" | "retry",
+        request:
+          | Parameters<RevisionCoordinator["reserveRevision"]>[0]
+          | Parameters<RevisionCoordinator["reserveRetry"]>[0],
+        kind: "revision" | "retry"
       ): Promise<Readonly<RevisionReservationOutcome>> => {
-        const operationId = await Effect.runPromise(services.ids.nextOperationId());
-        const retry = kind === "retry"
-          ? request as Parameters<RevisionCoordinator["reserveRetry"]>[0]
-          : undefined;
-        const revision = kind === "revision"
-          ? request as Parameters<RevisionCoordinator["reserveRevision"]>[0]
-          : undefined;
-        const originId = revision?.seriesId === undefined
-          ? revision?.targetOperationId ?? revisionSeriesOrigin(retry!.seriesId)
-          : revisionSeriesOrigin(revision.seriesId);
-        if (originId === undefined) return { status: "rejected", reason: "not_found" };
+        const operationId = await Effect.runPromise(
+          services.ids.nextOperationId()
+        );
+        const retry =
+          kind === "retry"
+            ? (request as Parameters<RevisionCoordinator["reserveRetry"]>[0])
+            : undefined;
+        const revision =
+          kind === "revision"
+            ? (request as Parameters<RevisionCoordinator["reserveRevision"]>[0])
+            : undefined;
+        const originId =
+          revision?.seriesId === undefined
+            ? (revision?.targetOperationId ??
+              revisionSeriesOrigin(retry!.seriesId))
+            : revisionSeriesOrigin(revision.seriesId);
+        if (originId === undefined)
+          return { status: "rejected", reason: "not_found" };
         if (retry?.clearance !== undefined) {
-          const verified = await services.retryClearanceVerifier?.verify(retry.clearance).catch(() => false) ?? false;
-          if (!verified) return { status: "rejected", reason: "retry_clearance_invalid" };
+          const verified =
+            (await services.retryClearanceVerifier
+              ?.verify(retry.clearance)
+              .catch(() => false)) ?? false;
+          if (!verified)
+            return { status: "rejected", reason: "retry_clearance_invalid" };
         }
-        const artifactAcceptanceSubjectIds = revision !== undefined && revision.seriesId === undefined
-          ? await principal.fixedArtifactAcceptanceSubjectIds(revision.targetOperationId)
-          : undefined;
-        const outcome = await runEffect(services.store.reserveRevision({
-          seriesOriginOperationId: originId,
-          operationId,
-          requestId: request.requestId,
-          kind,
-          targetOperationId: revision?.targetOperationId ?? retry!.failedOperationId,
-          ...(revision === undefined ? {} : {
-            targetResultId: revision.targetResultId,
-            targetResultDigest: revision.targetResultDigest,
-            ...(revision.maxAttempts === undefined ? {} : { maxAttempts: revision.maxAttempts }),
-            ...(artifactAcceptanceSubjectIds === undefined
-              ? {}
-              : { artifactAcceptanceSubjectIds: [...artifactAcceptanceSubjectIds] }),
-          }),
-          ...(retry === undefined ? {} : {
-            retryOfOperationId: retry.failedOperationId,
-            ...(retry.clearance === undefined ? {} : { clearance: retry.clearance }),
-          }),
-          reason: request.reason,
-          requestedBy: principal.subjectId,
-          task: request.task,
-        }).pipe(Effect.mapError((error) => persistenceError(originId, error))));
+        const artifactAcceptanceSubjectIds =
+          revision !== undefined && revision.seriesId === undefined
+            ? await principal.fixedArtifactAcceptanceSubjectIds(
+                revision.targetOperationId
+              )
+            : undefined;
+        const outcome = await runEffect(
+          services.store
+            .reserveRevision({
+              seriesOriginOperationId: originId,
+              operationId,
+              requestId: request.requestId,
+              kind,
+              targetOperationId:
+                revision?.targetOperationId ?? retry!.failedOperationId,
+              ...(revision === undefined
+                ? {}
+                : {
+                    targetResultId: revision.targetResultId,
+                    targetResultDigest: revision.targetResultDigest,
+                    ...(revision.maxAttempts === undefined
+                      ? {}
+                      : { maxAttempts: revision.maxAttempts }),
+                    ...(artifactAcceptanceSubjectIds === undefined
+                      ? {}
+                      : {
+                          artifactAcceptanceSubjectIds: [
+                            ...artifactAcceptanceSubjectIds,
+                          ],
+                        }),
+                  }),
+              ...(retry === undefined
+                ? {}
+                : {
+                    retryOfOperationId: retry.failedOperationId,
+                    ...(retry.clearance === undefined
+                      ? {}
+                      : { clearance: retry.clearance }),
+                  }),
+              reason: request.reason,
+              requestedBy: principal.subjectId,
+              task: request.task,
+            })
+            .pipe(Effect.mapError((error) => persistenceError(originId, error)))
+        );
         if (outcome.status === "reserved" || outcome.status === "idempotent") {
           const reservedOperationId = outcome.reservation.operationId;
-          const existingOperation = await runEffect(Effect.either(services.store.read(reservedOperationId)));
+          const existingOperation = await runEffect(
+            Effect.either(services.store.read(reservedOperationId))
+          );
           if (existingOperation._tag === "Left") {
             if (existingOperation.left.code !== "not_found") {
-              throw persistenceError(reservedOperationId, existingOperation.left);
+              throw persistenceError(
+                reservedOperationId,
+                existingOperation.left
+              );
             }
             const record = await serializeTreeMutation(() =>
-              createOperationUnlocked(outcome.reservation.task, undefined, outcome.reservation)
+              createOperationUnlocked(
+                outcome.reservation.task,
+                undefined,
+                outcome.reservation
+              )
             );
             if (record.executionRejected !== true) void execute(record);
           }
@@ -1857,10 +2310,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         reserveRetry: (request) => reserveOperation(request, "retry"),
         read: async (seriesId) => {
           const originId = revisionSeriesOrigin(seriesId);
-          if (originId === undefined) throw new OperationPersistenceError(seriesId, "corrupt_record");
-          const series = await runEffect(services.store.readRevisionSeries(originId).pipe(
-            Effect.mapError((error) => persistenceError(originId, error)),
-          ));
+          if (originId === undefined)
+            throw new OperationPersistenceError(seriesId, "corrupt_record");
+          const series = await runEffect(
+            services.store
+              .readRevisionSeries(originId)
+              .pipe(
+                Effect.mapError((error) => persistenceError(originId, error))
+              )
+          );
           if (series.seriesId !== seriesId) {
             throw new OperationPersistenceError(originId, "corrupt_record");
           }
@@ -1877,36 +2335,55 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             return { status: "rejected", reason: "authority_unknown" } as const;
           }
           const originId = revisionSeriesOrigin(request.seriesId);
-          if (originId === undefined) return { status: "rejected", reason: "series_not_found" };
-          const result = await runEffect(Effect.either(services.store.readRevisionSeries(originId)));
+          if (originId === undefined)
+            return { status: "rejected", reason: "series_not_found" };
+          const result = await runEffect(
+            Effect.either(services.store.readRevisionSeries(originId))
+          );
           if (result._tag === "Left") {
             if (result.left.code === "not_found") {
-              return { status: "rejected", reason: "series_not_found" } as const;
+              return {
+                status: "rejected",
+                reason: "series_not_found",
+              } as const;
             }
             throw persistenceError(originId, result.left);
           }
           const series = result.right;
-          if (!series.artifactAcceptanceSubjectIds.includes(principal.subjectId)) {
-            return { status: "rejected", reason: "fixed_scope_denied" } as const;
+          if (
+            !series.artifactAcceptanceSubjectIds.includes(principal.subjectId)
+          ) {
+            return {
+              status: "rejected",
+              reason: "fixed_scope_denied",
+            } as const;
           }
-          const currentAuthority = async () => currentPrincipal
-            .currentArtifactAcceptanceAuthority(request.seriesId)
-            .catch(() => "unknown" as const);
+          const currentAuthority = async () =>
+            currentPrincipal
+              .currentArtifactAcceptanceAuthority(request.seriesId)
+              .catch(() => "unknown" as const);
           const authorityImmediatelyBeforeDecision = await currentAuthority();
           if (authorityImmediatelyBeforeDecision !== "authorized") {
             return {
               status: "rejected",
-              reason: authorityImmediatelyBeforeDecision === "revoked"
-                ? "authority_revoked"
-                : authorityImmediatelyBeforeDecision === "unknown"
-                  ? "authority_unknown"
-                  : "current_authority_denied",
+              reason:
+                authorityImmediatelyBeforeDecision === "revoked"
+                  ? "authority_revoked"
+                  : authorityImmediatelyBeforeDecision === "unknown"
+                    ? "authority_unknown"
+                    : "current_authority_denied",
             } as const;
           }
-          return runEffect(services.store.adoptRevisionResult({
-            ...request,
-            decidedBy: currentPrincipal.subjectId,
-          }).pipe(Effect.mapError((error) => persistenceError(originId, error))));
+          return runEffect(
+            services.store
+              .adoptRevisionResult({
+                ...request,
+                decidedBy: currentPrincipal.subjectId,
+              })
+              .pipe(
+                Effect.mapError((error) => persistenceError(originId, error))
+              )
+          );
         },
       };
     },
@@ -1916,25 +2393,31 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (controller === undefined) {
         throw new ResourceProofRejectedError(
           "authority_unavailable",
-          "Resource proof adapters are unavailable",
+          "Resource proof adapters are unavailable"
         );
       }
       return {
         prepare: async (request) => {
           const stored = await readStoredSnapshot(request.operationId);
-          const profile = services.configuration?.profiles[stored.operation.task.profile];
-          if (profile?.resources.resourceProofPolicy !== "required" ||
-              !isDeepStrictEqual(profile.resources, request.requirements)) {
+          const profile =
+            services.configuration?.profiles[stored.operation.task.profile];
+          if (
+            profile?.resources.resourceProofPolicy !== "required" ||
+            !isDeepStrictEqual(profile.resources, request.requirements)
+          ) {
             throw new ResourceProofRejectedError(
               "binding_mismatch",
-              "Resource request differs from the Operation's fixed profile",
+              "Resource request differs from the Operation's fixed profile"
             );
           }
-          if (stored.operation.state !== "starting" ||
-              stored.operation.workerIdentity?.processInstanceId !== request.workerProcessInstanceId) {
+          if (
+            stored.operation.state !== "starting" ||
+            stored.operation.workerIdentity?.processInstanceId !==
+              request.workerProcessInstanceId
+          ) {
             throw new ResourceProofRejectedError(
               "binding_mismatch",
-              "Resource request is not bound to the Operation Worker",
+              "Resource request is not bound to the Operation Worker"
             );
           }
           return controller.prepare(request);
@@ -1957,34 +2440,55 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     async startAuthorizationInbox(credential: string) {
       const authenticator = services.startAuthorizationAuthenticator;
       if (authenticator === undefined) {
-        throw new StartAuthorizationAuthenticationError("Start authorization authentication is unavailable");
+        throw new StartAuthorizationAuthenticationError(
+          "Start authorization authentication is unavailable"
+        );
       }
-      const principal = await authenticator.authenticate(credential).catch((error) => {
-        throw error instanceof StartAuthorizationAuthenticationError
-          ? error
-          : new StartAuthorizationAuthenticationError("Start authorization authentication failed");
-      });
+      const principal = await authenticator
+        .authenticate(credential)
+        .catch((error) => {
+          throw error instanceof StartAuthorizationAuthenticationError
+            ? error
+            : new StartAuthorizationAuthenticationError(
+                "Start authorization authentication failed"
+              );
+        });
       const currentAuthorization = (operationId: string) =>
-        principal.currentAuthorization(operationId).catch(() => "unknown" as const);
+        principal
+          .currentAuthorization(operationId)
+          .catch(() => "unknown" as const);
       return {
         listWaiting: async () => {
-          const stored = await runEffect(services.store.listWaitingStartAuthorizations().pipe(
-            Effect.mapError((error) => persistenceError("start-authorization-inbox", error)),
-          ));
+          const stored = await runEffect(
+            services.store
+              .listWaitingStartAuthorizations()
+              .pipe(
+                Effect.mapError((error) =>
+                  persistenceError("start-authorization-inbox", error)
+                )
+              )
+          );
           const allowed = [];
           for (const snapshot of stored) {
             const operationId = snapshot.operation.operationId;
-            if (!snapshot.operation.startAuthorizationTiming.authorizedSubjectIds.includes(principal.subjectId)) continue;
-            if (await currentAuthorization(operationId) !== "authorized") continue;
+            if (
+              !snapshot.operation.startAuthorizationTiming.authorizedSubjectIds.includes(
+                principal.subjectId
+              )
+            )
+              continue;
+            if ((await currentAuthorization(operationId)) !== "authorized")
+              continue;
             const observedAt = await runEffect(services.clock.now());
-            const recoveryTimeUnreliable = !records.has(operationId) &&
+            const recoveryTimeUnreliable =
+              !records.has(operationId) &&
               !services.clock.recoveredElapsedTimeIsReliable();
             if (
               recoveryTimeUnreliable ||
               authorizationDeadlineElapsed(
                 operationId,
                 snapshot.operation.startAuthorizationTiming.deadline,
-                observedAt,
+                observedAt
               )
             ) {
               await serializeAuthorizationMutation(operationId, () =>
@@ -1994,18 +2498,24 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             }
             const receipt = snapshot.operation.startupReceipt;
             if (receipt === undefined) continue;
-            allowed.push(Object.freeze({
-              operationId: snapshot.operation.operationId,
-              version: Object.freeze({ ...snapshot.version }),
-              deadline: snapshot.operation.startAuthorizationTiming.deadline,
-              receipt,
-            }));
+            allowed.push(
+              Object.freeze({
+                operationId: snapshot.operation.operationId,
+                version: Object.freeze({ ...snapshot.version }),
+                deadline: snapshot.operation.startAuthorizationTiming.deadline,
+                receipt,
+              })
+            );
           }
           return Object.freeze(allowed);
         },
-        decide: (request: Readonly<StartAuthorizationDecisionRequest>): Promise<Readonly<StartAuthorizationDecisionOutcome>> =>
+        decide: (
+          request: Readonly<StartAuthorizationDecisionRequest>
+        ): Promise<Readonly<StartAuthorizationDecisionOutcome>> =>
           serializeAuthorizationMutation(request.operationId, async () => {
-            const storedRead = await runEffect(Effect.either(services.store.read(request.operationId)));
+            const storedRead = await runEffect(
+              Effect.either(services.store.read(request.operationId))
+            );
             if (storedRead._tag === "Left") {
               if (storedRead.left.code === "not_found") {
                 return { status: "rejected", reason: "operation_not_found" };
@@ -2015,60 +2525,82 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             const stored = storedRead.right;
             const operation = stored.operation;
             const rejectDecision = async (
-              reason: Exclude<StartAuthorizationDecisionRejectionReason, "operation_not_found">,
+              reason: Exclude<
+                StartAuthorizationDecisionRejectionReason,
+                "operation_not_found"
+              >
             ): Promise<Readonly<StartAuthorizationDecisionOutcome>> => {
-              const alreadyRecorded = operation.rejectedStartAuthorizationDecisions.some((attempt) =>
-                attempt.decisionId === request.decisionId &&
-                attempt.kind === request.kind &&
-                attempt.actorId === principal.subjectId &&
-                attempt.receiptDigest === request.receiptDigest &&
-                attempt.reason === reason
-              );
+              const alreadyRecorded =
+                operation.rejectedStartAuthorizationDecisions.some(
+                  (attempt) =>
+                    attempt.decisionId === request.decisionId &&
+                    attempt.kind === request.kind &&
+                    attempt.actorId === principal.subjectId &&
+                    attempt.receiptDigest === request.receiptDigest &&
+                    attempt.reason === reason
+                );
               if (!alreadyRecorded) {
-                await runEffect(advanceOperation(request.operationId, {
-                  type: "start_authorization_decision_rejected",
-                  attempt: {
-                    decisionId: request.decisionId,
-                    kind: request.kind,
-                    actorId: principal.subjectId,
-                    receiptDigest: request.receiptDigest,
-                    reason,
-                  },
-                }));
+                await runEffect(
+                  advanceOperation(request.operationId, {
+                    type: "start_authorization_decision_rejected",
+                    attempt: {
+                      decisionId: request.decisionId,
+                      kind: request.kind,
+                      actorId: principal.subjectId,
+                      receiptDigest: request.receiptDigest,
+                      reason,
+                    },
+                  })
+                );
               }
               return { status: "rejected", reason };
             };
-            if (!operation.startAuthorizationTiming.authorizedSubjectIds.includes(principal.subjectId)) {
+            if (
+              !operation.startAuthorizationTiming.authorizedSubjectIds.includes(
+                principal.subjectId
+              )
+            ) {
               return { status: "rejected", reason: "fixed_scope_denied" };
             }
-            const authorization = await currentAuthorization(request.operationId);
+            const authorization = await currentAuthorization(
+              request.operationId
+            );
             if (authorization !== "authorized") {
               return {
                 status: "rejected",
-                reason: authorization === "revoked"
-                  ? "authority_revoked"
-                  : authorization === "unknown"
-                    ? "authority_unknown"
-                    : "current_authority_denied",
+                reason:
+                  authorization === "revoked"
+                    ? "authority_revoked"
+                    : authorization === "unknown"
+                      ? "authority_unknown"
+                      : "current_authority_denied",
               };
             }
             const existing = operation.startAuthorizationDecision;
             if (existing !== undefined) {
-              const sameContent = existing.kind === request.kind &&
-                existing.receiptDigest === request.receiptDigest && existing.actorId === principal.subjectId;
+              const sameContent =
+                existing.kind === request.kind &&
+                existing.receiptDigest === request.receiptDigest &&
+                existing.actorId === principal.subjectId;
               if (sameContent) {
                 return {
-                  status: existing.decisionId === request.decisionId ? "idempotent" : "duplicate",
+                  status:
+                    existing.decisionId === request.decisionId
+                      ? "idempotent"
+                      : "duplicate",
                   decision: existing,
-                  gate: existing.kind === "authorize" ? "authorized" : "rejected",
+                  gate:
+                    existing.kind === "authorize" ? "authorized" : "rejected",
                 };
               }
               if (existing.decisionId === request.decisionId) {
                 return rejectDecision("decision_id_conflict");
               }
-              return rejectDecision(operation.startupReceipt?.digest === request.receiptDigest
-                ? "gate_closed"
-                : "receipt_mismatch");
+              return rejectDecision(
+                operation.startupReceipt?.digest === request.receiptDigest
+                  ? "gate_closed"
+                  : "receipt_mismatch"
+              );
             }
             if (operation.startupReceipt?.digest !== request.receiptDigest) {
               return rejectDecision("receipt_mismatch");
@@ -2077,43 +2609,53 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               return rejectDecision("gate_closed");
             }
             const decidedAt = await runEffect(services.clock.now());
-            const recoveryTimeUnreliable = !records.has(request.operationId) &&
+            const recoveryTimeUnreliable =
+              !records.has(request.operationId) &&
               !services.clock.recoveredElapsedTimeIsReliable();
             if (
               recoveryTimeUnreliable ||
               authorizationDeadlineElapsed(
                 request.operationId,
                 operation.startAuthorizationTiming.deadline,
-                decidedAt,
+                decidedAt
               )
             ) {
               await expireStartAuthorization(request.operationId);
               return rejectDecision("deadline_elapsed");
             }
-            const decided = await runEffect(advanceOperation(request.operationId, {
-              type: "start_authorization_decided",
-              gate: request.kind === "authorize" ? "authorized" : "rejected",
-              decision: {
-                decisionId: request.decisionId,
-                kind: request.kind,
-                actorId: principal.subjectId,
-                receiptDigest: request.receiptDigest,
-                decidedAt,
-              },
-            }));
+            const decided = await runEffect(
+              advanceOperation(request.operationId, {
+                type: "start_authorization_decided",
+                gate: request.kind === "authorize" ? "authorized" : "rejected",
+                decision: {
+                  decisionId: request.decisionId,
+                  kind: request.kind,
+                  actorId: principal.subjectId,
+                  receiptDigest: request.receiptDigest,
+                  decidedAt,
+                },
+              })
+            );
             const decision = decided.startAuthorizationDecision!;
             const accepted = {
               status: "accepted" as const,
               decision,
-              gate: request.kind === "authorize" ? "authorized" as const : "rejected" as const,
+              gate:
+                request.kind === "authorize"
+                  ? ("authorized" as const)
+                  : ("rejected" as const),
             };
             const record = records.get(request.operationId);
             if (record === undefined) {
-              await runEffect(advanceOperation(request.operationId, {
-                type: "operation_unknown",
-                reason: "liveness-unproven",
-                ...(request.kind === "reject" ? { failureReason: "start_rejected" as const } : {}),
-              }));
+              await runEffect(
+                advanceOperation(request.operationId, {
+                  type: "operation_unknown",
+                  reason: "liveness-unproven",
+                  ...(request.kind === "reject"
+                    ? { failureReason: "start_rejected" as const }
+                    : {}),
+                })
+              );
               return accepted;
             }
             if (request.kind === "reject") {
@@ -2122,66 +2664,91 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             }
 
             const latest = await runEffect(getOperation(request.operationId));
-            const targetMatches = latest.state === "starting" && latest.startGate === "authorized" &&
+            const targetMatches =
+              latest.state === "starting" &&
+              latest.startGate === "authorized" &&
               latest.startupReceipt?.digest === request.receiptDigest &&
-              latest.workerIdentity?.processInstanceId === latest.startupReceipt.workerIdentity.processInstanceId;
+              latest.workerIdentity?.processInstanceId ===
+                latest.startupReceipt.workerIdentity.processInstanceId;
             const deadlineStillOpen = !authorizationDeadlineElapsed(
               request.operationId,
               latest.startAuthorizationTiming.deadline,
-              await runEffect(services.clock.now()),
+              await runEffect(services.clock.now())
             );
-            const currentlyAuthorized = await currentAuthorization(request.operationId)
-              .then((authorization) => authorization === "authorized");
+            const currentlyAuthorized = await currentAuthorization(
+              request.operationId
+            ).then((authorization) => authorization === "authorized");
             try {
-              if (!targetMatches) throw new StartRevalidationError("invalidated");
-              if (!deadlineStillOpen) throw new StartRevalidationError("timed_out");
-              if (!currentlyAuthorized) throw new StartRevalidationError("invalidated");
+              if (!targetMatches)
+                throw new StartRevalidationError("invalidated");
+              if (!deadlineStillOpen)
+                throw new StartRevalidationError("timed_out");
+              if (!currentlyAuthorized)
+                throw new StartRevalidationError("invalidated");
               if (latest.resourceEvidenceRecord !== undefined) {
-                if (services.resourceProofController === undefined) throw new Error("Resource proof controller unavailable");
-                await services.resourceProofController.revalidate(request.operationId);
+                if (services.resourceProofController === undefined)
+                  throw new Error("Resource proof controller unavailable");
+                await services.resourceProofController.revalidate(
+                  request.operationId
+                );
               }
               if (latest.startupReceiptPolicy === undefined) {
                 throw new Error("Fixed Startup receipt policy unavailable");
               }
-              await verifyReviewSubject(request.operationId, latest.startupReceiptPolicy, false);
-              const revalidated = await runEffect(getOperation(request.operationId));
+              await verifyReviewSubject(
+                request.operationId,
+                latest.startupReceiptPolicy,
+                false
+              );
+              const revalidated = await runEffect(
+                getOperation(request.operationId)
+              );
               const revalidatedAt = await runEffect(services.clock.now());
-              const authorityStillCurrent = await currentAuthorization(request.operationId)
-                .then((authorization) => authorization === "authorized");
+              const authorityStillCurrent = await currentAuthorization(
+                request.operationId
+              ).then((authorization) => authorization === "authorized");
               if (
-                revalidated.state !== "starting" || revalidated.startGate !== "authorized" ||
+                revalidated.state !== "starting" ||
+                revalidated.startGate !== "authorized" ||
                 revalidated.startupReceipt?.digest !== request.receiptDigest ||
                 authorizationDeadlineElapsed(
                   request.operationId,
                   revalidated.startAuthorizationTiming.deadline,
-                  revalidatedAt,
+                  revalidatedAt
                 ) ||
                 !authorityStillCurrent
               ) {
                 const timedOut = authorizationDeadlineElapsed(
                   request.operationId,
                   revalidated.startAuthorizationTiming.deadline,
-                  revalidatedAt,
+                  revalidatedAt
                 );
-                throw new StartRevalidationError(timedOut ? "timed_out" : "invalidated");
+                throw new StartRevalidationError(
+                  timedOut ? "timed_out" : "invalidated"
+                );
               }
               const instruction = {
                 dispatcherId: RUNTIME_ACTOR_ID,
-                workerProcessInstanceId: latest.workerIdentity!.processInstanceId,
+                workerProcessInstanceId:
+                  latest.workerIdentity!.processInstanceId,
                 receiptDigest: request.receiptDigest,
                 authorizationDecisionId: request.decisionId,
                 deliveryGeneration: 1,
               };
-              await runEffect(advanceAndProject(request.operationId, {
-                type: "start_delivery_authority_acquired",
-                instruction,
-              }));
+              await runEffect(
+                advanceAndProject(request.operationId, {
+                  type: "start_delivery_authority_acquired",
+                  instruction,
+                })
+              );
               const dispatchCheckedAt = await runEffect(services.clock.now());
-              if (authorizationDeadlineElapsed(
-                request.operationId,
-                revalidated.startAuthorizationTiming.deadline,
-                dispatchCheckedAt,
-              )) {
+              if (
+                authorizationDeadlineElapsed(
+                  request.operationId,
+                  revalidated.startAuthorizationTiming.deadline,
+                  dispatchCheckedAt
+                )
+              ) {
                 await expireStartAuthorization(request.operationId);
                 throw new Error("Start authorization expired before begin");
               }
@@ -2191,16 +2758,27 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               });
               startGateWaiters.delete(request.operationId);
             } catch (error) {
-              const current = await runEffect(getOperation(request.operationId));
-              if (current.state === "starting" && current.startGate === "authorized") {
-                const timedOut = error instanceof StartRevalidationError && error.reason === "timed_out";
-                await runEffect(advanceOperation(request.operationId, {
-                  type: "start_gate_closed",
-                  gate: timedOut ? "expired" : "invalidated",
-                }));
+              const current = await runEffect(
+                getOperation(request.operationId)
+              );
+              if (
+                current.state === "starting" &&
+                current.startGate === "authorized"
+              ) {
+                const timedOut =
+                  error instanceof StartRevalidationError &&
+                  error.reason === "timed_out";
+                await runEffect(
+                  advanceOperation(request.operationId, {
+                    type: "start_gate_closed",
+                    gate: timedOut ? "expired" : "invalidated",
+                  })
+                );
                 await terminateBeforeStart(
                   record,
-                  timedOut ? "start_authorization_timed_out" : "start_authorization_invalidated",
+                  timedOut
+                    ? "start_authorization_timed_out"
+                    : "start_authorization_invalidated"
                 );
               } else {
                 const waiter = startGateWaiters.get(request.operationId);

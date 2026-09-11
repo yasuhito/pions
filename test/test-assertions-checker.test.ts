@@ -8,7 +8,7 @@ function checkFixture(name: string) {
     process.cwd(),
     ".test-dist",
     "scripts",
-    "check-test-assertions.js",
+    "check-test-assertions.js"
   );
   const fixture = join("fixtures", "test-assertions", `${name}.fixture.ts`);
   return spawnSync(process.execPath, [checker, fixture], {
@@ -32,7 +32,7 @@ test("checker reports a test without an assertion", () => {
       status: 1,
       stderr:
         'fixtures/test-assertions/zero-assertions.fixture.ts:3:1: test "zero assertions" must contain exactly one direct assertion; found 0\n',
-    },
+    }
   );
 });
 
@@ -45,7 +45,7 @@ test("checker reports a test with multiple assertions", () => {
       status: 1,
       stderr:
         'fixtures/test-assertions/two-assertions.fixture.ts:4:1: test "two assertions" must contain exactly one direct assertion; found 2\n',
-    },
+    }
   );
 });
 
@@ -64,7 +64,7 @@ test("checker does not count an assertion hidden in a helper", () => {
       status: 1,
       stderr:
         'fixtures/test-assertions/helper-assertion.fixture.ts:8:1: test "helper assertion" must contain exactly one direct assertion; found 0\n',
-    },
+    }
   );
 });
 
@@ -77,6 +77,6 @@ test("checker validates nested tests independently", () => {
       status: 1,
       stderr:
         'fixtures/test-assertions/nested-tests.fixture.ts:4:1: test "outer test" must contain exactly one direct assertion; found 0\n',
-    },
+    }
   );
 });

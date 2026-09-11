@@ -23,9 +23,7 @@ import type {
   OperationLineage,
   RevisionMembership,
 } from "./model.js";
-import type {
-  OperationIntent,
-} from "./intent.js";
+import type { OperationIntent } from "./intent.js";
 
 export type {
   CreatedPresentation,
@@ -73,7 +71,10 @@ export interface OperationRequest {
 }
 
 export interface OperationSnapshot {
-  readonly version: Readonly<{ readonly sequenceNumber: number; readonly recordedAt: string }>;
+  readonly version: Readonly<{
+    readonly sequenceNumber: number;
+    readonly recordedAt: string;
+  }>;
   readonly operation: Operation;
 }
 
@@ -94,28 +95,51 @@ export interface RevisionReservationCommand {
   readonly clearance?: Readonly<RetryClearanceEvidence>;
 }
 
-export interface RevisionAdoptionCommand extends Omit<RevisionResultAdoptionRecord, "decidedAt"> {}
+export interface RevisionAdoptionCommand extends Omit<
+  RevisionResultAdoptionRecord,
+  "decidedAt"
+> {}
 
 export interface EventStore {
-  create(request: OperationRequest): Effect.Effect<OperationSnapshot, StoreError>;
+  create(
+    request: OperationRequest
+  ): Effect.Effect<OperationSnapshot, StoreError>;
   advance(
     operationId: string,
-    intent: OperationIntent,
+    intent: OperationIntent
   ): Effect.Effect<OperationSnapshot, StoreError>;
   prepareResultAcceptance(
-    request: Readonly<ResultAcceptanceReservationRequest>,
+    request: Readonly<ResultAcceptanceReservationRequest>
   ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
   publishResultAcceptance(
-    evidence: Readonly<ResultAcceptancePreparationEvidence>,
+    evidence: Readonly<ResultAcceptancePreparationEvidence>
   ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
-  reserveRevision(command: Readonly<RevisionReservationCommand>): Effect.Effect<RevisionReservationOutcome, StoreError>;
-  adoptRevisionResult(command: Readonly<RevisionAdoptionCommand>): Effect.Effect<RevisionResultAdoptionOutcome, StoreError>;
-  readRevisionSeries(seriesOriginOperationId: string): Effect.Effect<RevisionSeriesSnapshot, StoreError>;
+  reserveRevision(
+    command: Readonly<RevisionReservationCommand>
+  ): Effect.Effect<RevisionReservationOutcome, StoreError>;
+  adoptRevisionResult(
+    command: Readonly<RevisionAdoptionCommand>
+  ): Effect.Effect<RevisionResultAdoptionOutcome, StoreError>;
+  readRevisionSeries(
+    seriesOriginOperationId: string
+  ): Effect.Effect<RevisionSeriesSnapshot, StoreError>;
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError>;
-  listWaitingStartAuthorizations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
-  listRecoverableOperations(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
-  listPendingPresentationCleanups(): Effect.Effect<ReadonlyArray<OperationSnapshot>, StoreError>;
-  listPendingRevisionReservations(): Effect.Effect<ReadonlyArray<Readonly<RevisionReservation>>, StoreError>;
+  listWaitingStartAuthorizations(): Effect.Effect<
+    ReadonlyArray<OperationSnapshot>,
+    StoreError
+  >;
+  listRecoverableOperations(): Effect.Effect<
+    ReadonlyArray<OperationSnapshot>,
+    StoreError
+  >;
+  listPendingPresentationCleanups(): Effect.Effect<
+    ReadonlyArray<OperationSnapshot>,
+    StoreError
+  >;
+  listPendingRevisionReservations(): Effect.Effect<
+    ReadonlyArray<Readonly<RevisionReservation>>,
+    StoreError
+  >;
 }
 
 export type { OperationState };

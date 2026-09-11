@@ -21,22 +21,26 @@ export interface StoredOperationRecord {
 export class RecordDecodingError extends Error {
   constructor(
     readonly code: "corrupt_record" | "unsupported_schema",
-    message: string,
+    message: string
   ) {
     super(message);
   }
 }
 
 const SafeInteger = Schema.Number.pipe(
-  Schema.filter(Number.isSafeInteger, { message: () => "Expected a safe integer" }),
+  Schema.filter(Number.isSafeInteger, {
+    message: () => "Expected a safe integer",
+  })
 );
 const NonNegativeSafeInteger = SafeInteger.pipe(
-  Schema.filter((value) => value >= 0, { message: () => "Expected a non-negative safe integer" }),
+  Schema.filter((value) => value >= 0, {
+    message: () => "Expected a non-negative safe integer",
+  })
 );
 const Digest = Schema.String.pipe(
   Schema.filter((value) => value.startsWith("sha256:"), {
     message: () => "Expected a sha256 digest",
-  }),
+  })
 );
 
 const EventMetadataFields = {
@@ -74,7 +78,7 @@ const CleanupDiagnosticCode = Schema.Literal(
   "pane_close_failed",
   "pane_identity_missing",
   "pane_identity_unavailable",
-  "cleanup_record_unavailable",
+  "cleanup_record_unavailable"
 );
 const WorkerIdentity = Schema.Struct({
   processId: SafeInteger,
@@ -200,7 +204,7 @@ const WorkspaceReceipt = Schema.Struct({
   baseRevision: Schema.String,
   owner: Schema.Union(
     Schema.Struct({ state: Schema.Literal("known"), ownerId: Schema.String }),
-    Schema.Struct({ state: Schema.Literal("unknown") }),
+    Schema.Struct({ state: Schema.Literal("unknown") })
   ),
   pionsMayDelete: Schema.Literal(false),
 });
@@ -243,7 +247,11 @@ const StartupReceipt = Schema.Struct({
   resourceEvidence: Schema.optional(ResourceEvidenceReceipt),
   reviewSubject: ReviewSubjectReceipt,
   reviewSubjectVerification: Schema.Literal("disabled", "required"),
-  configuredAuthorizationPolicy: Schema.Literal("disabled", "optional", "required"),
+  configuredAuthorizationPolicy: Schema.Literal(
+    "disabled",
+    "optional",
+    "required"
+  ),
   authorizationPolicy: Schema.Literal("disabled", "required"),
   authorizationDeadline: Schema.String,
 });
@@ -267,8 +275,15 @@ const StartAuthorizationDecisionAttempt = Schema.Struct({
   actorId: Schema.String,
   receiptDigest: Digest,
   reason: Schema.Literal(
-    "operation_not_found", "fixed_scope_denied", "current_authority_denied",
-    "authority_revoked", "authority_unknown", "receipt_mismatch", "deadline_elapsed", "decision_id_conflict", "gate_closed",
+    "operation_not_found",
+    "fixed_scope_denied",
+    "current_authority_denied",
+    "authority_revoked",
+    "authority_unknown",
+    "receipt_mismatch",
+    "deadline_elapsed",
+    "decision_id_conflict",
+    "gate_closed"
   ),
   attemptedAt: Schema.String,
 });
@@ -287,13 +302,16 @@ const FailureReason = Schema.Literal(
   "start_rejected",
   "start_authorization_timed_out",
   "start_authorization_invalidated",
-  "descendant_failed",
+  "descendant_failed"
 );
 const CancellationProof = Schema.Literal("worker-stop");
 const WorkspaceAccessScope = Schema.Union(
   Schema.Struct({ kind: Schema.Literal("none") }),
   Schema.Struct({ kind: Schema.Literal("workspace") }),
-  Schema.Struct({ kind: Schema.Literal("literals"), paths: Schema.Array(Schema.String) }),
+  Schema.Struct({
+    kind: Schema.Literal("literals"),
+    paths: Schema.Array(Schema.String),
+  })
 );
 const ResourceWorkspace = Schema.Struct({
   workspaceId: Schema.String,
@@ -301,7 +319,7 @@ const ResourceWorkspace = Schema.Struct({
   baseRevision: Schema.String,
   owner: Schema.Union(
     Schema.Struct({ state: Schema.Literal("known"), ownerId: Schema.String }),
-    Schema.Struct({ state: Schema.Literal("unknown") }),
+    Schema.Struct({ state: Schema.Literal("unknown") })
   ),
   pionsMayDelete: Schema.Literal(false),
 });
@@ -328,7 +346,9 @@ const ResourceRequirements = Schema.Struct({
   cleanupPolicy: Schema.Literal("automatic", "coordinator_required"),
   cleanupTimeoutMs: SafeInteger,
   maxCleanupAttempts: SafeInteger,
-  safetyCleanupOperations: Schema.Array(Schema.Literal("inspect", "revoke", "release")),
+  safetyCleanupOperations: Schema.Array(
+    Schema.Literal("inspect", "revoke", "release")
+  ),
 });
 const ResourcePreparationRequest = Schema.Struct({
   operationId: Schema.String,
@@ -379,7 +399,14 @@ const ResourceCleanupEvidence = Schema.Struct({
   attempt: SafeInteger,
 });
 const ResourceEvidenceSnapshot = Schema.Struct({
-  state: Schema.Literal("planned", "acquiring", "held", "releasing", "released", "unresolved"),
+  state: Schema.Literal(
+    "planned",
+    "acquiring",
+    "held",
+    "releasing",
+    "released",
+    "unresolved"
+  ),
   acquisitionId: Schema.String,
   requestDigest: Digest,
   proof: Schema.optional(CanonicalProofDocument),
@@ -389,12 +416,25 @@ const ResourceEvidenceSnapshot = Schema.Struct({
   cleanup: Schema.optional(ResourceCleanupEvidence),
   accessRevocation: Schema.optional(Schema.Literal("blocked", "unknown")),
   release: Schema.optional(Schema.Literal("released", "unknown")),
-  diagnostic: Schema.optional(Schema.Literal(
-    "invalid_profile", "authority_unavailable", "invalid_proof", "proof_limit_exceeded",
-    "binding_mismatch", "permission_mismatch", "permission_contradiction", "observation_missing",
-    "enforcement_missing", "resource_conflict", "authority_revoked", "validation_unknown",
-    "handoff_unconfirmed", "persistence_failed", "cleanup_unresolved",
-  )),
+  diagnostic: Schema.optional(
+    Schema.Literal(
+      "invalid_profile",
+      "authority_unavailable",
+      "invalid_proof",
+      "proof_limit_exceeded",
+      "binding_mismatch",
+      "permission_mismatch",
+      "permission_contradiction",
+      "observation_missing",
+      "enforcement_missing",
+      "resource_conflict",
+      "authority_revoked",
+      "validation_unknown",
+      "handoff_unconfirmed",
+      "persistence_failed",
+      "cleanup_unresolved"
+    )
+  ),
 });
 const PersistedResourceRecord = Schema.Struct({
   version: SafeInteger,
@@ -525,7 +565,7 @@ const OperationEventSchema = Schema.Union(
     instruction: StartInstructionReference,
     proof: Schema.Literal(
       "authenticated-worker-acknowledgement",
-      "authenticated-generation-acknowledgement",
+      "authenticated-generation-acknowledgement"
     ),
   }),
   Schema.Struct({
@@ -569,8 +609,14 @@ const OperationEventSchema = Schema.Union(
     childOperationId: Schema.String,
     outcome: Schema.Literal("succeeded", "failed"),
   }),
-  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_starting") }),
-  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("worker_launched") }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("operation_starting"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("worker_launched"),
+  }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("worker_identified"),
@@ -601,8 +647,14 @@ const OperationEventSchema = Schema.Union(
     paneId: Schema.NonEmptyString,
     reason: CleanupDiagnosticCode,
   }),
-  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_blocked") }),
-  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_unblocked") }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("operation_blocked"),
+  }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("operation_unblocked"),
+  }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("result_acceptance_prepared"),
@@ -625,7 +677,10 @@ const OperationEventSchema = Schema.Union(
     outcome: Schema.Literal("failed"),
     reason: FailureReason,
   }),
-  Schema.Struct({ ...EventMetadataFields, type: Schema.Literal("operation_completed") }),
+  Schema.Struct({
+    ...EventMetadataFields,
+    type: Schema.Literal("operation_completed"),
+  }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("cancellation_requested"),
@@ -657,17 +712,19 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("operation_unknown"),
     reason: Schema.Literal("liveness-unproven"),
-    failureReason: Schema.optional(Schema.Literal(
-      "start_rejected",
-      "start_authorization_timed_out",
-      "start_authorization_invalidated",
-    )),
+    failureReason: Schema.optional(
+      Schema.Literal(
+        "start_rejected",
+        "start_authorization_timed_out",
+        "start_authorization_invalidated"
+      )
+    ),
   }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("operation_failed"),
     reason: FailureReason,
-  }),
+  })
 );
 
 const StoredOperationRecordSchema = Schema.Struct({
@@ -678,26 +735,32 @@ const StoredOperationRecordSchema = Schema.Struct({
 
 function recordObject(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : undefined;
 }
 
 function rejectUnsupportedSchema(value: unknown): void {
   const record = recordObject(value);
   const recordVersion = record?.schemaVersion;
-  if (typeof recordVersion === "number" && recordVersion !== EVENT_SCHEMA_VERSION) {
+  if (
+    typeof recordVersion === "number" &&
+    recordVersion !== EVENT_SCHEMA_VERSION
+  ) {
     throw new RecordDecodingError(
       "unsupported_schema",
-      `Unsupported record schema ${recordVersion}`,
+      `Unsupported record schema ${recordVersion}`
     );
   }
   if (!Array.isArray(record?.events)) return;
   for (const value of record.events) {
     const eventVersion = recordObject(value)?.schemaVersion;
-    if (typeof eventVersion === "number" && eventVersion !== EVENT_SCHEMA_VERSION) {
+    if (
+      typeof eventVersion === "number" &&
+      eventVersion !== EVENT_SCHEMA_VERSION
+    ) {
       throw new RecordDecodingError(
         "unsupported_schema",
-        `Unsupported event schema ${eventVersion}`,
+        `Unsupported event schema ${eventVersion}`
       );
     }
   }
@@ -705,24 +768,26 @@ function rejectUnsupportedSchema(value: unknown): void {
 
 export function decodeRecord(
   value: unknown,
-  operationId: string,
+  operationId: string
 ): StoredOperationRecord {
   rejectUnsupportedSchema(value);
 
   let record: StoredOperationRecord;
   try {
-    record = Schema.decodeUnknownSync(StoredOperationRecordSchema)(value) as StoredOperationRecord;
+    record = Schema.decodeUnknownSync(StoredOperationRecordSchema)(
+      value
+    ) as StoredOperationRecord;
   } catch (error) {
     throw new RecordDecodingError(
       "corrupt_record",
-      error instanceof Error ? error.message : String(error),
+      error instanceof Error ? error.message : String(error)
     );
   }
 
   if (record.operationId !== operationId) {
     throw new RecordDecodingError(
       "corrupt_record",
-      "Operation identifier does not match record path",
+      "Operation identifier does not match record path"
     );
   }
   for (const event of record.events) {

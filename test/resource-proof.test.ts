@@ -51,26 +51,37 @@ class InterruptedRequiredResourceWorker implements WorkerAdapter {
 
   open(operation: Operation): Worker {
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(this, function* () {
-        yield* hooks.workerLaunched();
-        const instruction = yield* hooks.workerIdentified({
-          processId: 1234,
-          processInstanceId: "resource-worker",
-          processStartToken: "resource-worker-start",
-          piSessionId: "resource-pi",
-          observedConfig: {
-            model: { state: "observed", value: operation.effectiveConfig.model },
-            thinkingLevel: { state: "observed", value: operation.effectiveConfig.thinkingLevel },
-            tools: { state: "observed", value: operation.effectiveConfig.tools },
-            cwd: { state: "observed", value: operation.effectiveConfig.cwd },
-          },
-        });
-        yield* hooks.startDeliveryEntered(instruction);
-        yield* hooks.startInstructionDispatched(instruction);
-        return yield* Effect.async<WorkerRunOutcome>((resume) => {
-          this.releaseRun = () => resume(Effect.succeed({ state: "liveness-unproven" }));
-        });
-      }),
+      run: (hooks) =>
+        Effect.gen(this, function* () {
+          yield* hooks.workerLaunched();
+          const instruction = yield* hooks.workerIdentified({
+            processId: 1234,
+            processInstanceId: "resource-worker",
+            processStartToken: "resource-worker-start",
+            piSessionId: "resource-pi",
+            observedConfig: {
+              model: {
+                state: "observed",
+                value: operation.effectiveConfig.model,
+              },
+              thinkingLevel: {
+                state: "observed",
+                value: operation.effectiveConfig.thinkingLevel,
+              },
+              tools: {
+                state: "observed",
+                value: operation.effectiveConfig.tools,
+              },
+              cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+            },
+          });
+          yield* hooks.startDeliveryEntered(instruction);
+          yield* hooks.startInstructionDispatched(instruction);
+          return yield* Effect.async<WorkerRunOutcome>((resume) => {
+            this.releaseRun = () =>
+              resume(Effect.succeed({ state: "liveness-unproven" }));
+          });
+        }),
       cancel: () => Effect.succeed({ proof: "worker-stop" }),
     });
   }
@@ -78,28 +89,29 @@ class InterruptedRequiredResourceWorker implements WorkerAdapter {
   recover(operation: Operation): Worker {
     this.recoveryAttempted = true;
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(this, function* () {
-        const identity = operation.workerIdentity!;
-        const instruction = yield* hooks.workerIdentified({
-          processId: identity.processId,
-          processInstanceId: identity.processInstanceId,
-          processStartToken: identity.processStartToken,
-          piSessionId: identity.piSessionId,
-          observedConfig: operation.observedConfig!,
-        });
-        yield* hooks.startDeliveryAuthorityRevoked(
-          instruction.dispatcherId,
-          instruction.deliveryGeneration,
-        );
-        yield* hooks.deliveryGenerationConfirmed({
-          dispatcherId: instruction.dispatcherId,
-          deliveryGeneration: instruction.deliveryGeneration,
-          acceptanceState: "not_accepted",
-        });
-        yield* hooks.startDeliveryEntered(instruction);
-        this.recoveredDeliveryCount += 1;
-        return { state: "liveness-unproven" } as const;
-      }),
+      run: (hooks) =>
+        Effect.gen(this, function* () {
+          const identity = operation.workerIdentity!;
+          const instruction = yield* hooks.workerIdentified({
+            processId: identity.processId,
+            processInstanceId: identity.processInstanceId,
+            processStartToken: identity.processStartToken,
+            piSessionId: identity.piSessionId,
+            observedConfig: operation.observedConfig!,
+          });
+          yield* hooks.startDeliveryAuthorityRevoked(
+            instruction.dispatcherId,
+            instruction.deliveryGeneration
+          );
+          yield* hooks.deliveryGenerationConfirmed({
+            dispatcherId: instruction.dispatcherId,
+            deliveryGeneration: instruction.deliveryGeneration,
+            acceptanceState: "not_accepted",
+          });
+          yield* hooks.startDeliveryEntered(instruction);
+          this.recoveredDeliveryCount += 1;
+          return { state: "liveness-unproven" } as const;
+        }),
       cancel: () => Effect.succeed({ proof: "worker-stop" }),
     });
   }
@@ -111,12 +123,17 @@ const manifest = (read: PermissionManifest["read"]): PermissionManifest => ({
   write: { kind: "none" },
   commands: "unrestricted",
   network: "none",
-  externalResources: [{ authorityId: "launcher", selector: "repo", usage: "shared_read" }],
+  externalResources: [
+    { authorityId: "launcher", selector: "repo", usage: "shared_read" },
+  ],
 });
 
 test("permission manifests match after set normalization", () => {
   const left = manifest({ kind: "literals", paths: ["src/b.ts", "src/a.ts"] });
-  const right = { ...manifest({ kind: "literals", paths: ["src/a.ts", "src/b.ts"] }), tools: ["bash", "read"] };
+  const right = {
+    ...manifest({ kind: "literals", paths: ["src/a.ts", "src/b.ts"] }),
+    tools: ["bash", "read"],
+  };
 
   assert.equal(permissionManifestsMatch(left, right), true);
 });
@@ -144,31 +161,58 @@ test("conflicting use of one external resource is rejected", () => {
     ],
   };
 
-  assert.throws(() => normalizePermissionManifest(input), { name: "ResourceProofRejectedError", reason: "permission_contradiction" });
+  assert.throws(() => normalizePermissionManifest(input), {
+    name: "ResourceProofRejectedError",
+    reason: "permission_contradiction",
+  });
 });
 
 test("an absolute workspace literal is rejected", () => {
-  assert.throws(() => normalizePermissionManifest(manifest({ kind: "literals", paths: ["/etc"] })), { name: "ResourceProofRejectedError", reason: "permission_mismatch" });
+  assert.throws(
+    () =>
+      normalizePermissionManifest(
+        manifest({ kind: "literals", paths: ["/etc"] })
+      ),
+    { name: "ResourceProofRejectedError", reason: "permission_mismatch" }
+  );
 });
 
 test("proof JSON with decoded duplicate keys is rejected", () => {
-  assert.throws(() => parseProofDocument(Buffer.from('{"a":1,"\\u0061":2}')), { name: "ResourceProofRejectedError", reason: "invalid_proof" });
+  assert.throws(() => parseProofDocument(Buffer.from('{"a":1,"\\u0061":2}')), {
+    name: "ResourceProofRejectedError",
+    reason: "invalid_proof",
+  });
 });
 
 test("proof JSON with invalid UTF-8 is rejected", () => {
-  assert.throws(() => parseProofDocument(Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d])), { name: "ResourceProofRejectedError", reason: "invalid_proof" });
+  assert.throws(
+    () =>
+      parseProofDocument(
+        Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d])
+      ),
+    { name: "ResourceProofRejectedError", reason: "invalid_proof" }
+  );
 });
 
 test("proof JSON with an isolated surrogate is rejected", () => {
-  assert.throws(() => parseProofDocument(Buffer.from('{"x":"\\ud800"}')), { name: "ResourceProofRejectedError", reason: "invalid_proof" });
+  assert.throws(() => parseProofDocument(Buffer.from('{"x":"\\ud800"}')), {
+    name: "ResourceProofRejectedError",
+    reason: "invalid_proof",
+  });
 });
 
 test("proof JSON is canonicalized", () => {
-  assert.equal(parseProofDocument(Buffer.from('{"z":1,"a":[true,null]}')).json, '{"a":[true,null],"z":1}');
+  assert.equal(
+    parseProofDocument(Buffer.from('{"z":1,"a":[true,null]}')).json,
+    '{"a":[true,null],"z":1}'
+  );
 });
 
 test("proof JSON at the raw byte limit is accepted", () => {
-  const input = Buffer.concat([Buffer.alloc(2 * 1024 * 1024 - 4, 0x20), Buffer.from("null")]);
+  const input = Buffer.concat([
+    Buffer.alloc(2 * 1024 * 1024 - 4, 0x20),
+    Buffer.from("null"),
+  ]);
 
   assert.equal(parseProofDocument(input).json, "null");
 });
@@ -176,39 +220,79 @@ test("proof JSON at the raw byte limit is accepted", () => {
 test("proof JSON exceeding the raw byte limit is rejected", () => {
   const input = Buffer.alloc(2 * 1024 * 1024 + 1, 0x20);
 
-  assert.throws(() => parseProofDocument(input), { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" });
+  assert.throws(() => parseProofDocument(input), {
+    name: "ResourceProofRejectedError",
+    reason: "proof_limit_exceeded",
+  });
 });
 
 test("proof JSON at the canonical byte limit is accepted", () => {
-  const values = ["a".repeat(262_144), "b".repeat(262_144), "c".repeat(262_144), "d".repeat(262_131)];
+  const values = [
+    "a".repeat(262_144),
+    "b".repeat(262_144),
+    "c".repeat(262_144),
+    "d".repeat(262_131),
+  ];
 
-  assert.equal(parseProofDocument(Buffer.from(JSON.stringify(values))).byteCount, 1024 * 1024);
+  assert.equal(
+    parseProofDocument(Buffer.from(JSON.stringify(values))).byteCount,
+    1024 * 1024
+  );
 });
 
 test("proof JSON exceeding the canonical byte limit is rejected", () => {
-  const values = ["a".repeat(262_144), "b".repeat(262_144), "c".repeat(262_144), "d".repeat(262_132)];
+  const values = [
+    "a".repeat(262_144),
+    "b".repeat(262_144),
+    "c".repeat(262_144),
+    "d".repeat(262_132),
+  ];
 
-  assert.throws(() => parseProofDocument(Buffer.from(JSON.stringify(values))), { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" });
+  assert.throws(() => parseProofDocument(Buffer.from(JSON.stringify(values))), {
+    name: "ResourceProofRejectedError",
+    reason: "proof_limit_exceeded",
+  });
 });
 
 test("proof JSON at the string byte limit is accepted", () => {
-  assert.equal((parseProofDocument(Buffer.from(JSON.stringify("a".repeat(256 * 1024)))).value as string).length, 256 * 1024);
+  assert.equal(
+    (
+      parseProofDocument(Buffer.from(JSON.stringify("a".repeat(256 * 1024))))
+        .value as string
+    ).length,
+    256 * 1024
+  );
 });
 
 test("a proof object key at the string byte limit is accepted", () => {
   const key = "k".repeat(256 * 1024);
 
-  assert.equal(Object.keys(parseProofDocument(Buffer.from(JSON.stringify({ [key]: 1 }))).value as object)[0]?.length, 256 * 1024);
+  assert.equal(
+    Object.keys(
+      parseProofDocument(Buffer.from(JSON.stringify({ [key]: 1 })))
+        .value as object
+    )[0]?.length,
+    256 * 1024
+  );
 });
 
 test("a proof object key exceeding the string byte limit is rejected", () => {
   const key = "k".repeat(256 * 1024 + 1);
 
-  assert.throws(() => parseProofDocument(Buffer.from(JSON.stringify({ [key]: 1 }))), { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" });
+  assert.throws(
+    () => parseProofDocument(Buffer.from(JSON.stringify({ [key]: 1 }))),
+    { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" }
+  );
 });
 
 test("proof JSON exceeding the string byte limit is rejected", () => {
-  assert.throws(() => parseProofDocument(Buffer.from(JSON.stringify("a".repeat(256 * 1024 + 1)))), { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" });
+  assert.throws(
+    () =>
+      parseProofDocument(
+        Buffer.from(JSON.stringify("a".repeat(256 * 1024 + 1)))
+      ),
+    { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" }
+  );
 });
 
 test("proof JSON at the depth limit is accepted", () => {
@@ -220,15 +304,28 @@ test("proof JSON at the depth limit is accepted", () => {
 test("proof JSON exceeding the depth limit is rejected", () => {
   const input = `${"[".repeat(32)}0${"]".repeat(32)}`;
 
-  assert.throws(() => parseProofDocument(Buffer.from(input)), { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" });
+  assert.throws(() => parseProofDocument(Buffer.from(input)), {
+    name: "ResourceProofRejectedError",
+    reason: "proof_limit_exceeded",
+  });
 });
 
 test("proof JSON at the element limit is accepted", () => {
-  assert.equal((parseProofDocument(Buffer.from(JSON.stringify(Array(10_000).fill(0)))).value as Array<unknown>).length, 10_000);
+  assert.equal(
+    (
+      parseProofDocument(Buffer.from(JSON.stringify(Array(10_000).fill(0))))
+        .value as Array<unknown>
+    ).length,
+    10_000
+  );
 });
 
 test("proof JSON exceeding the element limit is rejected", () => {
-  assert.throws(() => parseProofDocument(Buffer.from(JSON.stringify(Array(10_001).fill(0)))), { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" });
+  assert.throws(
+    () =>
+      parseProofDocument(Buffer.from(JSON.stringify(Array(10_001).fill(0)))),
+    { name: "ResourceProofRejectedError", reason: "proof_limit_exceeded" }
+  );
 });
 
 test("an internal symbolic link inside the allowed scope is accepted", async () => {
@@ -236,7 +333,13 @@ test("an internal symbolic link inside the allowed scope is accepted", async () 
   await mkdir(join(workspace, "actual"));
   await symlink("actual", join(workspace, "linked"));
 
-  assert.equal(await validateWorkspaceScope(workspace, { kind: "literals", paths: ["linked", "actual"] }), true);
+  assert.equal(
+    await validateWorkspaceScope(workspace, {
+      kind: "literals",
+      paths: ["linked", "actual"],
+    }),
+    true
+  );
 });
 
 test("an internal symbolic link outside the declared literal scope is rejected", async () => {
@@ -244,7 +347,10 @@ test("an internal symbolic link outside the declared literal scope is rejected",
   await mkdir(join(workspace, "actual"));
   await symlink("actual", join(workspace, "linked"));
 
-  await assert.rejects(validateWorkspaceScope(workspace, { kind: "literals", paths: ["linked"] }), { name: "ResourceProofRejectedError", reason: "permission_mismatch" });
+  await assert.rejects(
+    validateWorkspaceScope(workspace, { kind: "literals", paths: ["linked"] }),
+    { name: "ResourceProofRejectedError", reason: "permission_mismatch" }
+  );
 });
 
 test("a symbolic link outside the workspace is rejected", async () => {
@@ -252,7 +358,10 @@ test("a symbolic link outside the workspace is rejected", async () => {
   const outside = await mkdtemp(join(tmpdir(), "pions-outside-"));
   await symlink(outside, join(workspace, "escape"));
 
-  await assert.rejects(validateWorkspaceScope(workspace, { kind: "literals", paths: ["escape"] }), { name: "ResourceProofRejectedError", reason: "permission_mismatch" });
+  await assert.rejects(
+    validateWorkspaceScope(workspace, { kind: "literals", paths: ["escape"] }),
+    { name: "ResourceProofRejectedError", reason: "permission_mismatch" }
+  );
 });
 
 class FakeResourceAdapter implements ResourceAdapter {
@@ -260,24 +369,39 @@ class FakeResourceAdapter implements ResourceAdapter {
   inspectCount = 0;
   lastRequest?: Readonly<ResourceAdapterRequest>;
   lastProofDigest?: `sha256:${string}`;
-  observedConstraints: ReadonlyArray<PermissionConstraint> = ["tools", "read", "write", "commands", "network", "externalResources"];
+  observedConstraints: ReadonlyArray<PermissionConstraint> = [
+    "tools",
+    "read",
+    "write",
+    "commands",
+    "network",
+    "externalResources",
+  ];
 
   async normalizeSelector(selector: string) {
-    return { namespace: "test", selector, conflictScopes: [`test:${selector}`] };
+    return {
+      namespace: "test",
+      selector,
+      conflictScopes: [`test:${selector}`],
+    };
   }
 
-  async acquire(request: Readonly<ResourceAdapterRequest>): Promise<Readonly<ResourceProofEvidence>> {
+  async acquire(
+    request: Readonly<ResourceAdapterRequest>
+  ): Promise<Readonly<ResourceProofEvidence>> {
     this.acquireCount += 1;
     this.lastRequest = request;
-    const workspaceEvidence = Buffer.from(JSON.stringify({
-      schemaVersion: 1,
-      kind: "workspace-proof",
-      authorityId: "launcher",
-      authorityRegistrationId: "launcher-registration-1",
-      authorityGeneration: "generation-1",
-      operationId: request.operationId,
-      workspace: request.workspace,
-    }));
+    const workspaceEvidence = Buffer.from(
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "workspace-proof",
+        authorityId: "launcher",
+        authorityRegistrationId: "launcher-registration-1",
+        authorityGeneration: "generation-1",
+        operationId: request.operationId,
+        workspace: request.workspace,
+      })
+    );
     const guarantees = (constraints: ReadonlyArray<PermissionConstraint>) =>
       constraints.map((constraint) => ({
         authorityId: "launcher",
@@ -307,16 +431,25 @@ class FakeResourceAdapter implements ResourceAdapter {
       noConflict: true,
       revocationOwner: "launcher",
       observations: guarantees(this.observedConstraints),
-      enforcements: guarantees(["tools", "read", "write", "commands", "network", "externalResources"]),
+      enforcements: guarantees([
+        "tools",
+        "read",
+        "write",
+        "commands",
+        "network",
+        "externalResources",
+      ]),
       generation: "lease-1",
     };
-    const evidence = Buffer.from(JSON.stringify({
-      schemaVersion: 1,
-      kind: "resource-proof",
-      ...fields,
-      workspace: undefined,
-      workspaceProofDigest: parseProofDocument(workspaceEvidence).digest,
-    }));
+    const evidence = Buffer.from(
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "resource-proof",
+        ...fields,
+        workspace: undefined,
+        workspaceProofDigest: parseProofDocument(workspaceEvidence).digest,
+      })
+    );
     this.lastProofDigest = parseProofDocument(evidence).digest;
     return { ...fields, workspaceEvidence, evidence };
   }
@@ -338,7 +471,8 @@ class FakeResourceAdapter implements ResourceAdapter {
       operationId: request.operationId,
       workerProcessInstanceId: request.workerProcessInstanceId,
       requestDigest: request.requestDigest,
-      proofDigest: this.lastProofDigest ?? `sha256:${"00".repeat(32)}` as const,
+      proofDigest:
+        this.lastProofDigest ?? (`sha256:${"00".repeat(32)}` as const),
       checkedAt: "2099-01-01T00:00:00.000Z",
       generation: "lease-1",
       handoffConfirmed: true,
@@ -346,12 +480,22 @@ class FakeResourceAdapter implements ResourceAdapter {
     };
     return {
       ...fields,
-      evidence: Buffer.from(JSON.stringify({ schemaVersion: 1, kind: "resource-validation", ...fields })),
+      evidence: Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          kind: "resource-validation",
+          ...fields,
+        })
+      ),
     };
   }
 
-  async revokeAccess() { return "blocked" as const; }
-  async release() { return "released" as const; }
+  async revokeAccess() {
+    return "blocked" as const;
+  }
+  async release() {
+    return "released" as const;
+  }
 }
 
 const controllerFixture = async () => {
@@ -370,7 +514,10 @@ const controllerFixture = async () => {
   const controller = makeResourceProofController({
     registrations: [registration],
     cleanupAuthenticator: {
-      authenticate: async () => ({ subjectId: "coordinator", canCleanup: async () => true }),
+      authenticate: async () => ({
+        subjectId: "coordinator",
+        canCleanup: async () => true,
+      }),
     },
   });
   const workspacePath = await mkdtemp(join(tmpdir(), "pions-controller-"));
@@ -411,7 +558,7 @@ const controllerFixture = async () => {
 };
 
 function requiredRuntimeConfiguration(
-  request: Awaited<ReturnType<typeof controllerFixture>>["request"],
+  request: Awaited<ReturnType<typeof controllerFixture>>["request"]
 ) {
   return {
     cwd: request.workspace.normalizedPath,
@@ -421,7 +568,10 @@ function requiredRuntimeConfiguration(
         modelCandidates: [{ provider: "test", id: "test-model" }],
         thinkingLevel: "medium" as const,
         tools: ["read", "bash"],
-        resources: { resourceProofPolicy: "required" as const, ...request.requirements },
+        resources: {
+          resourceProofPolicy: "required" as const,
+          ...request.requirements,
+        },
         startAuthorization: { policy: "disabled" as const },
         workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
         acceptedArtifactRetentionMs: 86_400_000,
@@ -448,37 +598,58 @@ test("missing observation evidence rejects resource acquisition", async () => {
   const { adapter, controller, request } = await controllerFixture();
   adapter.observedConstraints = ["tools"];
 
-  await assert.rejects(controller.prepare(request), { name: "ResourceProofRejectedError", reason: "observation_missing" });
+  await assert.rejects(controller.prepare(request), {
+    name: "ResourceProofRejectedError",
+    reason: "observation_missing",
+  });
 });
 
 test("a fresh validation is persisted before it is returned", async () => {
   const { controller, request } = await controllerFixture();
   await controller.prepare(request);
 
-  assert.equal((await controller.revalidate(request.operationId)).evidence.validations.length, 1);
+  assert.equal(
+    (await controller.revalidate(request.operationId)).evidence.validations
+      .length,
+    1
+  );
 });
 
 test("predelegated automatic cleanup releases the acquisition", async () => {
   const { controller, request } = await controllerFixture();
   const automatic = {
     ...request,
-    requirements: { ...request.requirements, cleanupPolicy: "automatic" as const },
+    requirements: {
+      ...request.requirements,
+      cleanupPolicy: "automatic" as const,
+    },
   };
   await controller.prepare(automatic);
 
-  assert.equal((await controller.automaticCleanup(request.operationId)).evidence.state, "released");
+  assert.equal(
+    (await controller.automaticCleanup(request.operationId)).evidence.state,
+    "released"
+  );
 });
 
 test("authorized cleanup releases the acquisition", async () => {
   const { controller, request } = await controllerFixture();
   await controller.prepare(request);
 
-  assert.equal((await controller.cleanup(request.operationId, "credential")).evidence.state, "released");
+  assert.equal(
+    (await controller.cleanup(request.operationId, "credential")).evidence
+      .state,
+    "released"
+  );
 });
 
 const unavailableRequiredRuntime = async () => {
   const { request } = await controllerFixture();
-  const timestamps = Array(20).fill(0).map((_, index) => new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString());
+  const timestamps = Array(20)
+    .fill(0)
+    .map((_, index) =>
+      new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString()
+    );
   const clock = new FakeClock(timestamps);
   const presentation = new FakePresentation();
   const runtime = makeTestRuntime({
@@ -495,7 +666,10 @@ const unavailableRequiredRuntime = async () => {
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],
-          resources: { resourceProofPolicy: "required", ...request.requirements },
+          resources: {
+            resourceProofPolicy: "required",
+            ...request.requirements,
+          },
           startAuthorization: { policy: "disabled" },
           workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
           acceptedArtifactRetentionMs: 86_400_000,
@@ -503,7 +677,11 @@ const unavailableRequiredRuntime = async () => {
       },
     },
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "protected", idempotencyKey: "unavailable-resource" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "protected",
+    idempotencyKey: "unavailable-resource",
+  });
   return { handle, presentation };
 };
 
@@ -521,7 +699,11 @@ test("an unavailable required adapter creates no pane", async () => {
 
 test("a required Runtime profile revalidates the acquisition before execution", async () => {
   const { adapter, controller, request } = await controllerFixture();
-  const timestamps = Array(30).fill(0).map((_, index) => new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString());
+  const timestamps = Array(30)
+    .fill(0)
+    .map((_, index) =>
+      new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString()
+    );
   const clock = new FakeClock(timestamps);
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
@@ -538,7 +720,10 @@ test("a required Runtime profile revalidates the acquisition before execution", 
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],
-          resources: { resourceProofPolicy: "required", ...request.requirements },
+          resources: {
+            resourceProofPolicy: "required",
+            ...request.requirements,
+          },
           startAuthorization: { policy: "disabled" },
           workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
           acceptedArtifactRetentionMs: 86_400_000,
@@ -546,7 +731,11 @@ test("a required Runtime profile revalidates the acquisition before execution", 
       },
     },
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "protected", idempotencyKey: "required-resource-test" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "protected",
+    idempotencyKey: "required-resource-test",
+  });
   await handle.result();
 
   assert.equal(adapter.inspectCount, 1);
@@ -558,9 +747,11 @@ async function recoveryWithoutRequiredResourceAdapter() {
   const firstWorker = new InterruptedRequiredResourceWorker();
   const firstRuntime = makeTestRuntime({
     worker: firstWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString(),
-    )),
+    clock: new FakeClock(
+      Array.from({ length: 40 }, (_, index) =>
+        new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString()
+      )
+    ),
     ids: new FakeIdGenerator([request.operationId]),
     presentation: new FakePresentation(),
     store,
@@ -579,15 +770,20 @@ async function recoveryWithoutRequiredResourceAdapter() {
   const recoveredWorker = new InterruptedRequiredResourceWorker();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      new Date(Date.UTC(2099, 0, 1, 1, 0, index)).toISOString(),
-    )),
+    clock: new FakeClock(
+      Array.from({ length: 40 }, (_, index) =>
+        new Date(Date.UTC(2099, 0, 1, 1, 0, index)).toISOString()
+      )
+    ),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store,
     configuration: requiredRuntimeConfiguration(request),
   });
-  while (!recoveredWorker.recoveryAttempted || (await handle.read()).failureReason === undefined) {
+  while (
+    !recoveredWorker.recoveryAttempted ||
+    (await handle.read()).failureReason === undefined
+  ) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   const operation = await handle.read();
@@ -611,7 +807,11 @@ test("recovery without a required resource adapter records resource proof reject
 test("resource evidence is reconstructed from a reopened Operation event store", async () => {
   const { registration, request } = await controllerFixture();
   const directory = await mkdtemp(join(tmpdir(), "pions-resource-events-"));
-  const timestamps = Array(30).fill(0).map((_, index) => new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString());
+  const timestamps = Array(30)
+    .fill(0)
+    .map((_, index) =>
+      new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString()
+    );
   const clock = new FakeClock(timestamps);
   const store = new PrivateFileEventStore(directory, clock);
   const controller = makeResourceProofController({
@@ -633,7 +833,10 @@ test("resource evidence is reconstructed from a reopened Operation event store",
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],
-          resources: { resourceProofPolicy: "required", ...request.requirements },
+          resources: {
+            resourceProofPolicy: "required",
+            ...request.requirements,
+          },
           startAuthorization: { policy: "disabled" },
           workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
           acceptedArtifactRetentionMs: 86_400_000,
@@ -641,19 +844,32 @@ test("resource evidence is reconstructed from a reopened Operation event store",
       },
     },
   });
-  await (await runtime.spawn({ promptRef: "prompt", profile: "protected", idempotencyKey: "persistent-resource" })).result();
+  await (
+    await runtime.spawn({
+      promptRef: "prompt",
+      profile: "protected",
+      idempotencyKey: "persistent-resource",
+    })
+  ).result();
   const reopenedStore = new PrivateFileEventStore(directory, new FakeClock([]));
   const reopened = makeResourceProofController({
     registrations: [registration],
     repository: new EventStoreResourceEvidenceRepository(reopenedStore),
   });
 
-  assert.equal((await reopened.read(request.operationId)).evidence.state, "held");
+  assert.equal(
+    (await reopened.read(request.operationId)).evidence.state,
+    "held"
+  );
 });
 
 test("Runtime Operation snapshots expose persisted resource evidence", async () => {
   const { registration, request } = await controllerFixture();
-  const timestamps = Array(20).fill(0).map((_, index) => new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString());
+  const timestamps = Array(20)
+    .fill(0)
+    .map((_, index) =>
+      new Date(Date.UTC(2099, 0, 1, 0, 0, index)).toISOString()
+    );
   const clock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], clock);
   const controller = makeResourceProofController({
@@ -675,7 +891,10 @@ test("Runtime Operation snapshots expose persisted resource evidence", async () 
           modelCandidates: [{ provider: "test", id: "test-model" }],
           thinkingLevel: "medium",
           tools: ["read", "bash"],
-          resources: { resourceProofPolicy: "required", ...request.requirements },
+          resources: {
+            resourceProofPolicy: "required",
+            ...request.requirements,
+          },
           startAuthorization: { policy: "disabled" },
           workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
           acceptedArtifactRetentionMs: 86_400_000,
@@ -683,7 +902,11 @@ test("Runtime Operation snapshots expose persisted resource evidence", async () 
       },
     },
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "protected", idempotencyKey: "resource-test" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "protected",
+    idempotencyKey: "resource-test",
+  });
   await handle.result();
 
   assert.equal((await handle.read()).resourceEvidence?.evidence.state, "held");

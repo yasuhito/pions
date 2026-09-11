@@ -9,9 +9,9 @@
 **推奨事項。** Pions のオーケストレーション実装、境界スキーマ、型付きの運用エラー、テストクロック、リソーススコープ、および構造化されたプロセス内並行処理には、**Effect v3 を正確に `effect@3.22.1` に固定して**採用する。呼び出し元向けの `Runtime`/`Handle` インターフェースに `Effect`、`Layer`、`Context`、`Exit`、または `Cause` を含めてはならず、純粋な操作リデューサーを Effect プログラムとして記述してもならない。要件で約束された公開形状を維持する：
 
 ```ts
-const handle = await runtime.spawn(task, options)
-const result = await handle.result()
-await handle.cancel({ scope: "subtree" })
+const handle = await runtime.spawn(task, options);
+const result = await handle.result();
+await handle.cancel({ scope: "subtree" });
 ```
 
 内部では、ブートストラップされた 1 つの Effect プログラムで `AgentBackend`、`EventStore`、`ChildChannel`、`Presentation`、クロック、および ID／トークンサービスを合成できる。薄いアダプターがそのプログラムを実行し、型付けされた結果を公開 Promise API に変換する。
@@ -44,15 +44,15 @@ await handle.cancel({ scope: "subtree" })
 
 ### 1.2 一貫性のある安定版パッケージマトリックス
 
-| パッケージ | 正確な安定版 | 正規リリースコミット | 互換性と判断 |
-|---|---:|---|---|
-| `effect` | `3.22.1` | [`417e0faa80e471d77fc4a67452e68b09ae0ee861`](https://github.com/Effect-TS/effect/tree/417e0faa80e471d77fc4a67452e68b09ae0ee861) | **Phase 0 の依存関係。** Effect、Schema、Context/Layer、Scope、ファイバー、Exit/Cause、Stream、Queue/PubSub、Ref/STM、Clock/TestClock、Config/Redacted、Logger、および Tracer を含む。 |
-| `@effect/platform` | `0.97.1` | [`417e0faa80e471d77fc4a67452e68b09ae0ee861`](https://github.com/Effect-TS/effect/blob/417e0faa80e471d77fc4a67452e68b09ae0ee861/packages/platform/package.json) | ピアとして `effect ^3.22.1` が必要；Phase 1 まで延期。[npm](https://registry.npmjs.org/%40effect%2Fplatform/0.97.1) |
-| `@effect/platform-node-shared` | `0.61.1` | [`417e0faa80e471d77fc4a67452e68b09ae0ee861`](https://github.com/Effect-TS/effect/blob/417e0faa80e471d77fc4a67452e68b09ae0ee861/packages/platform-node-shared/package.json) | platform-node からの推移的依存関係；ピアとして同じコア／プラットフォーム系列が必要。[npm](https://registry.npmjs.org/%40effect%2Fplatform-node-shared/0.61.1) |
-| `@effect/platform-node` | `0.108.1` | [`bd20125fb9b8ce42f814ba738513daaf83ce723d`](https://github.com/Effect-TS/effect/tree/bd20125fb9b8ce42f814ba738513daaf83ce723d) | ピアとして `effect ^3.22.1` および `@effect/platform ^0.97.1` が必要；Node `>=18`。Phase 1 まで延期。[マニフェスト](https://github.com/Effect-TS/effect/blob/bd20125fb9b8ce42f814ba738513daaf83ce723d/packages/platform-node/package.json) · [npm](https://registry.npmjs.org/%40effect%2Fplatform-node/0.108.1) |
-| `@effect/vitest` | `0.30.0` | [`e670e0f6befb959b84208d5f77631276521020ae`](https://github.com/Effect-TS/effect/tree/e670e0f6befb959b84208d5f77631276521020ae) | 任意の開発依存関係；ピアは `effect ^3.22.0`、`vitest ^3.2.0`。[マニフェスト](https://github.com/Effect-TS/effect/blob/e670e0f6befb959b84208d5f77631276521020ae/packages/vitest/package.json) · [npm](https://registry.npmjs.org/%40effect%2Fvitest/0.30.0) |
-| `@effect/opentelemetry` | `0.64.0` | [`e670e0f6befb959b84208d5f77631276521020ae`](https://github.com/Effect-TS/effect/blob/e670e0f6befb959b84208d5f77631276521020ae/packages/opentelemetry/package.json) | コア `^3.22.0` およびプラットフォーム `^0.97.0` と互換性あり；外部テレメトリが必要になるまで延期。[npm](https://registry.npmjs.org/%40effect%2Fopentelemetry/0.64.0) |
-| `@effect/schema` | `0.75.5` | 推奨対象外 | **追加しないこと。** 公式 npm マニフェストには「this package has been merged into the main effect package」と記載されている。[npm](https://registry.npmjs.org/%40effect%2Fschema/0.75.5) |
+| パッケージ                     | 正確な安定版 | 正規リリースコミット                                                                                                                                                       | 互換性と判断                                                                                                                                                                                                                                                                                                     |
+| ------------------------------ | -----------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `effect`                       |     `3.22.1` | [`417e0faa80e471d77fc4a67452e68b09ae0ee861`](https://github.com/Effect-TS/effect/tree/417e0faa80e471d77fc4a67452e68b09ae0ee861)                                            | **Phase 0 の依存関係。** Effect、Schema、Context/Layer、Scope、ファイバー、Exit/Cause、Stream、Queue/PubSub、Ref/STM、Clock/TestClock、Config/Redacted、Logger、および Tracer を含む。                                                                                                                           |
+| `@effect/platform`             |     `0.97.1` | [`417e0faa80e471d77fc4a67452e68b09ae0ee861`](https://github.com/Effect-TS/effect/blob/417e0faa80e471d77fc4a67452e68b09ae0ee861/packages/platform/package.json)             | ピアとして `effect ^3.22.1` が必要；Phase 1 まで延期。[npm](https://registry.npmjs.org/%40effect%2Fplatform/0.97.1)                                                                                                                                                                                              |
+| `@effect/platform-node-shared` |     `0.61.1` | [`417e0faa80e471d77fc4a67452e68b09ae0ee861`](https://github.com/Effect-TS/effect/blob/417e0faa80e471d77fc4a67452e68b09ae0ee861/packages/platform-node-shared/package.json) | platform-node からの推移的依存関係；ピアとして同じコア／プラットフォーム系列が必要。[npm](https://registry.npmjs.org/%40effect%2Fplatform-node-shared/0.61.1)                                                                                                                                                    |
+| `@effect/platform-node`        |    `0.108.1` | [`bd20125fb9b8ce42f814ba738513daaf83ce723d`](https://github.com/Effect-TS/effect/tree/bd20125fb9b8ce42f814ba738513daaf83ce723d)                                            | ピアとして `effect ^3.22.1` および `@effect/platform ^0.97.1` が必要；Node `>=18`。Phase 1 まで延期。[マニフェスト](https://github.com/Effect-TS/effect/blob/bd20125fb9b8ce42f814ba738513daaf83ce723d/packages/platform-node/package.json) · [npm](https://registry.npmjs.org/%40effect%2Fplatform-node/0.108.1) |
+| `@effect/vitest`               |     `0.30.0` | [`e670e0f6befb959b84208d5f77631276521020ae`](https://github.com/Effect-TS/effect/tree/e670e0f6befb959b84208d5f77631276521020ae)                                            | 任意の開発依存関係；ピアは `effect ^3.22.0`、`vitest ^3.2.0`。[マニフェスト](https://github.com/Effect-TS/effect/blob/e670e0f6befb959b84208d5f77631276521020ae/packages/vitest/package.json) · [npm](https://registry.npmjs.org/%40effect%2Fvitest/0.30.0)                                                       |
+| `@effect/opentelemetry`        |     `0.64.0` | [`e670e0f6befb959b84208d5f77631276521020ae`](https://github.com/Effect-TS/effect/blob/e670e0f6befb959b84208d5f77631276521020ae/packages/opentelemetry/package.json)        | コア `^3.22.0` およびプラットフォーム `^0.97.0` と互換性あり；外部テレメトリが必要になるまで延期。[npm](https://registry.npmjs.org/%40effect%2Fopentelemetry/0.64.0)                                                                                                                                             |
+| `@effect/schema`               |     `0.75.5` | 推奨対象外                                                                                                                                                                 | **追加しないこと。** 公式 npm マニフェストには「this package has been merged into the main effect package」と記載されている。[npm](https://registry.npmjs.org/%40effect%2Fschema/0.75.5)                                                                                                                         |
 
 **情報源に基づく事実。** platform-node の npm マニフェストでは、`@effect/cluster`、`@effect/rpc`、および `@effect/sql` もピアとして列挙されており、`peerDependenciesMeta` で任意とは指定されていない。[npm](https://registry.npmjs.org/%40effect%2Fplatform-node/0.108.1)
 
@@ -193,17 +193,17 @@ await handle.cancel({ scope: "subtree" })
 
 ## 4. Pions へのマッピング
 
-| Pions の概念／seam | Effect の最適な用途 | Pions 所有のまま維持すべき境界 |
-|---|---|---|
-| `Runtime` | Layer から一度だけ組み立てる内部 Effect program。Scope が runtime resource を所有し、edge に Promise adapter を置く | 公開 `spawn/result/cancel` API、operation semantics、idempotency、error vocabulary |
-| Pure reducer | Schema で decode された tagged input。Effect data helper を使用する可能性はあるが、effect execution は行わない | legal transition、terminal immutability、invariant derivation、決定論的な pure return value |
-| `AgentBackend` | Context サービス、スコープ付き起動、観測／期限用の fiber、後の段階で Stream | バックエンドイベントの変換、要求／実効／観測設定、プロセス／セッションの同一性と停止証明 |
-| `EventStore` | Context サービス、型付き失敗、Phase 0 では Ref の fake、後の段階でプラットフォーム FS | append/apply トランザクション、リプレイの権威性、単調増加シーケンス、永続的な結果／イベント順序 |
-| `ChildChannel` | Context サービス、後の段階で Queue/Stream と Node Unix ソケット、Schema フレーミング | 認証、ケイパビリティの秘匿性、シーケンス、サイズ上限、結果の単一ライター／ACK プロトコル |
-| `Presentation` | 別の監督対象 fiber 内のベストエフォート型サービス、コミット後の PubSub、注釈付きログ | セマンティックイベントをディスパッチしたり、reducer の状態を上書きしたりできないこと、pane の厳密な所有権／保持 |
-| settle 前の永続化 | 逐次的な Effect 合成と狭い割り込みマスキングにより順序を明示 | 実際の EventStore トランザクション／耐久性、`self_settled` の append 前に結果の bytes/digest を受理 |
-| キャンセル証明 | fiber が待機／タイムアウトを調整、Scope がクリーンアップを実行、Exit/Cause がローカルな結果を保持 | epoch/freeze、子孫スナップショット、後順ディスパッチ、バックエンドの ACK／終了証拠、`unknown` 判定 |
-| 最初の tracer bullet | Layer により提供される fake、Schema ingress、Effect の中核的な順序付け、捕捉された Exit | 正確なイベントシーケンスと単一の公開結果を維持、Stream/STM/プラットフォーム機構は不要 |
+| Pions の概念／seam   | Effect の最適な用途                                                                                                 | Pions 所有のまま維持すべき境界                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `Runtime`            | Layer から一度だけ組み立てる内部 Effect program。Scope が runtime resource を所有し、edge に Promise adapter を置く | 公開 `spawn/result/cancel` API、operation semantics、idempotency、error vocabulary                              |
+| Pure reducer         | Schema で decode された tagged input。Effect data helper を使用する可能性はあるが、effect execution は行わない      | legal transition、terminal immutability、invariant derivation、決定論的な pure return value                     |
+| `AgentBackend`       | Context サービス、スコープ付き起動、観測／期限用の fiber、後の段階で Stream                                         | バックエンドイベントの変換、要求／実効／観測設定、プロセス／セッションの同一性と停止証明                        |
+| `EventStore`         | Context サービス、型付き失敗、Phase 0 では Ref の fake、後の段階でプラットフォーム FS                               | append/apply トランザクション、リプレイの権威性、単調増加シーケンス、永続的な結果／イベント順序                 |
+| `ChildChannel`       | Context サービス、後の段階で Queue/Stream と Node Unix ソケット、Schema フレーミング                                | 認証、ケイパビリティの秘匿性、シーケンス、サイズ上限、結果の単一ライター／ACK プロトコル                        |
+| `Presentation`       | 別の監督対象 fiber 内のベストエフォート型サービス、コミット後の PubSub、注釈付きログ                                | セマンティックイベントをディスパッチしたり、reducer の状態を上書きしたりできないこと、pane の厳密な所有権／保持 |
+| settle 前の永続化    | 逐次的な Effect 合成と狭い割り込みマスキングにより順序を明示                                                        | 実際の EventStore トランザクション／耐久性、`self_settled` の append 前に結果の bytes/digest を受理             |
+| キャンセル証明       | fiber が待機／タイムアウトを調整、Scope がクリーンアップを実行、Exit/Cause がローカルな結果を保持                   | epoch/freeze、子孫スナップショット、後順ディスパッチ、バックエンドの ACK／終了証拠、`unknown` 判定              |
+| 最初の tracer bullet | Layer により提供される fake、Schema ingress、Effect の中核的な順序付け、捕捉された Exit                             | 正確なイベントシーケンスと単一の公開結果を維持、Stream/STM/プラットフォーム機構は不要                           |
 
 ### 4.1 settle 前の永続化
 
@@ -299,21 +299,25 @@ Effect の `forkDaemon` と、scope/fiber interruption の不注意な使用は�
 ```ts
 // 公開される、プレーンな TS/Promise インターフェース。
 interface Runtime {
-  spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle>
+  spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle>;
 }
 
 // 内部サービスは Effect を返してもよい。
 interface EventStore {
-  acceptResult(input: AcceptedResult): Effect.Effect<AcceptedSnapshot, StoreError>
+  acceptResult(
+    input: AcceptedResult
+  ): Effect.Effect<AcceptedSnapshot, StoreError>;
   // append/apply および replay メソッドは省略
 }
 
 interface AgentBackend {
-  start(operation: Operation): Effect.Effect<BackendHandle, BackendStartError, Scope.Scope>
+  start(
+    operation: Operation
+  ): Effect.Effect<BackendHandle, BackendStartError, Scope.Scope>;
 }
 
 // 純粋かつ同期的。
-function reduce(snapshot: Operation, event: OperationEvent): TransitionResult
+function reduce(snapshot: Operation, event: OperationEvent): TransitionResult;
 ```
 
 Schema を使用して `TaskSpec`、イベントエンベロープ、結果メッセージ、永続化されたスナップショットを定義・デコードする。5 つの主要な境界に加えて Clock と ID/token ファクトリに Context Tags を使用し、そのうえで単一の Runtime layer を構築する。テスト用 fake は通常の小さなサービス実装として維持する。
@@ -377,25 +381,26 @@ fake backend は起動回数をカウントする必要がある。EventStore �
 
 ## 9. リスクと緩和策
 
-| リスク | 結果 | 緩和策 |
-|---|---|---|
-| v3 stable と v4 preview の docs/APIs の混在 | コンパイル失敗または微妙に異なるセマンティクス | 厳密なバージョン固定；commit-pinned v3 source を典拠とする；lockfile 内の beta/rc/snapshot packages を禁止する。 |
-| 呼び出し元に公開される Effect 型 | Runtime が薄い依存関係組み立て facade になる | Promise-only の公開アダプター；Exit/Cause を変換し、すべての Layers を内部で提供する。 |
-| Effectful reducer | 遷移ルールの列挙/replay/property-test が難しくなる | 明示的な入力を持つ純粋で同期的な reducer；その前段で decode する。 |
-| ローカルな中断を外部の stop と誤認 | 誤った `cancelled` terminal state | ローカルの Cause と backend acknowledgement/process proof を分離する；reducer は proof event を要求する。 |
-| Scope cleanup が証拠を削除 | failed/unknown pane/artifacts が失われる | Scope の対象を破棄可能な handles のみにする；retention policy を明示的にエンコードする。 |
-| Queue/PubSub の損失またはメモリ内のみの state | 権威ある events/results の欠落 | EventStore への commit を先に行う；bounded nonlossy ingestion；PubSub は projection のみに使用する。 |
-| 広範な uninterruptible regions | cancellation が停滞する | メモリ内/公開の critical sections 周辺だけを狭く mask する；durable writes を復旧可能にする。 |
-| STM を durable transaction と見なす | 再起動により freeze/idempotency/count claims が失われる | 最終的な store transaction が durable claims を所有する；STM は process-local coordination のみに使用する。 |
-| Platform Command に process-tree proof がない | 孤立した worker または誤った cancellation | isolated spike；必要な場合は直接的な Node/OS supervisor adapter；process-instance token と正確な close proof。 |
-| Platform-node の peer/dependency の広さ | install と maintenance のコスト | Phase 1 まで延期する；一貫した厳密な stable matrix を固定し、受け入れ前に生成された lockfile を検査する。 |
-| Redacted を secret isolation と見なす | 抽出された token が logs/events 経由で漏洩 | field allowlists、protocol checks、private descriptors/files、argv/log/metadata をスキャンする tests。 |
-| Telemetry を真実と見なす | observer の失敗がセマンティクスを変える | telemetry/presentation は persistence の後に実行し、best effort とし、決して reducer input にしない。 |
-| Effect v4 がいずれ安定版になる | 移行圧力 | Effect を内部に隔離する；v3 pin を ADR に記録する；v4 は意図的な移行としてのみ評価する。 |
+| リスク                                        | 結果                                                    | 緩和策                                                                                                           |
+| --------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| v3 stable と v4 preview の docs/APIs の混在   | コンパイル失敗または微妙に異なるセマンティクス          | 厳密なバージョン固定；commit-pinned v3 source を典拠とする；lockfile 内の beta/rc/snapshot packages を禁止する。 |
+| 呼び出し元に公開される Effect 型              | Runtime が薄い依存関係組み立て facade になる            | Promise-only の公開アダプター；Exit/Cause を変換し、すべての Layers を内部で提供する。                           |
+| Effectful reducer                             | 遷移ルールの列挙/replay/property-test が難しくなる      | 明示的な入力を持つ純粋で同期的な reducer；その前段で decode する。                                               |
+| ローカルな中断を外部の stop と誤認            | 誤った `cancelled` terminal state                       | ローカルの Cause と backend acknowledgement/process proof を分離する；reducer は proof event を要求する。        |
+| Scope cleanup が証拠を削除                    | failed/unknown pane/artifacts が失われる                | Scope の対象を破棄可能な handles のみにする；retention policy を明示的にエンコードする。                         |
+| Queue/PubSub の損失またはメモリ内のみの state | 権威ある events/results の欠落                          | EventStore への commit を先に行う；bounded nonlossy ingestion；PubSub は projection のみに使用する。             |
+| 広範な uninterruptible regions                | cancellation が停滞する                                 | メモリ内/公開の critical sections 周辺だけを狭く mask する；durable writes を復旧可能にする。                    |
+| STM を durable transaction と見なす           | 再起動により freeze/idempotency/count claims が失われる | 最終的な store transaction が durable claims を所有する；STM は process-local coordination のみに使用する。      |
+| Platform Command に process-tree proof がない | 孤立した worker または誤った cancellation               | isolated spike；必要な場合は直接的な Node/OS supervisor adapter；process-instance token と正確な close proof。   |
+| Platform-node の peer/dependency の広さ       | install と maintenance のコスト                         | Phase 1 まで延期する；一貫した厳密な stable matrix を固定し、受け入れ前に生成された lockfile を検査する。        |
+| Redacted を secret isolation と見なす         | 抽出された token が logs/events 経由で漏洩              | field allowlists、protocol checks、private descriptors/files、argv/log/metadata をスキャンする tests。           |
+| Telemetry を真実と見なす                      | observer の失敗がセマンティクスを変える                 | telemetry/presentation は persistence の後に実行し、best effort とし、決して reducer input にしない。            |
+| Effect v4 がいずれ安定版になる                | 移行圧力                                                | Effect を内部に隔離する；v3 pin を ADR に記録する；v4 は意図的な移行としてのみ評価する。                         |
 
 ## 10. テスト戦略
 
 ### 純粋な reducer のテスト（Effect test runtime は不要）
+
 - 正当および不正なすべての遷移をテーブルテストする。
 - 終端状態の不変性と、outcome/descendant/handoff の各述語を表明する。
 - 重複、古いシーケンス、誤ったアクター、誤ったケイパビリティの拒否をテストする。

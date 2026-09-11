@@ -82,13 +82,17 @@ export interface Operation {
   readonly startGate: StartGateState;
   readonly startupReceipt?: Readonly<StartupReceipt>;
   readonly startAuthorizationDecision?: Readonly<StartAuthorizationDecisionRecord>;
-  readonly rejectedStartAuthorizationDecisions: ReadonlyArray<Readonly<StartAuthorizationDecisionAttemptRecord>>;
+  readonly rejectedStartAuthorizationDecisions: ReadonlyArray<
+    Readonly<StartAuthorizationDecisionAttemptRecord>
+  >;
   readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
   readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
   readonly startInstructionAcceptance?: Readonly<StartInstructionAcceptanceEvidence>;
   readonly startInstructionAcknowledgement?: Readonly<StartInstructionAcknowledgementEvidence>;
-  readonly startDeliveryHandoffs: ReadonlyArray<Readonly<StartDeliveryHandoffEvidence>>;
+  readonly startDeliveryHandoffs: ReadonlyArray<
+    Readonly<StartDeliveryHandoffEvidence>
+  >;
   readonly resultAcceptedAt?: string;
   readonly revisionSeries?: Readonly<RevisionSeriesSnapshot>;
   readonly workerStopConfirmedAt?: string;
@@ -107,7 +111,8 @@ export interface Operation {
   readonly resultAcceptanceReservation?: Readonly<ResultAcceptanceReservation>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
-  readonly terminalReason?: OperationFailureReason | "cancel-unproven" | "liveness-unproven";
+  readonly terminalReason?:
+    OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
 export const EVENT_SCHEMA_VERSION = 19 as const;
@@ -189,13 +194,27 @@ export type OperationEvent = EventMetadata &
     | {
         readonly type: "start_instruction_acknowledged";
         readonly instruction: Readonly<StartInstructionReference>;
-        readonly proof: "authenticated-worker-acknowledgement" | "authenticated-generation-acknowledgement";
+        readonly proof:
+          | "authenticated-worker-acknowledgement"
+          | "authenticated-generation-acknowledgement";
       }
     | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
-    | { readonly type: "resource_evidence_recorded"; readonly record: Readonly<PersistedResourceRecord> }
-    | { readonly type: "retry_clearance_recorded"; readonly clearance: Readonly<RetryClearanceEvidence> }
-    | { readonly type: "revision_reserved"; readonly reservation: Readonly<RevisionReservation> }
-    | { readonly type: "revision_result_adopted"; readonly adoption: Readonly<RevisionResultAdoptionRecord> }
+    | {
+        readonly type: "resource_evidence_recorded";
+        readonly record: Readonly<PersistedResourceRecord>;
+      }
+    | {
+        readonly type: "retry_clearance_recorded";
+        readonly clearance: Readonly<RetryClearanceEvidence>;
+      }
+    | {
+        readonly type: "revision_reserved";
+        readonly reservation: Readonly<RevisionReservation>;
+      }
+    | {
+        readonly type: "revision_result_adopted";
+        readonly adoption: Readonly<RevisionResultAdoptionRecord>;
+      }
     | PersistableOperationIntent
     | {
         readonly type: "result_acceptance_prepared";

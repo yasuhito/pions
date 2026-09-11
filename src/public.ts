@@ -4,13 +4,7 @@ export interface ModelReference {
 }
 
 export type ThinkingLevel =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface RequestedWorkerConfig {
   readonly model?: Readonly<ModelReference>;
@@ -67,7 +61,9 @@ export interface PermissionManifest {
   readonly write: Readonly<WorkspaceAccessScope>;
   readonly commands: "none" | "unrestricted";
   readonly network: "none" | "unrestricted";
-  readonly externalResources: ReadonlyArray<Readonly<ExternalResourcePermission>>;
+  readonly externalResources: ReadonlyArray<
+    Readonly<ExternalResourcePermission>
+  >;
 }
 
 export interface ResourceProofRequirements {
@@ -80,7 +76,9 @@ export interface ResourceProofRequirements {
   readonly cleanupPolicy: "automatic" | "coordinator_required";
   readonly cleanupTimeoutMs: number;
   readonly maxCleanupAttempts: number;
-  readonly safetyCleanupOperations: ReadonlyArray<"inspect" | "revoke" | "release">;
+  readonly safetyCleanupOperations: ReadonlyArray<
+    "inspect" | "revoke" | "release"
+  >;
 }
 
 export type WorkerResourcePolicy =
@@ -145,10 +143,7 @@ export type WorkerStartAuthorizationPolicy =
     };
 
 export type WorkerProfileIntendedUse =
-  | "reader"
-  | "formal_reviewer"
-  | "writer"
-  | "revision_retry";
+  "reader" | "formal_reviewer" | "writer" | "revision_retry";
 
 export interface WorkerProfilePolicy {
   readonly intendedUse: WorkerProfileIntendedUse;
@@ -162,14 +157,15 @@ export interface WorkerProfilePolicy {
 }
 
 export type WorkProductRequirementsFailureReason =
-  | "invalid_key"
-  | "duplicate_key"
-  | "invalid_requirement";
+  "invalid_key" | "duplicate_key" | "invalid_requirement";
 
 export class WorkProductRequirementsError extends Error {
   override readonly name = "WorkProductRequirementsError";
 
-  constructor(readonly reason: WorkProductRequirementsFailureReason, message: string) {
+  constructor(
+    readonly reason: WorkProductRequirementsFailureReason,
+    message: string
+  ) {
     super(message);
   }
 }
@@ -203,7 +199,9 @@ export interface ResultAcceptanceManifest {
   readonly bodyArtifactId: string;
   readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
   readonly requirementSetDigest: ArtifactDigest;
-  readonly workProducts: ReadonlyArray<Readonly<ResultAcceptanceManifestWorkProduct>>;
+  readonly workProducts: ReadonlyArray<
+    Readonly<ResultAcceptanceManifestWorkProduct>
+  >;
 }
 
 export interface CanonicalResultAcceptanceManifestDocument {
@@ -241,7 +239,10 @@ export type ResultAcceptanceManifestFailureReason =
 export class ResultAcceptanceManifestError extends Error {
   override readonly name = "ResultAcceptanceManifestError";
 
-  constructor(readonly reason: ResultAcceptanceManifestFailureReason, message: string) {
+  constructor(
+    readonly reason: ResultAcceptanceManifestFailureReason,
+    message: string
+  ) {
     super(message);
   }
 }
@@ -265,7 +266,7 @@ export class WorkerConfigurationError extends Error {
 
   constructor(
     readonly reason: WorkerConfigurationFailureReason,
-    message: string,
+    message: string
   ) {
     super(message);
   }
@@ -284,7 +285,7 @@ export class ProjectConfigurationError extends Error {
 
   constructor(
     readonly reason: ProjectConfigurationFailureReason,
-    message: string,
+    message: string
   ) {
     super(message);
   }
@@ -353,7 +354,9 @@ export interface StartupReceipt {
     readonly workspaceId: string;
     readonly normalizedPath: string;
     readonly baseRevision: string;
-    readonly owner: { readonly state: "known"; readonly ownerId: string } | { readonly state: "unknown" };
+    readonly owner:
+      | { readonly state: "known"; readonly ownerId: string }
+      | { readonly state: "unknown" };
     readonly pionsMayDelete: false;
   }>;
   readonly permissionManifest: Readonly<{
@@ -404,7 +407,9 @@ export interface StartAuthorizationSnapshot {
   readonly gate: StartGateState;
   readonly receipt?: Readonly<StartupReceipt>;
   readonly decision?: Readonly<StartAuthorizationDecisionRecord>;
-  readonly rejectedDecisions: ReadonlyArray<Readonly<StartAuthorizationDecisionAttemptRecord>>;
+  readonly rejectedDecisions: ReadonlyArray<
+    Readonly<StartAuthorizationDecisionAttemptRecord>
+  >;
 }
 
 export interface StartInstructionReference {
@@ -434,7 +439,9 @@ export interface StartInstructionAcceptanceEvidence extends StartInstructionRefe
 
 export interface StartInstructionAcknowledgementEvidence extends StartInstructionReference {
   readonly acknowledgedAt: string;
-  readonly proof: "authenticated-worker-acknowledgement" | "authenticated-generation-acknowledgement";
+  readonly proof:
+    | "authenticated-worker-acknowledgement"
+    | "authenticated-generation-acknowledgement";
 }
 
 export interface StartDeliveryHandoffEvidence {
@@ -479,12 +486,7 @@ export interface PresentationCleanupEvidence {
 }
 
 export type ResourceAcquisitionState =
-  | "planned"
-  | "acquiring"
-  | "held"
-  | "releasing"
-  | "released"
-  | "unresolved";
+  "planned" | "acquiring" | "held" | "releasing" | "released" | "unresolved";
 
 export type ResourceValidationState = "valid" | "invalid" | "unknown";
 
@@ -536,11 +538,14 @@ export interface ResourceWorkspace {
   readonly workspaceId: string;
   readonly normalizedPath: string;
   readonly baseRevision: string;
-  readonly owner: { readonly state: "known"; readonly ownerId: string } | { readonly state: "unknown" };
+  readonly owner:
+    | { readonly state: "known"; readonly ownerId: string }
+    | { readonly state: "unknown" };
   readonly pionsMayDelete: false;
 }
 
-export type PermissionConstraint = "tools" | "read" | "write" | "commands" | "network" | "externalResources";
+export type PermissionConstraint =
+  "tools" | "read" | "write" | "commands" | "network" | "externalResources";
 
 export interface PermissionGuaranteeEvidence {
   readonly authorityId: string;
@@ -602,20 +607,37 @@ export interface ResourceAdapterRequest {
 
 export interface ResourceProofIssuer {
   verify(evidence: Uint8Array): Promise<boolean>;
-  isCurrentlyTrusted(generation: string): Promise<"trusted" | "revoked" | "unknown">;
+  isCurrentlyTrusted(
+    generation: string
+  ): Promise<"trusted" | "revoked" | "unknown">;
 }
 
 export interface ResourceAdapter {
-  normalizeSelector(selector: string, normalizationVersion: string): Promise<Readonly<{
-    readonly namespace: string;
-    readonly selector: string;
-    readonly conflictScopes: ReadonlyArray<string>;
-  }>>;
-  acquire(request: Readonly<ResourceAdapterRequest>): Promise<Readonly<ResourceProofEvidence>>;
-  recover(request: Readonly<ResourceAdapterRequest>): Promise<Readonly<ResourceProofEvidence> | "released" | "unknown">;
-  inspect(request: Readonly<ResourceAdapterRequest>): Promise<Readonly<ResourceValidationEvidence>>;
-  revokeAccess(request: Readonly<ResourceAdapterRequest>): Promise<"blocked" | "unknown">;
-  release(request: Readonly<ResourceAdapterRequest>): Promise<"released" | "unknown">;
+  normalizeSelector(
+    selector: string,
+    normalizationVersion: string
+  ): Promise<
+    Readonly<{
+      readonly namespace: string;
+      readonly selector: string;
+      readonly conflictScopes: ReadonlyArray<string>;
+    }>
+  >;
+  acquire(
+    request: Readonly<ResourceAdapterRequest>
+  ): Promise<Readonly<ResourceProofEvidence>>;
+  recover(
+    request: Readonly<ResourceAdapterRequest>
+  ): Promise<Readonly<ResourceProofEvidence> | "released" | "unknown">;
+  inspect(
+    request: Readonly<ResourceAdapterRequest>
+  ): Promise<Readonly<ResourceValidationEvidence>>;
+  revokeAccess(
+    request: Readonly<ResourceAdapterRequest>
+  ): Promise<"blocked" | "unknown">;
+  release(
+    request: Readonly<ResourceAdapterRequest>
+  ): Promise<"released" | "unknown">;
 }
 
 export interface ResourceAuthorityRegistration {
@@ -627,7 +649,10 @@ export interface ResourceAuthorityRegistration {
   readonly adapter: ResourceAdapter;
 }
 
-export interface PersistedResourceValidation extends Omit<ResourceValidationEvidence, "evidence"> {
+export interface PersistedResourceValidation extends Omit<
+  ResourceValidationEvidence,
+  "evidence"
+> {
   readonly evidence: Readonly<CanonicalProofDocument>;
 }
 
@@ -664,7 +689,10 @@ export interface ResourcePreparationRequest {
 
 export interface ResourceCleanupPrincipal {
   readonly subjectId: string;
-  canCleanup(operationId: string, operations: ReadonlyArray<"inspect" | "revoke" | "release">): Promise<boolean>;
+  canCleanup(
+    operationId: string,
+    operations: ReadonlyArray<"inspect" | "revoke" | "release">
+  ): Promise<boolean>;
 }
 
 export interface ResourceCleanupAuthenticator {
@@ -677,16 +705,28 @@ export interface VersionedResourceEvidenceSnapshot {
 }
 
 export interface ResourceProofController {
-  prepare(request: Readonly<ResourcePreparationRequest>): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
-  revalidate(operationId: string): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
-  cleanup(operationId: string, credential: string): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
-  read(operationId: string): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  prepare(
+    request: Readonly<ResourcePreparationRequest>
+  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  revalidate(
+    operationId: string
+  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  cleanup(
+    operationId: string,
+    credential: string
+  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  read(
+    operationId: string
+  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
 }
 
 export class ResourceProofRejectedError extends Error {
   override readonly name = "ResourceProofRejectedError";
 
-  constructor(readonly reason: ResourceProofRejectionReason, message: string) {
+  constructor(
+    readonly reason: ResourceProofRejectionReason,
+    message: string
+  ) {
     super(message);
   }
 }
@@ -755,10 +795,11 @@ interface ReserveRevisionRequestBase {
   readonly task: Readonly<TaskSpec>;
 }
 
-export type ReserveRevisionRequest = ReserveRevisionRequestBase & (
-  | { readonly seriesId?: never; readonly maxAttempts: number }
-  | { readonly seriesId: RevisionSeriesId; readonly maxAttempts?: never }
-);
+export type ReserveRevisionRequest = ReserveRevisionRequestBase &
+  (
+    | { readonly seriesId?: never; readonly maxAttempts: number }
+    | { readonly seriesId: RevisionSeriesId; readonly maxAttempts?: never }
+  );
 
 export interface ReserveRetryRequest {
   readonly requestId: string;
@@ -770,8 +811,20 @@ export interface ReserveRetryRequest {
 }
 
 export type RevisionReservationOutcome =
-  | { readonly status: "reserved" | "idempotent"; readonly reservation: Readonly<RevisionReservation> }
-  | { readonly status: "rejected"; readonly reason: "not_found" | "request_conflict" | "invalid_target" | "limit_exceeded" | "retry_clearance_required" | "retry_clearance_invalid" };
+  | {
+      readonly status: "reserved" | "idempotent";
+      readonly reservation: Readonly<RevisionReservation>;
+    }
+  | {
+      readonly status: "rejected";
+      readonly reason:
+        | "not_found"
+        | "request_conflict"
+        | "invalid_target"
+        | "limit_exceeded"
+        | "retry_clearance_required"
+        | "retry_clearance_invalid";
+    };
 
 export interface AdoptRevisionResultRequest {
   readonly decisionId: string;
@@ -783,15 +836,34 @@ export interface AdoptRevisionResultRequest {
 }
 
 export type RevisionResultAdoptionOutcome =
-  | { readonly status: "adopted" | "idempotent"; readonly adoption: Readonly<RevisionResultAdoptionRecord> }
-  | { readonly status: "rejected"; readonly reason: "series_not_found" | "fixed_scope_denied" | "current_authority_denied" | "authority_revoked" | "authority_unknown" | "decision_conflict" | "invalid_successor" | "result_not_accepted" };
+  | {
+      readonly status: "adopted" | "idempotent";
+      readonly adoption: Readonly<RevisionResultAdoptionRecord>;
+    }
+  | {
+      readonly status: "rejected";
+      readonly reason:
+        | "series_not_found"
+        | "fixed_scope_denied"
+        | "current_authority_denied"
+        | "authority_revoked"
+        | "authority_unknown"
+        | "decision_conflict"
+        | "invalid_successor"
+        | "result_not_accepted";
+    };
 
-export type CurrentArtifactAcceptanceAuthority = "authorized" | "denied" | "revoked" | "unknown";
+export type CurrentArtifactAcceptanceAuthority =
+  "authorized" | "denied" | "revoked" | "unknown";
 
 export interface AuthenticatedRevisionCoordinator {
   readonly subjectId: string;
-  fixedArtifactAcceptanceSubjectIds(targetOperationId: string): Promise<ReadonlyArray<string>>;
-  currentArtifactAcceptanceAuthority(seriesId: string): Promise<CurrentArtifactAcceptanceAuthority>;
+  fixedArtifactAcceptanceSubjectIds(
+    targetOperationId: string
+  ): Promise<ReadonlyArray<string>>;
+  currentArtifactAcceptanceAuthority(
+    seriesId: string
+  ): Promise<CurrentArtifactAcceptanceAuthority>;
 }
 
 export interface RetryClearanceVerifier {
@@ -799,7 +871,9 @@ export interface RetryClearanceVerifier {
 }
 
 export interface RevisionAuthenticator {
-  authenticate(credential: string): Promise<Readonly<AuthenticatedRevisionCoordinator>>;
+  authenticate(
+    credential: string
+  ): Promise<Readonly<AuthenticatedRevisionCoordinator>>;
 }
 
 export class RevisionAuthenticationError extends Error {
@@ -807,9 +881,15 @@ export class RevisionAuthenticationError extends Error {
 }
 
 export interface RevisionCoordinator {
-  reserveRevision(request: Readonly<ReserveRevisionRequest>): Promise<Readonly<RevisionReservationOutcome>>;
-  reserveRetry(request: Readonly<ReserveRetryRequest>): Promise<Readonly<RevisionReservationOutcome>>;
-  adopt(request: Readonly<AdoptRevisionResultRequest>): Promise<Readonly<RevisionResultAdoptionOutcome>>;
+  reserveRevision(
+    request: Readonly<ReserveRevisionRequest>
+  ): Promise<Readonly<RevisionReservationOutcome>>;
+  reserveRetry(
+    request: Readonly<ReserveRetryRequest>
+  ): Promise<Readonly<RevisionReservationOutcome>>;
+  adopt(
+    request: Readonly<AdoptRevisionResultRequest>
+  ): Promise<Readonly<RevisionResultAdoptionOutcome>>;
   read(seriesId: string): Promise<Readonly<RevisionSeriesSnapshot>>;
 }
 
@@ -824,7 +904,9 @@ export interface OperationSnapshot {
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
   readonly startInstructionAcceptance?: Readonly<StartInstructionAcceptanceEvidence>;
   readonly startInstructionAcknowledgement?: Readonly<StartInstructionAcknowledgementEvidence>;
-  readonly startDeliveryHandoffs: ReadonlyArray<Readonly<StartDeliveryHandoffEvidence>>;
+  readonly startDeliveryHandoffs: ReadonlyArray<
+    Readonly<StartDeliveryHandoffEvidence>
+  >;
   readonly resultAcceptance?: Readonly<ResultAcceptanceEvidence>;
   readonly stopConfirmation?: Readonly<StopConfirmationEvidence>;
   readonly presentationCleanup?: Readonly<PresentationCleanupEvidence>;
@@ -878,10 +960,13 @@ export type StartAuthorizationDecisionOutcome =
 
 export interface StartAuthorizationInbox {
   listWaiting(): Promise<ReadonlyArray<Readonly<WaitingStartAuthorization>>>;
-  decide(request: Readonly<StartAuthorizationDecisionRequest>): Promise<Readonly<StartAuthorizationDecisionOutcome>>;
+  decide(
+    request: Readonly<StartAuthorizationDecisionRequest>
+  ): Promise<Readonly<StartAuthorizationDecisionOutcome>>;
 }
 
-export type CurrentStartAuthorization = "authorized" | "denied" | "revoked" | "unknown";
+export type CurrentStartAuthorization =
+  "authorized" | "denied" | "revoked" | "unknown";
 
 export interface AuthenticatedStartAuthorizer {
   readonly subjectId: string;
@@ -889,13 +974,15 @@ export interface AuthenticatedStartAuthorizer {
 }
 
 export interface StartAuthorizationAuthenticator {
-  authenticate(credential: string): Promise<Readonly<AuthenticatedStartAuthorizer>>;
+  authenticate(
+    credential: string
+  ): Promise<Readonly<AuthenticatedStartAuthorizer>>;
 }
 
 export interface StartAuthorizationAuthority {
   currentAuthorization(
     subjectId: string,
-    operationId: string,
+    operationId: string
   ): Promise<CurrentStartAuthorization>;
 }
 
@@ -943,7 +1030,7 @@ export class CancellationRejectedError extends Error {
 
   constructor(
     readonly reason: CancellationRejectionReason,
-    readonly cancellationEpoch: number,
+    readonly cancellationEpoch: number
   ) {
     super(`Cancellation epoch ${cancellationEpoch} rejected: ${reason}`);
   }
@@ -962,7 +1049,7 @@ export class OperationUnknownError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: "cancel-unproven" | "liveness-unproven",
+    readonly reason: "cancel-unproven" | "liveness-unproven"
   ) {
     super(`Operation ${operationId} has unknown outcome: ${reason}`);
   }
@@ -973,7 +1060,7 @@ export class SpawnRejectedError extends Error {
 
   constructor(
     readonly reason: SpawnRejectionReason,
-    readonly parentOperationId: string,
+    readonly parentOperationId: string
   ) {
     super(`Child Operation rejected for ${parentOperationId}: ${reason}`);
   }
@@ -984,7 +1071,7 @@ export class OperationFailedError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: OperationFailureReason,
+    readonly reason: OperationFailureReason
   ) {
     super(`Operation ${operationId} failed: ${reason}`);
   }
@@ -1001,7 +1088,7 @@ export class OperationPersistenceError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: PersistenceFailureReason,
+    readonly reason: PersistenceFailureReason
   ) {
     super(`Operation ${operationId} persistence failed: ${reason}`);
   }
@@ -1012,7 +1099,7 @@ export class ResultRetrievalError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: ArtifactFailureReason,
+    readonly reason: ArtifactFailureReason
   ) {
     super(`Result retrieval failed for Operation ${operationId}: ${reason}`);
   }
@@ -1105,7 +1192,10 @@ export type ArtifactFailureReason =
   | "dependency_cycle";
 
 export type ArtifactRegistrationOutcome =
-  | { readonly kind: "registered"; readonly artifact: Readonly<ArtifactMetadata> }
+  | {
+      readonly kind: "registered";
+      readonly artifact: Readonly<ArtifactMetadata>;
+    }
   | {
       readonly kind: "continuable";
       readonly reason: "transfer_incomplete";
@@ -1130,7 +1220,8 @@ export type ArtifactRetrievalOutcome =
       readonly reason: ArtifactFailureReason;
     };
 
-export type ArtifactAuthorityDecision = "allowed" | "denied" | "revoked" | "unknown";
+export type ArtifactAuthorityDecision =
+  "allowed" | "denied" | "revoked" | "unknown";
 
 export interface ResultAcceptanceReservationRequest {
   readonly preparationId: string;
@@ -1167,7 +1258,9 @@ export interface AcceptedResult {
   readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
   readonly requirementsDigest: ArtifactDigest;
   readonly bodyArtifactId: string;
-  readonly workProducts: ReadonlyArray<Readonly<ResultAcceptanceManifestWorkProduct>>;
+  readonly workProducts: ReadonlyArray<
+    Readonly<ResultAcceptanceManifestWorkProduct>
+  >;
   readonly artifactIds: ReadonlyArray<string>;
   readonly preparationEvidence: Readonly<ResultAcceptancePreparationEvidence>;
   readonly acceptedArtifactRetentionMs: number;
@@ -1184,7 +1277,10 @@ export type ResultAcceptanceTransactionFailureReason =
   | "unsupported_schema";
 
 export type ResultAcceptanceTransactionOutcome =
-  | { readonly kind: "prepared"; readonly reservation: Readonly<ResultAcceptanceReservation> }
+  | {
+      readonly kind: "prepared";
+      readonly reservation: Readonly<ResultAcceptanceReservation>;
+    }
   | {
       readonly kind: "accepted";
       readonly acceptance: Readonly<AcceptedResult>;
@@ -1219,7 +1315,9 @@ export interface ResultAcceptancePreparationEvidence {
   readonly manifestDigest: ArtifactDigest;
   readonly requirementsDigest: ArtifactDigest;
   readonly bodyArtifactId: string;
-  readonly workProducts: ReadonlyArray<Readonly<ResultAcceptanceManifestWorkProduct>>;
+  readonly workProducts: ReadonlyArray<
+    Readonly<ResultAcceptanceManifestWorkProduct>
+  >;
   readonly artifactIds: ReadonlyArray<string>;
   readonly totalByteCount: number;
   readonly acceptedArtifactRetentionMs: number;
@@ -1235,11 +1333,15 @@ export interface ResultAcceptanceRetentionPolicyEvidence {
 }
 
 export interface ResultAcceptanceRetentionPolicySource {
-  read(operationId: string): Promise<Readonly<ResultAcceptanceRetentionPolicyEvidence> | "unknown">;
+  read(
+    operationId: string
+  ): Promise<Readonly<ResultAcceptanceRetentionPolicyEvidence> | "unknown">;
 }
 
 export interface ResultAcceptanceRequirementsSource {
-  read(operationId: string): Promise<Readonly<ResolvedWorkProductRequirements> | "unknown">;
+  read(
+    operationId: string
+  ): Promise<Readonly<ResolvedWorkProductRequirements> | "unknown">;
 }
 
 export interface ResultAcceptanceEventEvidence {
@@ -1254,35 +1356,52 @@ export interface ResultAcceptanceEventEvidence {
 }
 
 export interface ResultAcceptanceEventEvidenceVerifier {
-  verify(evidence: Readonly<ResultAcceptanceEventEvidence>): Promise<"trusted" | "untrusted" | "unknown">;
+  verify(
+    evidence: Readonly<ResultAcceptanceEventEvidence>
+  ): Promise<"trusted" | "untrusted" | "unknown">;
 }
 
 export interface ResultAcceptanceEventEvidenceSource {
   read(
     operationId: string,
-    preparationId: string,
+    preparationId: string
   ): Promise<Readonly<ResultAcceptanceEventEvidence> | "unknown">;
 }
 
 export interface ResultAcceptancePreparationSnapshot {
   readonly evidence?: Readonly<ResultAcceptancePreparationEvidence>;
-  readonly state: "preparing" | "prepared" | "accepted" | "aborted" | "unresolved";
+  readonly state:
+    "preparing" | "prepared" | "accepted" | "aborted" | "unresolved";
   readonly retentionUntil?: string;
 }
 
-export type PublishedResultAcceptancePreparationSnapshot = ResultAcceptancePreparationSnapshot & {
-  readonly evidence: Readonly<ResultAcceptancePreparationEvidence>;
-};
+export type PublishedResultAcceptancePreparationSnapshot =
+  ResultAcceptancePreparationSnapshot & {
+    readonly evidence: Readonly<ResultAcceptancePreparationEvidence>;
+  };
 
 export type ResultAcceptancePreparationOutcome =
-  | { readonly kind: "prepared"; readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot> }
-  | { readonly kind: "accepted"; readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot> }
-  | { readonly kind: "aborted"; readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot> }
-  | { readonly kind: "continuable"; readonly preparation: Readonly<ResultAcceptancePreparationSnapshot> }
+  | {
+      readonly kind: "prepared";
+      readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot>;
+    }
+  | {
+      readonly kind: "accepted";
+      readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot>;
+    }
+  | {
+      readonly kind: "aborted";
+      readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot>;
+    }
+  | {
+      readonly kind: "continuable";
+      readonly preparation: Readonly<ResultAcceptancePreparationSnapshot>;
+    }
   | {
       readonly kind: "failed";
       readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason | ResultAcceptanceManifestFailureReason;
+      readonly reason:
+        ArtifactFailureReason | ResultAcceptanceManifestFailureReason;
     };
 
 export interface ArtifactUseBindingRequest {
@@ -1298,14 +1417,28 @@ export interface ArtifactUseBindingSnapshot extends ArtifactUseBindingRequest {
   readonly subjectId: string;
   readonly dependencyClosure: ReadonlyArray<string>;
   readonly retentionUntil: string;
-  readonly state: "preparing" | "available" | "rejected" | "released" | "unresolved";
+  readonly state:
+    "preparing" | "available" | "rejected" | "released" | "unresolved";
 }
 
 export type ArtifactUseBindingOutcome =
-  | { readonly kind: "available"; readonly binding: Readonly<ArtifactUseBindingSnapshot> }
-  | { readonly kind: "released"; readonly binding: Readonly<ArtifactUseBindingSnapshot> }
-  | { readonly kind: "continuable"; readonly binding: Readonly<ArtifactUseBindingSnapshot> }
-  | { readonly kind: "failed"; readonly terminal: boolean; readonly reason: ArtifactFailureReason };
+  | {
+      readonly kind: "available";
+      readonly binding: Readonly<ArtifactUseBindingSnapshot>;
+    }
+  | {
+      readonly kind: "released";
+      readonly binding: Readonly<ArtifactUseBindingSnapshot>;
+    }
+  | {
+      readonly kind: "continuable";
+      readonly binding: Readonly<ArtifactUseBindingSnapshot>;
+    }
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason;
+    };
 
 export interface ArtifactRetentionPinRequest {
   readonly pinId: string;
@@ -1322,9 +1455,19 @@ export interface ArtifactRetentionPinSnapshot extends ArtifactRetentionPinReques
 }
 
 export type ArtifactRetentionPinOutcome =
-  | { readonly kind: "held"; readonly pin: Readonly<ArtifactRetentionPinSnapshot> }
-  | { readonly kind: "released"; readonly pin: Readonly<ArtifactRetentionPinSnapshot> }
-  | { readonly kind: "failed"; readonly terminal: boolean; readonly reason: ArtifactFailureReason };
+  | {
+      readonly kind: "held";
+      readonly pin: Readonly<ArtifactRetentionPinSnapshot>;
+    }
+  | {
+      readonly kind: "released";
+      readonly pin: Readonly<ArtifactRetentionPinSnapshot>;
+    }
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason;
+    };
 
 export interface ArtifactGarbageCollectionRequest {
   readonly collectionId: string;
@@ -1335,7 +1478,10 @@ export interface ArtifactGarbageCollectionRequest {
 }
 
 export type ArtifactGarbageCollectionOutcome =
-  | { readonly kind: "completed"; readonly deletedArtifactIds: ReadonlyArray<string> }
+  | {
+      readonly kind: "completed";
+      readonly deletedArtifactIds: ReadonlyArray<string>;
+    }
   | {
       readonly kind: "continuable";
       readonly reason: "gc_unprocessed";
@@ -1343,24 +1489,38 @@ export type ArtifactGarbageCollectionOutcome =
       readonly remainingArtifactIds: ReadonlyArray<string>;
       readonly nextCursor: string;
     }
-  | { readonly kind: "failed"; readonly terminal: boolean; readonly reason: ArtifactFailureReason };
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason;
+    };
 
 export interface ArtifactPrincipal {
   readonly subjectId: string;
-  canRegister(request: Readonly<ArtifactRegistrationRequest>): Promise<ArtifactAuthorityDecision>;
+  canRegister(
+    request: Readonly<ArtifactRegistrationRequest>
+  ): Promise<ArtifactAuthorityDecision>;
   canReference(artifactId: string): Promise<ArtifactAuthorityDecision>;
   canRetrieve(artifactId: string): Promise<ArtifactAuthorityDecision>;
-  canBindArtifactUse(request: Readonly<ArtifactUseBindingRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
-  canPinArtifact(request: Readonly<ArtifactRetentionPinRequest>, artifactId: string): Promise<ArtifactAuthorityDecision>;
+  canBindArtifactUse(
+    request: Readonly<ArtifactUseBindingRequest>,
+    artifactId: string
+  ): Promise<ArtifactAuthorityDecision>;
+  canPinArtifact(
+    request: Readonly<ArtifactRetentionPinRequest>,
+    artifactId: string
+  ): Promise<ArtifactAuthorityDecision>;
   canPrepareResultAcceptance(
     request: Readonly<ResultAcceptancePreparationRequest>,
-    artifactId: string,
+    artifactId: string
   ): Promise<ArtifactAuthorityDecision>;
   canReconcileResultAcceptance(
     preparationId: string,
-    evidence: Readonly<ResultAcceptanceEventEvidence>,
+    evidence: Readonly<ResultAcceptanceEventEvidence>
   ): Promise<ArtifactAuthorityDecision>;
-  canGarbageCollect(request: Readonly<ArtifactGarbageCollectionRequest>): Promise<ArtifactAuthorityDecision>;
+  canGarbageCollect(
+    request: Readonly<ArtifactGarbageCollectionRequest>
+  ): Promise<ArtifactAuthorityDecision>;
 }
 
 export interface ArtifactAuthenticator {
@@ -1405,46 +1565,64 @@ export interface ArtifactStore {
   writerOwnership(): Promise<Readonly<ArtifactWriterOwnership>>;
   startRegistration(
     credential: string,
-    request: Readonly<ArtifactRegistrationRequest>,
+    request: Readonly<ArtifactRegistrationRequest>
   ): Promise<ArtifactRegistrationOutcome>;
   transfer(
     credential: string,
     registrationId: string,
-    bytes: Uint8Array | AsyncIterable<Uint8Array>,
+    bytes: Uint8Array | AsyncIterable<Uint8Array>
   ): Promise<ArtifactRegistrationOutcome>;
   registrationStatus(
     credential: string,
-    registrationId: string,
+    registrationId: string
   ): Promise<ArtifactRegistrationOutcome>;
-  retrieve(credential: string, artifactId: string): Promise<ArtifactRetrievalOutcome>;
-  prepareUseBinding(credential: string, request: Readonly<ArtifactUseBindingRequest>): Promise<ArtifactUseBindingOutcome>;
-  useBindingStatus(credential: string, bindingId: string): Promise<ArtifactUseBindingOutcome>;
-  retrieveForUseBinding(credential: string, bindingId: string): Promise<ArtifactRetrievalOutcome>;
-  releaseUseBinding(credential: string, bindingId: string): Promise<ArtifactUseBindingOutcome>;
+  retrieve(
+    credential: string,
+    artifactId: string
+  ): Promise<ArtifactRetrievalOutcome>;
+  prepareUseBinding(
+    credential: string,
+    request: Readonly<ArtifactUseBindingRequest>
+  ): Promise<ArtifactUseBindingOutcome>;
+  useBindingStatus(
+    credential: string,
+    bindingId: string
+  ): Promise<ArtifactUseBindingOutcome>;
+  retrieveForUseBinding(
+    credential: string,
+    bindingId: string
+  ): Promise<ArtifactRetrievalOutcome>;
+  releaseUseBinding(
+    credential: string,
+    bindingId: string
+  ): Promise<ArtifactUseBindingOutcome>;
   createRetentionPin(
     credential: string,
-    request: Readonly<ArtifactRetentionPinRequest>,
+    request: Readonly<ArtifactRetentionPinRequest>
   ): Promise<ArtifactRetentionPinOutcome>;
-  releaseRetentionPin(credential: string, pinId: string): Promise<ArtifactRetentionPinOutcome>;
+  releaseRetentionPin(
+    credential: string,
+    pinId: string
+  ): Promise<ArtifactRetentionPinOutcome>;
   prepareResultAcceptance(
     credential: string,
-    request: Readonly<ResultAcceptancePreparationRequest>,
+    request: Readonly<ResultAcceptancePreparationRequest>
   ): Promise<ResultAcceptancePreparationOutcome>;
   resultAcceptancePreparationStatus(
     credential: string,
-    preparationId: string,
+    preparationId: string
   ): Promise<ResultAcceptancePreparationOutcome>;
   finalizeResultAcceptance(
     credential: string,
-    evidence: Readonly<ResultAcceptanceEventEvidence>,
+    evidence: Readonly<ResultAcceptanceEventEvidence>
   ): Promise<ResultAcceptancePreparationOutcome>;
   abortResultAcceptance(
     credential: string,
-    evidence: Readonly<ResultAcceptanceEventEvidence>,
+    evidence: Readonly<ResultAcceptanceEventEvidence>
   ): Promise<ResultAcceptancePreparationOutcome>;
   collectGarbage(
     credential: string,
-    request: Readonly<ArtifactGarbageCollectionRequest>,
+    request: Readonly<ArtifactGarbageCollectionRequest>
   ): Promise<ArtifactGarbageCollectionOutcome>;
   close(): Promise<void>;
 }
@@ -1458,7 +1636,10 @@ export type ArtifactStoreOpenFailureReason =
 export class ArtifactStoreOpenError extends Error {
   override readonly name = "ArtifactStoreOpenError";
 
-  constructor(readonly reason: ArtifactStoreOpenFailureReason, message: string) {
+  constructor(
+    readonly reason: ArtifactStoreOpenFailureReason,
+    message: string
+  ) {
     super(message);
   }
 }

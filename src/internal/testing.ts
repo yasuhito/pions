@@ -36,16 +36,23 @@ import type {
   Runtime,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
-import { automaticStartScopeDigest, startInstructionReference } from "./start-instruction.js";
+import {
+  automaticStartScopeDigest,
+  startInstructionReference,
+} from "./start-instruction.js";
 
-type TestRuntimeServices = Omit<RuntimeServices, "artifacts" | "artifactCredential"> &
+type TestRuntimeServices = Omit<
+  RuntimeServices,
+  "artifacts" | "artifactCredential"
+> &
   Partial<Pick<RuntimeServices, "artifacts" | "artifactCredential">>;
 
 export async function advanceTestOperationToStartDeliveryAuthority(
   store: EventStore,
-  operationId: string,
+  operationId: string
 ): Promise<void> {
-  const operation = (await Effect.runPromise(store.read(operationId))).operation;
+  const operation = (await Effect.runPromise(store.read(operationId)))
+    .operation;
   const processInstanceId = "test-worker-instance";
   const instruction = {
     dispatcherId: "pions-runtime",
@@ -53,66 +60,107 @@ export async function advanceTestOperationToStartDeliveryAuthority(
     receiptDigest: automaticStartScopeDigest(operation),
     deliveryGeneration: 1,
   };
-  await Effect.runPromise(store.advance(operationId, {
-    type: "presentation_owned",
-    presentation: { kind: "herdr_pane", paneId: "test-pane", ownedByPions: true },
-  }));
-  await Effect.runPromise(store.advance(operationId, { type: "operation_starting" }));
-  await Effect.runPromise(store.advance(operationId, { type: "worker_launched" }));
-  await Effect.runPromise(store.advance(operationId, {
-    type: "worker_identified",
-    workerIdentity: {
-      processId: 1,
-      processInstanceId,
-      processStartToken: "test-worker-start",
-      piSessionId: "test-pi-session",
-      paneId: "test-pane",
-    },
-    observedConfig: {
-      model: { state: "observed", value: operation.effectiveConfig.model },
-      thinkingLevel: { state: "observed", value: operation.effectiveConfig.thinkingLevel },
-      tools: { state: "observed", value: operation.effectiveConfig.tools },
-      cwd: { state: "observed", value: operation.effectiveConfig.cwd },
-    },
-  }));
-  await Effect.runPromise(store.advance(operationId, {
-    type: "start_delivery_authority_acquired",
-    instruction,
-  }));
+  await Effect.runPromise(
+    store.advance(operationId, {
+      type: "presentation_owned",
+      presentation: {
+        kind: "herdr_pane",
+        paneId: "test-pane",
+        ownedByPions: true,
+      },
+    })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, { type: "operation_starting" })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, { type: "worker_launched" })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, {
+      type: "worker_identified",
+      workerIdentity: {
+        processId: 1,
+        processInstanceId,
+        processStartToken: "test-worker-start",
+        piSessionId: "test-pi-session",
+        paneId: "test-pane",
+      },
+      observedConfig: {
+        model: { state: "observed", value: operation.effectiveConfig.model },
+        thinkingLevel: {
+          state: "observed",
+          value: operation.effectiveConfig.thinkingLevel,
+        },
+        tools: { state: "observed", value: operation.effectiveConfig.tools },
+        cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+      },
+    })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, {
+      type: "start_delivery_authority_acquired",
+      instruction,
+    })
+  );
 }
 
 export async function advanceTestOperationToRunning(
   store: EventStore,
-  operationId: string,
+  operationId: string
 ): Promise<void> {
   await advanceTestOperationToStartDeliveryAuthority(store, operationId);
   const instruction = startInstructionReference(
-    (await Effect.runPromise(store.read(operationId))).operation.startDeliveryAuthority!,
+    (await Effect.runPromise(store.read(operationId))).operation
+      .startDeliveryAuthority!
   );
-  await Effect.runPromise(store.advance(operationId, { type: "start_delivery_entered", instruction }));
-  await Effect.runPromise(store.advance(operationId, { type: "start_instruction_dispatched", instruction }));
-  await Effect.runPromise(store.advance(operationId, {
-    type: "start_instruction_accepted",
-    instruction,
-    proof: "worker-durable-acceptance",
-  }));
-  await Effect.runPromise(store.advance(operationId, {
-    type: "start_instruction_acknowledged",
-    instruction,
-    proof: "authenticated-worker-acknowledgement",
-  }));
+  await Effect.runPromise(
+    store.advance(operationId, { type: "start_delivery_entered", instruction })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, {
+      type: "start_instruction_dispatched",
+      instruction,
+    })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, {
+      type: "start_instruction_accepted",
+      instruction,
+      proof: "worker-durable-acceptance",
+    })
+  );
+  await Effect.runPromise(
+    store.advance(operationId, {
+      type: "start_instruction_acknowledged",
+      instruction,
+      proof: "authenticated-worker-acknowledgement",
+    })
+  );
 }
 
 export function makeTestRuntime(services: TestRuntimeServices): Runtime {
-  if (services.artifacts !== undefined && services.artifactCredential !== undefined) {
-    return makeRuntime({ ...services, artifacts: services.artifacts, artifactCredential: services.artifactCredential });
+  if (
+    services.artifacts !== undefined &&
+    services.artifactCredential !== undefined
+  ) {
+    return makeRuntime({
+      ...services,
+      artifacts: services.artifacts,
+      artifactCredential: services.artifactCredential,
+    });
   }
-  if (services.artifacts !== undefined || services.artifactCredential !== undefined) {
-    throw new Error("Test Artifact Store and credential must be supplied together");
+  if (
+    services.artifacts !== undefined ||
+    services.artifactCredential !== undefined
+  ) {
+    throw new Error(
+      "Test Artifact Store and credential must be supplied together"
+    );
   }
   const artifactServices = runtimeArtifactStore(
     join(process.cwd(), ".test-dist", "runtime-artifacts", randomUUID()),
-    services.store,
+    services.store
   );
   return makeRuntime({
     ...services,
@@ -177,7 +225,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
 
   protected run(
     operation: Operation,
-    hooks: Readonly<WorkerRunHooks>,
+    hooks: Readonly<WorkerRunHooks>
   ): Effect.Effect<
     WorkerRunOutcome,
     OperationPersistenceError | ResourceProofRejectedError
@@ -208,9 +256,15 @@ export class FakeWorkerAdapter implements WorkerAdapter {
         processStartToken: "fake-process-start",
         piSessionId: "fake-pi-session",
         observedConfig: {
-          model: { state: "observed", value: { ...operation.effectiveConfig.model } },
+          model: {
+            state: "observed",
+            value: { ...operation.effectiveConfig.model },
+          },
           thinkingLevel: { state: "unavailable" },
-          tools: { state: "observed", value: [...operation.effectiveConfig.tools] },
+          tools: {
+            state: "observed",
+            value: [...operation.effectiveConfig.tools],
+          },
           cwd: { state: "observed", value: operation.effectiveConfig.cwd },
         },
       });
@@ -236,13 +290,16 @@ export class FakeWorkerAdapter implements WorkerAdapter {
               totalTokens: 17,
               cost: 0.33,
             },
-            toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: true }],
+            toolUses: [
+              { toolCallId: "fake-call", toolName: "read", isError: true },
+            ],
           },
         } as const;
       }
       this.trace.push("worker-protocol:receive-result");
       const message = this.messages[0];
-      if (message === undefined) return { state: "worker_protocol_failed" } as const;
+      if (message === undefined)
+        return { state: "worker_protocol_failed" } as const;
       const bytes = Buffer.from(message.body, "utf8");
       const acceptance = yield* hooks.acceptResult({
         acceptanceRequestId: `request-${message.sequenceNumber ?? 1}`,
@@ -266,13 +323,17 @@ export class FakeWorkerAdapter implements WorkerAdapter {
             totalTokens: 17,
             cost: 0.33,
           },
-          toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: false }],
+          toolUses: [
+            { toolCallId: "fake-call", toolName: "read", isError: false },
+          ],
         },
-        (proof) => this.acknowledgementFails
-          ? Effect.fail(new Error("Fake Worker acknowledgement failed"))
-          : Effect.sync(() => this.acknowledge(proof)),
+        (proof) =>
+          this.acknowledgementFails
+            ? Effect.fail(new Error("Fake Worker acknowledgement failed"))
+            : Effect.sync(() => this.acknowledge(proof))
       );
-      return acknowledged.state === "result_acknowledged" && this.successfulExitConfirmed
+      return acknowledged.state === "result_acknowledged" &&
+        this.successfulExitConfirmed
         ? { ...acknowledged, successfulExitConfirmed: true }
         : acknowledged;
     });
@@ -284,7 +345,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
 
   protected cancel(
     _operation: Operation,
-    _cancellationEpoch: number,
+    _cancellationEpoch: number
   ): Effect.Effect<WorkerCancellationEvidence | undefined> {
     return Effect.succeed({ proof: "worker-stop" });
   }
@@ -346,7 +407,8 @@ export class FakeIdGenerator implements IdGenerator {
   nextOperationId(): Effect.Effect<string> {
     return Effect.sync(() => {
       const operationId = this.operationIds[this.index++];
-      if (operationId === undefined) throw new Error("FakeIdGenerator exhausted");
+      if (operationId === undefined)
+        throw new Error("FakeIdGenerator exhausted");
       return operationId;
     });
   }
@@ -402,10 +464,13 @@ export class FakePresentation implements Presentation {
     return Effect.void;
   }
 
-  inspectOwnedPane(_operation: Operation): Effect.Effect<"matching" | "missing", Error> {
+  inspectOwnedPane(
+    _operation: Operation
+  ): Effect.Effect<"matching" | "missing", Error> {
     return Effect.sync(() => {
       this.trace.push("presentation:inspect-owned-pane");
-      if (this.paneInspection === "unavailable") throw new Error("Pane inspection unavailable");
+      if (this.paneInspection === "unavailable")
+        throw new Error("Pane inspection unavailable");
       return this.paneInspection;
     });
   }

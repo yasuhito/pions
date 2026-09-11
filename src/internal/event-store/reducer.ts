@@ -5,7 +5,10 @@ import {
   OPERATION_AUTHORITY,
   RUNTIME_ACTOR_ID,
 } from "./model.js";
-import type { StartInstructionReference, StartupReceipt } from "../../public.js";
+import type {
+  StartInstructionReference,
+  StartupReceipt,
+} from "../../public.js";
 import type { Operation, OperationEvent } from "./model.js";
 import { revisionSeriesId, revisionSeriesOrigin } from "../revision-series.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
@@ -75,8 +78,10 @@ function immutable(operation: Operation): Operation {
   deepFreeze(operation.workProductRequirements);
   deepFreeze(operation.resultRetentionPolicy);
   if (operation.observedConfig !== undefined) {
-    if (operation.observedConfig.model.state === "observed") Object.freeze(operation.observedConfig.model.value);
-    if (operation.observedConfig.tools.state === "observed") Object.freeze(operation.observedConfig.tools.value);
+    if (operation.observedConfig.model.state === "observed")
+      Object.freeze(operation.observedConfig.model.value);
+    if (operation.observedConfig.tools.state === "observed")
+      Object.freeze(operation.observedConfig.tools.value);
     Object.freeze(operation.observedConfig.model);
     Object.freeze(operation.observedConfig.thinkingLevel);
     Object.freeze(operation.observedConfig.tools);
@@ -84,11 +89,15 @@ function immutable(operation: Operation): Operation {
     Object.freeze(operation.observedConfig);
   }
   Object.freeze(operation.lineage);
-  if (operation.presentation !== undefined) Object.freeze(operation.presentation);
-  if (operation.workerIdentity !== undefined) Object.freeze(operation.workerIdentity);
+  if (operation.presentation !== undefined)
+    Object.freeze(operation.presentation);
+  if (operation.workerIdentity !== undefined)
+    Object.freeze(operation.workerIdentity);
   deepFreeze(operation.startAuthorizationTiming);
-  if (operation.startupReceiptPolicy !== undefined) deepFreeze(operation.startupReceiptPolicy);
-  if (operation.startupReceipt !== undefined) deepFreeze(operation.startupReceipt);
+  if (operation.startupReceiptPolicy !== undefined)
+    deepFreeze(operation.startupReceiptPolicy);
+  if (operation.startupReceipt !== undefined)
+    deepFreeze(operation.startupReceipt);
   if (operation.startAuthorizationDecision !== undefined) {
     Object.freeze(operation.startAuthorizationDecision);
   }
@@ -109,7 +118,8 @@ function immutable(operation: Operation): Operation {
     Object.freeze(operation.startInstructionAcknowledgement);
   }
   deepFreeze(operation.startDeliveryHandoffs);
-  if (operation.resourceEvidenceRecord !== undefined) deepFreeze(operation.resourceEvidenceRecord);
+  if (operation.resourceEvidenceRecord !== undefined)
+    deepFreeze(operation.resourceEvidenceRecord);
   if (operation.agentRunEvidence !== undefined) {
     Object.freeze(operation.agentRunEvidence.usage);
     operation.agentRunEvidence.toolUses.forEach(Object.freeze);
@@ -127,22 +137,24 @@ function immutable(operation: Operation): Operation {
 
 function sameStringArray(
   left: ReadonlyArray<string> | undefined,
-  right: ReadonlyArray<string> | undefined,
+  right: ReadonlyArray<string> | undefined
 ): boolean {
   return left === undefined
     ? right === undefined
-    : right !== undefined && left.length === right.length &&
-      left.every((value, index) => value === right[index]);
+    : right !== undefined &&
+        left.length === right.length &&
+        left.every((value, index) => value === right[index]);
 }
 
 function validInitialConfiguration(
-  event: Extract<OperationEvent, { readonly type: "operation_requested" }>,
+  event: Extract<OperationEvent, { readonly type: "operation_requested" }>
 ): boolean {
   const requested = event.requestedConfig;
   const effective = event.effectiveConfig;
   const candidate = effective.modelPolicy.candidates[0];
   const attempted = effective.modelPolicy.attempted[0];
-  return requested.model?.provider === event.task.model?.provider &&
+  return (
+    requested.model?.provider === event.task.model?.provider &&
     requested.model?.id === event.task.model?.id &&
     requested.thinkingLevel === event.task.thinkingLevel &&
     requested.cwd === event.task.cwd &&
@@ -158,16 +170,18 @@ function validInitialConfiguration(
     candidate?.provider === effective.model.provider &&
     candidate.id === effective.model.id &&
     attempted?.provider === effective.model.provider &&
-    attempted.id === effective.model.id;
+    attempted.id === effective.model.id
+  );
 }
 
 function sanitizedStartupReceipt(
   operation: Operation,
-  receipt: Readonly<StartupReceipt>,
+  receipt: Readonly<StartupReceipt>
 ): StartupReceipt {
-  const owner = receipt.workspace.owner.state === "known"
-    ? { state: "known" as const, ownerId: receipt.workspace.owner.ownerId }
-    : { state: "unknown" as const };
+  const owner =
+    receipt.workspace.owner.state === "known"
+      ? { state: "known" as const, ownerId: receipt.workspace.owner.ownerId }
+      : { state: "unknown" as const };
   return {
     operationId: receipt.operationId,
     digest: receipt.digest,
@@ -206,23 +220,30 @@ function sanitizedStartupReceipt(
 
 function validStartInstructionReference(
   operation: Operation,
-  instruction: Readonly<StartInstructionReference>,
+  instruction: Readonly<StartInstructionReference>
 ): boolean {
   if (
     operation.workerIdentity === undefined ||
     instruction.dispatcherId.length === 0 ||
     !Number.isSafeInteger(instruction.deliveryGeneration) ||
     instruction.deliveryGeneration < 1 ||
-    instruction.workerProcessInstanceId !== operation.workerIdentity.processInstanceId
-  ) return false;
+    instruction.workerProcessInstanceId !==
+      operation.workerIdentity.processInstanceId
+  )
+    return false;
   if (operation.startGate === "not_required") {
-    return instruction.authorizationDecisionId === undefined &&
-      instruction.receiptDigest === automaticStartScopeDigest(operation);
+    return (
+      instruction.authorizationDecisionId === undefined &&
+      instruction.receiptDigest === automaticStartScopeDigest(operation)
+    );
   }
-  return operation.startGate === "authorized" &&
+  return (
+    operation.startGate === "authorized" &&
     operation.startupReceipt !== undefined &&
     instruction.receiptDigest === operation.startupReceipt.digest &&
-    instruction.authorizationDecisionId === operation.startAuthorizationDecision?.decisionId;
+    instruction.authorizationDecisionId ===
+      operation.startAuthorizationDecision?.decisionId
+  );
 }
 
 function hasUnsettledChildren(operation: Operation): boolean {
@@ -233,21 +254,25 @@ function hasUnsettledChildren(operation: Operation): boolean {
 }
 
 function validStartAuthorizationTiming(
-  event: Extract<OperationEvent, { readonly type: "operation_requested" }>,
+  event: Extract<OperationEvent, { readonly type: "operation_requested" }>
 ): boolean {
   const timing = event.startAuthorizationTiming;
   const created = Date.parse(timing.createdAt);
-  return timing.createdAt === event.timestamp &&
+  return (
+    timing.createdAt === event.timestamp &&
     Number.isSafeInteger(timing.windowMs) &&
     timing.windowMs >= 0 &&
     Number.isFinite(created) &&
     timing.deadline === new Date(created + timing.windowMs).toISOString() &&
-    (timing.configuredPolicy === "optional" || timing.configuredPolicy === timing.policy) &&
-    new Set(timing.authorizedSubjectIds).size === timing.authorizedSubjectIds.length &&
+    (timing.configuredPolicy === "optional" ||
+      timing.configuredPolicy === timing.policy) &&
+    new Set(timing.authorizedSubjectIds).size ===
+      timing.authorizedSubjectIds.length &&
     timing.authorizedSubjectIds.every((subjectId) => subjectId.length > 0) &&
     (timing.policy === "disabled"
       ? timing.windowMs === 0 && timing.authorizedSubjectIds.length === 0
-      : timing.windowMs > 0 && timing.authorizedSubjectIds.length > 0);
+      : timing.windowMs > 0 && timing.authorizedSubjectIds.length > 0)
+  );
 }
 
 function validateEnvelope(event: OperationEvent): void {
@@ -273,7 +298,7 @@ function validateEnvelope(event: OperationEvent): void {
 
 export function reduceOperation(
   current: Operation | undefined,
-  event: OperationEvent,
+  event: OperationEvent
 ): Operation {
   validateEnvelope(event);
 
@@ -288,14 +313,16 @@ export function reduceOperation(
       (event.startAuthorizationTiming.policy === "required") !==
         (event.startupReceiptPolicy !== undefined) ||
       event.resultRetentionPolicy.operationId !== event.operationId ||
-      (event.revisionMembership !== undefined && (
-        revisionSeriesOrigin(event.revisionMembership.seriesId) === undefined ||
-        !Number.isSafeInteger(event.revisionMembership.revisionNumber) ||
-        event.revisionMembership.revisionNumber < 1 ||
-        !Number.isSafeInteger(event.revisionMembership.attemptNumber) ||
-        event.revisionMembership.attemptNumber < 1
-      )) ||
-      !Number.isSafeInteger(event.resultRetentionPolicy.acceptedArtifactRetentionMs) ||
+      (event.revisionMembership !== undefined &&
+        (revisionSeriesOrigin(event.revisionMembership.seriesId) ===
+          undefined ||
+          !Number.isSafeInteger(event.revisionMembership.revisionNumber) ||
+          event.revisionMembership.revisionNumber < 1 ||
+          !Number.isSafeInteger(event.revisionMembership.attemptNumber) ||
+          event.revisionMembership.attemptNumber < 1)) ||
+      !Number.isSafeInteger(
+        event.resultRetentionPolicy.acceptedArtifactRetentionMs
+      ) ||
       event.resultRetentionPolicy.acceptedArtifactRetentionMs <= 0
     ) {
       throw new TransitionError("illegal_transition");
@@ -313,8 +340,12 @@ export function reduceOperation(
       task: { ...event.task },
       requestedConfig: {
         ...event.requestedConfig,
-        ...(event.requestedConfig.model === undefined ? {} : { model: { ...event.requestedConfig.model } }),
-        ...(event.requestedConfig.tools === undefined ? {} : { tools: [...event.requestedConfig.tools] }),
+        ...(event.requestedConfig.model === undefined
+          ? {}
+          : { model: { ...event.requestedConfig.model } }),
+        ...(event.requestedConfig.tools === undefined
+          ? {}
+          : { tools: [...event.requestedConfig.tools] }),
       },
       effectiveConfig: {
         ...event.effectiveConfig,
@@ -322,15 +353,21 @@ export function reduceOperation(
         tools: [...event.effectiveConfig.tools],
         modelPolicy: {
           ...event.effectiveConfig.modelPolicy,
-          candidates: event.effectiveConfig.modelPolicy.candidates.map((model) => ({ ...model })),
-          attempted: event.effectiveConfig.modelPolicy.attempted.map((model) => ({ ...model })),
+          candidates: event.effectiveConfig.modelPolicy.candidates.map(
+            (model) => ({ ...model })
+          ),
+          attempted: event.effectiveConfig.modelPolicy.attempted.map(
+            (model) => ({ ...model })
+          ),
           aliases: [],
         },
       },
       startAuthorizationTiming: { ...event.startAuthorizationTiming },
       ...(event.startupReceiptPolicy === undefined
         ? {}
-        : { startupReceiptPolicy: structuredClone(event.startupReceiptPolicy) }),
+        : {
+            startupReceiptPolicy: structuredClone(event.startupReceiptPolicy),
+          }),
       workProductRequirements: structuredClone(event.workProductRequirements),
       resultRetentionPolicy: structuredClone(event.resultRetentionPolicy),
       startGate: "not_required",
@@ -397,7 +434,10 @@ export function reduceOperation(
       }
       return immutable({
         ...current,
-        childOperationIds: [...current.childOperationIds, event.childOperationId],
+        childOperationIds: [
+          ...current.childOperationIds,
+          event.childOperationId,
+        ],
         state:
           current.state === "self_settled"
             ? "draining_descendants"
@@ -443,15 +483,28 @@ export function reduceOperation(
       const sanitizedReceipt = sanitizedStartupReceipt(current, event.receipt);
       if (
         event.receipt.operationId !== current.operationId ||
-        event.receipt.authorizationDeadline !== current.startAuthorizationTiming.deadline ||
-        event.receipt.configuredAuthorizationPolicy !== current.startAuthorizationTiming.configuredPolicy ||
-        event.receipt.authorizationPolicy !== current.startAuthorizationTiming.policy ||
+        event.receipt.authorizationDeadline !==
+          current.startAuthorizationTiming.deadline ||
+        event.receipt.configuredAuthorizationPolicy !==
+          current.startAuthorizationTiming.configuredPolicy ||
+        event.receipt.authorizationPolicy !==
+          current.startAuthorizationTiming.policy ||
         (event.receipt.authorizationPolicy === "required" &&
           (current.startupReceiptPolicy === undefined ||
-            !isDeepStrictEqual(event.receipt.workspace, current.startupReceiptPolicy.workspace) ||
-            !isDeepStrictEqual(event.receipt.permissionManifest, current.startupReceiptPolicy.permissionManifest) ||
-            !isDeepStrictEqual(event.receipt.reviewSubject, current.startupReceiptPolicy.reviewSubject) ||
-            event.receipt.reviewSubjectVerification !== current.startupReceiptPolicy.reviewSubjectVerification)) ||
+            !isDeepStrictEqual(
+              event.receipt.workspace,
+              current.startupReceiptPolicy.workspace
+            ) ||
+            !isDeepStrictEqual(
+              event.receipt.permissionManifest,
+              current.startupReceiptPolicy.permissionManifest
+            ) ||
+            !isDeepStrictEqual(
+              event.receipt.reviewSubject,
+              current.startupReceiptPolicy.reviewSubject
+            ) ||
+            event.receipt.reviewSubjectVerification !==
+              current.startupReceiptPolicy.reviewSubjectVerification)) ||
         event.receipt.recordedAt !== event.timestamp ||
         !Number.isFinite(Date.parse(event.receipt.recordedAt)) ||
         event.receipt.workspace.workspaceId.length === 0 ||
@@ -459,18 +512,35 @@ export function reduceOperation(
         event.receipt.workspace.baseRevision.length === 0 ||
         event.receipt.permissionManifest.manifestId.length === 0 ||
         event.receipt.reviewSubject.artifactId.length === 0 ||
-        event.receipt.workerIdentity.processInstanceId !== current.workerIdentity.processInstanceId ||
-        !isDeepStrictEqual(event.receipt.workerIdentity, current.workerIdentity) ||
-        !isDeepStrictEqual(event.receipt.requestedConfig, current.requestedConfig) ||
-        !isDeepStrictEqual(event.receipt.effectiveConfig, current.effectiveConfig) ||
-        !isDeepStrictEqual(event.receipt.observedConfig, current.observedConfig) ||
+        event.receipt.workerIdentity.processInstanceId !==
+          current.workerIdentity.processInstanceId ||
+        !isDeepStrictEqual(
+          event.receipt.workerIdentity,
+          current.workerIdentity
+        ) ||
+        !isDeepStrictEqual(
+          event.receipt.requestedConfig,
+          current.requestedConfig
+        ) ||
+        !isDeepStrictEqual(
+          event.receipt.effectiveConfig,
+          current.effectiveConfig
+        ) ||
+        !isDeepStrictEqual(
+          event.receipt.observedConfig,
+          current.observedConfig
+        ) ||
         (event.gate === "waiting" || event.gate === "expired") !==
           (event.receipt.authorizationPolicy === "required") ||
         (event.gate === "waiting") !==
-          (Date.parse(event.receipt.recordedAt) < Date.parse(current.startAuthorizationTiming.deadline)) ||
+          Date.parse(event.receipt.recordedAt) <
+            Date.parse(current.startAuthorizationTiming.deadline) ||
         (event.receipt.configuredAuthorizationPolicy !== "optional" &&
-          event.receipt.configuredAuthorizationPolicy !== event.receipt.authorizationPolicy) ||
-        startupReceiptDigest((({ digest: _digest, ...receipt }) => receipt)(sanitizedReceipt)) !== event.receipt.digest
+          event.receipt.configuredAuthorizationPolicy !==
+            event.receipt.authorizationPolicy) ||
+        startupReceiptDigest(
+          (({ digest: _digest, ...receipt }) => receipt)(sanitizedReceipt)
+        ) !== event.receipt.digest
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -491,7 +561,8 @@ export function reduceOperation(
         event.decision.decisionId.length === 0 ||
         event.decision.actorId.length === 0 ||
         event.decision.decidedAt !== event.timestamp ||
-        Date.parse(event.decision.decidedAt) >= Date.parse(current.startAuthorizationTiming.deadline) ||
+        Date.parse(event.decision.decidedAt) >=
+          Date.parse(current.startAuthorizationTiming.deadline) ||
         event.decision.receiptDigest !== current.startupReceipt.digest ||
         (event.gate === "authorized") !== (event.decision.kind === "authorize")
       ) {
@@ -507,16 +578,23 @@ export function reduceOperation(
     case "start_gate_closed":
       if (
         current.state !== "starting" ||
-        (event.gate === "expired" && current.startGate !== "waiting" && current.startGate !== "authorized") ||
+        (event.gate === "expired" &&
+          current.startGate !== "waiting" &&
+          current.startGate !== "authorized") ||
         (event.gate === "invalidated" && current.startGate !== "authorized")
       ) {
         throw new TransitionError("illegal_transition");
       }
-      return immutable({ ...current, startGate: event.gate, stateSeq: event.seq });
+      return immutable({
+        ...current,
+        startGate: event.gate,
+        stateSeq: event.seq,
+      });
 
     case "start_authorization_decision_rejected":
       if (
-        event.attempt.decisionId.length === 0 || event.attempt.actorId.length === 0 ||
+        event.attempt.decisionId.length === 0 ||
+        event.attempt.actorId.length === 0 ||
         event.attempt.attemptedAt !== event.timestamp
       ) {
         throw new TransitionError("illegal_transition");
@@ -532,7 +610,8 @@ export function reduceOperation(
 
     case "start_delivery_authority_acquired": {
       const handoff = current.startDeliveryHandoffs.at(-1);
-      const replacesRevokedAuthority = handoff !== undefined &&
+      const replacesRevokedAuthority =
+        handoff !== undefined &&
         handoff.workerGenerationConfirmedAt !== undefined &&
         handoff.acceptanceState === "not_accepted" &&
         event.instruction.dispatcherId === handoff.successorDispatcherId &&
@@ -540,17 +619,23 @@ export function reduceOperation(
       if (
         current.state !== "starting" ||
         !current.workerLaunched ||
-        current.startGate !== "not_required" && current.startGate !== "authorized" ||
-        current.startDeliveryAuthority !== undefined && !replacesRevokedAuthority ||
-        current.startAuthorizationTiming.policy === "required" &&
-          Date.parse(event.timestamp) >= Date.parse(current.startAuthorizationTiming.deadline) ||
+        (current.startGate !== "not_required" &&
+          current.startGate !== "authorized") ||
+        (current.startDeliveryAuthority !== undefined &&
+          !replacesRevokedAuthority) ||
+        (current.startAuthorizationTiming.policy === "required" &&
+          Date.parse(event.timestamp) >=
+            Date.parse(current.startAuthorizationTiming.deadline)) ||
         !validStartInstructionReference(current, event.instruction)
       ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({
         ...current,
-        startDeliveryAuthority: { ...event.instruction, acquiredAt: event.timestamp },
+        startDeliveryAuthority: {
+          ...event.instruction,
+          acquiredAt: event.timestamp,
+        },
         stateSeq: event.seq,
       });
     }
@@ -564,16 +649,18 @@ export function reduceOperation(
         event.successorDispatcherId === pendingHandoff.successorDispatcherId &&
         event.deliveryGeneration === pendingHandoff.deliveryGeneration;
       if (
-        current.state !== "starting" && current.state !== "running" && current.state !== "blocked" ||
+        (current.state !== "starting" &&
+          current.state !== "running" &&
+          current.state !== "blocked") ||
         authority === undefined ||
         event.successorDispatcherId === authority.dispatcherId ||
         event.deliveryGeneration !== authority.deliveryGeneration + 1 ||
         !Number.isSafeInteger(event.writerOwnership.pid) ||
         event.writerOwnership.pid < 1 ||
         event.writerOwnership.processStartToken.length === 0 ||
-        pendingHandoff !== undefined &&
+        (pendingHandoff !== undefined &&
           pendingHandoff.workerGenerationConfirmedAt === undefined &&
-          !resumesPendingHandoff
+          !resumesPendingHandoff)
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -601,13 +688,14 @@ export function reduceOperation(
         handoff.workerGenerationConfirmedAt !== undefined ||
         event.dispatcherId !== handoff.successorDispatcherId ||
         event.deliveryGeneration !== handoff.deliveryGeneration ||
-        (event.acceptanceState === "accepted") !== (event.acceptedInstruction !== undefined) ||
-        event.acceptedInstruction !== undefined &&
+        (event.acceptanceState === "accepted") !==
+          (event.acceptedInstruction !== undefined) ||
+        (event.acceptedInstruction !== undefined &&
           current.startInstructionDelivery !== undefined &&
           !isDeepStrictEqual(
             event.acceptedInstruction,
-            startInstructionReference(current.startInstructionDelivery),
-          )
+            startInstructionReference(current.startInstructionDelivery)
+          ))
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -618,7 +706,10 @@ export function reduceOperation(
       };
       return immutable({
         ...current,
-        startDeliveryHandoffs: [...current.startDeliveryHandoffs.slice(0, -1), confirmed],
+        startDeliveryHandoffs: [
+          ...current.startDeliveryHandoffs.slice(0, -1),
+          confirmed,
+        ],
         stateSeq: event.seq,
       });
     }
@@ -626,16 +717,24 @@ export function reduceOperation(
     case "start_delivery_entered": {
       const authority = current.startDeliveryAuthority;
       if (
-        current.state !== "starting" || authority === undefined ||
-        current.startDeliveryEntry !== undefined &&
-          current.startDeliveryEntry.deliveryGeneration === event.instruction.deliveryGeneration ||
-        !isDeepStrictEqual(event.instruction, startInstructionReference(authority))
+        current.state !== "starting" ||
+        authority === undefined ||
+        (current.startDeliveryEntry !== undefined &&
+          current.startDeliveryEntry.deliveryGeneration ===
+            event.instruction.deliveryGeneration) ||
+        !isDeepStrictEqual(
+          event.instruction,
+          startInstructionReference(authority)
+        )
       ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({
         ...current,
-        startDeliveryEntry: { ...event.instruction, enteredAt: event.timestamp },
+        startDeliveryEntry: {
+          ...event.instruction,
+          enteredAt: event.timestamp,
+        },
         stateSeq: event.seq,
       });
     }
@@ -643,28 +742,39 @@ export function reduceOperation(
     case "start_instruction_dispatched": {
       const entry = current.startDeliveryEntry;
       if (
-        current.state !== "starting" || entry === undefined ||
-        current.startInstructionDelivery !== undefined &&
-          current.startInstructionDelivery.deliveryGeneration === event.instruction.deliveryGeneration ||
+        current.state !== "starting" ||
+        entry === undefined ||
+        (current.startInstructionDelivery !== undefined &&
+          current.startInstructionDelivery.deliveryGeneration ===
+            event.instruction.deliveryGeneration) ||
         !isDeepStrictEqual(event.instruction, startInstructionReference(entry))
       ) {
         throw new TransitionError("illegal_transition");
       }
       return immutable({
         ...current,
-        startInstructionDelivery: { ...event.instruction, dispatchedAt: event.timestamp },
+        startInstructionDelivery: {
+          ...event.instruction,
+          dispatchedAt: event.timestamp,
+        },
         stateSeq: event.seq,
       });
     }
 
     case "start_instruction_accepted": {
-      const deliveryEvidence = current.startInstructionDelivery ?? current.startDeliveryEntry;
+      const deliveryEvidence =
+        current.startInstructionDelivery ?? current.startDeliveryEntry;
       if (
-        current.state !== "starting" || deliveryEvidence === undefined ||
-        current.startInstructionAcceptance !== undefined &&
-          current.startInstructionAcceptance.deliveryGeneration === event.instruction.deliveryGeneration ||
+        current.state !== "starting" ||
+        deliveryEvidence === undefined ||
+        (current.startInstructionAcceptance !== undefined &&
+          current.startInstructionAcceptance.deliveryGeneration ===
+            event.instruction.deliveryGeneration) ||
         event.proof !== "worker-durable-acceptance" ||
-        !isDeepStrictEqual(event.instruction, startInstructionReference(deliveryEvidence))
+        !isDeepStrictEqual(
+          event.instruction,
+          startInstructionReference(deliveryEvidence)
+        )
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -682,12 +792,17 @@ export function reduceOperation(
     case "start_instruction_acknowledged": {
       const acceptance = current.startInstructionAcceptance;
       if (
-        current.state !== "starting" || acceptance === undefined ||
-        current.startInstructionAcknowledgement !== undefined &&
-          current.startInstructionAcknowledgement.deliveryGeneration === event.instruction.deliveryGeneration ||
-        event.proof !== "authenticated-worker-acknowledgement" &&
-          event.proof !== "authenticated-generation-acknowledgement" ||
-        !isDeepStrictEqual(event.instruction, startInstructionReference(acceptance))
+        current.state !== "starting" ||
+        acceptance === undefined ||
+        (current.startInstructionAcknowledgement !== undefined &&
+          current.startInstructionAcknowledgement.deliveryGeneration ===
+            event.instruction.deliveryGeneration) ||
+        (event.proof !== "authenticated-worker-acknowledgement" &&
+          event.proof !== "authenticated-generation-acknowledgement") ||
+        !isDeepStrictEqual(
+          event.instruction,
+          startInstructionReference(acceptance)
+        )
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -706,7 +821,8 @@ export function reduceOperation(
     case "resource_evidence_recorded":
       if (
         event.record.request.operationId !== current.operationId ||
-        event.record.version !== (current.resourceEvidenceRecord?.version ?? 0) + 1 ||
+        event.record.version !==
+          (current.resourceEvidenceRecord?.version ?? 0) + 1 ||
         event.record.snapshot.acquisitionId.length === 0
       ) {
         throw new TransitionError("illegal_transition");
@@ -723,7 +839,9 @@ export function reduceOperation(
         series === undefined ||
         event.clearance.failedOperationId.length === 0 ||
         event.clearance.clearanceId.length === 0 ||
-        series.retryClearances.some(({ clearanceId }) => clearanceId === event.clearance.clearanceId) ||
+        series.retryClearances.some(
+          ({ clearanceId }) => clearanceId === event.clearance.clearanceId
+        ) ||
         !event.clearance.workerStoppedOrAccessBlocked ||
         !event.clearance.noConflict ||
         !event.clearance.handoffConfirmed
@@ -734,7 +852,10 @@ export function reduceOperation(
         ...current,
         revisionSeries: {
           ...series,
-          retryClearances: [...series.retryClearances, structuredClone(event.clearance)],
+          retryClearances: [
+            ...series.retryClearances,
+            structuredClone(event.clearance),
+          ],
         },
         stateSeq: event.seq,
       });
@@ -743,20 +864,30 @@ export function reduceOperation(
     case "revision_reserved": {
       const reservation = event.reservation;
       const series = current.revisionSeries;
-      const latestRevisionNumber = series?.reservations.reduce(
-        (max, item) => Math.max(max, item.revisionNumber),
-        0,
-      ) ?? 0;
-      const previousRetry = reservation.retryOfOperationId === undefined
-        ? undefined
-        : series?.reservations.find(({ operationId }) => operationId === reservation.retryOfOperationId);
-      const latestRevisionReservations = series?.reservations.filter(({ revisionNumber }) =>
-        revisionNumber === latestRevisionNumber
-      ) ?? [];
-      const directRevision = latestRevisionReservations.find(({ kind }) => kind === "revision");
-      const latestRevisionHasRetry = latestRevisionReservations.some(({ kind }) => kind === "retry");
-      const adoptedResult = series?.adoptions.find(({ revisionNumber }) =>
-        revisionNumber === latestRevisionNumber
+      const latestRevisionNumber =
+        series?.reservations.reduce(
+          (max, item) => Math.max(max, item.revisionNumber),
+          0
+        ) ?? 0;
+      const previousRetry =
+        reservation.retryOfOperationId === undefined
+          ? undefined
+          : series?.reservations.find(
+              ({ operationId }) =>
+                operationId === reservation.retryOfOperationId
+            );
+      const latestRevisionReservations =
+        series?.reservations.filter(
+          ({ revisionNumber }) => revisionNumber === latestRevisionNumber
+        ) ?? [];
+      const directRevision = latestRevisionReservations.find(
+        ({ kind }) => kind === "revision"
+      );
+      const latestRevisionHasRetry = latestRevisionReservations.some(
+        ({ kind }) => kind === "retry"
+      );
+      const adoptedResult = series?.adoptions.find(
+        ({ revisionNumber }) => revisionNumber === latestRevisionNumber
       );
       const expectedRevisionTargetOperationId = latestRevisionHasRetry
         ? adoptedResult?.retryOperationId
@@ -764,35 +895,48 @@ export function reduceOperation(
       if (
         reservation.seriesOriginOperationId !== current.operationId ||
         reservation.seriesId !== revisionSeriesId(current.operationId) ||
-        reservation.requestId.length === 0 || reservation.operationId.length === 0 ||
-        reservation.reason.length === 0 || reservation.requestedBy.length === 0 ||
-        !Number.isSafeInteger(reservation.revisionNumber) || reservation.revisionNumber < 1 ||
-        !Number.isSafeInteger(reservation.attemptNumber) || reservation.attemptNumber < 1 ||
-        !Number.isSafeInteger(reservation.maxAttempts) || reservation.maxAttempts < 1 ||
+        reservation.requestId.length === 0 ||
+        reservation.operationId.length === 0 ||
+        reservation.reason.length === 0 ||
+        reservation.requestedBy.length === 0 ||
+        !Number.isSafeInteger(reservation.revisionNumber) ||
+        reservation.revisionNumber < 1 ||
+        !Number.isSafeInteger(reservation.attemptNumber) ||
+        reservation.attemptNumber < 1 ||
+        !Number.isSafeInteger(reservation.maxAttempts) ||
+        reservation.maxAttempts < 1 ||
         reservation.artifactAcceptanceSubjectIds.length < 1 ||
-        new Set(reservation.artifactAcceptanceSubjectIds).size !== reservation.artifactAcceptanceSubjectIds.length ||
+        new Set(reservation.artifactAcceptanceSubjectIds).size !==
+          reservation.artifactAcceptanceSubjectIds.length ||
         reservation.attemptNumber !== (series?.reservations.length ?? 0) + 1 ||
         reservation.attemptNumber > reservation.maxAttempts ||
-        (reservation.kind === "revision" && (
-          reservation.retryOfOperationId !== undefined ||
-          reservation.revisionNumber !== latestRevisionNumber + 1 ||
-          series !== undefined && expectedRevisionTargetOperationId !== reservation.targetOperationId
-        )) ||
-        (reservation.kind === "retry" && (
-          previousRetry === undefined ||
-          reservation.revisionNumber !== previousRetry.revisionNumber ||
-          reservation.targetOperationId !== reservation.retryOfOperationId ||
-          series?.reservations.some(({ retryOfOperationId }) =>
-            retryOfOperationId === reservation.retryOfOperationId
-          ) === true
-        )) ||
-        (series !== undefined && (
-          series.seriesId !== reservation.seriesId ||
-          series.maxAttempts !== reservation.maxAttempts ||
-          !isDeepStrictEqual(series.artifactAcceptanceSubjectIds, reservation.artifactAcceptanceSubjectIds) ||
-          series.reservations.some(({ requestId }) => requestId === reservation.requestId) ||
-          series.reservations.some(({ operationId }) => operationId === reservation.operationId)
-        ))
+        (reservation.kind === "revision" &&
+          (reservation.retryOfOperationId !== undefined ||
+            reservation.revisionNumber !== latestRevisionNumber + 1 ||
+            (series !== undefined &&
+              expectedRevisionTargetOperationId !==
+                reservation.targetOperationId))) ||
+        (reservation.kind === "retry" &&
+          (previousRetry === undefined ||
+            reservation.revisionNumber !== previousRetry.revisionNumber ||
+            reservation.targetOperationId !== reservation.retryOfOperationId ||
+            series?.reservations.some(
+              ({ retryOfOperationId }) =>
+                retryOfOperationId === reservation.retryOfOperationId
+            ) === true)) ||
+        (series !== undefined &&
+          (series.seriesId !== reservation.seriesId ||
+            series.maxAttempts !== reservation.maxAttempts ||
+            !isDeepStrictEqual(
+              series.artifactAcceptanceSubjectIds,
+              reservation.artifactAcceptanceSubjectIds
+            ) ||
+            series.reservations.some(
+              ({ requestId }) => requestId === reservation.requestId
+            ) ||
+            series.reservations.some(
+              ({ operationId }) => operationId === reservation.operationId
+            )))
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -800,7 +944,9 @@ export function reduceOperation(
         seriesId: reservation.seriesId,
         seriesOriginOperationId: current.operationId,
         maxAttempts: reservation.maxAttempts,
-        artifactAcceptanceSubjectIds: [...reservation.artifactAcceptanceSubjectIds],
+        artifactAcceptanceSubjectIds: [
+          ...reservation.artifactAcceptanceSubjectIds,
+        ],
         reservations: [],
         retryClearances: [],
         adoptions: [],
@@ -809,7 +955,10 @@ export function reduceOperation(
         ...current,
         revisionSeries: {
           ...nextSeries,
-          reservations: [...nextSeries.reservations, structuredClone(reservation)],
+          reservations: [
+            ...nextSeries.reservations,
+            structuredClone(reservation),
+          ],
         },
         stateSeq: event.seq,
       });
@@ -818,13 +967,23 @@ export function reduceOperation(
     case "revision_result_adopted": {
       const series = current.revisionSeries;
       if (
-        series === undefined || event.adoption.seriesId !== series.seriesId ||
-        !series.artifactAcceptanceSubjectIds.includes(event.adoption.decidedBy) ||
-        !series.reservations.some(({ operationId, revisionNumber }) =>
-          operationId === event.adoption.retryOperationId && revisionNumber === event.adoption.revisionNumber
+        series === undefined ||
+        event.adoption.seriesId !== series.seriesId ||
+        !series.artifactAcceptanceSubjectIds.includes(
+          event.adoption.decidedBy
         ) ||
-        series.adoptions.some(({ revisionNumber }) => revisionNumber === event.adoption.revisionNumber) ||
-        series.adoptions.some(({ decisionId }) => decisionId === event.adoption.decisionId)
+        !series.reservations.some(
+          ({ operationId, revisionNumber }) =>
+            operationId === event.adoption.retryOperationId &&
+            revisionNumber === event.adoption.revisionNumber
+        ) ||
+        series.adoptions.some(
+          ({ revisionNumber }) =>
+            revisionNumber === event.adoption.revisionNumber
+        ) ||
+        series.adoptions.some(
+          ({ decisionId }) => decisionId === event.adoption.decisionId
+        )
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -841,7 +1000,9 @@ export function reduceOperation(
     case "worker_stop_confirmed":
       if (
         !current.workerLaunched ||
-        current.state !== "starting" && current.state !== "running" && current.state !== "blocked" ||
+        (current.state !== "starting" &&
+          current.state !== "running" &&
+          current.state !== "blocked") ||
         current.workerStopConfirmedAt !== undefined ||
         event.proof !== "worker-stop"
       ) {
@@ -863,11 +1024,15 @@ export function reduceOperation(
       if (current.state !== "starting" || current.workerLaunched) {
         throw new TransitionError("illegal_transition");
       }
-      return immutable({ ...current, workerLaunched: true, stateSeq: event.seq });
+      return immutable({
+        ...current,
+        workerLaunched: true,
+        stateSeq: event.seq,
+      });
 
     case "worker_identified":
       if (
-        current.state !== "starting" && current.state !== "running" ||
+        (current.state !== "starting" && current.state !== "running") ||
         !current.workerLaunched ||
         current.workerIdentity !== undefined ||
         current.presentation === undefined ||
@@ -885,13 +1050,21 @@ export function reduceOperation(
         ...current,
         workerIdentity: { ...event.workerIdentity },
         observedConfig: {
-          model: event.observedConfig.model.state === "observed"
-            ? { state: "observed", value: { ...event.observedConfig.model.value } }
-            : { state: "unavailable" },
+          model:
+            event.observedConfig.model.state === "observed"
+              ? {
+                  state: "observed",
+                  value: { ...event.observedConfig.model.value },
+                }
+              : { state: "unavailable" },
           thinkingLevel: { ...event.observedConfig.thinkingLevel },
-          tools: event.observedConfig.tools.state === "observed"
-            ? { state: "observed", value: [...event.observedConfig.tools.value] }
-            : { state: "unavailable" },
+          tools:
+            event.observedConfig.tools.state === "observed"
+              ? {
+                  state: "observed",
+                  value: [...event.observedConfig.tools.value],
+                }
+              : { state: "unavailable" },
           cwd: { ...event.observedConfig.cwd },
         },
         stateSeq: event.seq,
@@ -899,7 +1072,7 @@ export function reduceOperation(
 
     case "agent_settled":
       if (
-        current.state !== "running" && current.state !== "blocked" ||
+        (current.state !== "running" && current.state !== "blocked") ||
         current.agentRunEvidence !== undefined
       ) {
         throw new TransitionError("illegal_transition");
@@ -939,8 +1112,10 @@ export function reduceOperation(
     case "presentation_cleanup_completed": {
       const cleanup = current.presentationCleanup;
       if (
-        current.state !== "completed" || cleanup?.state !== "pending" ||
-        cleanup.cleanupId !== event.cleanupId || cleanup.paneId !== event.paneId
+        current.state !== "completed" ||
+        cleanup?.state !== "pending" ||
+        cleanup.cleanupId !== event.cleanupId ||
+        cleanup.paneId !== event.paneId
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -958,8 +1133,10 @@ export function reduceOperation(
     case "presentation_cleanup_unconfirmed": {
       const cleanup = current.presentationCleanup;
       if (
-        current.state !== "completed" || cleanup?.state !== "pending" ||
-        cleanup.cleanupId !== event.cleanupId || cleanup.paneId !== event.paneId
+        current.state !== "completed" ||
+        cleanup?.state !== "pending" ||
+        cleanup.cleanupId !== event.cleanupId ||
+        cleanup.paneId !== event.paneId
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -989,7 +1166,7 @@ export function reduceOperation(
 
     case "result_acceptance_prepared":
       if (
-        current.state !== "running" && current.state !== "blocked" ||
+        (current.state !== "running" && current.state !== "blocked") ||
         current.resultAcceptanceReservation !== undefined ||
         current.result !== undefined ||
         event.reservation.operationId !== current.operationId ||
@@ -1010,25 +1187,37 @@ export function reduceOperation(
       const reservation = current.resultAcceptanceReservation;
       const evidence = event.preparationEvidence;
       if (
-        current.state !== "running" && current.state !== "blocked" ||
+        (current.state !== "running" && current.state !== "blocked") ||
         reservation === undefined ||
         current.result !== undefined ||
         event.acceptance.acceptedAt !== event.timestamp ||
         event.acceptance.eventSequenceNumber !== event.seq ||
         event.acceptance.operationId !== current.operationId ||
         event.acceptance.preparationId !== reservation.preparationId ||
-        event.acceptance.acceptanceRequestId !== reservation.acceptanceRequestId ||
+        event.acceptance.acceptanceRequestId !==
+          reservation.acceptanceRequestId ||
         event.acceptance.manifestFormatId !== reservation.manifest.formatId ||
-        event.acceptance.manifestNormalizationId !== reservation.manifest.normalizationId ||
+        event.acceptance.manifestNormalizationId !==
+          reservation.manifest.normalizationId ||
         event.acceptance.manifestDigest !== reservation.manifestDigest ||
         event.acceptance.requirementSetId !== reservation.requirementSetId ||
-        event.acceptance.requirementsDigest !== reservation.requirementsDigest ||
-        event.acceptance.bodyArtifactId !== reservation.manifest.bodyArtifactId ||
-        !isDeepStrictEqual(event.acceptance.workProducts, reservation.manifest.workProducts) ||
-        !isDeepStrictEqual(event.acceptance.artifactIds, reservation.artifactIds) ||
+        event.acceptance.requirementsDigest !==
+          reservation.requirementsDigest ||
+        event.acceptance.bodyArtifactId !==
+          reservation.manifest.bodyArtifactId ||
+        !isDeepStrictEqual(
+          event.acceptance.workProducts,
+          reservation.manifest.workProducts
+        ) ||
+        !isDeepStrictEqual(
+          event.acceptance.artifactIds,
+          reservation.artifactIds
+        ) ||
         !isDeepStrictEqual(event.acceptance.preparationEvidence, evidence) ||
-        event.acceptance.acceptedArtifactRetentionMs !== evidence.acceptedArtifactRetentionMs ||
-        event.acceptance.retentionPolicyDigest !== evidence.retentionPolicyDigest ||
+        event.acceptance.acceptedArtifactRetentionMs !==
+          evidence.acceptedArtifactRetentionMs ||
+        event.acceptance.retentionPolicyDigest !==
+          evidence.retentionPolicyDigest ||
         !preparationEvidenceMatchesReservation(evidence, reservation)
       ) {
         throw new TransitionError("illegal_transition");
@@ -1138,15 +1327,19 @@ export function reduceOperation(
         state: "unknown",
         stateSeq: event.seq,
         terminalReason: event.reason,
-        ...(event.reason === "liveness-unproven" && event.failureReason !== undefined
+        ...(event.reason === "liveness-unproven" &&
+        event.failureReason !== undefined
           ? { failureReason: event.failureReason }
           : {}),
       });
 
     case "operation_completed":
-      if (current.state !== "self_settled" || current.selfOutcome !== "succeeded") {
+      if (
+        current.state !== "self_settled" ||
+        current.selfOutcome !== "succeeded"
+      ) {
         throw new TransitionError(
-          "successful_settlement_required_before_completion",
+          "successful_settlement_required_before_completion"
         );
       }
       if (hasUnsettledChildren(current)) {
@@ -1192,7 +1385,7 @@ export function reduceOperation(
 }
 
 export function replayOperation(
-  events: ReadonlyArray<OperationEvent>,
+  events: ReadonlyArray<OperationEvent>
 ): Operation | undefined {
   const eventIds = new Set<string>();
   let operation: Operation | undefined;

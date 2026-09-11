@@ -10,7 +10,11 @@ import {
 } from "./artifact-store.js";
 import { eventStoreResultAcceptanceSources } from "./event-store-result-acceptance-sources.js";
 import type { EventStore } from "./event-store/index.js";
-import type { ArtifactAuthenticator, ArtifactPrincipal, ArtifactStore } from "../public.js";
+import type {
+  ArtifactAuthenticator,
+  ArtifactPrincipal,
+  ArtifactStore,
+} from "../public.js";
 
 const policy = {
   maxArtifactBytes: 1024 * 1024,
@@ -28,18 +32,23 @@ const policy = {
   maxGarbageCollectionRecoveryAttempts: 3,
 } as const;
 
-function runtimePrincipal(subjectId: string, store: EventStore): ArtifactPrincipal {
+function runtimePrincipal(
+  subjectId: string,
+  store: EventStore
+): ArtifactPrincipal {
   const canUseForResultAcceptance: ArtifactPrincipal["canPrepareResultAcceptance"] =
     async (request, artifactId) => {
-      const stored = await Effect.runPromise(Effect.either(store.read(request.operationId)));
+      const stored = await Effect.runPromise(
+        Effect.either(store.read(request.operationId))
+      );
       if (stored._tag === "Left") {
         return stored.left.code === "not_found" ? "denied" : "unknown";
       }
       const reservation = stored.right.operation.resultAcceptanceReservation;
       return reservation?.preparationId === request.preparationId &&
-          reservation.acceptanceRequestId === request.acceptanceRequestId &&
-          reservation.manifestDigest === request.manifestDigest &&
-          reservation.artifactIds.includes(artifactId)
+        reservation.acceptanceRequestId === request.acceptanceRequestId &&
+        reservation.manifestDigest === request.manifestDigest &&
+        reservation.artifactIds.includes(artifactId)
         ? "allowed"
         : "denied";
     };
@@ -60,7 +69,7 @@ export function runtimeArtifactStore(
   stateDirectory: string,
   store: EventStore,
   now?: () => Date,
-  fault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>,
+  fault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>
 ): {
   readonly artifacts: ArtifactStore;
   readonly credential: string;
@@ -74,7 +83,8 @@ export function runtimeArtifactStore(
       return principal;
     },
     restore: async (subjectId) => {
-      if (subjectId !== principal.subjectId) throw new Error("unknown artifact principal");
+      if (subjectId !== principal.subjectId)
+        throw new Error("unknown artifact principal");
       return principal;
     },
   };
@@ -93,32 +103,51 @@ export function runtimeArtifactStore(
   let opened: Promise<ArtifactStore> | undefined;
   let closed = false;
   const open = (): Promise<ArtifactStore> => {
-    if (closed) return Promise.reject(new Error("Runtime Artifact Store is closed"));
-    opened ??= fault === undefined
-      ? openArtifactStore(options)
-      : openArtifactStoreWithFaultInjection(options, fault);
+    if (closed)
+      return Promise.reject(new Error("Runtime Artifact Store is closed"));
+    opened ??=
+      fault === undefined
+        ? openArtifactStore(options)
+        : openArtifactStoreWithFaultInjection(options, fault);
     return opened;
   };
   return {
     credential,
-    synchronizeClock: (timestamp) => { synchronizedNow = new Date(timestamp); },
+    synchronizeClock: (timestamp) => {
+      synchronizedNow = new Date(timestamp);
+    },
     artifacts: {
       writerOwnership: () => open().then((value) => value.writerOwnership()),
-      startRegistration: (...args) => open().then((value) => value.startRegistration(...args)),
+      startRegistration: (...args) =>
+        open().then((value) => value.startRegistration(...args)),
       transfer: (...args) => open().then((value) => value.transfer(...args)),
-      registrationStatus: (...args) => open().then((value) => value.registrationStatus(...args)),
+      registrationStatus: (...args) =>
+        open().then((value) => value.registrationStatus(...args)),
       retrieve: (...args) => open().then((value) => value.retrieve(...args)),
-      prepareUseBinding: (...args) => open().then((value) => value.prepareUseBinding(...args)),
-      useBindingStatus: (...args) => open().then((value) => value.useBindingStatus(...args)),
-      retrieveForUseBinding: (...args) => open().then((value) => value.retrieveForUseBinding(...args)),
-      releaseUseBinding: (...args) => open().then((value) => value.releaseUseBinding(...args)),
-      createRetentionPin: (...args) => open().then((value) => value.createRetentionPin(...args)),
-      releaseRetentionPin: (...args) => open().then((value) => value.releaseRetentionPin(...args)),
-      prepareResultAcceptance: (...args) => open().then((value) => value.prepareResultAcceptance(...args)),
-      resultAcceptancePreparationStatus: (...args) => open().then((value) => value.resultAcceptancePreparationStatus(...args)),
-      finalizeResultAcceptance: (...args) => open().then((value) => value.finalizeResultAcceptance(...args)),
-      abortResultAcceptance: (...args) => open().then((value) => value.abortResultAcceptance(...args)),
-      collectGarbage: (...args) => open().then((value) => value.collectGarbage(...args)),
+      prepareUseBinding: (...args) =>
+        open().then((value) => value.prepareUseBinding(...args)),
+      useBindingStatus: (...args) =>
+        open().then((value) => value.useBindingStatus(...args)),
+      retrieveForUseBinding: (...args) =>
+        open().then((value) => value.retrieveForUseBinding(...args)),
+      releaseUseBinding: (...args) =>
+        open().then((value) => value.releaseUseBinding(...args)),
+      createRetentionPin: (...args) =>
+        open().then((value) => value.createRetentionPin(...args)),
+      releaseRetentionPin: (...args) =>
+        open().then((value) => value.releaseRetentionPin(...args)),
+      prepareResultAcceptance: (...args) =>
+        open().then((value) => value.prepareResultAcceptance(...args)),
+      resultAcceptancePreparationStatus: (...args) =>
+        open().then((value) =>
+          value.resultAcceptancePreparationStatus(...args)
+        ),
+      finalizeResultAcceptance: (...args) =>
+        open().then((value) => value.finalizeResultAcceptance(...args)),
+      abortResultAcceptance: (...args) =>
+        open().then((value) => value.abortResultAcceptance(...args)),
+      collectGarbage: (...args) =>
+        open().then((value) => value.collectGarbage(...args)),
       close: () => {
         closed = true;
         return opened?.then((value) => value.close()) ?? Promise.resolve();

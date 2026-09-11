@@ -70,32 +70,37 @@ export interface DeliveryGenerationConfirmation {
 export interface WorkerRunHooks {
   workerLaunched(): Effect.Effect<void, OperationPersistenceError>;
   workerIdentified(
-    identity: Readonly<WorkerProcessIdentity>,
-  ): Effect.Effect<Readonly<StartInstruction>, OperationPersistenceError | ResourceProofRejectedError>;
+    identity: Readonly<WorkerProcessIdentity>
+  ): Effect.Effect<
+    Readonly<StartInstruction>,
+    OperationPersistenceError | ResourceProofRejectedError
+  >;
   startDeliveryAuthorityRevoked(
     successorDispatcherId: string,
-    deliveryGeneration: number,
+    deliveryGeneration: number
   ): Effect.Effect<void, OperationPersistenceError>;
   deliveryGenerationConfirmed(
-    confirmation: Readonly<DeliveryGenerationConfirmation>,
+    confirmation: Readonly<DeliveryGenerationConfirmation>
   ): Effect.Effect<
     void,
-    OperationPersistenceError | ResourceProofRejectedError | StartDeliveryAbortedError
+    | OperationPersistenceError
+    | ResourceProofRejectedError
+    | StartDeliveryAbortedError
   >;
   startDeliveryEntered(
-    instruction: Readonly<StartInstruction>,
+    instruction: Readonly<StartInstruction>
   ): Effect.Effect<void, OperationPersistenceError>;
   startInstructionDispatched(
-    instruction: Readonly<StartInstruction>,
+    instruction: Readonly<StartInstruction>
   ): Effect.Effect<void, OperationPersistenceError>;
   startInstructionAccepted(
-    instruction: Readonly<StartInstruction>,
+    instruction: Readonly<StartInstruction>
   ): Effect.Effect<void, OperationPersistenceError>;
   startInstructionAcknowledged(
-    instruction: Readonly<StartInstruction>,
+    instruction: Readonly<StartInstruction>
   ): Effect.Effect<void, OperationPersistenceError>;
   acceptResult(
-    result: Readonly<WorkerProducedResult>,
+    result: Readonly<WorkerProducedResult>
   ): Effect.Effect<ResultAcceptanceOutcome>;
 }
 
@@ -122,30 +127,32 @@ export type WorkerRunOutcome = (
 
 export interface Worker {
   run(
-    hooks: Readonly<WorkerRunHooks>,
+    hooks: Readonly<WorkerRunHooks>
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResourceProofRejectedError | StartDeliveryAbortedError
+    | OperationPersistenceError
+    | ResourceProofRejectedError
+    | StartDeliveryAbortedError
   >;
   cancel(
     cancellationEpoch: number,
-    timeoutMs: number,
+    timeoutMs: number
   ): Effect.Effect<WorkerCancellationEvidence | undefined>;
 }
 
-export function makeSingleRunWorker(
-  implementation: Worker,
-): Worker {
+export function makeSingleRunWorker(implementation: Worker): Worker {
   let runStarted = false;
   return {
-    run: (hooks) => Effect.suspend(() => {
-      if (runStarted) {
-        return Effect.die(new Error("Worker can only run once"));
-      }
-      runStarted = true;
-      return implementation.run(hooks);
-    }),
-    cancel: (cancellationEpoch, timeoutMs) => implementation.cancel(cancellationEpoch, timeoutMs),
+    run: (hooks) =>
+      Effect.suspend(() => {
+        if (runStarted) {
+          return Effect.die(new Error("Worker can only run once"));
+        }
+        runStarted = true;
+        return implementation.run(hooks);
+      }),
+    cancel: (cancellationEpoch, timeoutMs) =>
+      implementation.cancel(cancellationEpoch, timeoutMs),
   };
 }
 
@@ -153,8 +160,8 @@ export function acknowledgeResultAcceptance(
   acceptance: ResultAcceptanceOutcome,
   evidence: Readonly<AgentRunEvidence>,
   acknowledge: (
-    proof: Readonly<ResultAcceptanceProof>,
-  ) => Effect.Effect<void, unknown>,
+    proof: Readonly<ResultAcceptanceProof>
+  ) => Effect.Effect<void, unknown>
 ): Effect.Effect<WorkerRunOutcome> {
   if (acceptance.state !== "accepted") {
     return Effect.succeed({ state: "worker_protocol_failed" } as const);
@@ -165,7 +172,9 @@ export function acknowledgeResultAcceptance(
   };
   return acknowledge(acceptance.proof).pipe(
     Effect.as(outcome),
-    Effect.catchAll(() => Effect.succeed({ state: "liveness-unproven" } as const)),
+    Effect.catchAll(() =>
+      Effect.succeed({ state: "liveness-unproven" } as const)
+    )
   );
 }
 
@@ -190,9 +199,13 @@ export interface IdGenerator {
 export interface Presentation {
   preflight(): Effect.Effect<void, unknown>;
   create(operation: Operation): Effect.Effect<CreatedPresentation, unknown>;
-  rollbackCreated(presentation: CreatedPresentation): Effect.Effect<void, unknown>;
+  rollbackCreated(
+    presentation: CreatedPresentation
+  ): Effect.Effect<void, unknown>;
   onWorkerStartFailure(operation: Operation): Effect.Effect<void, unknown>;
-  inspectOwnedPane(operation: Operation): Effect.Effect<"matching" | "missing", unknown>;
+  inspectOwnedPane(
+    operation: Operation
+  ): Effect.Effect<"matching" | "missing", unknown>;
   closeOwnedPane(operation: Operation): Effect.Effect<void, unknown>;
   project(operation: Operation): Effect.Effect<void, unknown>;
 }

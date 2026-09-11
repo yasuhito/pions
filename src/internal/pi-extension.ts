@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse } from "node:path";
 
@@ -43,7 +50,13 @@ const FILE_MODE = 0o600;
 const REVIEW_PROFILE = "review";
 const REVIEW_TOOLS = Object.freeze(["read", "grep", "find", "ls", "bash"]);
 const THINKING_LEVELS: ReadonlyArray<ThinkingLevel> = [
-  "off", "minimal", "low", "medium", "high", "xhigh", "max",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
 ];
 const PROJECT_CONFIG_FILE = ".pions.json";
 const PROVIDER_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u;
@@ -54,12 +67,15 @@ interface ReviewProjectConfig {
   readonly thinkingLevel?: ThinkingLevel;
 }
 
-const DelegateParameters = Type.Object({
-  task: Type.String({
-    minLength: 1,
-    description: "Self-contained work to delegate",
-  }),
-}, { additionalProperties: false });
+const DelegateParameters = Type.Object(
+  {
+    task: Type.String({
+      minLength: 1,
+      description: "Self-contained work to delegate",
+    }),
+  },
+  { additionalProperties: false }
+);
 
 export interface PionsDelegateDetails {
   readonly operationId: string;
@@ -88,7 +104,12 @@ async function pathExists(path: string): Promise<boolean> {
     await stat(path);
     return true;
   } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
       return false;
     }
     throw error;
@@ -107,7 +128,7 @@ async function repositoryRoot(cwd: string): Promise<string> {
 
 function userStateDirectory(
   environment: Readonly<Record<string, string | undefined>>,
-  home: string,
+  home: string
 ): string {
   const configured = environment.XDG_STATE_HOME;
   return configured !== undefined && isAbsolute(configured)
@@ -123,9 +144,18 @@ async function privateDirectory(path: string): Promise<void> {
 async function writePrivatePrompt(path: string, body: string): Promise<void> {
   await privateDirectory(dirname(path));
   try {
-    await writeFile(path, body, { encoding: "utf8", mode: FILE_MODE, flag: "wx" });
+    await writeFile(path, body, {
+      encoding: "utf8",
+      mode: FILE_MODE,
+      flag: "wx",
+    });
   } catch (error) {
-    if (!(typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST")) {
+    if (!(
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "EEXIST"
+    )) {
       throw error;
     }
   }
@@ -134,7 +164,10 @@ async function writePrivatePrompt(path: string, body: string): Promise<void> {
 
 function selectedModel(context: ExtensionContext): ModelReference {
   if (context.model === undefined) {
-    throw new WorkerConfigurationError("model_mismatch", "The delegating Pi session has no selected model");
+    throw new WorkerConfigurationError(
+      "model_mismatch",
+      "The delegating Pi session has no selected model"
+    );
   }
   return { provider: context.model.provider, id: context.model.id };
 }
@@ -150,13 +183,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function requireKnownKeys(
   value: Readonly<Record<string, unknown>>,
   keys: ReadonlyArray<string>,
-  location: string,
+  location: string
 ): void {
   const unknown = Object.keys(value).find((key) => !keys.includes(key));
   if (unknown !== undefined) {
     throw new ProjectConfigurationError(
       "unknown_key",
-      `Unknown key ${JSON.stringify(unknown)} in ${location}`,
+      `Unknown key ${JSON.stringify(unknown)} in ${location}`
     );
   }
 }
@@ -166,72 +199,108 @@ function decodeProjectConfig(source: string): ReviewProjectConfig {
   try {
     decoded = JSON.parse(source) as unknown;
   } catch {
-    throw new ProjectConfigurationError("invalid_json", `${PROJECT_CONFIG_FILE} is not valid JSON`);
+    throw new ProjectConfigurationError(
+      "invalid_json",
+      `${PROJECT_CONFIG_FILE} is not valid JSON`
+    );
   }
   if (!isRecord(decoded)) {
-    throw new ProjectConfigurationError("invalid_shape", `${PROJECT_CONFIG_FILE} must contain an object`);
+    throw new ProjectConfigurationError(
+      "invalid_shape",
+      `${PROJECT_CONFIG_FILE} must contain an object`
+    );
   }
   requireKnownKeys(decoded, ["review"], PROJECT_CONFIG_FILE);
   const review = decoded.review;
   if (!isRecord(review)) {
-    throw new ProjectConfigurationError("invalid_shape", "review must contain an object");
+    throw new ProjectConfigurationError(
+      "invalid_shape",
+      "review must contain an object"
+    );
   }
   requireKnownKeys(review, ["model", "thinkingLevel"], "review");
 
   let model: ModelReference | undefined;
   if (review.model !== undefined) {
     if (!isRecord(review.model)) {
-      throw new ProjectConfigurationError("invalid_shape", "review.model must contain an object");
+      throw new ProjectConfigurationError(
+        "invalid_shape",
+        "review.model must contain an object"
+      );
     }
     requireKnownKeys(review.model, ["provider", "id"], "review.model");
-    if (typeof review.model.provider !== "string" || !PROVIDER_PATTERN.test(review.model.provider)) {
-      throw new ProjectConfigurationError("invalid_provider", "review.model.provider is invalid");
+    if (
+      typeof review.model.provider !== "string" ||
+      !PROVIDER_PATTERN.test(review.model.provider)
+    ) {
+      throw new ProjectConfigurationError(
+        "invalid_provider",
+        "review.model.provider is invalid"
+      );
     }
-    if (typeof review.model.id !== "string" || !MODEL_ID_PATTERN.test(review.model.id)) {
-      throw new ProjectConfigurationError("invalid_model_id", "review.model.id is invalid");
+    if (
+      typeof review.model.id !== "string" ||
+      !MODEL_ID_PATTERN.test(review.model.id)
+    ) {
+      throw new ProjectConfigurationError(
+        "invalid_model_id",
+        "review.model.id is invalid"
+      );
     }
     model = { provider: review.model.provider, id: review.model.id };
   }
 
-  if (review.thinkingLevel !== undefined && !isThinkingLevel(review.thinkingLevel)) {
+  if (
+    review.thinkingLevel !== undefined &&
+    !isThinkingLevel(review.thinkingLevel)
+  ) {
     throw new ProjectConfigurationError(
       "invalid_thinking_level",
-      "review.thinkingLevel is invalid",
+      "review.thinkingLevel is invalid"
     );
   }
   return {
     ...(model === undefined ? {} : { model }),
-    ...(review.thinkingLevel === undefined ? {} : { thinkingLevel: review.thinkingLevel }),
+    ...(review.thinkingLevel === undefined
+      ? {}
+      : { thinkingLevel: review.thinkingLevel }),
   };
 }
 
-async function projectConfig(root: string): Promise<ReviewProjectConfig | undefined> {
+async function projectConfig(
+  root: string
+): Promise<ReviewProjectConfig | undefined> {
   try {
-    return decodeProjectConfig(await readFile(join(root, PROJECT_CONFIG_FILE), "utf8"));
+    return decodeProjectConfig(
+      await readFile(join(root, PROJECT_CONFIG_FILE), "utf8")
+    );
   } catch (error) {
     if (
-      typeof error === "object" && error !== null && "code" in error &&
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
       error.code === "ENOENT"
-    ) return undefined;
+    )
+      return undefined;
     throw error;
   }
 }
 
 function configuredModel(
   context: ExtensionContext,
-  model: Readonly<ModelReference>,
+  model: Readonly<ModelReference>
 ): ModelReference {
   const registered = context.modelRegistry.find(model.provider, model.id);
   if (registered === undefined) {
     throw new WorkerConfigurationError(
       "model_not_found",
-      `Configured review model ${model.provider}/${model.id} was not found`,
+      `Configured review model ${model.provider}/${model.id} was not found`
     );
   }
   if (!context.modelRegistry.hasConfiguredAuth(registered)) {
     throw new WorkerConfigurationError(
       "model_auth_unavailable",
-      `Configured review model provider ${model.provider} is not authenticated`,
+      `Configured review model provider ${model.provider} is not authenticated`
     );
   }
   return { provider: registered.provider, id: registered.id };
@@ -241,7 +310,7 @@ function selectedThinkingLevel(context: ExtensionContext): ThinkingLevel {
   if (!isThinkingLevel(context.thinkingLevel)) {
     throw new WorkerConfigurationError(
       "unsupported_capability",
-      "The delegating Pi session has no supported thinking level",
+      "The delegating Pi session has no supported thinking level"
     );
   }
   return context.thinkingLevel;
@@ -263,7 +332,7 @@ function workerPrompt(task: string): string {
 
 function boundedResultBody(
   body: string,
-  operationId: string,
+  operationId: string
 ): { readonly text: string; readonly truncated: boolean } {
   const initial = truncateHead(body, {
     maxLines: DEFAULT_MAX_LINES,
@@ -311,13 +380,16 @@ class OperationLifetime {
 
   async cancelAll(): Promise<void> {
     const outcomes = await Promise.allSettled(
-      Array.from(this.active.values(), (operation) => operation.cancel()),
+      Array.from(this.active.values(), (operation) => operation.cancel())
     );
     const failures = outcomes.flatMap((outcome) =>
       outcome.status === "rejected" ? [outcome.reason] : []
     );
     if (failures.length > 0) {
-      throw new AggregateError(failures, "Failed to classify all active Operation cancellations");
+      throw new AggregateError(
+        failures,
+        "Failed to classify all active Operation cancellations"
+      );
     }
   }
 }
@@ -330,7 +402,7 @@ type ResultOutcome =
 async function awaitOperation(
   operation: TrackedOperation,
   lifetime: OperationLifetime,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal | undefined
 ): Promise<Result> {
   let notifyInterrupted!: () => void;
   const interrupted = new Promise<ResultOutcome>((resolve) => {
@@ -341,7 +413,7 @@ async function awaitOperation(
 
   const settled: Promise<ResultOutcome> = operation.handle.result().then(
     (completion) => ({ type: "result", result: completion.result }),
-    (error: unknown) => ({ type: "failure", error }),
+    (error: unknown) => ({ type: "failure", error })
   );
   if (signal?.aborted) notifyInterrupted();
 
@@ -359,7 +431,10 @@ async function awaitOperation(
     const cancellation = await operation.cancel();
     lifetime.complete(operation);
     if (cancellation.state === "unknown") {
-      throw new OperationUnknownError(operation.handle.operationId, "cancel-unproven");
+      throw new OperationUnknownError(
+        operation.handle.operationId,
+        "cancel-unproven"
+      );
     }
     throw new OperationCancelledError(operation.handle.operationId);
   } finally {
@@ -370,7 +445,7 @@ async function awaitOperation(
 /** Install the project-local Pi delegation tool. */
 export function installPionsExtension(
   pi: ExtensionAPI,
-  options: PionsExtensionOptions = {},
+  options: PionsExtensionOptions = {}
 ): void {
   const runtimesByConfig = new Map<string, Runtime>();
   const runtimesByCall = new Map<string, Runtime>();
@@ -386,13 +461,18 @@ export function installPionsExtension(
       failures.push(error);
     }
     const closeOutcomes = await Promise.allSettled(
-      [...new Set(runtimesByCall.values())].map((runtime) => runtime.close()),
+      [...new Set(runtimesByCall.values())].map((runtime) => runtime.close())
     );
-    failures.push(...closeOutcomes.flatMap((outcome) =>
-      outcome.status === "rejected" ? [outcome.reason] : []
-    ));
+    failures.push(
+      ...closeOutcomes.flatMap((outcome) =>
+        outcome.status === "rejected" ? [outcome.reason] : []
+      )
+    );
     if (failures.length > 0) {
-      throw new AggregateError(failures, "Failed to shut down the Pions Runtime");
+      throw new AggregateError(
+        failures,
+        "Failed to shut down the Pions Runtime"
+      );
     }
   });
 
@@ -403,7 +483,8 @@ export function installPionsExtension(
       "Use pions_delegate to delegate one self-contained task to a subagent with an independent context.",
       `The returned text is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}; the complete Result remains persisted by Operation identifier.`,
     ].join(" "),
-    promptSnippet: "Use pions_delegate to start one read-oriented subagent with an independent context",
+    promptSnippet:
+      "Use pions_delegate to start one read-oriented subagent with an independent context",
     promptGuidelines: [
       "Use pions_delegate when asked to launch or delegate to a subagent, or to investigate in an independent context.",
       "Compose independent pions_delegate calls in parallel rather than combining multiple tasks in one call.",
@@ -416,19 +497,22 @@ export function installPionsExtension(
       }
       const inheritedModel = selectedModel(context);
       const inheritedThinkingLevel = selectedThinkingLevel(context);
-      const root = options.repositoryRoot ?? await repositoryRoot(context.cwd);
+      const root =
+        options.repositoryRoot ?? (await repositoryRoot(context.cwd));
       const normalizedRoot = await realpath(root);
       const configured = await projectConfig(normalizedRoot);
-      const model = configured?.model === undefined
-        ? inheritedModel
-        : configuredModel(context, configured.model);
-      const claudeBridge = model.provider === "claude-bridge"
-        ? resolveClaudeBridgeExtension({
-            ...(options.claudeBridgePackagePath === undefined
-              ? {}
-              : { packagePath: options.claudeBridgePackagePath }),
-          })
-        : undefined;
+      const model =
+        configured?.model === undefined
+          ? inheritedModel
+          : configuredModel(context, configured.model);
+      const claudeBridge =
+        model.provider === "claude-bridge"
+          ? resolveClaudeBridgeExtension({
+              ...(options.claudeBridgePackagePath === undefined
+                ? {}
+                : { packagePath: options.claudeBridgePackagePath }),
+            })
+          : undefined;
       if (claudeBridge !== undefined) {
         validateClaudeBridgePolicy({
           cwd: normalizedRoot,
@@ -437,15 +521,26 @@ export function installPionsExtension(
         });
       }
       const thinkingLevel = configured?.thinkingLevel ?? inheritedThinkingLevel;
-      const stateBase = options.stateBaseDirectory ?? userStateDirectory(
-        options.environment ?? process.env,
-        options.homeDirectory ?? homedir(),
+      const stateBase =
+        options.stateBaseDirectory ??
+        userStateDirectory(
+          options.environment ?? process.env,
+          options.homeDirectory ?? homedir()
+        );
+      const repositoryState = join(
+        stateBase,
+        "pions",
+        "repositories",
+        opaqueDigest(normalizedRoot)
       );
-      const repositoryState = join(stateBase, "pions", "repositories", opaqueDigest(normalizedRoot));
       await privateDirectory(repositoryState);
 
       const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
-      const promptRef = join(repositoryState, "requests", `${idempotencyKey.slice("pi-tool:".length)}.utf8`);
+      const promptRef = join(
+        repositoryState,
+        "requests",
+        `${idempotencyKey.slice("pi-tool:".length)}.utf8`
+      );
       await writePrivatePrompt(promptRef, workerPrompt(parameters.task));
 
       const profile: WorkerProfilePolicy = {
@@ -463,10 +558,13 @@ export function installPionsExtension(
       let runtime = options.runtime;
       if (runtime === undefined) {
         const extensionEntryPath = resolveWorkerExtensionEntryPath({
-          ...(options.extensionEntryPath === undefined ? {} : { explicitPath: options.extensionEntryPath }),
+          ...(options.extensionEntryPath === undefined
+            ? {}
+            : { explicitPath: options.extensionEntryPath }),
           cwd: normalizedRoot,
         });
-        runtime = runtimesByCall.get(idempotencyKey) ?? runtimesByConfig.get(configKey);
+        runtime =
+          runtimesByCall.get(idempotencyKey) ?? runtimesByConfig.get(configKey);
         if (runtime === undefined) {
           runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
             cwd: normalizedRoot,

@@ -7,7 +7,10 @@ import type { StoredOperationRecord } from "./store.js";
 
 const systemClock: RuntimeClock = {
   now: () => Effect.sync(() => new Date().toISOString()),
-  sleep: (milliseconds) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, milliseconds))),
+  sleep: (milliseconds) =>
+    Effect.promise(
+      () => new Promise((resolve) => setTimeout(resolve, milliseconds))
+    ),
   monotonicMilliseconds: () => performance.now(),
   recoveredElapsedTimeIsReliable: () => false,
 };
@@ -17,7 +20,7 @@ export class InMemoryEventStore extends ValidatedEventStore {
 
   constructor(
     private readonly trace: Array<string> = [],
-    clock: RuntimeClock = systemClock,
+    clock: RuntimeClock = systemClock
   ) {
     super(clock);
   }
@@ -26,7 +29,10 @@ export class InMemoryEventStore extends ValidatedEventStore {
     return Promise.resolve(this.records.get(operationId));
   }
 
-  protected writeRecord(operationId: string, record: StoredOperationRecord): Promise<void> {
+  protected writeRecord(
+    operationId: string,
+    record: StoredOperationRecord
+  ): Promise<void> {
     this.records.set(operationId, structuredClone(record));
     return Promise.resolve();
   }
@@ -36,11 +42,13 @@ export class InMemoryEventStore extends ValidatedEventStore {
   }
 
   protected override didAppend(event: OperationEvent): void {
-    this.trace.push(`event:${JSON.stringify({
-      operationId: event.operationId,
-      type: event.type,
-      seq: event.seq,
-      timestamp: event.timestamp,
-    })}`);
+    this.trace.push(
+      `event:${JSON.stringify({
+        operationId: event.operationId,
+        type: event.type,
+        seq: event.seq,
+        timestamp: event.timestamp,
+      })}`
+    );
   }
 }

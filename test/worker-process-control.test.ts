@@ -39,21 +39,33 @@ test("an unreadable process identity is not treated as stopped", async () => {
     readProcessStat: () => Promise.reject(new Error("permission denied")),
   });
 
-  assert.equal(await Effect.runPromise(control.observe(identity)), "unverifiable");
+  assert.equal(
+    await Effect.runPromise(control.observe(identity)),
+    "unverifiable"
+  );
 });
 
 test("Claude backend descendants are captured with process start tokens", async () => {
   const control = new NodeWorkerProcessControl({
-    readProcessChildren: (processId) => Promise.resolve(processId === 1234 ? "2001 2002" : ""),
-    readProcessStat: (processId) => Promise.resolve(stat(
-      processId === identity.processId ? identity.processStartToken : `token-${processId}`,
-    )),
+    readProcessChildren: (processId) =>
+      Promise.resolve(processId === 1234 ? "2001 2002" : ""),
+    readProcessStat: (processId) =>
+      Promise.resolve(
+        stat(
+          processId === identity.processId
+            ? identity.processStartToken
+            : `token-${processId}`
+        )
+      ),
   });
 
-  assert.deepEqual(await Effect.runPromise(control.captureDescendants(identity)), [
-    { processId: 2001, processStartToken: "token-2001" },
-    { processId: 2002, processStartToken: "token-2002" },
-  ]);
+  assert.deepEqual(
+    await Effect.runPromise(control.captureDescendants(identity)),
+    [
+      { processId: 2001, processStartToken: "token-2001" },
+      { processId: 2002, processStartToken: "token-2002" },
+    ]
+  );
 });
 
 test("unreadable Claude backend descendants cannot prove cancellation", async () => {
@@ -61,15 +73,21 @@ test("unreadable Claude backend descendants cannot prove cancellation", async ()
     readProcessChildren: () => Promise.reject(new Error("permission denied")),
   });
 
-  assert.equal(await Effect.runPromise(control.captureDescendants(identity)), undefined);
+  assert.equal(
+    await Effect.runPromise(control.captureDescendants(identity)),
+    undefined
+  );
 });
 
 test("an already stopped exact process is cancellation evidence", async () => {
   const control = new NodeWorkerProcessControl({
-    readProcessStat: () => Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" })),
+    readProcessStat: () =>
+      Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" })),
   });
 
-  assert.deepEqual(await Effect.runPromise(control.terminate(identity)), { proof: "worker-stop" });
+  assert.deepEqual(await Effect.runPromise(control.terminate(identity)), {
+    proof: "worker-stop",
+  });
 });
 
 test("successful signal delivery is not cancellation evidence", async () => {
@@ -84,13 +102,20 @@ test("successful signal delivery is not cancellation evidence", async () => {
 
 test("forced termination signals only the exact process instance", async () => {
   let signals = 0;
-  const stats = [stat("987654"), Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" }))];
+  const stats = [
+    stat("987654"),
+    Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" })),
+  ];
   const control = new NodeWorkerProcessControl({
     readProcessStat: () => {
       const next = stats.shift();
-      return next instanceof Promise ? next : Promise.resolve(next ?? stat("other"));
+      return next instanceof Promise
+        ? next
+        : Promise.resolve(next ?? stat("other"));
     },
-    signal: () => { signals += 1; },
+    signal: () => {
+      signals += 1;
+    },
     sleep: () => Promise.resolve(),
   });
   await Effect.runPromise(control.terminate(identity));

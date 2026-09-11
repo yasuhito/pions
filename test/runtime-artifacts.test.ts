@@ -14,5 +14,11 @@ test("closing an unopened Runtime Artifact Store prevents a later open", async (
 
   await services.artifacts.close();
 
-  await assert.rejects(services.artifacts.registrationStatus(services.credential, "registration-1"), /closed/u);
+  await assert.rejects(
+    services.artifacts.registrationStatus(
+      services.credential,
+      "registration-1"
+    ),
+    /closed/u
+  );
 });

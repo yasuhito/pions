@@ -2,12 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 
-import {
-  Effect,
-  ManagedRuntime,
-  TestClock,
-  TestContext,
-} from "effect";
+import { Effect, ManagedRuntime, TestClock, TestContext } from "effect";
 
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
 import {
@@ -20,7 +15,10 @@ import {
   SpawnRejectedError,
   WorkerConfigurationError,
 } from "../src/index.js";
-import type { Operation, OperationIntent } from "../src/internal/event-store/index.js";
+import type {
+  Operation,
+  OperationIntent,
+} from "../src/internal/event-store/index.js";
 import type { WorkerProducedResult } from "../src/public.js";
 import {
   acknowledgeResultAcceptance,
@@ -54,55 +52,67 @@ class InterruptedStartWorkerAdapter implements WorkerAdapter {
 
   open(operation: Operation): Worker {
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(this, function* () {
-        yield* hooks.workerLaunched();
-        const instruction = yield* hooks.workerIdentified({
-          processId: 1234,
-          processInstanceId: "interrupted-worker",
-          processStartToken: "interrupted-worker-start",
-          piSessionId: "interrupted-pi",
-          observedConfig: {
-            model: { state: "observed", value: operation.effectiveConfig.model },
-            thinkingLevel: { state: "observed", value: operation.effectiveConfig.thinkingLevel },
-            tools: { state: "observed", value: operation.effectiveConfig.tools },
-            cwd: { state: "observed", value: operation.effectiveConfig.cwd },
-          },
-        });
-        yield* hooks.startDeliveryEntered(instruction);
-        yield* hooks.startInstructionDispatched(instruction);
-        return yield* Effect.async<WorkerRunOutcome>((resume) => {
-          this.releaseRun = () => resume(Effect.succeed({ state: "liveness-unproven" }));
-        });
-      }),
+      run: (hooks) =>
+        Effect.gen(this, function* () {
+          yield* hooks.workerLaunched();
+          const instruction = yield* hooks.workerIdentified({
+            processId: 1234,
+            processInstanceId: "interrupted-worker",
+            processStartToken: "interrupted-worker-start",
+            piSessionId: "interrupted-pi",
+            observedConfig: {
+              model: {
+                state: "observed",
+                value: operation.effectiveConfig.model,
+              },
+              thinkingLevel: {
+                state: "observed",
+                value: operation.effectiveConfig.thinkingLevel,
+              },
+              tools: {
+                state: "observed",
+                value: operation.effectiveConfig.tools,
+              },
+              cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+            },
+          });
+          yield* hooks.startDeliveryEntered(instruction);
+          yield* hooks.startInstructionDispatched(instruction);
+          return yield* Effect.async<WorkerRunOutcome>((resume) => {
+            this.releaseRun = () =>
+              resume(Effect.succeed({ state: "liveness-unproven" }));
+          });
+        }),
       cancel: () => Effect.succeed(undefined),
     });
   }
 
   recover(operation: Operation): Worker {
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(this, function* () {
-        const identity = operation.workerIdentity!;
-        const instruction = yield* hooks.workerIdentified({
-          processId: identity.processId,
-          processInstanceId: identity.processInstanceId,
-          processStartToken: identity.processStartToken,
-          piSessionId: identity.piSessionId,
-          observedConfig: operation.observedConfig!,
-        });
-        yield* hooks.startDeliveryAuthorityRevoked(
-          instruction.dispatcherId,
-          instruction.deliveryGeneration,
-        );
-        yield* hooks.deliveryGenerationConfirmed({
-          dispatcherId: instruction.dispatcherId,
-          deliveryGeneration: instruction.deliveryGeneration,
-          acceptanceState: "not_accepted",
-        });
-        yield* hooks.startDeliveryEntered(instruction);
-        yield* hooks.startInstructionDispatched(instruction);
-        this.recoveredDeliveryCount += 1;
-        return { state: "liveness-unproven" } as const;
-      }),
+      run: (hooks) =>
+        Effect.gen(this, function* () {
+          const identity = operation.workerIdentity!;
+          const instruction = yield* hooks.workerIdentified({
+            processId: identity.processId,
+            processInstanceId: identity.processInstanceId,
+            processStartToken: identity.processStartToken,
+            piSessionId: identity.piSessionId,
+            observedConfig: operation.observedConfig!,
+          });
+          yield* hooks.startDeliveryAuthorityRevoked(
+            instruction.dispatcherId,
+            instruction.deliveryGeneration
+          );
+          yield* hooks.deliveryGenerationConfirmed({
+            dispatcherId: instruction.dispatcherId,
+            deliveryGeneration: instruction.deliveryGeneration,
+            acceptanceState: "not_accepted",
+          });
+          yield* hooks.startDeliveryEntered(instruction);
+          yield* hooks.startInstructionDispatched(instruction);
+          this.recoveredDeliveryCount += 1;
+          return { state: "liveness-unproven" } as const;
+        }),
       cancel: () => Effect.succeed(undefined),
     });
   }
@@ -117,24 +127,35 @@ class AuthorityOnlyWorkerAdapter extends InterruptedStartWorkerAdapter {
 
   override open(operation: Operation): Worker {
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(this, function* () {
-        yield* hooks.workerLaunched();
-        yield* hooks.workerIdentified({
-          processId: 1234,
-          processInstanceId: "authority-only-worker",
-          processStartToken: "authority-only-worker-start",
-          piSessionId: "authority-only-pi",
-          observedConfig: {
-            model: { state: "observed", value: operation.effectiveConfig.model },
-            thinkingLevel: { state: "observed", value: operation.effectiveConfig.thinkingLevel },
-            tools: { state: "observed", value: operation.effectiveConfig.tools },
-            cwd: { state: "observed", value: operation.effectiveConfig.cwd },
-          },
-        });
-        return yield* Effect.async<WorkerRunOutcome>((resume) => {
-          this.releaseAuthorityRun = () => resume(Effect.succeed({ state: "liveness-unproven" }));
-        });
-      }),
+      run: (hooks) =>
+        Effect.gen(this, function* () {
+          yield* hooks.workerLaunched();
+          yield* hooks.workerIdentified({
+            processId: 1234,
+            processInstanceId: "authority-only-worker",
+            processStartToken: "authority-only-worker-start",
+            piSessionId: "authority-only-pi",
+            observedConfig: {
+              model: {
+                state: "observed",
+                value: operation.effectiveConfig.model,
+              },
+              thinkingLevel: {
+                state: "observed",
+                value: operation.effectiveConfig.thinkingLevel,
+              },
+              tools: {
+                state: "observed",
+                value: operation.effectiveConfig.tools,
+              },
+              cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+            },
+          });
+          return yield* Effect.async<WorkerRunOutcome>((resume) => {
+            this.releaseAuthorityRun = () =>
+              resume(Effect.succeed({ state: "liveness-unproven" }));
+          });
+        }),
       cancel: () => Effect.succeed(undefined),
     });
   }
@@ -150,24 +171,26 @@ class PausedHandoffWorkerAdapter extends InterruptedStartWorkerAdapter {
 
   override recover(operation: Operation): Worker {
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(this, function* () {
-        const identity = operation.workerIdentity!;
-        const instruction = yield* hooks.workerIdentified({
-          processId: identity.processId,
-          processInstanceId: identity.processInstanceId,
-          processStartToken: identity.processStartToken,
-          piSessionId: identity.piSessionId,
-          observedConfig: operation.observedConfig!,
-        });
-        yield* hooks.startDeliveryAuthorityRevoked(
-          instruction.dispatcherId,
-          instruction.deliveryGeneration,
-        );
-        this.revocationRecorded = true;
-        return yield* Effect.async<WorkerRunOutcome>((resume) => {
-          this.releaseHandoff = () => resume(Effect.succeed({ state: "liveness-unproven" }));
-        });
-      }),
+      run: (hooks) =>
+        Effect.gen(this, function* () {
+          const identity = operation.workerIdentity!;
+          const instruction = yield* hooks.workerIdentified({
+            processId: identity.processId,
+            processInstanceId: identity.processInstanceId,
+            processStartToken: identity.processStartToken,
+            piSessionId: identity.piSessionId,
+            observedConfig: operation.observedConfig!,
+          });
+          yield* hooks.startDeliveryAuthorityRevoked(
+            instruction.dispatcherId,
+            instruction.deliveryGeneration
+          );
+          this.revocationRecorded = true;
+          return yield* Effect.async<WorkerRunOutcome>((resume) => {
+            this.releaseHandoff = () =>
+              resume(Effect.succeed({ state: "liveness-unproven" }));
+          });
+        }),
       cancel: () => Effect.succeed(undefined),
     });
   }
@@ -189,7 +212,7 @@ class ControlledTestClock implements RuntimeClock {
 
   sleep(milliseconds: number): Effect.Effect<void> {
     return Effect.promise(() =>
-      this.runtime.runPromise(TestClock.sleep(milliseconds)),
+      this.runtime.runPromise(TestClock.sleep(milliseconds))
     );
   }
 
@@ -222,49 +245,53 @@ class ControlledWorkerAdapter implements WorkerAdapter {
   open(operation: Operation): Worker {
     return makeSingleRunWorker({
       run: (hooks) => this.run(operation, hooks),
-      cancel: (cancellationEpoch) => Effect.async((resume) => {
-        this.cancelTrace.push(`${operation.operationId}:${cancellationEpoch}`);
-        this.cancellationResponders.set(operation.operationId, resume);
-      }),
+      cancel: (cancellationEpoch) =>
+        Effect.async((resume) => {
+          this.cancelTrace.push(
+            `${operation.operationId}:${cancellationEpoch}`
+          );
+          this.cancellationResponders.set(operation.operationId, resume);
+        }),
     });
   }
 
   recover(operation: Operation): Worker {
     this.recoverCount += 1;
     return makeSingleRunWorker({
-      run: (hooks) => Effect.gen(function* () {
-        const identity = operation.workerIdentity!;
-        const instruction = yield* hooks.workerIdentified({
-          processId: identity.processId,
-          processInstanceId: identity.processInstanceId,
-          processStartToken: identity.processStartToken,
-          piSessionId: identity.piSessionId,
-          observedConfig: operation.observedConfig!,
-        });
-        yield* hooks.startDeliveryAuthorityRevoked(
-          instruction.dispatcherId,
-          instruction.deliveryGeneration,
-        );
-        yield* hooks.deliveryGenerationConfirmed({
-          dispatcherId: instruction.dispatcherId,
-          deliveryGeneration: instruction.deliveryGeneration,
-          acceptanceState: "accepted",
-          acceptedInstruction: {
-            ...operation.startInstructionAcceptance!,
-            ...(operation.startAuthorizationTiming.policy === "required"
-              ? { deadline: operation.startAuthorizationTiming.deadline }
-              : {}),
-          },
-        });
-        return { state: "liveness-unproven" } as const;
-      }),
+      run: (hooks) =>
+        Effect.gen(function* () {
+          const identity = operation.workerIdentity!;
+          const instruction = yield* hooks.workerIdentified({
+            processId: identity.processId,
+            processInstanceId: identity.processInstanceId,
+            processStartToken: identity.processStartToken,
+            piSessionId: identity.piSessionId,
+            observedConfig: operation.observedConfig!,
+          });
+          yield* hooks.startDeliveryAuthorityRevoked(
+            instruction.dispatcherId,
+            instruction.deliveryGeneration
+          );
+          yield* hooks.deliveryGenerationConfirmed({
+            dispatcherId: instruction.dispatcherId,
+            deliveryGeneration: instruction.deliveryGeneration,
+            acceptanceState: "accepted",
+            acceptedInstruction: {
+              ...operation.startInstructionAcceptance!,
+              ...(operation.startAuthorizationTiming.policy === "required"
+                ? { deadline: operation.startAuthorizationTiming.deadline }
+                : {}),
+            },
+          });
+          return { state: "liveness-unproven" } as const;
+        }),
       cancel: () => Effect.succeed(undefined),
     });
   }
 
   protected run(
     operation: Operation,
-    hooks: Readonly<WorkerRunHooks>,
+    hooks: Readonly<WorkerRunHooks>
   ): Effect.Effect<
     WorkerRunOutcome,
     OperationPersistenceError | ResourceProofRejectedError
@@ -278,9 +305,15 @@ class ControlledWorkerAdapter implements WorkerAdapter {
         processStartToken: `start:${operation.operationId}`,
         piSessionId: `session:${operation.operationId}`,
         observedConfig: {
-          model: { state: "observed", value: { ...operation.effectiveConfig.model } },
+          model: {
+            state: "observed",
+            value: { ...operation.effectiveConfig.model },
+          },
           thinkingLevel: { state: "unavailable" },
-          tools: { state: "observed", value: [...operation.effectiveConfig.tools] },
+          tools: {
+            state: "observed",
+            value: [...operation.effectiveConfig.tools],
+          },
           cwd: { state: "observed", value: operation.effectiveConfig.cwd },
         },
       });
@@ -288,9 +321,11 @@ class ControlledWorkerAdapter implements WorkerAdapter {
       yield* hooks.startInstructionDispatched(startInstruction);
       yield* hooks.startInstructionAccepted(startInstruction);
       yield* hooks.startInstructionAcknowledged(startInstruction);
-      const produced = yield* Effect.async<Readonly<WorkerProducedResult>>((resume) => {
-        this.receivers.set(operation.operationId, resume);
-      });
+      const produced = yield* Effect.async<Readonly<WorkerProducedResult>>(
+        (resume) => {
+          this.receivers.set(operation.operationId, resume);
+        }
+      );
       const acceptance = yield* hooks.acceptResult(produced);
       return yield* acknowledgeResultAcceptance(
         acceptance,
@@ -303,9 +338,11 @@ class ControlledWorkerAdapter implements WorkerAdapter {
             totalTokens: 17,
             cost: 0.33,
           },
-          toolUses: [{ toolCallId: "call-1", toolName: "read", isError: false }],
+          toolUses: [
+            { toolCallId: "call-1", toolName: "read", isError: false },
+          ],
         },
-        () => Effect.void,
+        () => Effect.void
       );
     });
   }
@@ -313,24 +350,28 @@ class ControlledWorkerAdapter implements WorkerAdapter {
   deliver(operationId: string, body = "finished"): void {
     const resume = this.receivers.get(operationId);
     if (resume === undefined) throw new Error(`No receiver for ${operationId}`);
-    const digest = `sha256:${createHash("sha256").update(body).digest("hex")}` as const;
+    const digest =
+      `sha256:${createHash("sha256").update(body).digest("hex")}` as const;
     const bytes = Buffer.from(body, "utf8");
-    resume(Effect.succeed({
-      acceptanceRequestId: "request-1",
-      body: {
-        formatId: "pions.result-body.v1",
-        normalizationId: "identity.v1",
-        expectedByteCount: bytes.byteLength,
-        expectedDigest: digest,
-        bytes,
-      },
-      workProducts: [],
-    }));
+    resume(
+      Effect.succeed({
+        acceptanceRequestId: "request-1",
+        body: {
+          formatId: "pions.result-body.v1",
+          normalizationId: "identity.v1",
+          expectedByteCount: bytes.byteLength,
+          expectedDigest: digest,
+          bytes,
+        },
+        workProducts: [],
+      })
+    );
   }
 
   confirmWorkerStopped(operationId: string): void {
     const resume = this.cancellationResponders.get(operationId);
-    if (resume === undefined) throw new Error(`No cancellation for ${operationId}`);
+    if (resume === undefined)
+      throw new Error(`No cancellation for ${operationId}`);
     resume(Effect.succeed({ proof: "worker-stop" }));
   }
 }
@@ -338,7 +379,7 @@ class ControlledWorkerAdapter implements WorkerAdapter {
 class FailingChildWorkerAdapter extends ControlledWorkerAdapter {
   protected override run(
     operation: Operation,
-    hooks: Readonly<WorkerRunHooks>,
+    hooks: Readonly<WorkerRunHooks>
   ): Effect.Effect<
     WorkerRunOutcome,
     OperationPersistenceError | ResourceProofRejectedError
@@ -358,10 +399,11 @@ async function waitForReceiver(): Promise<void> {
 async function waitForOperationState(
   store: InMemoryEventStore,
   operationId: string,
-  expectedState: Operation["state"],
+  expectedState: Operation["state"]
 ): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if ((await storedOperation(store, operationId)).state === expectedState) return;
+    if ((await storedOperation(store, operationId)).state === expectedState)
+      return;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
 }
@@ -373,12 +415,15 @@ async function storedOperation(store: InMemoryEventStore, operationId: string) {
 function operationEvents(trace: ReadonlyArray<string>, operationId: string) {
   return trace
     .filter((entry) => entry.startsWith("event:"))
-    .map((entry) => JSON.parse(entry.slice("event:".length)) as {
-      readonly operationId: string;
-      readonly type: string;
-      readonly seq: number;
-      readonly timestamp: string;
-    })
+    .map(
+      (entry) =>
+        JSON.parse(entry.slice("event:".length)) as {
+          readonly operationId: string;
+          readonly type: string;
+          readonly seq: number;
+          readonly timestamp: string;
+        }
+    )
     .filter((event) => event.operationId === operationId);
 }
 
@@ -386,13 +431,16 @@ async function completeOperation(
   messages: NonNullable<FakeWorkerAdapterOptions["messages"]> = {
     body: "finished",
   },
-  presentationFails = false,
+  presentationFails = false
 ) {
   const trace: Array<string> = [];
   const worker = new FakeWorkerAdapter({ messages, trace });
-  const clock = new FakeClock(Array.from({ length: 20 }, (_, index) =>
-    `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
-  ));
+  const clock = new FakeClock(
+    Array.from(
+      { length: 20 },
+      (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
   const store = new InMemoryEventStore(trace, clock);
   const presentation = new FakePresentation({
     trace,
@@ -429,9 +477,12 @@ test("runtime startup adopts a recoverable Start delivery", async () => {
   const firstWorker = new ControlledWorkerAdapter();
   const firstRuntime = makeTestRuntime({
     worker: firstWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
@@ -448,9 +499,12 @@ test("runtime startup adopts a recoverable Start delivery", async () => {
   const recoveredWorker = new ControlledWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T11:00:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T11:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store,
@@ -470,9 +524,12 @@ test("runtime recovery delivers a Start instruction acquired before delivery ent
   const firstWorker = new AuthorityOnlyWorkerAdapter();
   const firstRuntime = makeTestRuntime({
     worker: firstWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T10:05:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T10:05:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
@@ -489,9 +546,12 @@ test("runtime recovery delivers a Start instruction acquired before delivery ent
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T11:05:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T11:05:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store,
@@ -510,9 +570,12 @@ test("runtime recovery redispatches only after a durable not-accepted result", a
   const firstWorker = new InterruptedStartWorkerAdapter();
   const firstRuntime = makeTestRuntime({
     worker: firstWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T10:10:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T10:10:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
@@ -529,9 +592,12 @@ test("runtime recovery redispatches only after a durable not-accepted result", a
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T11:10:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T11:10:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store,
@@ -550,9 +616,12 @@ test("runtime recovery resumes a Start delivery handoff interrupted after revoca
   const firstWorker = new InterruptedStartWorkerAdapter();
   const firstRuntime = makeTestRuntime({
     worker: firstWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T10:20:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T10:20:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
@@ -569,9 +638,12 @@ test("runtime recovery resumes a Start delivery handoff interrupted after revoca
   const pausedWorker = new PausedHandoffWorkerAdapter();
   const interruptedRuntime = makeTestRuntime({
     worker: pausedWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T11:20:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T11:20:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store,
@@ -583,9 +655,12 @@ test("runtime recovery resumes a Start delivery handoff interrupted after revoca
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T12:20:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T12:20:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store,
@@ -606,35 +681,47 @@ test("each Operation records root, parent, and depth lineage", async () => {
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
     worker,
-    clock: new FakeClock(Array.from({ length: 30 }, (_, index) =>
-      `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 30 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["root", "child", "grandchild"]),
     presentation: new FakePresentation(),
     store,
   });
 
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   const child = await runtime.spawn(
     { promptRef: "child", profile: "coding", idempotencyKey: "child" },
-    { parentOperationId: root.operationId },
+    { parentOperationId: root.operationId }
   );
   const grandchild = await runtime.spawn(
-    { promptRef: "grandchild", profile: "coding", idempotencyKey: "grandchild" },
-    { parentOperationId: child.operationId },
+    {
+      promptRef: "grandchild",
+      profile: "coding",
+      idempotencyKey: "grandchild",
+    },
+    { parentOperationId: child.operationId }
   );
 
   assert.deepEqual(
     await Promise.all(
-      [root, child, grandchild].map(async ({ operationId }) =>
-        (await storedOperation(store, operationId)).lineage,
-      ),
+      [root, child, grandchild].map(
+        async ({ operationId }) =>
+          (await storedOperation(store, operationId)).lineage
+      )
     ),
     [
       { rootOperationId: "root", depth: 0 },
       { rootOperationId: "root", parentOperationId: "root", depth: 1 },
       { rootOperationId: "root", parentOperationId: "child", depth: 2 },
-    ],
+    ]
   );
 });
 
@@ -646,9 +733,11 @@ function nestedRuntime(operationIds: ReadonlyArray<string>) {
   const runtime = makeTestRuntime({
     worker,
     clock: new FakeClock(
-      Array.from({ length: 100 }, (_, index) =>
-        `2026-09-06T10:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
-      ),
+      Array.from(
+        { length: 100 },
+        (_, index) =>
+          `2026-09-06T10:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
+      )
     ),
     ids,
     presentation,
@@ -660,18 +749,18 @@ function nestedRuntime(operationIds: ReadonlyArray<string>) {
 async function spawnNested(
   runtime: ReturnType<typeof makeTestRuntime>,
   parentOperationId: string,
-  key: string,
+  key: string
 ) {
   return runtime.spawn(
     { promptRef: key, profile: "coding", idempotencyKey: key },
-    { parentOperationId },
+    { parentOperationId }
   );
 }
 
 function cancellableNestedRuntime(operationIds: ReadonlyArray<string>) {
   const worker = new ControlledWorkerAdapter();
   const clock = new ControlledTestClock(
-    Array.from({ length: 100 }, (_, index) => `cancel-time-${index}`),
+    Array.from({ length: 100 }, (_, index) => `cancel-time-${index}`)
   );
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(trace);
@@ -697,7 +786,7 @@ async function spawnCancellationTree() {
   const grandchild = await spawnNested(
     fixture.runtime,
     child.operationId,
-    "grandchild",
+    "grandchild"
   );
   await waitForReceiver();
   return { ...fixture, child, grandchild, root };
@@ -708,9 +797,12 @@ test("runtime startup resumes an interrupted Worker cancellation", async () => {
   const firstWorker = new ControlledWorkerAdapter();
   const firstRuntime = makeTestRuntime({
     worker: firstWorker,
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T10:30:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T10:30:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
@@ -730,9 +822,12 @@ test("runtime startup resumes an interrupted Worker cancellation", async () => {
   await firstRuntime.close();
   const recoveredRuntime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
-    clock: new FakeClock(Array.from({ length: 40 }, (_, index) =>
-      `2026-09-06T11:30:${String(index).padStart(2, "0")}.000Z`,
-    )),
+    clock: new FakeClock(
+      Array.from(
+        { length: 40 },
+        (_, index) => `2026-09-06T11:30:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store,
@@ -756,7 +851,7 @@ test("subtree cancellation freezes new descendants before dispatch", async () =>
     spawnNested(runtime, root.operationId, "late-child"),
     (error) =>
       error instanceof SpawnRejectedError &&
-      error.reason === "cancellation_in_progress",
+      error.reason === "cancellation_in_progress"
   );
   await waitForReceiver();
   await clock.advanceBy(1_000);
@@ -782,7 +877,7 @@ test("cancellation remains the outcome when Result acceptance loses the persiste
 
   await assert.rejects(
     root.result(),
-    (error) => error instanceof OperationCancelledError,
+    (error) => error instanceof OperationCancelledError
   );
 });
 
@@ -807,7 +902,10 @@ test("acknowledged subtree cancellation ends as cancelled", async () => {
   await clock.advanceBy(1_000);
   await cancellation;
 
-  assert.equal((await storedOperation(store, root.operationId)).state, "cancelled");
+  assert.equal(
+    (await storedOperation(store, root.operationId)).state,
+    "cancelled"
+  );
 });
 
 test("cancelled Operations retain their owned panes", async () => {
@@ -839,7 +937,7 @@ test("an unproven descendant makes subtree cancellation unknown", async () => {
       (await storedOperation(store, root.operationId)).state,
       (await storedOperation(store, root.operationId)).terminalReason,
     ],
-    ["unknown", "cancel-unproven"],
+    ["unknown", "cancel-unproven"]
   );
 });
 
@@ -864,8 +962,10 @@ test("an acknowledged parent retains its evidence when a descendant is unproven"
   await cancellation;
 
   assert.deepEqual(
-    operationEvents(trace, root.operationId).slice(-2).map(({ type }) => type),
-    ["cancel_acknowledged", "operation_unknown"],
+    operationEvents(trace, root.operationId)
+      .slice(-2)
+      .map(({ type }) => type),
+    ["cancel_acknowledged", "operation_unknown"]
   );
 });
 
@@ -898,7 +998,8 @@ test("Runtime rejects an older cancellation epoch", async () => {
   await assert.rejects(
     root.cancel({ scope: "subtree", cancellationEpoch: 0 }),
     (error: unknown) =>
-      error instanceof CancellationRejectedError && error.reason === "stale_epoch",
+      error instanceof CancellationRejectedError &&
+      error.reason === "stale_epoch"
   );
 });
 
@@ -914,44 +1015,74 @@ test("subtree cancellation preserves an already completed descendant", async () 
   await clock.advanceBy(1_000);
   await cancellation;
 
-  assert.equal((await storedOperation(store, grandchild.operationId)).state, "completed");
+  assert.equal(
+    (await storedOperation(store, grandchild.operationId)).state,
+    "completed"
+  );
 });
 
 test("a self-settled parent drains while its child is still running", async () => {
   const { runtime, store, worker } = nestedRuntime(["root", "child"]);
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   await spawnNested(runtime, root.operationId, "child");
   await waitForReceiver();
 
   worker.deliver(root.operationId);
   await waitForOperationState(store, root.operationId, "draining_descendants");
 
-  assert.equal((await storedOperation(store, root.operationId)).state, "draining_descendants");
+  assert.equal(
+    (await storedOperation(store, root.operationId)).state,
+    "draining_descendants"
+  );
 });
 
 test("a parent completes after its child result handoff terminates", async () => {
   const { runtime, store, worker } = nestedRuntime(["root", "child"]);
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   const child = await spawnNested(runtime, root.operationId, "child");
   await waitForReceiver();
   worker.deliver(root.operationId);
   worker.deliver(child.operationId);
   await Promise.all([root.result(), child.result()]);
 
-  assert.equal((await storedOperation(store, root.operationId)).state, "completed");
+  assert.equal(
+    (await storedOperation(store, root.operationId)).state,
+    "completed"
+  );
 });
 
 test("a grandparent completes only after its grandchild terminates", async () => {
-  const { runtime, store, worker } = nestedRuntime(["root", "child", "grandchild"]);
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const { runtime, store, worker } = nestedRuntime([
+    "root",
+    "child",
+    "grandchild",
+  ]);
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   const child = await spawnNested(runtime, root.operationId, "child");
-  const grandchild = await spawnNested(runtime, child.operationId, "grandchild");
+  const grandchild = await spawnNested(
+    runtime,
+    child.operationId,
+    "grandchild"
+  );
   await waitForReceiver();
   worker.deliver(root.operationId);
   worker.deliver(child.operationId);
   await waitForOperationState(store, root.operationId, "draining_descendants");
 
-  const beforeGrandchild = (await storedOperation(store, root.operationId)).state;
+  const beforeGrandchild = (await storedOperation(store, root.operationId))
+    .state;
   worker.deliver(grandchild.operationId);
   await Promise.all([root.result(), child.result(), grandchild.result()]);
 
@@ -963,12 +1094,21 @@ test("the default descendant failure policy fails a successful parent", async ()
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
     worker,
-    clock: new FakeClock(Array.from({ length: 30 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    clock: new FakeClock(
+      Array.from(
+        { length: 30 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["root", "child"]),
     presentation: new FakePresentation(),
     store,
   });
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   await spawnNested(runtime, root.operationId, "child");
   await waitForReceiver();
   worker.deliver(root.operationId);
@@ -976,26 +1116,40 @@ test("the default descendant failure policy fails a successful parent", async ()
   await assert.rejects(
     root.result(),
     (error) =>
-      error instanceof OperationFailedError && error.reason === "descendant_failed",
+      error instanceof OperationFailedError &&
+      error.reason === "descendant_failed"
   );
 });
 
 test("Runtime rejects a child beyond depth two", async () => {
   const { runtime } = nestedRuntime(["root", "child", "grandchild"]);
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   const child = await spawnNested(runtime, root.operationId, "child");
-  const grandchild = await spawnNested(runtime, child.operationId, "grandchild");
+  const grandchild = await spawnNested(
+    runtime,
+    child.operationId,
+    "grandchild"
+  );
 
   await assert.rejects(
     spawnNested(runtime, grandchild.operationId, "great-grandchild"),
     (error) =>
-      error instanceof SpawnRejectedError && error.reason === "depth_limit_exceeded",
+      error instanceof SpawnRejectedError &&
+      error.reason === "depth_limit_exceeded"
   );
 });
 
 test("Runtime rejects a fourth child of one parent", async () => {
   const { runtime } = nestedRuntime(["root", "child-1", "child-2", "child-3"]);
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   await Promise.all([
     spawnNested(runtime, root.operationId, "child-1"),
     spawnNested(runtime, root.operationId, "child-2"),
@@ -1005,25 +1159,40 @@ test("Runtime rejects a fourth child of one parent", async () => {
   await assert.rejects(
     spawnNested(runtime, root.operationId, "child-4"),
     (error) =>
-      error instanceof SpawnRejectedError && error.reason === "child_limit_exceeded",
+      error instanceof SpawnRejectedError &&
+      error.reason === "child_limit_exceeded"
   );
 });
 
 test("Runtime rejects a fifth live descendant of one root", async () => {
-  const { runtime } = nestedRuntime(["root", "child-1", "child-2", "child-3", "grandchild"]);
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const { runtime } = nestedRuntime([
+    "root",
+    "child-1",
+    "child-2",
+    "child-3",
+    "grandchild",
+  ]);
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   const children = await Promise.all([
     spawnNested(runtime, root.operationId, "child-1"),
     spawnNested(runtime, root.operationId, "child-2"),
     spawnNested(runtime, root.operationId, "child-3"),
   ]);
-  await spawnNested(runtime, children[0]?.operationId ?? "missing", "grandchild");
+  await spawnNested(
+    runtime,
+    children[0]?.operationId ?? "missing",
+    "grandchild"
+  );
 
   await assert.rejects(
     spawnNested(runtime, children[1]?.operationId ?? "missing", "fifth"),
     (error) =>
       error instanceof SpawnRejectedError &&
-      error.reason === "live_descendant_limit_exceeded",
+      error.reason === "live_descendant_limit_exceeded"
   );
 });
 
@@ -1034,7 +1203,11 @@ async function rejectedChildResources() {
     "child-2",
     "child-3",
   ]);
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   await Promise.all([
     spawnNested(runtime, root.operationId, "child-1"),
     spawnNested(runtime, root.operationId, "child-2"),
@@ -1046,7 +1219,9 @@ async function rejectedChildResources() {
     presentations: presentation.projections.length,
     workerStarts: worker.startCount,
   };
-  await spawnNested(runtime, root.operationId, "child-4").catch(() => undefined);
+  await spawnNested(runtime, root.operationId, "child-4").catch(
+    () => undefined
+  );
   await waitForReceiver();
   return { before, ids, presentation, worker };
 }
@@ -1071,7 +1246,11 @@ test("a rejected child creates no Presentation resource", async () => {
 
 test("retrying the same child acceptance returns one child", async () => {
   const { runtime } = nestedRuntime(["root", "child"]);
-  const root = await runtime.spawn({ promptRef: "root", profile: "coding", idempotencyKey: "root" });
+  const root = await runtime.spawn({
+    promptRef: "root",
+    profile: "coding",
+    idempotencyKey: "root",
+  });
   const children = await Promise.all([
     spawnNested(runtime, root.operationId, "child"),
     spawnNested(runtime, root.operationId, "child"),
@@ -1086,7 +1265,8 @@ test("OperationHandle returns the accepted Result", async () => {
   assert.deepEqual(result, {
     body: "finished",
     byteCount: 8,
-    digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
+    digest:
+      "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
   });
 });
 
@@ -1105,19 +1285,25 @@ test("Runtime starts the Worker once", async () => {
 test("Operation records requested configuration separately", async () => {
   const { store } = await completeOperation();
 
-  assert.deepEqual((await storedOperation(store, "operation-1")).requestedConfig, {});
+  assert.deepEqual(
+    (await storedOperation(store, "operation-1")).requestedConfig,
+    {}
+  );
 });
 
 test("Operation records the policy-resolved effective configuration", async () => {
   const { store } = await completeOperation();
 
-  assert.deepEqual((await storedOperation(store, "operation-1")).effectiveConfig.modelPolicy, {
-    candidates: [{ provider: "test", id: "test-model" }],
-    attempted: [{ provider: "test", id: "test-model" }],
-    maxAttempts: 1,
-    fallback: "forbidden",
-    aliases: [],
-  });
+  assert.deepEqual(
+    (await storedOperation(store, "operation-1")).effectiveConfig.modelPolicy,
+    {
+      candidates: [{ provider: "test", id: "test-model" }],
+      attempted: [{ provider: "test", id: "test-model" }],
+      maxAttempts: 1,
+      fallback: "forbidden",
+      aliases: [],
+    }
+  );
 });
 
 test("Operation does not invent an observed thinking level", async () => {
@@ -1125,7 +1311,7 @@ test("Operation does not invent an observed thinking level", async () => {
 
   assert.deepEqual(
     (await storedOperation(store, "operation-1")).observedConfig?.thinkingLevel,
-    { state: "unavailable" },
+    { state: "unavailable" }
   );
 });
 
@@ -1134,7 +1320,7 @@ test("Operation records the observed Worker tool set", async () => {
 
   assert.deepEqual(
     (await storedOperation(store, "operation-1")).observedConfig?.tools,
-    { state: "observed", value: ["read", "bash"] },
+    { state: "observed", value: ["read", "bash"] }
   );
 });
 
@@ -1158,8 +1344,9 @@ test("Runtime rejects a model outside the exact candidate policy", async () => {
   const { rejection } = await rejectedModelConfiguration();
 
   assert.equal(
-    rejection instanceof WorkerConfigurationError && rejection.reason === "model_mismatch",
-    true,
+    rejection instanceof WorkerConfigurationError &&
+      rejection.reason === "model_mismatch",
+    true
   );
 });
 
@@ -1191,8 +1378,10 @@ test("Runtime rejects tools above the profile ceiling before resources", async (
       idempotencyKey: "task",
       tools: ["read", "network"],
     }),
-    (error) => error instanceof WorkerConfigurationError &&
-      error.reason === "tool_policy_violation" && ids.issuedCount === 0,
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "tool_policy_violation" &&
+      ids.issuedCount === 0
   );
 });
 
@@ -1221,7 +1410,8 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
     },
   });
 
-  await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" })
+  await runtime
+    .spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" })
     .catch(() => undefined);
 
   assert.equal(ids.issuedCount, 0);
@@ -1275,7 +1465,10 @@ test("Runtime rejects a contradictory candidate profile without disabling its gu
             authorizedSubjectIds: ["coordinator-1"],
             receipt: {
               workspace,
-              permissionManifest: { manifestId: "manifest-1", digest: `sha256:${"ab".repeat(32)}` },
+              permissionManifest: {
+                manifestId: "manifest-1",
+                digest: `sha256:${"ab".repeat(32)}`,
+              },
               reviewSubjectVerification: "disabled",
               reviewSubject: {
                 artifactId: "artifact-1",
@@ -1288,14 +1481,16 @@ test("Runtime rejects a contradictory candidate profile without disabling its gu
           },
           workProductRequirements: {
             body: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS.body,
-            workProducts: [{
-              key: "patch",
-              formatId: "pions.patch.v1",
-              normalizationId: "identity.v1",
-              minCount: 1,
-              maxCount: 1,
-              maxByteCount: 1_024,
-            }],
+            workProducts: [
+              {
+                key: "patch",
+                formatId: "pions.patch.v1",
+                normalizationId: "identity.v1",
+                minCount: 1,
+                maxCount: 1,
+                maxByteCount: 1_024,
+              },
+            ],
             maxTotalByteCount: 1_049_600,
           },
           acceptedArtifactRetentionMs: 86_400_000,
@@ -1305,8 +1500,12 @@ test("Runtime rejects a contradictory candidate profile without disabling its gu
   });
 
   await assert.rejects(
-    runtime.spawn({ promptRef: "prompt", profile: "candidate", idempotencyKey: "candidate" }),
-    { name: "ResourceProofRejectedError", reason: "permission_contradiction" },
+    runtime.spawn({
+      promptRef: "prompt",
+      profile: "candidate",
+      idempotencyKey: "candidate",
+    }),
+    { name: "ResourceProofRejectedError", reason: "permission_contradiction" }
   );
 });
 
@@ -1329,14 +1528,16 @@ test("Runtime rejects required work products when the Worker adapter cannot prod
           startAuthorization: { policy: "disabled" },
           workProductRequirements: {
             body: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS.body,
-            workProducts: [{
-              key: "patch",
-              formatId: "pions.patch.v1",
-              normalizationId: "identity.v1",
-              minCount: 1,
-              maxCount: 1,
-              maxByteCount: 1_024,
-            }],
+            workProducts: [
+              {
+                key: "patch",
+                formatId: "pions.patch.v1",
+                normalizationId: "identity.v1",
+                minCount: 1,
+                maxCount: 1,
+                maxByteCount: 1_024,
+              },
+            ],
             maxTotalByteCount: 1_049_600,
           },
           acceptedArtifactRetentionMs: 86_400_000,
@@ -1346,8 +1547,14 @@ test("Runtime rejects required work products when the Worker adapter cannot prod
   });
 
   await assert.rejects(
-    runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" }),
-    (error) => error instanceof WorkerConfigurationError && error.reason === "unsupported_capability",
+    runtime.spawn({
+      promptRef: "prompt",
+      profile: "coding",
+      idempotencyKey: "task",
+    }),
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "unsupported_capability"
   );
 });
 
@@ -1362,10 +1569,17 @@ test("a child cannot raise its inherited thinking ceiling", async () => {
 
   await assert.rejects(
     runtime.spawn(
-      { promptRef: "child", profile: "coding", idempotencyKey: "child", thinkingLevel: "medium" },
-      { parentOperationId: root.operationId },
+      {
+        promptRef: "child",
+        profile: "coding",
+        idempotencyKey: "child",
+        thinkingLevel: "medium",
+      },
+      { parentOperationId: root.operationId }
     ),
-    (error) => error instanceof WorkerConfigurationError && error.reason === "unsupported_capability",
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "unsupported_capability"
   );
 });
 
@@ -1380,87 +1594,131 @@ test("a child cannot raise its inherited tool ceiling", async () => {
 
   await assert.rejects(
     runtime.spawn(
-      { promptRef: "child", profile: "coding", idempotencyKey: "child", tools: ["read", "bash"] },
-      { parentOperationId: root.operationId },
+      {
+        promptRef: "child",
+        profile: "coding",
+        idempotencyKey: "child",
+        tools: ["read", "bash"],
+      },
+      { parentOperationId: root.operationId }
     ),
-    (error) => error instanceof WorkerConfigurationError && error.reason === "tool_policy_violation",
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "tool_policy_violation"
   );
 });
 
 test("an observed model mismatch becomes a typed Operation failure", async () => {
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "model_mismatch" }),
-    clock: new FakeClock(Array.from({ length: 8 }, (_, index) => `config-time-${index}`)),
+    clock: new FakeClock(
+      Array.from({ length: 8 }, (_, index) => `config-time-${index}`)
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store: new InMemoryEventStore(),
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "coding",
+    idempotencyKey: "task",
+  });
 
   await assert.rejects(
     handle.result(),
-    (error) => error instanceof OperationFailedError && error.reason === "model_mismatch",
+    (error) =>
+      error instanceof OperationFailedError && error.reason === "model_mismatch"
   );
 });
 
 test("an observed thinking mismatch becomes a typed Operation failure", async () => {
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "thinking_level_mismatch" }),
-    clock: new FakeClock(Array.from({ length: 8 }, (_, index) => `config-time-${index}`)),
+    clock: new FakeClock(
+      Array.from({ length: 8 }, (_, index) => `config-time-${index}`)
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store: new InMemoryEventStore(),
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "coding",
+    idempotencyKey: "task",
+  });
 
   await assert.rejects(
     handle.result(),
-    (error) => error instanceof OperationFailedError && error.reason === "thinking_level_mismatch",
+    (error) =>
+      error instanceof OperationFailedError &&
+      error.reason === "thinking_level_mismatch"
   );
 });
 
 test("Operation records the worker process identifier", async () => {
   const { store } = await completeOperation();
 
-  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.processId, 1234);
+  assert.equal(
+    (await storedOperation(store, "operation-1")).workerIdentity?.processId,
+    1234
+  );
 });
 
 test("Operation records the worker process instance identity", async () => {
   const { store } = await completeOperation();
 
-  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.processInstanceId, "fake-process-instance");
+  assert.equal(
+    (await storedOperation(store, "operation-1")).workerIdentity
+      ?.processInstanceId,
+    "fake-process-instance"
+  );
 });
 
 test("Operation records the worker process start identity", async () => {
   const { store } = await completeOperation();
 
-  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.processStartToken, "fake-process-start");
+  assert.equal(
+    (await storedOperation(store, "operation-1")).workerIdentity
+      ?.processStartToken,
+    "fake-process-start"
+  );
 });
 
 test("Operation records the Pi session identity", async () => {
   const { store } = await completeOperation();
 
-  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.piSessionId, "fake-pi-session");
+  assert.equal(
+    (await storedOperation(store, "operation-1")).workerIdentity?.piSessionId,
+    "fake-pi-session"
+  );
 });
 
 test("Operation records Pi usage at agent settlement", async () => {
   const { store } = await completeOperation();
 
-  assert.equal((await storedOperation(store, "operation-1")).agentRunEvidence?.usage.totalTokens, 17);
+  assert.equal(
+    (await storedOperation(store, "operation-1")).agentRunEvidence?.usage
+      .totalTokens,
+    17
+  );
 });
 
 test("Operation records Pi tool use at agent settlement", async () => {
   const { store } = await completeOperation();
 
-  assert.deepEqual((await storedOperation(store, "operation-1")).agentRunEvidence?.toolUses, [
-    { toolCallId: "fake-call", toolName: "read", isError: false },
-  ]);
+  assert.deepEqual(
+    (await storedOperation(store, "operation-1")).agentRunEvidence?.toolUses,
+    [{ toolCallId: "fake-call", toolName: "read", isError: false }]
+  );
 });
 
 test("Operation records the worker's owned pane identity", async () => {
   const { store } = await completeOperation();
 
-  assert.equal((await storedOperation(store, "operation-1")).workerIdentity?.paneId, "fake-pane:operation-1");
+  assert.equal(
+    (await storedOperation(store, "operation-1")).workerIdentity?.paneId,
+    "fake-pane:operation-1"
+  );
 });
 
 test("Runtime records the successful Operation event sequence", async () => {
@@ -1484,7 +1742,7 @@ test("Runtime records the successful Operation event sequence", async () => {
       "agent_settled",
       "self_settled",
       "operation_completed",
-    ],
+    ]
   );
 });
 
@@ -1492,7 +1750,10 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
   const { trace } = await completeOperation();
 
   assert.deepEqual(
-    operationEvents(trace, "operation-1").map(({ seq, timestamp }) => ({ seq, timestamp })),
+    operationEvents(trace, "operation-1").map(({ seq, timestamp }) => ({
+      seq,
+      timestamp,
+    })),
     [
       { seq: 1, timestamp: "2026-09-06T10:00:00.000Z" },
       { seq: 2, timestamp: "2026-09-06T10:00:01.000Z" },
@@ -1509,7 +1770,7 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
       { seq: 13, timestamp: "2026-09-06T10:00:13.000Z" },
       { seq: 14, timestamp: "2026-09-06T10:00:14.000Z" },
       { seq: 15, timestamp: "2026-09-06T10:00:15.000Z" },
-    ],
+    ]
   );
 });
 
@@ -1528,7 +1789,10 @@ test("Presentation receives the completed Operation projection", async () => {
 test("Presentation failure cannot prevent terminal completion", async () => {
   const { store } = await completeOperation({ body: "finished" }, true);
 
-  assert.equal((await storedOperation(store, "operation-1")).state, "completed");
+  assert.equal(
+    (await storedOperation(store, "operation-1")).state,
+    "completed"
+  );
 });
 
 test("completion without confirmed Worker stop retains its pane", async () => {
@@ -1553,11 +1817,18 @@ class CleanupWriteFailingStore extends InMemoryEventStore {
   }
 }
 
-async function completeWithPaneClosureFailure(store: InMemoryEventStore = new InMemoryEventStore()) {
+async function completeWithPaneClosureFailure(
+  store: InMemoryEventStore = new InMemoryEventStore()
+) {
   const presentation = new FakePresentation({ paneClosureFails: true });
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    clock: new FakeClock(
+      Array.from(
+        { length: 20 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation,
     store,
@@ -1576,12 +1847,23 @@ async function completeWithPaneClosureFailure(store: InMemoryEventStore = new In
 
 test("successful cleanup follows Result acceptance and Worker stop confirmation", async () => {
   const trace: Array<string> = [];
-  const store = new InMemoryEventStore(trace, new FakeClock(
-    Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`),
-  ));
+  const store = new InMemoryEventStore(
+    trace,
+    new FakeClock(
+      Array.from(
+        { length: 20 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    )
+  );
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true, trace }),
-    clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    clock: new FakeClock(
+      Array.from(
+        { length: 20 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation({ trace }),
     store,
@@ -1592,19 +1874,25 @@ test("successful cleanup follows Result acceptance and Worker stop confirmation"
     idempotencyKey: "task-1",
   });
   await handle.result();
-  const sequence = trace.flatMap((entry) => {
-    if (entry.startsWith("presentation:")) return [entry];
-    if (!entry.startsWith("event:")) return [];
-    const type = (JSON.parse(entry.slice("event:".length)) as { readonly type: string }).type;
-    return [type];
-  }).filter((entry) => [
-    "result_accepted",
-    "worker_stop_confirmed",
-    "presentation_cleanup_started",
-    "presentation:inspect-owned-pane",
-    "presentation:close-owned-pane",
-    "presentation_cleanup_completed",
-  ].includes(entry));
+  const sequence = trace
+    .flatMap((entry) => {
+      if (entry.startsWith("presentation:")) return [entry];
+      if (!entry.startsWith("event:")) return [];
+      const type = (
+        JSON.parse(entry.slice("event:".length)) as { readonly type: string }
+      ).type;
+      return [type];
+    })
+    .filter((entry) =>
+      [
+        "result_accepted",
+        "worker_stop_confirmed",
+        "presentation_cleanup_started",
+        "presentation:inspect-owned-pane",
+        "presentation:close-owned-pane",
+        "presentation_cleanup_completed",
+      ].includes(entry)
+    );
 
   assert.deepEqual(sequence, [
     "result_accepted",
@@ -1636,7 +1924,7 @@ test("successful-worker cleanup targets only the Operation's persisted pane", as
 
 test("cleanup does not close a pane when its pending record cannot be saved", async () => {
   const { presentation } = await completeWithPaneClosureFailure(
-    new CleanupWriteFailingStore("presentation_cleanup_started"),
+    new CleanupWriteFailingStore("presentation_cleanup_started")
   );
 
   assert.deepEqual(presentation.closedPaneIds, []);
@@ -1647,7 +1935,12 @@ test("a pending-record failure is returned as an independent cleanup diagnostic"
   const presentation = new FakePresentation();
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    clock: new FakeClock(
+      Array.from(
+        { length: 20 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation,
     store,
@@ -1659,15 +1952,24 @@ test("a pending-record failure is returned as an independent cleanup diagnostic"
   });
   const completion = await handle.result();
 
-  assert.deepEqual(completion.cleanupDiagnostics, [{ code: "cleanup_record_unavailable" }]);
+  assert.deepEqual(completion.cleanupDiagnostics, [
+    { code: "cleanup_record_unavailable" },
+  ]);
 });
 
-test("close and diagnostic persistence failures preserve both cleanup failures",  async () => {
-  const store = new CleanupWriteFailingStore("presentation_cleanup_unconfirmed");
+test("close and diagnostic persistence failures preserve both cleanup failures", async () => {
+  const store = new CleanupWriteFailingStore(
+    "presentation_cleanup_unconfirmed"
+  );
   const presentation = new FakePresentation({ paneClosureFails: true });
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(Array.from({ length: 20 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    clock: new FakeClock(
+      Array.from(
+        { length: 20 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation,
     store,
@@ -1681,7 +1983,7 @@ test("close and diagnostic persistence failures preserve both cleanup failures",
 
   assert.deepEqual(
     completion.cleanupDiagnostics.map(({ code }) => code).sort(),
-    ["cleanup_record_unavailable", "pane_close_failed"],
+    ["cleanup_record_unavailable", "pane_close_failed"]
   );
 });
 
@@ -1689,7 +1991,12 @@ async function recoverInterruptedCleanup() {
   const store = new CleanupWriteFailingStore("presentation_cleanup_completed");
   const firstRuntime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(Array.from({ length: 30 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    clock: new FakeClock(
+      Array.from(
+        { length: 30 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
@@ -1702,7 +2009,9 @@ async function recoverInterruptedCleanup() {
   await handle.result();
   await firstRuntime.close();
 
-  const recoveredPresentation = new FakePresentation({ paneInspection: "missing" });
+  const recoveredPresentation = new FakePresentation({
+    paneInspection: "missing",
+  });
   const recoveredRuntime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock: new FakeClock(["2026-09-06T10:01:00.000Z"]),
@@ -1729,7 +2038,9 @@ test("cleanup recovery records missing completion proof as unconfirmed", async (
   assert.equal(operation.presentationCleanup?.state, "unconfirmed");
 });
 
-async function retryOperation(options?: { readonly parentOperationId?: string }) {
+async function retryOperation(options?: {
+  readonly parentOperationId?: string;
+}) {
   const worker = new FakeWorkerAdapter({ messages: { body: "finished" } });
   const runtime = makeTestRuntime({
     worker,
@@ -1778,19 +2089,22 @@ test("Runtime starts the Worker once for an idempotent spawn", async () => {
 test("OperationHandle returns the same Result without republishing it", async () => {
   const { handle } = await completeOperation();
 
-  const results = (await Promise.all([handle.result(), handle.result()]))
-    .map((completion) => completion.result);
+  const results = (await Promise.all([handle.result(), handle.result()])).map(
+    (completion) => completion.result
+  );
 
   assert.deepEqual(results, [
     {
       body: "finished",
       byteCount: 8,
-      digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
+      digest:
+        "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
     },
     {
       body: "finished",
       byteCount: 8,
-      digest: "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
+      digest:
+        "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
     },
   ]);
 });
@@ -1836,12 +2150,18 @@ async function settledAgentFailure() {
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "agent_failed" }),
-    clock: new FakeClock(Array.from({ length: 12 }, (_, index) => `failure-time-${index}`)),
+    clock: new FakeClock(
+      Array.from({ length: 12 }, (_, index) => `failure-time-${index}`)
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "coding",
+    idempotencyKey: "task",
+  });
   await handle.result().catch(() => undefined);
   return { handle, store };
 }
@@ -1849,47 +2169,76 @@ async function settledAgentFailure() {
 test("a settled Pi failure is durably classified", async () => {
   const { store } = await settledAgentFailure();
 
-  assert.equal((await storedOperation(store, "operation-1")).terminalReason, "agent_failed");
+  assert.equal(
+    (await storedOperation(store, "operation-1")).terminalReason,
+    "agent_failed"
+  );
 });
 
 test("a settled Pi failure retains usage and tool evidence", async () => {
   const { store } = await settledAgentFailure();
 
-  assert.deepEqual((await storedOperation(store, "operation-1")).agentRunEvidence, {
-    usage: { input: 10, output: 4, cacheRead: 2, cacheWrite: 1, totalTokens: 17, cost: 0.33 },
-    toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: true }],
-  });
+  assert.deepEqual(
+    (await storedOperation(store, "operation-1")).agentRunEvidence,
+    {
+      usage: {
+        input: 10,
+        output: 4,
+        cacheRead: 2,
+        cacheWrite: 1,
+        totalTokens: 17,
+        cost: 0.33,
+      },
+      toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: true }],
+    }
+  );
 });
 
 test("confirmed process exit without a Result becomes a bounded failure", async () => {
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "process-exited-without-result" }),
-    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `exit-time-${index}`)),
+    clock: new FakeClock(
+      Array.from({ length: 10 }, (_, index) => `exit-time-${index}`)
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store: new InMemoryEventStore(),
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "coding",
+    idempotencyKey: "task",
+  });
 
   await assert.rejects(
     handle.result(),
-    (error) => error instanceof OperationFailedError && error.reason === "process-exited-without-result",
+    (error) =>
+      error instanceof OperationFailedError &&
+      error.reason === "process-exited-without-result"
   );
 });
 
 test("unproven Worker liveness becomes an unknown Operation", async () => {
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ failure: "liveness-unproven" }),
-    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `unknown-time-${index}`)),
+    clock: new FakeClock(
+      Array.from({ length: 10 }, (_, index) => `unknown-time-${index}`)
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store: new InMemoryEventStore(),
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "coding",
+    idempotencyKey: "task",
+  });
 
   await assert.rejects(
     handle.result(),
-    (error) => error instanceof OperationUnknownError && error.reason === "liveness-unproven",
+    (error) =>
+      error instanceof OperationUnknownError &&
+      error.reason === "liveness-unproven"
   );
 });
 
@@ -1900,29 +2249,46 @@ test("a Worker protocol failure is durably classified without fake completion", 
       messages: { body: "unused" },
       failure: "worker_protocol_failed",
     }),
-    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
+    clock: new FakeClock(
+      Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "coding",
+    idempotencyKey: "task",
+  });
   await handle.result().catch(() => undefined);
 
-  assert.equal((await storedOperation(store, "operation-1")).terminalReason, "worker_protocol_failed");
+  assert.equal(
+    (await storedOperation(store, "operation-1")).terminalReason,
+    "worker_protocol_failed"
+  );
 });
 
 async function acknowledgementFailure(
-  messages: NonNullable<FakeWorkerAdapterOptions["messages"]> = { body: "accepted" },
+  messages: NonNullable<FakeWorkerAdapterOptions["messages"]> = {
+    body: "accepted",
+  }
 ): Promise<InMemoryEventStore> {
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ messages, acknowledgementFails: true }),
-    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)),
+    clock: new FakeClock(
+      Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
   });
-  const handle = await runtime.spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" });
+  const handle = await runtime.spawn({
+    promptRef: "prompt",
+    profile: "coding",
+    idempotencyKey: "task",
+  });
   await handle.result().catch(() => undefined);
   return store;
 }
@@ -1930,13 +2296,20 @@ async function acknowledgementFailure(
 test("an acknowledgement failure leaves the Operation unknown", async () => {
   const store = await acknowledgementFailure();
 
-  assert.equal((await storedOperation(store, "operation-1")).terminalReason, "liveness-unproven");
+  assert.equal(
+    (await storedOperation(store, "operation-1")).terminalReason,
+    "liveness-unproven"
+  );
 });
 
 test("an acknowledgement failure retains the accepted Result", async () => {
   const store = await acknowledgementFailure();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.result?.bodyArtifactId === undefined, false);
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.result
+      ?.bodyArtifactId === undefined,
+    false
+  );
 });
 
 test("OperationHandle reports Worker start failure as a bounded typed failure", async () => {
@@ -1946,7 +2319,7 @@ test("OperationHandle reports Worker start failure as a bounded typed failure", 
     handle.result(),
     (error) =>
       error instanceof OperationFailedError &&
-      error.reason === "worker_start_failed",
+      error.reason === "worker_start_failed"
   );
 });
 
@@ -1961,12 +2334,15 @@ test("Worker start failure records the failed terminal result", async () => {
       "operation_starting",
       "self_settled",
       "operation_failed",
-    ],
+    ]
   );
 });
 
 test("Worker start failure does not publish a successful Result", async () => {
   const { store } = await failOperation();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.result, undefined);
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.result,
+    undefined
+  );
 });

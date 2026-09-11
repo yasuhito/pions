@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 
 export const CLAUDE_BRIDGE_PACKAGE = "pi-claude-bridge";
 export const CLAUDE_BRIDGE_VERSION = "0.7.0";
-export const CLAUDE_BRIDGE_SOURCE_DIGEST = "sha256:b2ddc3215775cb12589ab54576d882e8c2eb1aadcba89eb9bd99bef40d93ea49";
+export const CLAUDE_BRIDGE_SOURCE_DIGEST =
+  "sha256:b2ddc3215775cb12589ab54576d882e8c2eb1aadcba89eb9bd99bef40d93ea49";
 
 export interface ApprovedProviderExtension {
   readonly provider: "claude-bridge";
@@ -30,14 +31,22 @@ function isRegularFile(path: string): boolean {
   try {
     return statSync(path).isFile();
   } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
       return false;
     }
     throw error;
   }
 }
 
-function configRecord(value: unknown, name: string): Readonly<Record<string, unknown>> | undefined {
+function configRecord(
+  value: unknown,
+  name: string
+): Readonly<Record<string, unknown>> | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`${name} must contain an object`);
@@ -47,7 +56,10 @@ function configRecord(value: unknown, name: string): Readonly<Record<string, unk
 
 function readClaudeBridgeConfig(path: string): ClaudeBridgeConfig {
   try {
-    const value = configRecord(JSON.parse(readFileSync(path, "utf8")) as unknown, "configuration")!;
+    const value = configRecord(
+      JSON.parse(readFileSync(path, "utf8")) as unknown,
+      "configuration"
+    )!;
     const askClaude = configRecord(value.askClaude, "askClaude");
     const provider = configRecord(value.provider, "provider");
     return {
@@ -55,11 +67,21 @@ function readClaudeBridgeConfig(path: string): ClaudeBridgeConfig {
       ...(provider === undefined ? {} : { provider }),
     };
   } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
       return {};
     }
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Claude bridge configuration cannot be inspected at ${path}: ${reason}`);
+    throw new Error(
+      `Claude bridge configuration cannot be inspected at ${path}: ${reason}`,
+      {
+        cause: error,
+      }
+    );
   }
 }
 
@@ -70,25 +92,42 @@ export function validateClaudeBridgePolicy(options: {
   readonly homeDirectory?: string;
 }): void {
   const environment = options.environment ?? process.env;
-  const agentDirectory = environment.PI_CODING_AGENT_DIR ?? join(
-    options.homeDirectory ?? homedir(),
-    ".pi",
-    "agent",
+  const agentDirectory =
+    environment.PI_CODING_AGENT_DIR ??
+    join(options.homeDirectory ?? homedir(), ".pi", "agent");
+  const globalConfig = readClaudeBridgeConfig(
+    join(agentDirectory, "claude-bridge.json")
   );
-  const globalConfig = readClaudeBridgeConfig(join(agentDirectory, "claude-bridge.json"));
-  const projectConfig = readClaudeBridgeConfig(join(options.cwd, ".pi", "claude-bridge.json"));
+  const projectConfig = readClaudeBridgeConfig(
+    join(options.cwd, ".pi", "claude-bridge.json")
+  );
   const askClaude = { ...globalConfig.askClaude, ...projectConfig.askClaude };
   const provider = { ...globalConfig.provider, ...projectConfig.provider };
   if (askClaude.enabled !== undefined && askClaude.enabled !== false) {
-    throw new Error("Pions Claude Workers require AskClaude to remain disabled");
+    throw new Error(
+      "Pions Claude Workers require AskClaude to remain disabled"
+    );
   }
-  if (provider.strictMcpConfig !== undefined && provider.strictMcpConfig !== true) {
-    throw new Error("Pions Claude Workers require strictMcpConfig to remain enabled");
+  if (
+    provider.strictMcpConfig !== undefined &&
+    provider.strictMcpConfig !== true
+  ) {
+    throw new Error(
+      "Pions Claude Workers require strictMcpConfig to remain enabled"
+    );
   }
-  if (provider.autoMemoryEnabled !== undefined && provider.autoMemoryEnabled !== false) {
-    throw new Error("Pions Claude Workers require Claude Code auto-memory to remain disabled");
+  if (
+    provider.autoMemoryEnabled !== undefined &&
+    provider.autoMemoryEnabled !== false
+  ) {
+    throw new Error(
+      "Pions Claude Workers require Claude Code auto-memory to remain disabled"
+    );
   }
-  if (provider.longContextExtraUsage !== undefined && provider.longContextExtraUsage !== false) {
+  if (
+    provider.longContextExtraUsage !== undefined &&
+    provider.longContextExtraUsage !== false
+  ) {
     throw new Error("Pions Claude Workers forbid Claude Extra Usage");
   }
 }
@@ -115,40 +154,57 @@ function sourceDigest(root: string): `sha256:${string}` {
 }
 
 /** 監査済みの固定版Claude bridgeを解決し、起動前に版とエントリーを検証する。 */
-export function resolveClaudeBridgeExtension(options: {
-  readonly packagePath?: string;
-  readonly moduleUrl?: string;
-} = {}): ApprovedProviderExtension {
+export function resolveClaudeBridgeExtension(
+  options: {
+    readonly packagePath?: string;
+    readonly moduleUrl?: string;
+  } = {}
+): ApprovedProviderExtension {
   const moduleUrl = options.moduleUrl ?? import.meta.url;
-  const packagePath = options.packagePath ?? createRequire(moduleUrl).resolve(
-    `${CLAUDE_BRIDGE_PACKAGE}/package.json`,
-  );
+  const packagePath =
+    options.packagePath ??
+    createRequire(moduleUrl).resolve(`${CLAUDE_BRIDGE_PACKAGE}/package.json`);
   let manifest: unknown;
   try {
     manifest = JSON.parse(readFileSync(packagePath, "utf8")) as unknown;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Approved Claude bridge manifest cannot be inspected at ${packagePath}: ${reason}`);
+    throw new Error(
+      `Approved Claude bridge manifest cannot be inspected at ${packagePath}: ${reason}`,
+      {
+        cause: error,
+      }
+    );
   }
-  const record = typeof manifest === "object" && manifest !== null
-    ? manifest as { readonly name?: unknown; readonly version?: unknown }
-    : undefined;
-  if (record?.name !== CLAUDE_BRIDGE_PACKAGE || typeof record.version !== "string") {
-    throw new Error(`Approved Claude bridge manifest is invalid at ${packagePath}`);
+  const record =
+    typeof manifest === "object" && manifest !== null
+      ? (manifest as { readonly name?: unknown; readonly version?: unknown })
+      : undefined;
+  if (
+    record?.name !== CLAUDE_BRIDGE_PACKAGE ||
+    typeof record.version !== "string"
+  ) {
+    throw new Error(
+      `Approved Claude bridge manifest is invalid at ${packagePath}`
+    );
   }
   if (record.version !== CLAUDE_BRIDGE_VERSION) {
     throw new Error(
-      `Installed Claude bridge version ${record.version} does not match expected ${CLAUDE_BRIDGE_VERSION}`,
+      `Installed Claude bridge version ${record.version} does not match expected ${CLAUDE_BRIDGE_VERSION}`
     );
   }
   const sourceRoot = join(dirname(packagePath), "src");
   const entryPath = join(sourceRoot, "index.ts");
   if (!isRegularFile(entryPath)) {
-    throw new Error(`Approved Claude bridge extension entry is unavailable: ${entryPath}`);
+    throw new Error(
+      `Approved Claude bridge extension entry is unavailable: ${entryPath}`
+    );
   }
   const observedDigest = sourceDigest(sourceRoot);
   if (observedDigest !== CLAUDE_BRIDGE_SOURCE_DIGEST) {
-    throw new Error(`Installed Claude bridge source digest ${observedDigest} is not approved by Pions`);
+    throw new Error(
+      `Installed Claude bridge source digest ${observedDigest} is not approved by Pions`
+    );
   }
   return Object.freeze({
     provider: "claude-bridge",
@@ -161,7 +217,7 @@ export function resolveClaudeBridgeExtension(options: {
 
 /** 解決済みの許可拡張が起動直前にも固定版を指すことを再検査する。 */
 export function verifyApprovedProviderExtension(
-  extension: Readonly<ApprovedProviderExtension>,
+  extension: Readonly<ApprovedProviderExtension>
 ): ApprovedProviderExtension {
   if (
     extension.provider !== "claude-bridge" ||
@@ -171,37 +227,55 @@ export function verifyApprovedProviderExtension(
   ) {
     throw new Error("Provider extension is not approved by Pions");
   }
-  const packagePath = join(dirname(dirname(extension.entryPath)), "package.json");
+  const packagePath = join(
+    dirname(dirname(extension.entryPath)),
+    "package.json"
+  );
   const verified = resolveClaudeBridgeExtension({ packagePath });
   if (verified.entryPath !== extension.entryPath) {
-    throw new Error("Approved Claude bridge entry path changed before Worker launch");
+    throw new Error(
+      "Approved Claude bridge entry path changed before Worker launch"
+    );
   }
   return verified;
 }
 
 /** 可視ワーカーが読み込むPions所有の拡張を解決し、検証する。 */
-export function resolveWorkerExtensionEntryPath(options: {
-  readonly explicitPath?: string;
-  readonly moduleUrl?: string;
-  readonly cwd?: string;
-} = {}): string {
+export function resolveWorkerExtensionEntryPath(
+  options: {
+    readonly explicitPath?: string;
+    readonly moduleUrl?: string;
+    readonly cwd?: string;
+  } = {}
+): string {
   const moduleUrl = options.moduleUrl ?? import.meta.url;
-  const candidates = options.explicitPath === undefined
-    ? [
-        fileURLToPath(new URL("../worker-extension.js", moduleUrl)),
-        fileURLToPath(new URL("../../dist/src/worker-extension.js", moduleUrl)),
-      ]
-    : [options.explicitPath];
+  const candidates =
+    options.explicitPath === undefined
+      ? [
+          fileURLToPath(new URL("../worker-extension.js", moduleUrl)),
+          fileURLToPath(
+            new URL("../../dist/src/worker-extension.js", moduleUrl)
+          ),
+        ]
+      : [options.explicitPath];
   const cwd = options.cwd ?? process.cwd();
   const validationPaths = candidates.map((candidate) =>
-    isAbsolute(candidate) ? candidate : resolve(cwd, candidate));
+    isAbsolute(candidate) ? candidate : resolve(cwd, candidate)
+  );
   for (const [index, validationPath] of validationPaths.entries()) {
     try {
       if (isRegularFile(validationPath)) return candidates[index]!;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(`Pions Worker extension entry cannot be inspected at ${validationPath}: ${reason}`);
+      throw new Error(
+        `Pions Worker extension entry cannot be inspected at ${validationPath}: ${reason}`,
+        {
+          cause: error,
+        }
+      );
     }
   }
-  throw new Error(`Pions Worker extension entry is unavailable: ${validationPaths.join(", ")}`);
+  throw new Error(
+    `Pions Worker extension entry is unavailable: ${validationPaths.join(", ")}`
+  );
 }

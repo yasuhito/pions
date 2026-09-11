@@ -2,7 +2,9 @@ import type { RevisionSeriesId } from "../public.js";
 
 const PREFIX = "pions.revision-series.v1:";
 
-export function revisionSeriesId(seriesOriginOperationId: string): RevisionSeriesId {
+export function revisionSeriesId(
+  seriesOriginOperationId: string
+): RevisionSeriesId {
   return `${PREFIX}${seriesOriginOperationId}`;
 }
 

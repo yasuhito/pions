@@ -59,16 +59,22 @@ export class ProtocolViolation extends Error {
 
   constructor(
     readonly reason: ProtocolViolationReason,
-    message: string,
+    message: string
   ) {
     super(message);
   }
 }
 
 const CapabilitySchema = Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64,}$/u));
-const ProcessInstanceIdSchema = Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/u));
-const DigestSchema = Schema.String.pipe(Schema.pattern(/^sha256:[0-9a-f]{64}$/u));
-const IdentifierSchema = Schema.String.pipe(Schema.pattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u));
+const ProcessInstanceIdSchema = Schema.String.pipe(
+  Schema.pattern(/^[0-9a-f]{64}$/u)
+);
+const DigestSchema = Schema.String.pipe(
+  Schema.pattern(/^sha256:[0-9a-f]{64}$/u)
+);
+const IdentifierSchema = Schema.String.pipe(
+  Schema.pattern(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u)
+);
 
 const CommonWorkerFrameFields = {
   protocolVersion: Schema.Number,
@@ -99,7 +105,7 @@ const ConfigurationFailedSchema = Schema.Struct({
     "model_not_found",
     "model_auth_unavailable",
     "unsupported_capability",
-    "tool_policy_violation",
+    "tool_policy_violation"
   ),
 });
 const ArtifactBeginSchema = Schema.Struct({
@@ -162,7 +168,9 @@ const CancelledSchema = Schema.Struct({
 const AcknowledgementSchema = Schema.Struct({
   protocolVersion: Schema.Number,
   operationId: Schema.NonEmptyString,
-  acceptanceId: Schema.String.pipe(Schema.pattern(/^pions\.result-acceptance\.v1:[0-9a-f]{64}$/u)),
+  acceptanceId: Schema.String.pipe(
+    Schema.pattern(/^pions\.result-acceptance\.v1:[0-9a-f]{64}$/u)
+  ),
   manifestDigest: DigestSchema,
   eventSequenceNumber: Schema.Number,
   type: Schema.Literal("ack"),
@@ -200,7 +208,7 @@ const BeginRejectionReasonSchema = Schema.Literal(
   "worker_mismatch",
   "expired",
   "stale_generation",
-  "acceptance_unknown",
+  "acceptance_unknown"
 );
 const BeginRejectionSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
@@ -271,16 +279,20 @@ export interface StartInstructionAcceptanceStore {
   saveDeliveryAuthority(authority: Readonly<DurableDeliveryAuthority>): boolean;
 }
 
-export type BeginRejectionReason = Schema.Schema.Type<typeof BeginRejectionReasonSchema>;
+export type BeginRejectionReason = Schema.Schema.Type<
+  typeof BeginRejectionReasonSchema
+>;
 export type StartAcceptanceState = "not_accepted" | "accepted" | "unknown";
 
 export interface WorkerProtocolReception {
   readonly acknowledgementsComplete: boolean;
   readonly cancellationRequested?: true;
-  readonly startInstructions: ReadonlyArray<Readonly<{
-    readonly status: "accepted" | "duplicate" | BeginRejectionReason;
-    readonly instruction: Readonly<StartInstruction>;
-  }>>;
+  readonly startInstructions: ReadonlyArray<
+    Readonly<{
+      readonly status: "accepted" | "duplicate" | BeginRejectionReason;
+      readonly instruction: Readonly<StartInstruction>;
+    }>
+  >;
   readonly observedStartAcceptances: ReadonlyArray<Readonly<StartInstruction>>;
   readonly generationUpdate?: Readonly<{
     readonly deliveryGeneration: number;
@@ -354,9 +366,18 @@ export type WorkerProtocolEvent =
       readonly result: Readonly<WorkerProducedResult>;
     }
   | ({ readonly type: "done" } & Readonly<AgentRunEvidence>)
-  | ({ readonly type: "failed"; readonly errorMessage: string } & Readonly<AgentRunEvidence>)
-  | { readonly type: "begin_accepted"; readonly instruction: Readonly<StartInstruction> }
-  | { readonly type: "begin_ack"; readonly instruction: Readonly<StartInstruction> }
+  | ({
+      readonly type: "failed";
+      readonly errorMessage: string;
+    } & Readonly<AgentRunEvidence>)
+  | {
+      readonly type: "begin_accepted";
+      readonly instruction: Readonly<StartInstruction>;
+    }
+  | {
+      readonly type: "begin_ack";
+      readonly instruction: Readonly<StartInstruction>;
+    }
   | {
       readonly type: "begin_rejected";
       readonly instruction: Readonly<StartInstruction>;
@@ -372,7 +393,7 @@ export type WorkerProtocolEvent =
 
 function violation(
   reason: ProtocolViolationReason,
-  message: string,
+  message: string
 ): ProtocolViolation {
   return new ProtocolViolation(reason, message);
 }
@@ -400,7 +421,7 @@ function parseFrame(bytes: Buffer): unknown {
 function decodeShape<Decoded>(
   schema: Schema.Schema<Decoded>,
   value: unknown,
-  message: string,
+  message: string
 ): Decoded {
   try {
     return Schema.decodeUnknownSync(schema)(value);
@@ -411,14 +432,28 @@ function decodeShape<Decoded>(
 
 function validateSafePositiveInteger(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
-    throw violation("invalid_frame", `${field} must be a positive safe integer`);
+    throw violation(
+      "invalid_frame",
+      `${field} must be a positive safe integer`
+    );
   }
 }
 
-function validateStartInstruction(instruction: Readonly<StartInstruction>): void {
-  validateSafePositiveInteger(instruction.deliveryGeneration, "deliveryGeneration");
-  if (instruction.deadline !== undefined && !Number.isFinite(Date.parse(instruction.deadline))) {
-    throw violation("invalid_frame", "Start instruction deadline must be absolute");
+function validateStartInstruction(
+  instruction: Readonly<StartInstruction>
+): void {
+  validateSafePositiveInteger(
+    instruction.deliveryGeneration,
+    "deliveryGeneration"
+  );
+  if (
+    instruction.deadline !== undefined &&
+    !Number.isFinite(Date.parse(instruction.deadline))
+  ) {
+    throw violation(
+      "invalid_frame",
+      "Start instruction deadline must be absolute"
+    );
   }
 }
 
@@ -426,7 +461,7 @@ export function decodeStartInstruction(value: unknown): StartInstruction {
   const instruction = decodeShape(
     StartInstructionSchema,
     value,
-    "Stored Start instruction has an invalid shape",
+    "Stored Start instruction has an invalid shape"
   ) as StartInstruction;
   validateStartInstruction(instruction);
   return instruction;
@@ -439,14 +474,19 @@ function encode(value: unknown): Buffer {
 function sameSecret(expectedValue: string, actualValue: string): boolean {
   const expected = Buffer.from(expectedValue, "utf8");
   const actual = Buffer.from(actualValue, "utf8");
-  return expected.byteLength === actual.byteLength && timingSafeEqual(expected, actual);
+  return (
+    expected.byteLength === actual.byteLength &&
+    timingSafeEqual(expected, actual)
+  );
 }
 
 function completeLimits(overrides?: Partial<ProtocolLimits>): ProtocolLimits {
   const limits = { ...DEFAULT_PROTOCOL_LIMITS, ...overrides };
   for (const [name, value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value < 1) {
-      throw new Error(`Worker protocol limit ${name} must be a positive safe integer`);
+      throw new Error(
+        `Worker protocol limit ${name} must be a positive safe integer`
+      );
     }
   }
   return Object.freeze(limits);
@@ -463,10 +503,16 @@ class ArtifactBudget {
       throw violation("artifact_too_large", "Artifact exceeds its size limit");
     }
     if (this.bytes + bodyBytes > this.limits.sessionArtifactBytes) {
-      throw violation("session_artifact_too_large", "Artifact transfer exceeds its session size limit");
+      throw violation(
+        "session_artifact_too_large",
+        "Artifact transfer exceeds its session size limit"
+      );
     }
     if (this.deliveries + 1 > this.limits.artifacts) {
-      throw violation("too_many_artifacts", "Artifact transfer exceeds its count limit");
+      throw violation(
+        "too_many_artifacts",
+        "Artifact transfer exceeds its count limit"
+      );
     }
     return bodyBytes;
   }
@@ -488,9 +534,14 @@ abstract class FramedPeer {
 
   protected encodeFrame(value: unknown, firstFrame = false): Buffer {
     const bytes = encode(value);
-    const limit = firstFrame ? this.limits.firstFrameBytes : this.limits.frameBytes;
+    const limit = firstFrame
+      ? this.limits.firstFrameBytes
+      : this.limits.frameBytes;
     if (bytes.byteLength - 1 > limit) {
-      throw violation("frame_too_large", "Worker protocol frame exceeds its size limit");
+      throw violation(
+        "frame_too_large",
+        "Worker protocol frame exceeds its size limit"
+      );
     }
     return bytes;
   }
@@ -498,7 +549,7 @@ abstract class FramedPeer {
   protected acceptBytes(
     bytes: Buffer,
     firstFrame: boolean,
-    acceptFrame: (frame: Buffer) => void,
+    acceptFrame: (frame: Buffer) => void
   ): void {
     let offset = 0;
     let first = firstFrame;
@@ -506,19 +557,26 @@ abstract class FramedPeer {
       const newline = bytes.indexOf(0x0a, offset);
       const end = newline < 0 ? bytes.byteLength : newline;
       const fragment = bytes.subarray(offset, end);
-      const limit = first ? this.limits.firstFrameBytes : this.limits.frameBytes;
+      const limit = first
+        ? this.limits.firstFrameBytes
+        : this.limits.frameBytes;
       if (this.buffered.byteLength + fragment.byteLength > limit) {
-        throw violation("frame_too_large", "Worker protocol frame exceeds its size limit");
+        throw violation(
+          "frame_too_large",
+          "Worker protocol frame exceeds its size limit"
+        );
       }
       if (newline < 0) {
-        this.buffered = this.buffered.byteLength === 0
-          ? Buffer.from(fragment)
-          : Buffer.concat([this.buffered, fragment]);
+        this.buffered =
+          this.buffered.byteLength === 0
+            ? Buffer.from(fragment)
+            : Buffer.concat([this.buffered, fragment]);
         return;
       }
-      const frame = this.buffered.byteLength === 0
-        ? fragment
-        : Buffer.concat([this.buffered, fragment]);
+      const frame =
+        this.buffered.byteLength === 0
+          ? fragment
+          : Buffer.concat([this.buffered, fragment]);
       this.buffered = Buffer.alloc(0);
       acceptFrame(frame);
       first = false;
@@ -528,7 +586,10 @@ abstract class FramedPeer {
 
   protected requireFrameBoundary(): void {
     if (this.buffered.byteLength !== 0) {
-      throw violation("invalid_frame", "Worker protocol ended with an incomplete frame");
+      throw violation(
+        "invalid_frame",
+        "Worker protocol ended with an incomplete frame"
+      );
     }
   }
 }
@@ -549,19 +610,23 @@ export class HostProtocolPeer extends FramedPeer {
   private processStartToken = "";
   private readonly artifactBudget: ArtifactBudget;
   private bodyArtifact?: WorkerProducedResult["body"];
-  private readonly workProducts: Array<WorkerProducedResult["workProducts"][number]> = [];
-  private currentArtifact: {
-    readonly acceptanceRequestId: string;
-    readonly slot: "body" | "work_product";
-    readonly key?: string;
-    readonly index?: number;
-    readonly formatId: string;
-    readonly normalizationId: string;
-    readonly expectedByteCount: number;
-    readonly expectedDigest: `sha256:${string}`;
-    readonly chunks: Array<Buffer>;
-    receivedByteCount: number;
-  } | undefined;
+  private readonly workProducts: Array<
+    WorkerProducedResult["workProducts"][number]
+  > = [];
+  private currentArtifact:
+    | {
+        readonly acceptanceRequestId: string;
+        readonly slot: "body" | "work_product";
+        readonly key?: string;
+        readonly index?: number;
+        readonly formatId: string;
+        readonly normalizationId: string;
+        readonly expectedByteCount: number;
+        readonly expectedDigest: `sha256:${string}`;
+        readonly chunks: Array<Buffer>;
+        receivedByteCount: number;
+      }
+    | undefined;
   private acceptanceRequestId?: string;
   private acknowledgementPending = false;
   private acknowledgedProof?: Readonly<ResultAcceptanceProof>;
@@ -576,7 +641,7 @@ export class HostProtocolPeer extends FramedPeer {
 
   constructor(
     private readonly authority: Readonly<ProtocolAuthority>,
-    limits?: Partial<ProtocolLimits>,
+    limits?: Partial<ProtocolLimits>
   ) {
     const resolvedLimits = completeLimits(limits);
     super(resolvedLimits);
@@ -587,7 +652,10 @@ export class HostProtocolPeer extends FramedPeer {
     const events: Array<HostProtocolEvent> = [];
     try {
       if (this.state === "failed" || this.state === "done") {
-        throw violation("invalid_transition", "Worker protocol session is already terminal");
+        throw violation(
+          "invalid_transition",
+          "Worker protocol session is already terminal"
+        );
       }
       this.acceptBytes(bytes, this.state === "awaiting_hello", (frame) => {
         const event = this.acceptFrame(frame);
@@ -606,20 +674,35 @@ export class HostProtocolPeer extends FramedPeer {
       this.state = "failed";
       throw violation(
         "incomplete_session",
-        "Worker protocol disconnected before delivering a Result",
+        "Worker protocol disconnected before delivering a Result"
       );
     }
   }
 
   begin(instruction: Readonly<StartInstruction>): Buffer {
-    if (this.activeDispatcherId !== undefined && instruction.dispatcherId !== this.activeDispatcherId) {
-      throw violation("authority_mismatch", "Dispatcher does not hold Start delivery authority");
+    if (
+      this.activeDispatcherId !== undefined &&
+      instruction.dispatcherId !== this.activeDispatcherId
+    ) {
+      throw violation(
+        "authority_mismatch",
+        "Dispatcher does not hold Start delivery authority"
+      );
     }
     if (this.state !== "awaiting_begin" && this.state !== "receiving_results") {
-      throw violation("invalid_transition", "Worker execution cannot begin before identification");
+      throw violation(
+        "invalid_transition",
+        "Worker execution cannot begin before identification"
+      );
     }
-    if (this.startInstruction !== undefined && !isDeepStrictEqual(this.startInstruction, instruction)) {
-      throw violation("invalid_transition", "A different Start instruction cannot replace the dispatched instruction");
+    if (
+      this.startInstruction !== undefined &&
+      !isDeepStrictEqual(this.startInstruction, instruction)
+    ) {
+      throw violation(
+        "invalid_transition",
+        "A different Start instruction cannot replace the dispatched instruction"
+      );
     }
     validateStartInstruction(instruction);
     this.activeDispatcherId ??= instruction.dispatcherId;
@@ -630,8 +713,14 @@ export class HostProtocolPeer extends FramedPeer {
   }
 
   restoreStartDelivery(instruction: Readonly<StartInstruction>): void {
-    if (this.state !== "awaiting_hello" || this.startInstruction !== undefined) {
-      throw violation("invalid_transition", "Start delivery can only be restored before Worker reconnection");
+    if (
+      this.state !== "awaiting_hello" ||
+      this.startInstruction !== undefined
+    ) {
+      throw violation(
+        "invalid_transition",
+        "Start delivery can only be restored before Worker reconnection"
+      );
     }
     validateStartInstruction(instruction);
     this.startInstruction = { ...instruction };
@@ -647,7 +736,7 @@ export class HostProtocolPeer extends FramedPeer {
     ) {
       throw violation(
         "invalid_transition",
-        "Dispatcher handoff requires Worker generation confirmation",
+        "Dispatcher handoff requires Worker generation confirmation"
       );
     }
     this.activeDispatcherId = nextDispatcherId;
@@ -658,29 +747,49 @@ export class HostProtocolPeer extends FramedPeer {
     }
   }
 
-  acknowledgeStartInstructionAcceptance(instruction: Readonly<StartInstruction>): Buffer {
+  acknowledgeStartInstructionAcceptance(
+    instruction: Readonly<StartInstruction>
+  ): Buffer {
     if (
       this.acceptedStartInstruction === undefined ||
       !isDeepStrictEqual(instruction, this.acceptedStartInstruction) ||
       this.pendingStartAcceptanceObservations === 0
     ) {
-      throw violation("invalid_transition", "Start acceptance cannot be acknowledged before observation");
+      throw violation(
+        "invalid_transition",
+        "Start acceptance cannot be acknowledged before observation"
+      );
     }
     this.pendingStartAcceptanceObservations -= 1;
     this.pendingStartAcknowledgements += 1;
     return this.encodeHostFrame("begin_acceptance_observed", { instruction });
   }
 
-  updateDeliveryGeneration(deliveryGeneration: number, dispatcherId: string): Buffer {
+  updateDeliveryGeneration(
+    deliveryGeneration: number,
+    dispatcherId: string
+  ): Buffer {
     validateSafePositiveInteger(deliveryGeneration, "deliveryGeneration");
-    if (deliveryGeneration <= this.confirmedDeliveryGeneration || this.pendingDeliveryGeneration !== undefined) {
-      throw violation("invalid_transition", "A newer delivery generation is already confirmed or pending");
+    if (
+      deliveryGeneration <= this.confirmedDeliveryGeneration ||
+      this.pendingDeliveryGeneration !== undefined
+    ) {
+      throw violation(
+        "invalid_transition",
+        "A newer delivery generation is already confirmed or pending"
+      );
     }
     if (dispatcherId.length === 0) {
-      throw violation("invalid_frame", "Successor Dispatcher identity is required");
+      throw violation(
+        "invalid_frame",
+        "Successor Dispatcher identity is required"
+      );
     }
     this.pendingDeliveryGeneration = deliveryGeneration;
-    return this.encodeHostFrame("delivery_generation_update", { dispatcherId, deliveryGeneration });
+    return this.encodeHostFrame("delivery_generation_update", {
+      dispatcherId,
+      deliveryGeneration,
+    });
   }
 
   requestCancellation(): Buffer | undefined {
@@ -689,7 +798,8 @@ export class HostProtocolPeer extends FramedPeer {
       this.state === "cancelling" ||
       this.state === "failed" ||
       this.state === "done"
-    ) return undefined;
+    )
+      return undefined;
     const bytes = this.encodeHostFrame("cancel", {
       ...(this.activeDispatcherId === undefined
         ? {}
@@ -707,19 +817,27 @@ export class HostProtocolPeer extends FramedPeer {
     readonly complete: boolean;
   } {
     if (this.state !== "done") {
-      throw violation("invalid_transition", "Result cannot be acknowledged before reception completes");
+      throw violation(
+        "invalid_transition",
+        "Result cannot be acknowledged before reception completes"
+      );
     }
     if (acceptance.operationId !== this.authority.operationId) {
-      throw violation("unexpected_acknowledgement", "Result acceptance belongs to another Operation");
-    }
-    if (!this.acknowledgementPending && (
-      this.acknowledgedProof?.acceptanceId !== acceptance.acceptanceId ||
-      this.acknowledgedProof.manifestDigest !== acceptance.manifestDigest ||
-      this.acknowledgedProof.eventSequenceNumber !== acceptance.eventSequenceNumber
-    )) {
       throw violation(
         "unexpected_acknowledgement",
-        "Result acknowledgement does not match a received delivery",
+        "Result acceptance belongs to another Operation"
+      );
+    }
+    if (
+      !this.acknowledgementPending &&
+      (this.acknowledgedProof?.acceptanceId !== acceptance.acceptanceId ||
+        this.acknowledgedProof.manifestDigest !== acceptance.manifestDigest ||
+        this.acknowledgedProof.eventSequenceNumber !==
+          acceptance.eventSequenceNumber)
+    ) {
+      throw violation(
+        "unexpected_acknowledgement",
+        "Result acknowledgement does not match a received delivery"
       );
     }
     const bytes = this.encodeFrame({
@@ -736,8 +854,12 @@ export class HostProtocolPeer extends FramedPeer {
   }
 
   private encodeHostFrame(
-    type: "begin" | "begin_acceptance_observed" | "cancel" | "delivery_generation_update",
-    fields: Readonly<Record<string, unknown>> = {},
+    type:
+      | "begin"
+      | "begin_acceptance_observed"
+      | "cancel"
+      | "delivery_generation_update",
+    fields: Readonly<Record<string, unknown>> = {}
   ): Buffer {
     const bytes = this.encodeFrame({
       protocolVersion: WORKER_PROTOCOL_VERSION,
@@ -757,7 +879,10 @@ export class HostProtocolPeer extends FramedPeer {
 
   private acceptFrame(bytes: Buffer): HostProtocolEvent | undefined {
     if (this.state === "done") {
-      throw violation("invalid_transition", "Worker protocol sent a frame after completion");
+      throw violation(
+        "invalid_transition",
+        "Worker protocol sent a frame after completion"
+      );
     }
     const value = parseFrame(bytes);
     validateProtocolVersion(value, "Worker protocol");
@@ -767,7 +892,7 @@ export class HostProtocolPeer extends FramedPeer {
       const hello = decodeShape(
         HelloSchema,
         value,
-        "Worker protocol frame has an invalid shape",
+        "Worker protocol frame has an invalid shape"
       );
       this.validateCommon(hello, true);
       this.state = "awaiting_started";
@@ -777,7 +902,7 @@ export class HostProtocolPeer extends FramedPeer {
       const started = decodeShape(
         StartedSchema,
         value,
-        "Worker protocol frame has an invalid shape",
+        "Worker protocol frame has an invalid shape"
       );
       this.validateCommon(started);
       if (this.state !== "awaiting_started") {
@@ -797,11 +922,14 @@ export class HostProtocolPeer extends FramedPeer {
       const failed = decodeShape(
         ConfigurationFailedSchema,
         value,
-        "Worker configuration failure frame has an invalid shape",
+        "Worker configuration failure frame has an invalid shape"
       );
       this.validateCommon(failed);
       if (this.state !== "awaiting_started") {
-        throw violation("invalid_transition", "Configuration failure arrived after Worker start");
+        throw violation(
+          "invalid_transition",
+          "Configuration failure arrived after Worker start"
+        );
       }
       this.state = "done";
       return { type: "worker_configuration_failed", reason: failed.reason };
@@ -810,11 +938,14 @@ export class HostProtocolPeer extends FramedPeer {
       const cancelled = decodeShape(
         CancelledSchema,
         value,
-        "Worker cancellation frame has an invalid shape",
+        "Worker cancellation frame has an invalid shape"
       );
       this.validateCommon(cancelled);
       if (this.state !== "cancelling") {
-        throw violation("invalid_transition", "Worker cancellation arrived without a host request");
+        throw violation(
+          "invalid_transition",
+          "Worker cancellation arrived without a host request"
+        );
       }
       this.state = "done";
       return { type: "worker_cancelled" };
@@ -823,19 +954,28 @@ export class HostProtocolPeer extends FramedPeer {
       const acknowledgement = decodeShape(
         GenerationUpdatedSchema,
         value,
-        "Worker generation acknowledgement has an invalid shape",
+        "Worker generation acknowledgement has an invalid shape"
       );
       this.validateCommon(acknowledgement);
-      validateSafePositiveInteger(acknowledgement.deliveryGeneration, "deliveryGeneration");
+      validateSafePositiveInteger(
+        acknowledgement.deliveryGeneration,
+        "deliveryGeneration"
+      );
       if (
         acknowledgement.deliveryGeneration !== this.pendingDeliveryGeneration ||
         (acknowledgement.acceptanceState === "accepted") !==
           (acknowledgement.acceptedInstruction !== undefined) ||
-        acknowledgement.acceptedInstruction !== undefined &&
+        (acknowledgement.acceptedInstruction !== undefined &&
           this.startInstruction !== undefined &&
-          !isDeepStrictEqual(acknowledgement.acceptedInstruction, this.startInstruction)
+          !isDeepStrictEqual(
+            acknowledgement.acceptedInstruction,
+            this.startInstruction
+          ))
       ) {
-        throw violation("unexpected_acknowledgement", "Worker generation acknowledgement is inconsistent");
+        throw violation(
+          "unexpected_acknowledgement",
+          "Worker generation acknowledgement is inconsistent"
+        );
       }
       this.confirmedDeliveryGeneration = acknowledgement.deliveryGeneration;
       this.confirmedStartAcceptanceState = acknowledgement.acceptanceState;
@@ -849,14 +989,18 @@ export class HostProtocolPeer extends FramedPeer {
         acceptanceState: acknowledgement.acceptanceState,
         ...(acknowledgement.acceptedInstruction === undefined
           ? {}
-          : { acceptedInstruction: { ...acknowledgement.acceptedInstruction } as StartInstruction }),
+          : {
+              acceptedInstruction: {
+                ...acknowledgement.acceptedInstruction,
+              } as StartInstruction,
+            }),
       };
     }
     if (object.type === "begin_rejected") {
       const rejection = decodeShape(
         BeginRejectionSchema,
         value,
-        "Worker begin rejection has an invalid shape",
+        "Worker begin rejection has an invalid shape"
       );
       this.validateCommon(rejection);
       if (
@@ -864,7 +1008,10 @@ export class HostProtocolPeer extends FramedPeer {
         this.startInstruction === undefined ||
         !isDeepStrictEqual(rejection.instruction, this.startInstruction)
       ) {
-        throw violation("unexpected_acknowledgement", "Begin rejection does not match the dispatched instruction");
+        throw violation(
+          "unexpected_acknowledgement",
+          "Begin rejection does not match the dispatched instruction"
+        );
       }
       return {
         type: "start_instruction_rejected",
@@ -876,7 +1023,7 @@ export class HostProtocolPeer extends FramedPeer {
       const acceptance = decodeShape(
         BeginAcceptanceSchema,
         value,
-        "Worker begin acceptance has an invalid shape",
+        "Worker begin acceptance has an invalid shape"
       );
       this.validateCommon(acceptance);
       if (
@@ -884,9 +1031,14 @@ export class HostProtocolPeer extends FramedPeer {
         this.startInstruction === undefined ||
         !isDeepStrictEqual(acceptance.instruction, this.startInstruction)
       ) {
-        throw violation("unexpected_acknowledgement", "Begin acceptance does not match the dispatched instruction");
+        throw violation(
+          "unexpected_acknowledgement",
+          "Begin acceptance does not match the dispatched instruction"
+        );
       }
-      this.acceptedStartInstruction = { ...acceptance.instruction } as StartInstruction;
+      this.acceptedStartInstruction = {
+        ...acceptance.instruction,
+      } as StartInstruction;
       this.pendingStartAcceptanceObservations += 1;
       return {
         type: "start_instruction_accepted",
@@ -897,16 +1049,22 @@ export class HostProtocolPeer extends FramedPeer {
       const acknowledgement = decodeShape(
         BeginAcknowledgementSchema,
         value,
-        "Worker begin acknowledgement has an invalid shape",
+        "Worker begin acknowledgement has an invalid shape"
       );
       this.validateCommon(acknowledgement);
       if (
         this.state !== "receiving_results" ||
         this.acceptedStartInstruction === undefined ||
         this.pendingStartAcknowledgements === 0 ||
-        !isDeepStrictEqual(acknowledgement.instruction, this.acceptedStartInstruction)
+        !isDeepStrictEqual(
+          acknowledgement.instruction,
+          this.acceptedStartInstruction
+        )
       ) {
-        throw violation("unexpected_acknowledgement", "Begin acknowledgement does not match the accepted instruction");
+        throw violation(
+          "unexpected_acknowledgement",
+          "Begin acknowledgement does not match the accepted instruction"
+        );
       }
       this.pendingStartAcknowledgements -= 1;
       return {
@@ -915,21 +1073,42 @@ export class HostProtocolPeer extends FramedPeer {
       };
     }
     if (object.type === "artifact_begin") {
-      const begin = decodeShape(ArtifactBeginSchema, value, "Artifact begin frame has an invalid shape");
+      const begin = decodeShape(
+        ArtifactBeginSchema,
+        value,
+        "Artifact begin frame has an invalid shape"
+      );
       this.validateCommon(begin);
-      if (this.state !== "receiving_results" || this.currentArtifact !== undefined) {
-        throw violation("invalid_transition", "Artifact began outside result reception");
+      if (
+        this.state !== "receiving_results" ||
+        this.currentArtifact !== undefined
+      ) {
+        throw violation(
+          "invalid_transition",
+          "Artifact began outside result reception"
+        );
       }
-      if (!Number.isSafeInteger(begin.expectedByteCount) || begin.expectedByteCount < 0 ||
-          begin.slot === "body" && (begin.key !== undefined || begin.index !== undefined) ||
-          begin.slot === "work_product" && (
-            begin.key === undefined || begin.key.length === 0 ||
-            !Number.isSafeInteger(begin.index) || begin.index !== this.workProducts.length
-          )) {
+      if (
+        !Number.isSafeInteger(begin.expectedByteCount) ||
+        begin.expectedByteCount < 0 ||
+        (begin.slot === "body" &&
+          (begin.key !== undefined || begin.index !== undefined)) ||
+        (begin.slot === "work_product" &&
+          (begin.key === undefined ||
+            begin.key.length === 0 ||
+            !Number.isSafeInteger(begin.index) ||
+            begin.index !== this.workProducts.length))
+      ) {
         throw violation("invalid_frame", "Artifact slot is invalid");
       }
-      if (this.acceptanceRequestId !== undefined && this.acceptanceRequestId !== begin.acceptanceRequestId) {
-        throw violation("invalid_transition", "Acceptance request changed during transfer");
+      if (
+        this.acceptanceRequestId !== undefined &&
+        this.acceptanceRequestId !== begin.acceptanceRequestId
+      ) {
+        throw violation(
+          "invalid_transition",
+          "Acceptance request changed during transfer"
+        );
       }
       this.artifactBudget.check(begin.expectedByteCount);
       this.acceptanceRequestId = begin.acceptanceRequestId;
@@ -948,30 +1127,65 @@ export class HostProtocolPeer extends FramedPeer {
       return undefined;
     }
     if (object.type === "artifact_chunk") {
-      const chunk = decodeShape(ArtifactChunkSchema, value, "Artifact chunk frame has an invalid shape");
+      const chunk = decodeShape(
+        ArtifactChunkSchema,
+        value,
+        "Artifact chunk frame has an invalid shape"
+      );
       this.validateCommon(chunk);
-      if (this.state !== "receiving_results" || this.currentArtifact === undefined ||
-          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(chunk.payload)) {
-        throw violation("invalid_transition", "Artifact chunk arrived without an active artifact");
+      if (
+        this.state !== "receiving_results" ||
+        this.currentArtifact === undefined ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+          chunk.payload
+        )
+      ) {
+        throw violation(
+          "invalid_transition",
+          "Artifact chunk arrived without an active artifact"
+        );
       }
       const chunkBytes = Buffer.from(chunk.payload, "base64");
       this.currentArtifact.receivedByteCount += chunkBytes.byteLength;
-      if (this.currentArtifact.receivedByteCount > this.currentArtifact.expectedByteCount) {
-        throw violation("artifact_too_large", "Artifact chunks exceed the declared size");
+      if (
+        this.currentArtifact.receivedByteCount >
+        this.currentArtifact.expectedByteCount
+      ) {
+        throw violation(
+          "artifact_too_large",
+          "Artifact chunks exceed the declared size"
+        );
       }
       this.currentArtifact.chunks.push(chunkBytes);
       return undefined;
     }
     if (object.type === "artifact_commit") {
-      const commit = decodeShape(ArtifactCommitSchema, value, "Artifact commit frame has an invalid shape");
+      const commit = decodeShape(
+        ArtifactCommitSchema,
+        value,
+        "Artifact commit frame has an invalid shape"
+      );
       this.validateCommon(commit);
       const artifact = this.currentArtifact;
-      if (this.state !== "receiving_results" || artifact === undefined || commit.expectedDigest !== artifact.expectedDigest) {
-        throw violation("invalid_transition", "Artifact commit does not match an active artifact");
+      if (
+        this.state !== "receiving_results" ||
+        artifact === undefined ||
+        commit.expectedDigest !== artifact.expectedDigest
+      ) {
+        throw violation(
+          "invalid_transition",
+          "Artifact commit does not match an active artifact"
+        );
       }
       const bytes = Buffer.concat(artifact.chunks);
-      if (bytes.byteLength !== artifact.expectedByteCount || sha256Digest(bytes) !== artifact.expectedDigest) {
-        throw violation("digest_mismatch", "Artifact bytes do not match their declaration");
+      if (
+        bytes.byteLength !== artifact.expectedByteCount ||
+        sha256Digest(bytes) !== artifact.expectedDigest
+      ) {
+        throw violation(
+          "digest_mismatch",
+          "Artifact bytes do not match their declaration"
+        );
       }
       this.artifactBudget.accept(bytes.byteLength);
       const produced = {
@@ -982,7 +1196,11 @@ export class HostProtocolPeer extends FramedPeer {
         bytes,
       };
       if (artifact.slot === "body") {
-        if (this.bodyArtifact !== undefined) throw violation("invalid_transition", "Result body was sent more than once");
+        if (this.bodyArtifact !== undefined)
+          throw violation(
+            "invalid_transition",
+            "Result body was sent more than once"
+          );
         this.bodyArtifact = produced;
       } else {
         if (artifact.key === undefined) {
@@ -994,11 +1212,22 @@ export class HostProtocolPeer extends FramedPeer {
       return undefined;
     }
     if (object.type === "result_manifest") {
-      const manifest = decodeShape(ResultManifestSchema, value, "Result manifest frame has an invalid shape");
+      const manifest = decodeShape(
+        ResultManifestSchema,
+        value,
+        "Result manifest frame has an invalid shape"
+      );
       this.validateCommon(manifest);
-      if (this.state !== "receiving_results" || this.currentArtifact !== undefined || this.bodyArtifact === undefined ||
-          manifest.acceptanceRequestId !== this.acceptanceRequestId) {
-        throw violation("invalid_transition", "Result manifest arrived before all artifacts");
+      if (
+        this.state !== "receiving_results" ||
+        this.currentArtifact !== undefined ||
+        this.bodyArtifact === undefined ||
+        manifest.acceptanceRequestId !== this.acceptanceRequestId
+      ) {
+        throw violation(
+          "invalid_transition",
+          "Result manifest arrived before all artifacts"
+        );
       }
       this.acknowledgementPending = true;
       return undefined;
@@ -1007,11 +1236,17 @@ export class HostProtocolPeer extends FramedPeer {
       const failed = decodeShape(
         FailedSchema,
         value,
-        "Worker protocol frame has an invalid shape",
+        "Worker protocol frame has an invalid shape"
       );
       this.validateCommon(failed);
-      if (this.state !== "receiving_results" || this.bodyArtifact !== undefined) {
-        throw violation("invalid_transition", "Worker failure arrived outside an active Pi run");
+      if (
+        this.state !== "receiving_results" ||
+        this.bodyArtifact !== undefined
+      ) {
+        throw violation(
+          "invalid_transition",
+          "Worker failure arrived outside an active Pi run"
+        );
       }
       this.state = "done";
       return {
@@ -1027,12 +1262,19 @@ export class HostProtocolPeer extends FramedPeer {
       const done = decodeShape(
         DoneSchema,
         value,
-        "Worker protocol frame has an invalid shape",
+        "Worker protocol frame has an invalid shape"
       );
       this.validateCommon(done);
-      if (this.state !== "receiving_results" || this.bodyArtifact === undefined ||
-          this.acceptanceRequestId === undefined || !this.acknowledgementPending) {
-        throw violation("invalid_transition", "Worker finished without a Result manifest");
+      if (
+        this.state !== "receiving_results" ||
+        this.bodyArtifact === undefined ||
+        this.acceptanceRequestId === undefined ||
+        !this.acknowledgementPending
+      ) {
+        throw violation(
+          "invalid_transition",
+          "Worker finished without a Result manifest"
+        );
       }
       this.state = "done";
       return {
@@ -1060,22 +1302,34 @@ export class HostProtocolPeer extends FramedPeer {
       readonly processInstanceId?: string;
       readonly processStartToken?: string;
     },
-    hello = false,
+    hello = false
   ): void {
     if (
       frame.operationId !== this.authority.operationId ||
       !sameSecret(this.authority.capability, frame.capability)
     ) {
-      throw violation("authority_mismatch", "Worker protocol authority does not match the Operation");
+      throw violation(
+        "authority_mismatch",
+        "Worker protocol authority does not match the Operation"
+      );
     }
     validateSafePositiveInteger(frame.sequenceNumber, "sequenceNumber");
     if (frame.sequenceNumber !== this.lastSequenceNumber + 1) {
-      throw violation("sequence_mismatch", "Worker protocol sequence is stale or out of order");
+      throw violation(
+        "sequence_mismatch",
+        "Worker protocol sequence is stale or out of order"
+      );
     }
     this.lastSequenceNumber = frame.sequenceNumber;
     if (hello) {
-      if (!Number.isSafeInteger(frame.processId) || (frame.processId ?? 0) < 1) {
-        throw violation("invalid_frame", "processId must be a positive safe integer");
+      if (
+        !Number.isSafeInteger(frame.processId) ||
+        (frame.processId ?? 0) < 1
+      ) {
+        throw violation(
+          "invalid_frame",
+          "processId must be a positive safe integer"
+        );
       }
       this.processId = frame.processId ?? 0;
       this.processInstanceId = frame.processInstanceId ?? "";
@@ -1113,7 +1367,7 @@ export class WorkerProtocolPeer extends FramedPeer {
     private readonly authority: Readonly<ProtocolAuthority>,
     private readonly startAcceptanceStore: Readonly<StartInstructionAcceptanceStore>,
     limits?: Partial<ProtocolLimits>,
-    private readonly now: () => string = () => new Date().toISOString(),
+    private readonly now: () => string = () => new Date().toISOString()
   ) {
     const resolvedLimits = completeLimits(limits);
     super(resolvedLimits);
@@ -1125,13 +1379,22 @@ export class WorkerProtocolPeer extends FramedPeer {
       case "hello": {
         if (this.state !== "new") return this.invalidSend(event.type);
         if (!Number.isSafeInteger(event.processId) || event.processId < 1) {
-          throw violation("invalid_frame", "processId must be a positive safe integer");
+          throw violation(
+            "invalid_frame",
+            "processId must be a positive safe integer"
+          );
         }
         if (!/^[0-9a-f]{64}$/u.test(event.processInstanceId)) {
-          throw violation("invalid_frame", "processInstanceId has an invalid shape");
+          throw violation(
+            "invalid_frame",
+            "processInstanceId has an invalid shape"
+          );
         }
         if (event.processStartToken.length === 0) {
-          throw violation("invalid_frame", "processStartToken must not be empty");
+          throw violation(
+            "invalid_frame",
+            "processStartToken must not be empty"
+          );
         }
         const bytes = this.encodeWorkerFrame({
           type: "hello",
@@ -1166,10 +1429,16 @@ export class WorkerProtocolPeer extends FramedPeer {
         return bytes;
       }
       case "generation_updated": {
-        if (event.deliveryGeneration !== this.deliveryGeneration ||
-            (event.acceptanceState === "accepted") !== (event.acceptedInstruction !== undefined) ||
-            event.acceptedInstruction !== undefined &&
-              !isDeepStrictEqual(event.acceptedInstruction, this.acceptedStartInstruction)) {
+        if (
+          event.deliveryGeneration !== this.deliveryGeneration ||
+          (event.acceptanceState === "accepted") !==
+            (event.acceptedInstruction !== undefined) ||
+          (event.acceptedInstruction !== undefined &&
+            !isDeepStrictEqual(
+              event.acceptedInstruction,
+              this.acceptedStartInstruction
+            ))
+        ) {
           return this.invalidSend(event.type);
         }
         return this.encodeWorkerFrame({
@@ -1182,20 +1451,30 @@ export class WorkerProtocolPeer extends FramedPeer {
         });
       }
       case "begin_accepted": {
-        if (this.state !== "running" ||
-            this.acceptedStartInstruction === undefined ||
-            !isDeepStrictEqual(event.instruction, this.acceptedStartInstruction)) {
+        if (
+          this.state !== "running" ||
+          this.acceptedStartInstruction === undefined ||
+          !isDeepStrictEqual(event.instruction, this.acceptedStartInstruction)
+        ) {
           return this.invalidSend(event.type);
         }
-        return this.encodeWorkerFrame({ type: "begin_accepted", instruction: event.instruction });
+        return this.encodeWorkerFrame({
+          type: "begin_accepted",
+          instruction: event.instruction,
+        });
       }
       case "begin_ack": {
-        if (this.state !== "running" ||
-            this.acceptedStartInstruction === undefined ||
-            !isDeepStrictEqual(event.instruction, this.acceptedStartInstruction)) {
+        if (
+          this.state !== "running" ||
+          this.acceptedStartInstruction === undefined ||
+          !isDeepStrictEqual(event.instruction, this.acceptedStartInstruction)
+        ) {
           return this.invalidSend(event.type);
         }
-        return this.encodeWorkerFrame({ type: "begin_ack", instruction: event.instruction });
+        return this.encodeWorkerFrame({
+          type: "begin_ack",
+          instruction: event.instruction,
+        });
       }
       case "begin_rejected": {
         if (this.state !== "ready" && this.state !== "running") {
@@ -1209,48 +1488,67 @@ export class WorkerProtocolPeer extends FramedPeer {
       }
       case "artifacts": {
         if (this.state !== "running") return this.invalidSend(event.type);
-        if (Symbol.asyncIterator in Object(event.result.body.bytes) ||
-            event.result.workProducts.some((entry) => Symbol.asyncIterator in Object(entry.bytes))) {
-          throw violation("invalid_frame", "Worker protocol artifacts must be finite byte arrays");
+        if (
+          Symbol.asyncIterator in Object(event.result.body.bytes) ||
+          event.result.workProducts.some(
+            (entry) => Symbol.asyncIterator in Object(entry.bytes)
+          )
+        ) {
+          throw violation(
+            "invalid_frame",
+            "Worker protocol artifacts must be finite byte arrays"
+          );
         }
         const frames: Array<Buffer> = [];
         const append = (
           artifact: WorkerProducedResult["body"],
           slot: "body" | "work_product",
           key?: string,
-          index?: number,
+          index?: number
         ) => {
           const bytes = Buffer.from(artifact.bytes as Uint8Array);
           this.artifactBudget.accept(bytes.byteLength);
-          frames.push(this.encodeWorkerFrame({
-            type: "artifact_begin",
-            acceptanceRequestId: event.result.acceptanceRequestId,
-            slot,
-            ...(key === undefined ? {} : { key }),
-            ...(index === undefined ? {} : { index }),
-            formatId: artifact.formatId,
-            normalizationId: artifact.normalizationId,
-            expectedByteCount: artifact.expectedByteCount,
-            expectedDigest: artifact.expectedDigest,
-          }));
+          frames.push(
+            this.encodeWorkerFrame({
+              type: "artifact_begin",
+              acceptanceRequestId: event.result.acceptanceRequestId,
+              slot,
+              ...(key === undefined ? {} : { key }),
+              ...(index === undefined ? {} : { index }),
+              formatId: artifact.formatId,
+              normalizationId: artifact.normalizationId,
+              expectedByteCount: artifact.expectedByteCount,
+              expectedDigest: artifact.expectedDigest,
+            })
+          );
           const maxChunk = Math.max(1, Math.floor(this.limits.frameBytes / 2));
           for (let offset = 0; offset < bytes.byteLength; offset += maxChunk) {
-            frames.push(this.encodeWorkerFrame({
-              type: "artifact_chunk",
-              payload: bytes.subarray(offset, offset + maxChunk).toString("base64"),
-            }));
+            frames.push(
+              this.encodeWorkerFrame({
+                type: "artifact_chunk",
+                payload: bytes
+                  .subarray(offset, offset + maxChunk)
+                  .toString("base64"),
+              })
+            );
           }
-          frames.push(this.encodeWorkerFrame({
-            type: "artifact_commit",
-            expectedDigest: artifact.expectedDigest,
-          }));
+          frames.push(
+            this.encodeWorkerFrame({
+              type: "artifact_commit",
+              expectedDigest: artifact.expectedDigest,
+            })
+          );
         };
         append(event.result.body, "body");
-        event.result.workProducts.forEach((artifact, index) => append(artifact, "work_product", artifact.key, index));
-        frames.push(this.encodeWorkerFrame({
-          type: "result_manifest",
-          acceptanceRequestId: event.result.acceptanceRequestId,
-        }));
+        event.result.workProducts.forEach((artifact, index) =>
+          append(artifact, "work_product", artifact.key, index)
+        );
+        frames.push(
+          this.encodeWorkerFrame({
+            type: "result_manifest",
+            acceptanceRequestId: event.result.acceptanceRequestId,
+          })
+        );
         this.acknowledgementPending = true;
         this.state = "delivering";
         return Buffer.concat(frames);
@@ -1287,7 +1585,9 @@ export class WorkerProtocolPeer extends FramedPeer {
 
   receive(bytes: Buffer): WorkerProtocolReception {
     try {
-      const startInstructions: Array<WorkerProtocolReception["startInstructions"][number]> = [];
+      const startInstructions: Array<
+        WorkerProtocolReception["startInstructions"][number]
+      > = [];
       const observedStartAcceptances: Array<Readonly<StartInstruction>> = [];
       let generationUpdate: WorkerProtocolReception["generationUpdate"];
       let cancellationRequested = false;
@@ -1299,28 +1599,38 @@ export class WorkerProtocolPeer extends FramedPeer {
           const begin = decodeShape(
             BeginRequestSchema,
             value,
-            "Worker begin request has an invalid shape",
+            "Worker begin request has an invalid shape"
           );
           this.validateHostControl(begin, "Begin");
           validateStartInstruction(begin.instruction as StartInstruction);
           const received = { ...begin.instruction } as StartInstruction;
-          const durableAuthority = this.startAcceptanceStore.loadDeliveryAuthority();
+          const durableAuthority =
+            this.startAcceptanceStore.loadDeliveryAuthority();
           if (durableAuthority === "unknown") {
-            startInstructions.push({ status: "acceptance_unknown", instruction: received });
+            startInstructions.push({
+              status: "acceptance_unknown",
+              instruction: received,
+            });
             return;
           }
           this.deliveryGeneration = durableAuthority.deliveryGeneration;
           this.deliveryDispatcherId = durableAuthority.dispatcherId;
           if (received.workerProcessInstanceId !== this.processInstanceId) {
-            startInstructions.push({ status: "worker_mismatch", instruction: received });
+            startInstructions.push({
+              status: "worker_mismatch",
+              instruction: received,
+            });
             return;
           }
           if (
             received.deliveryGeneration !== this.deliveryGeneration ||
-            this.deliveryDispatcherId !== undefined &&
-              received.dispatcherId !== this.deliveryDispatcherId
+            (this.deliveryDispatcherId !== undefined &&
+              received.dispatcherId !== this.deliveryDispatcherId)
           ) {
-            startInstructions.push({ status: "stale_generation", instruction: received });
+            startInstructions.push({
+              status: "stale_generation",
+              instruction: received,
+            });
             return;
           }
           if (this.acceptedStartInstruction !== undefined) {
@@ -1334,24 +1644,35 @@ export class WorkerProtocolPeer extends FramedPeer {
           }
           const storedAcceptance = this.restoreDurableStartAcceptance();
           if (storedAcceptance === "unknown") {
-            startInstructions.push({ status: "acceptance_unknown", instruction: received });
+            startInstructions.push({
+              status: "acceptance_unknown",
+              instruction: received,
+            });
             return;
           }
           if (storedAcceptance !== "none") {
             startInstructions.push({
-              status: isDeepStrictEqual(received, storedAcceptance) ? "duplicate" : "conflict",
+              status: isDeepStrictEqual(received, storedAcceptance)
+                ? "duplicate"
+                : "conflict",
               instruction: received,
             });
             return;
           }
           if (this.state !== "ready") {
-            throw violation("invalid_transition", "Begin arrived before Worker start");
+            throw violation(
+              "invalid_transition",
+              "Begin arrived before Worker start"
+            );
           }
           if (
             received.deadline !== undefined &&
             Date.parse(this.now()) >= Date.parse(received.deadline)
           ) {
-            startInstructions.push({ status: "expired", instruction: received });
+            startInstructions.push({
+              status: "expired",
+              instruction: received,
+            });
             return;
           }
           if (
@@ -1361,11 +1682,17 @@ export class WorkerProtocolPeer extends FramedPeer {
               dispatcherId: received.dispatcherId,
             })
           ) {
-            startInstructions.push({ status: "acceptance_unknown", instruction: received });
+            startInstructions.push({
+              status: "acceptance_unknown",
+              instruction: received,
+            });
             return;
           }
           if (!this.startAcceptanceStore.save(received)) {
-            startInstructions.push({ status: "acceptance_unknown", instruction: received });
+            startInstructions.push({
+              status: "acceptance_unknown",
+              instruction: received,
+            });
             return;
           }
           this.acceptedStartInstruction = received;
@@ -1378,17 +1705,22 @@ export class WorkerProtocolPeer extends FramedPeer {
           const observation = decodeShape(
             BeginAcceptanceObservedSchema,
             value,
-            "Worker Start acceptance observation has an invalid shape",
+            "Worker Start acceptance observation has an invalid shape"
           );
           this.validateHostControl(observation, "Start acceptance observation");
           validateStartInstruction(observation.instruction as StartInstruction);
-          const durableAcceptance = this.acceptedStartInstruction ?? this.restoreDurableStartAcceptance();
+          const durableAcceptance =
+            this.acceptedStartInstruction ??
+            this.restoreDurableStartAcceptance();
           if (
             durableAcceptance === "none" ||
             durableAcceptance === "unknown" ||
             !isDeepStrictEqual(observation.instruction, durableAcceptance)
           ) {
-            throw violation("unexpected_acknowledgement", "Observed Start acceptance does not match durable acceptance");
+            throw violation(
+              "unexpected_acknowledgement",
+              "Observed Start acceptance does not match durable acceptance"
+            );
           }
           observedStartAcceptances.push({ ...durableAcceptance });
           return;
@@ -1397,41 +1729,65 @@ export class WorkerProtocolPeer extends FramedPeer {
           const update = decodeShape(
             DeliveryGenerationUpdateSchema,
             value,
-            "Worker delivery generation update has an invalid shape",
+            "Worker delivery generation update has an invalid shape"
           );
           this.validateHostControl(update, "Delivery generation update");
-          validateSafePositiveInteger(update.deliveryGeneration, "deliveryGeneration");
+          validateSafePositiveInteger(
+            update.deliveryGeneration,
+            "deliveryGeneration"
+          );
           if (this.state !== "ready" && this.state !== "running") {
-            throw violation("invalid_transition", "Delivery generation changed before Worker identification");
+            throw violation(
+              "invalid_transition",
+              "Delivery generation changed before Worker identification"
+            );
           }
-          const durableAuthority = this.startAcceptanceStore.loadDeliveryAuthority();
+          const durableAuthority =
+            this.startAcceptanceStore.loadDeliveryAuthority();
           if (durableAuthority === "unknown") {
-            throw violation("invalid_transition", "Durable delivery authority is unavailable");
+            throw violation(
+              "invalid_transition",
+              "Durable delivery authority is unavailable"
+            );
           }
           this.deliveryGeneration = durableAuthority.deliveryGeneration;
           this.deliveryDispatcherId = durableAuthority.dispatcherId;
           if (update.deliveryGeneration < this.deliveryGeneration) {
-            throw violation("invalid_transition", "Delivery generation must not decrease");
+            throw violation(
+              "invalid_transition",
+              "Delivery generation must not decrease"
+            );
           }
           let acceptanceState: StartAcceptanceState =
-            this.acceptedStartInstruction === undefined ? "not_accepted" : "accepted";
+            this.acceptedStartInstruction === undefined
+              ? "not_accepted"
+              : "accepted";
           if (this.acceptedStartInstruction === undefined) {
             const storedAcceptance = this.restoreDurableStartAcceptance();
-            acceptanceState = storedAcceptance === "unknown"
-              ? "unknown"
-              : storedAcceptance === "none"
-                ? "not_accepted"
-                : "accepted";
+            acceptanceState =
+              storedAcceptance === "unknown"
+                ? "unknown"
+                : storedAcceptance === "none"
+                  ? "not_accepted"
+                  : "accepted";
           }
           if (update.deliveryGeneration === this.deliveryGeneration) {
             if (update.dispatcherId !== this.deliveryDispatcherId) {
-              throw violation("authority_mismatch", "Delivery generation belongs to another Dispatcher");
+              throw violation(
+                "authority_mismatch",
+                "Delivery generation belongs to another Dispatcher"
+              );
             }
-          } else if (!this.startAcceptanceStore.saveDeliveryAuthority({
-            deliveryGeneration: update.deliveryGeneration,
-            dispatcherId: update.dispatcherId,
-          })) {
-            throw violation("invalid_transition", "Delivery authority could not be durably updated");
+          } else if (
+            !this.startAcceptanceStore.saveDeliveryAuthority({
+              deliveryGeneration: update.deliveryGeneration,
+              dispatcherId: update.dispatcherId,
+            })
+          ) {
+            throw violation(
+              "invalid_transition",
+              "Delivery authority could not be durably updated"
+            );
           }
           this.deliveryGeneration = update.deliveryGeneration;
           this.deliveryDispatcherId = update.dispatcherId;
@@ -1448,58 +1804,81 @@ export class WorkerProtocolPeer extends FramedPeer {
           const cancellation = decodeShape(
             CancellationRequestSchema,
             value,
-            "Worker cancellation request has an invalid shape",
+            "Worker cancellation request has an invalid shape"
           );
           this.validateHostControl(cancellation, "Cancellation");
           if (cancellation.deliveryGeneration !== undefined) {
-            validateSafePositiveInteger(cancellation.deliveryGeneration, "deliveryGeneration");
+            validateSafePositiveInteger(
+              cancellation.deliveryGeneration,
+              "deliveryGeneration"
+            );
           }
           if (
             this.deliveryDispatcherId !== undefined &&
             (cancellation.deliveryGeneration !== this.deliveryGeneration ||
               cancellation.dispatcherId !== this.deliveryDispatcherId)
           ) {
-            throw violation("authority_mismatch", "Cancellation sender has no current Start delivery authority");
+            throw violation(
+              "authority_mismatch",
+              "Cancellation sender has no current Start delivery authority"
+            );
           }
           if (
             this.state !== "ready" &&
             this.state !== "running" &&
             this.state !== "delivering"
           ) {
-            throw violation("invalid_transition", "Cancellation arrived outside an available Pi run");
+            throw violation(
+              "invalid_transition",
+              "Cancellation arrived outside an available Pi run"
+            );
           }
           this.state = "cancelling";
           cancellationRequested = true;
           return;
         }
         if (this.state !== "done" && this.state !== "acknowledged") {
-          throw violation("invalid_transition", "Acknowledgement arrived outside the completed delivery state");
+          throw violation(
+            "invalid_transition",
+            "Acknowledgement arrived outside the completed delivery state"
+          );
         }
         const acknowledgement = decodeShape(
           AcknowledgementSchema,
           value,
-          "Worker protocol frame has an invalid shape",
+          "Worker protocol frame has an invalid shape"
         );
         if (acknowledgement.operationId !== this.authority.operationId) {
-          throw violation("authority_mismatch", "Acknowledgement operation does not match");
+          throw violation(
+            "authority_mismatch",
+            "Acknowledgement operation does not match"
+          );
         }
         validateSafePositiveInteger(
           acknowledgement.eventSequenceNumber,
-          "eventSequenceNumber",
+          "eventSequenceNumber"
         );
         if (!this.acknowledgementPending) {
           if (
-            this.acknowledgedEvidence?.acceptanceId === acknowledgement.acceptanceId &&
-            this.acknowledgedEvidence.manifestDigest === acknowledgement.manifestDigest &&
-            this.acknowledgedEvidence.eventSequenceNumber === acknowledgement.eventSequenceNumber
-          ) return;
-          throw violation("unexpected_acknowledgement", "Acknowledgement does not match a Result delivery");
+            this.acknowledgedEvidence?.acceptanceId ===
+              acknowledgement.acceptanceId &&
+            this.acknowledgedEvidence.manifestDigest ===
+              acknowledgement.manifestDigest &&
+            this.acknowledgedEvidence.eventSequenceNumber ===
+              acknowledgement.eventSequenceNumber
+          )
+            return;
+          throw violation(
+            "unexpected_acknowledgement",
+            "Acknowledgement does not match a Result delivery"
+          );
         }
         this.acknowledgementPending = false;
         this.acknowledgedEvidence = acknowledgement;
       });
       const acknowledgementsComplete =
-        this.state === "acknowledged" || this.state === "done" && !this.acknowledgementPending;
+        this.state === "acknowledged" ||
+        (this.state === "done" && !this.acknowledgementPending);
       if (this.state === "done" && acknowledgementsComplete) {
         this.requireFrameBoundary();
         this.state = "acknowledged";
@@ -1509,7 +1888,9 @@ export class WorkerProtocolPeer extends FramedPeer {
         startInstructions,
         observedStartAcceptances,
         ...(generationUpdate === undefined ? {} : { generationUpdate }),
-        ...(cancellationRequested ? { cancellationRequested: true as const } : {}),
+        ...(cancellationRequested
+          ? { cancellationRequested: true as const }
+          : {}),
       };
     } catch (error) {
       this.state = "failed";
@@ -1517,11 +1898,13 @@ export class WorkerProtocolPeer extends FramedPeer {
     }
   }
 
-  private restoreDurableStartAcceptance(): Readonly<StartInstruction> | "none" | "unknown" {
+  private restoreDurableStartAcceptance():
+    Readonly<StartInstruction> | "none" | "unknown" {
     const stored = this.startAcceptanceStore.load();
     if (stored === "none" || stored === "unknown") return stored;
     validateStartInstruction(stored);
-    if (stored.workerProcessInstanceId !== this.processInstanceId) return "unknown";
+    if (stored.workerProcessInstanceId !== this.processInstanceId)
+      return "unknown";
     this.acceptedStartInstruction = { ...stored };
     this.state = "running";
     return this.acceptedStartInstruction;
@@ -1533,36 +1916,48 @@ export class WorkerProtocolPeer extends FramedPeer {
       readonly capability: string;
       readonly sequenceNumber: number;
     },
-    subject: string,
+    subject: string
   ): void {
     if (
       frame.operationId !== this.authority.operationId ||
       !sameSecret(this.authority.capability, frame.capability)
     ) {
-      throw violation("authority_mismatch", `${subject} authority does not match the Operation`);
+      throw violation(
+        "authority_mismatch",
+        `${subject} authority does not match the Operation`
+      );
     }
     validateSafePositiveInteger(frame.sequenceNumber, "sequenceNumber");
     if (frame.sequenceNumber !== this.lastHostSequenceNumber + 1) {
-      throw violation("sequence_mismatch", "Host protocol sequence is stale or out of order");
+      throw violation(
+        "sequence_mismatch",
+        "Host protocol sequence is stale or out of order"
+      );
     }
     this.lastHostSequenceNumber = frame.sequenceNumber;
   }
 
   private encodeWorkerFrame(fields: Readonly<Record<string, unknown>>): Buffer {
     const sequenceNumber = this.sequenceNumber;
-    const bytes = this.encodeFrame({
-      protocolVersion: WORKER_PROTOCOL_VERSION,
-      operationId: this.authority.operationId,
-      capability: this.authority.capability,
-      sequenceNumber,
-      ...fields,
-    }, sequenceNumber === 1);
+    const bytes = this.encodeFrame(
+      {
+        protocolVersion: WORKER_PROTOCOL_VERSION,
+        operationId: this.authority.operationId,
+        capability: this.authority.capability,
+        sequenceNumber,
+        ...fields,
+      },
+      sequenceNumber === 1
+    );
     this.sequenceNumber += 1;
     return bytes;
   }
 
   private invalidSend(type: WorkerProtocolEvent["type"]): never {
-    throw violation("invalid_transition", `Worker cannot send ${type} while ${this.state}`);
+    throw violation(
+      "invalid_transition",
+      `Worker cannot send ${type} while ${this.state}`
+    );
   }
 }
 
@@ -1587,12 +1982,15 @@ export function decodeWorkerConfig(text: string): WorkerConfig {
 }
 
 function decodeWorkerConfigValue(
-  value: unknown,
+  value: unknown
 ): Schema.Schema.Type<typeof WorkerConfigSchema> {
   validateProtocolVersion(value, "Worker configuration");
   try {
     return Schema.decodeUnknownSync(WorkerConfigSchema)(value);
   } catch {
-    throw violation("invalid_frame", "Worker configuration has an invalid shape");
+    throw violation(
+      "invalid_frame",
+      "Worker configuration has an invalid shape"
+    );
   }
 }

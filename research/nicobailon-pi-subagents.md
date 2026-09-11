@@ -20,16 +20,16 @@
 
 ### 全体的な適合性
 
-| 問い | 判定 |
-|---|---|
-| Python `AgentBackend` の候補 | **競合** — ランタイム／パッケージ形態が異なり、Python API がない。 |
-| 独立プロセス型の非同期バックエンド | **部分的に適合** — バックグラウンド実行には切り離された Node ランナーがあるが、フォアグラウンド実行はプロセス内であり、公開されている構造化委譲 API はフォアグラウンド専用である。 |
-| Phase 1 の可視 Herdr ワーカー | **競合** — 通常の実行は意図的にヘッドレスである。Herdr はメタデータ／調査／ピアペイン統合であり、子の表示基盤ではない。 |
-| セマンティックな結果／イベントソース | **優れた設計材料** — ネイティブな子セッションを直接監視し、端末のスクレイピングではなく、型付きの結果と Pi イベントを使用している。 |
-| Pions に必要な状態／イベントプロトコル | **相当量のラッパー状態があればアダプターで解決可能** — パッケージのステータスファイルは有用だが、Pions の追記専用で認証済みの操作プロトコルではない。 |
-| 必須の入れ子型完了待機／キャンセル | **競合** — 入れ子と制限は存在するが、子孫が継続中でも親が終了し得る。stop は子孫の確認応答より前に親を stopped とし、ディスパッチの走査順は後行順ではない。 |
-| 永続化／復旧 | **混在** — 運用成果物、セッション識別、陳腐化した実行の修復、および再読み込み時の復元は強力だが、権威ある永続イベントストアではなく、Pions の厳密に再生可能な reducer と同等でもない。 |
-| セキュリティ境界 | **混在** — ツールの上限、パス検査、非公開の選択ファイル、シェルを介さないプロセス起動、およびフェイルクローズな証明は有用だが、通常のネイティブな子はプロセスの認証情報を継承し、worktree はサンドボックスではなく、複数の成果物／制御ファイルは認証済みの子チャネルではない。 |
+| 問い                                   | 判定                                                                                                                                                                                                                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Python `AgentBackend` の候補           | **競合** — ランタイム／パッケージ形態が異なり、Python API がない。                                                                                                                                                                                                             |
+| 独立プロセス型の非同期バックエンド     | **部分的に適合** — バックグラウンド実行には切り離された Node ランナーがあるが、フォアグラウンド実行はプロセス内であり、公開されている構造化委譲 API はフォアグラウンド専用である。                                                                                             |
+| Phase 1 の可視 Herdr ワーカー          | **競合** — 通常の実行は意図的にヘッドレスである。Herdr はメタデータ／調査／ピアペイン統合であり、子の表示基盤ではない。                                                                                                                                                        |
+| セマンティックな結果／イベントソース   | **優れた設計材料** — ネイティブな子セッションを直接監視し、端末のスクレイピングではなく、型付きの結果と Pi イベントを使用している。                                                                                                                                            |
+| Pions に必要な状態／イベントプロトコル | **相当量のラッパー状態があればアダプターで解決可能** — パッケージのステータスファイルは有用だが、Pions の追記専用で認証済みの操作プロトコルではない。                                                                                                                          |
+| 必須の入れ子型完了待機／キャンセル     | **競合** — 入れ子と制限は存在するが、子孫が継続中でも親が終了し得る。stop は子孫の確認応答より前に親を stopped とし、ディスパッチの走査順は後行順ではない。                                                                                                                    |
+| 永続化／復旧                           | **混在** — 運用成果物、セッション識別、陳腐化した実行の修復、および再読み込み時の復元は強力だが、権威ある永続イベントストアではなく、Pions の厳密に再生可能な reducer と同等でもない。                                                                                         |
+| セキュリティ境界                       | **混在** — ツールの上限、パス検査、非公開の選択ファイル、シェルを介さないプロセス起動、およびフェイルクローズな証明は有用だが、通常のネイティブな子はプロセスの認証情報を継承し、worktree はサンドボックスではなく、複数の成果物／制御ファイルは認証済みの子チャネルではない。 |
 
 **推奨。** このパッケージを Pions の Python バックエンドとして選択したり、通常の Herdr 統合を Phase 1 の可視ワーカーの縦断的スライスに使用したりしては**ならない**。直接的な Pi イベント購読、明示的な `agent_settled` の処理、プロセスインスタンスの証明、モデル検証、ケイパビリティ上限、制限付きファンアウトの主張、セッションリース、フェイルクローズな worktree クリーンアップといった選定したアイデアを、Pions 独自の Python コントラクトの背後で再利用すること。
 
@@ -196,6 +196,7 @@ foreground セッションは意図的に parent の ambient extension をロー
 **解釈。** 受け入れゲート 8 は満たされている。prompt text を process argv に含める必要はない。Pions の `prompt_ref` または認証済み Unix socket protocol は使用していない。
 
 **分類:** argv に prompt がない点は **適合**。Pions の transport 形式には **アダプターで解決可能なギャップ**。
+
 ### 6.2 シークレットとチャネル認証
 
 **ソースから確認できる事実。** ネイティブのバックグラウンドランナーは、パッケージの拡張バインディング変数を除いて親の環境を継承し、ネイティブの Pi 子拡張はそのプロセス内で実行される。外部 CLI アダプターは環境変数の許可リストを使用できるが、通常のネイティブランナーは最小権限の環境変数許可リストを実装していない。[async-execution.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/background/async-execution.ts) · [external-cli-runner.ts](https://github.com/nicobailon/pi-subagents/blob/7fe9dee1bc186592e3f2b95c07d86c02f2edd57a/src/runs/shared/external-cli-runner.ts)
@@ -287,56 +288,56 @@ foreground セッションは意図的に parent の ambient extension をロー
 
 ### 12.1 バックエンド受け入れゲート（§1）
 
-| # | 要件 | 固定コミットでの証拠 | 分類 |
-|---:|---|---|---|
-| 1 | 独立した OS プロセス、または独立したラッパー内のバックエンド | 非同期用のデタッチされた Node ランナー。フォアグラウンドは親プロセス内 | **アダプターで解決可能なギャップ**（バックグラウンドのみ）。フォアグラウンドは **競合** |
-| 2 | 非同期処理とキャンセル／デッドラインの伝播 | 非同期ランナー、制御 inbox、中断とデッドライン | 基本的なオペレーションには **適合**。サブツリーの証明は異なる |
-| 3 | 型付きの意味的な結果／失敗。終端出力のスクレイピングなし | `AgentSession` のイベント／メッセージを直接取得し、構造化された結果を使用 | **適合** |
-| 4 | ライフサイクル／ツール／メッセージ／使用量のストリームまたはコールバック | 豊富な直接サブスクリプションと、サイズ制限付き JSONL／進捗コールバック | **適合** |
-| 5 | 要求／観測されたモデルと推論。暗黙のフォールバックなし | モデル候補／試行と終端時のモデル検証。実効的な thinking はあるが、独立して観測された thinking はない | **アダプターで解決可能なギャップ** |
-| 6 | オペレーション単位のツール制限 | プロファイルのツール計画、ケイパビリティ上限、必須ツールの事前チェック | **適合** |
-| 7 | 子が Pions Runtime の spawn を呼び出せる | 子はパッケージの子向けに安全な `subagent` を呼び出せるが、Python の Pions Runtime ではない | Pions には **競合**。有用な設計上の類例 |
-| 8 | argv にプロンプト/token/result が存在しない | `0600` の設定にあるネイティブのバックグラウンドプロンプト、外部 CLI の stdin/ファイル | プロンプトには **適合**、Pions の token チャネルは存在しない |
-| 9 | バックエンドのセッション/プロセス ID | 実行/セッション/PID/プロセスインスタンス/writer ID | **適合** |
-| 10 | サポートされていない機能を成功に見せかけない | 広範な事前チェックによる拒否と unknown のプロセス証明 | **適合**、ただしパッケージの状態は慎重なマッピングが必要 |
+|   # | 要件                                                                     | 固定コミットでの証拠                                                                                 | 分類                                                                                    |
+| --: | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+|   1 | 独立した OS プロセス、または独立したラッパー内のバックエンド             | 非同期用のデタッチされた Node ランナー。フォアグラウンドは親プロセス内                               | **アダプターで解決可能なギャップ**（バックグラウンドのみ）。フォアグラウンドは **競合** |
+|   2 | 非同期処理とキャンセル／デッドラインの伝播                               | 非同期ランナー、制御 inbox、中断とデッドライン                                                       | 基本的なオペレーションには **適合**。サブツリーの証明は異なる                           |
+|   3 | 型付きの意味的な結果／失敗。終端出力のスクレイピングなし                 | `AgentSession` のイベント／メッセージを直接取得し、構造化された結果を使用                            | **適合**                                                                                |
+|   4 | ライフサイクル／ツール／メッセージ／使用量のストリームまたはコールバック | 豊富な直接サブスクリプションと、サイズ制限付き JSONL／進捗コールバック                               | **適合**                                                                                |
+|   5 | 要求／観測されたモデルと推論。暗黙のフォールバックなし                   | モデル候補／試行と終端時のモデル検証。実効的な thinking はあるが、独立して観測された thinking はない | **アダプターで解決可能なギャップ**                                                      |
+|   6 | オペレーション単位のツール制限                                           | プロファイルのツール計画、ケイパビリティ上限、必須ツールの事前チェック                               | **適合**                                                                                |
+|   7 | 子が Pions Runtime の spawn を呼び出せる                                 | 子はパッケージの子向けに安全な `subagent` を呼び出せるが、Python の Pions Runtime ではない           | Pions には **競合**。有用な設計上の類例                                                 |
+|   8 | argv にプロンプト/token/result が存在しない                              | `0600` の設定にあるネイティブのバックグラウンドプロンプト、外部 CLI の stdin/ファイル                | プロンプトには **適合**、Pions の token チャネルは存在しない                            |
+|   9 | バックエンドのセッション/プロセス ID                                     | 実行/セッション/PID/プロセスインスタンス/writer ID                                                   | **適合**                                                                                |
+|  10 | サポートされていない機能を成功に見せかけない                             | 広範な事前チェックによる拒否と unknown のプロセス証明                                                | **適合**、ただしパッケージの状態は慎重なマッピングが必要                                |
 
 ### 12.2 共有ドメインとステートマシン（§§2–4）
 
-| 要件 | 分類 | 理由 |
-|---|---|---|
-| `Runtime` が呼び出し側に公開される唯一の境界であり、バックエンド/プレゼンテーション/store/channel が分離されている | **競合** | パッケージは Pi ツール、ワークフロー DSL、RPC、ファイル、TUI、Herdr API を公開している。これはオーケストレーション製品であり、交換可能な Python バックエンド境界ではない。 |
-| `TaskSpec.prompt_ref`、profile、idempotency key | **不足/競合** | profile は存在する。生のプロンプトはメモリ/非公開設定内にある。Pions のプロンプト参照や親スコープの idempotency key はない。 |
-| Pions の完全な `Operation` フィールド | **アダプターで解決可能な不足** | backend/session/model/cwd/timing のフィールドは大半が存在するが、Pions の lineage、状態シーケンス、キャンセル epoch、result digest、pane 所有権は存在しない。 |
-| Pions の厳密な非終端/終端状態 | **競合** | アップストリームには running/attention/paused/stopped/partial などがあるが、`self_settled`/`draining_descendants` はなく、stopped はキャンセルが証明済みであることを意味しない。 |
-| 正当な reducer 遷移と終端状態の不変性 | **競合** | 純粋な reducer も、権威ある追記専用の遷移モデルもない。可変な状態修復は意図的な設計である。 |
-| プロセス/Herdr の状態だけでは成功を作り出せない | **適合** | ネイティブの結果はセッションのセマンティクスから得られ、プロセス証明は分離されたままである。 |
-| 単調な認証済みイベント envelope | **アダプターで解決可能な不足** | 一部のイベント timestamp/version/capability は存在するが、要求される envelope やシーケンス検証が一律に備わっているわけではない。 |
-| 決定論的な Phase 0 の fake backend/store/clock/ID | **成果物として競合** | アップストリームのテストには注入可能な factory/fake があるが、Pions reducer パッケージや決定論的ドメインハーネスはない。 |
-| 深さ 2、fan-out 3、live descendants 4、リソースなしなら拒否 | **部分的/不足** | 深さ 2 は存在する。他のアップストリームの制限はスコープ/デフォルトが異なり、キューに入る場合がある。 |
-| 自己 settlement 前の結果永続化と、親への高々一回の publish | **部分的に適合** | 非同期の pending/promoted result は watcher への配信に先行し、重複排除/replay がある。Pions の自己 settlement 遷移や永続的な single-writer イベントはない。 |
-| 親は終端になる前に子孫を待つ | **競合** | 保持された子孫追跡では、親が先に完了することが明示的に許可されている。 |
-| アトミックな spawn freeze + post-order cancel + ack/death proof + unknown | **競合** | キャンセル epoch/freeze はない。ネストした dispatch は pre-order で、親の stopped 状態が最初に書き込まれる。 |
-| 必須の Phase 0 property/table テスト | **成果物として競合** | 広範なアップストリームテストは自身の契約を対象としており、Pions の遷移不変条件を対象としていない。 |
+| 要件                                                                                                               | 分類                           | 理由                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Runtime` が呼び出し側に公開される唯一の境界であり、バックエンド/プレゼンテーション/store/channel が分離されている | **競合**                       | パッケージは Pi ツール、ワークフロー DSL、RPC、ファイル、TUI、Herdr API を公開している。これはオーケストレーション製品であり、交換可能な Python バックエンド境界ではない。       |
+| `TaskSpec.prompt_ref`、profile、idempotency key                                                                    | **不足/競合**                  | profile は存在する。生のプロンプトはメモリ/非公開設定内にある。Pions のプロンプト参照や親スコープの idempotency key はない。                                                     |
+| Pions の完全な `Operation` フィールド                                                                              | **アダプターで解決可能な不足** | backend/session/model/cwd/timing のフィールドは大半が存在するが、Pions の lineage、状態シーケンス、キャンセル epoch、result digest、pane 所有権は存在しない。                    |
+| Pions の厳密な非終端/終端状態                                                                                      | **競合**                       | アップストリームには running/attention/paused/stopped/partial などがあるが、`self_settled`/`draining_descendants` はなく、stopped はキャンセルが証明済みであることを意味しない。 |
+| 正当な reducer 遷移と終端状態の不変性                                                                              | **競合**                       | 純粋な reducer も、権威ある追記専用の遷移モデルもない。可変な状態修復は意図的な設計である。                                                                                      |
+| プロセス/Herdr の状態だけでは成功を作り出せない                                                                    | **適合**                       | ネイティブの結果はセッションのセマンティクスから得られ、プロセス証明は分離されたままである。                                                                                     |
+| 単調な認証済みイベント envelope                                                                                    | **アダプターで解決可能な不足** | 一部のイベント timestamp/version/capability は存在するが、要求される envelope やシーケンス検証が一律に備わっているわけではない。                                                 |
+| 決定論的な Phase 0 の fake backend/store/clock/ID                                                                  | **成果物として競合**           | アップストリームのテストには注入可能な factory/fake があるが、Pions reducer パッケージや決定論的ドメインハーネスはない。                                                         |
+| 深さ 2、fan-out 3、live descendants 4、リソースなしなら拒否                                                        | **部分的/不足**                | 深さ 2 は存在する。他のアップストリームの制限はスコープ/デフォルトが異なり、キューに入る場合がある。                                                                             |
+| 自己 settlement 前の結果永続化と、親への高々一回の publish                                                         | **部分的に適合**               | 非同期の pending/promoted result は watcher への配信に先行し、重複排除/replay がある。Pions の自己 settlement 遷移や永続的な single-writer イベントはない。                      |
+| 親は終端になる前に子孫を待つ                                                                                       | **競合**                       | 保持された子孫追跡では、親が先に完了することが明示的に許可されている。                                                                                                           |
+| アトミックな spawn freeze + post-order cancel + ack/death proof + unknown                                          | **競合**                       | キャンセル epoch/freeze はない。ネストした dispatch は pre-order で、親の stopped 状態が最初に書き込まれる。                                                                     |
+| 必須の Phase 0 property/table テスト                                                                               | **成果物として競合**           | 広範なアップストリームテストは自身の契約を対象としており、Pions の遷移不変条件を対象としていない。                                                                               |
 
 ### 12.3 Phase 1 visible-worker MVP（§5）
 
-| 要件 | 分類 | 理由 |
-|---|---|---|
-| 1 operation、ネストなし、blocking vertical slice | **アダプターで解決可能** | foreground の単一実行は存在するが、in-process であり、可視の別 worker ではない。 |
-| 厳格な Herdr 環境事前チェック、headless fallback なし | **競合** | Herdr は任意であり、通常の起動は headless のままである。 |
-| 現在の Pions pane を split、focus なし、明示的な cwd、返される opaque pane ID | **競合** | 通常の子起動では pane の split は行われない。 |
-| Pions が所有する正確な pane を永続化し、既存/Qoral pane を決して対象にしない | **競合/未実装** | operation ごとの worker pane 所有権は存在しない。Project/inspector pane は別機能である。 |
-| 非公開の `0700` run dir と `0600` prompt/config/result/error | **部分的な不足** | 選択された config/budget/recovery ファイルは `0600` で、一部のディレクトリは `0700` だが、汎用の async/artifact/result writer は Pions の mode を一律には適用しない。 |
-| worker の認証済み `hello/started/activity/.../result/cancel_ack` チャネル | **競合** | ネイティブセッションは直接 callback を使用する。detached coordination はパッケージのファイル artifact/inbox を使用し、このプロトコルではない。 |
-| 256-bit capability、argv/log/metadata から隠蔽、単調なシーケンス | **競合** | ネスト用 UUID capability は永続化され、より限定的である。通常の result/control パスには同等の token/sequence がない。 |
-| result を永続化/hash 化し、ACK 後に settle | **アダプターで解決可能な不足** | アトミックな result publish は存在するが、Pions の ACK/hash/state transaction はない。 |
-| Herdr は projection/liveness 専用 | **適合** | アップストリームの Herdr bridge は best effort であり、result authority ではない。 |
-| operation ごとの正確な Herdr model/state/usage projection | **不足** | 親 pane の集約 metadata のみ。 |
-| result なしのプロセス終了 => 証明済みなら failed、未証明なら unknown | **部分的に適合** | stale reconciler は、result がなく停止が証明された runner を failed とする。process-terminal sidecar は unknown の証明を保持する。マッピングは明示的なままにする必要がある。 |
-| まず backend をキャンセルし、停止が証明されれば cancelled、そうでなければ unknown | **競合** | アップストリームは子孫/プロセスの完全な証明より先に stopped を publish する。 |
-| blocked/failed/unknown/success pane を保持 | **競合/該当なし** | 通常の実行には worker pane がない。 |
-| fake-Herdr の argv/ownership/security テスト | **成果物として競合** | Herdr bridge/project/inspector テストはアップストリームのインターフェースを対象としており、Pions の pane transaction fixture を対象としていない。 |
-| terminal output なしで最終結果を再構築 | **適合** | ネイティブの session/result/status artifact で十分である。 |
+| 要件                                                                              | 分類                           | 理由                                                                                                                                                                         |
+| --------------------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 operation、ネストなし、blocking vertical slice                                  | **アダプターで解決可能**       | foreground の単一実行は存在するが、in-process であり、可視の別 worker ではない。                                                                                             |
+| 厳格な Herdr 環境事前チェック、headless fallback なし                             | **競合**                       | Herdr は任意であり、通常の起動は headless のままである。                                                                                                                     |
+| 現在の Pions pane を split、focus なし、明示的な cwd、返される opaque pane ID     | **競合**                       | 通常の子起動では pane の split は行われない。                                                                                                                                |
+| Pions が所有する正確な pane を永続化し、既存/Qoral pane を決して対象にしない      | **競合/未実装**                | operation ごとの worker pane 所有権は存在しない。Project/inspector pane は別機能である。                                                                                     |
+| 非公開の `0700` run dir と `0600` prompt/config/result/error                      | **部分的な不足**               | 選択された config/budget/recovery ファイルは `0600` で、一部のディレクトリは `0700` だが、汎用の async/artifact/result writer は Pions の mode を一律には適用しない。        |
+| worker の認証済み `hello/started/activity/.../result/cancel_ack` チャネル         | **競合**                       | ネイティブセッションは直接 callback を使用する。detached coordination はパッケージのファイル artifact/inbox を使用し、このプロトコルではない。                               |
+| 256-bit capability、argv/log/metadata から隠蔽、単調なシーケンス                  | **競合**                       | ネスト用 UUID capability は永続化され、より限定的である。通常の result/control パスには同等の token/sequence がない。                                                        |
+| result を永続化/hash 化し、ACK 後に settle                                        | **アダプターで解決可能な不足** | アトミックな result publish は存在するが、Pions の ACK/hash/state transaction はない。                                                                                       |
+| Herdr は projection/liveness 専用                                                 | **適合**                       | アップストリームの Herdr bridge は best effort であり、result authority ではない。                                                                                           |
+| operation ごとの正確な Herdr model/state/usage projection                         | **不足**                       | 親 pane の集約 metadata のみ。                                                                                                                                               |
+| result なしのプロセス終了 => 証明済みなら failed、未証明なら unknown              | **部分的に適合**               | stale reconciler は、result がなく停止が証明された runner を failed とする。process-terminal sidecar は unknown の証明を保持する。マッピングは明示的なままにする必要がある。 |
+| まず backend をキャンセルし、停止が証明されれば cancelled、そうでなければ unknown | **競合**                       | アップストリームは子孫/プロセスの完全な証明より先に stopped を publish する。                                                                                                |
+| blocked/failed/unknown/success pane を保持                                        | **競合/該当なし**              | 通常の実行には worker pane がない。                                                                                                                                          |
+| fake-Herdr の argv/ownership/security テスト                                      | **成果物として競合**           | Herdr bridge/project/inspector テストはアップストリームのインターフェースを対象としており、Pions の pane transaction fixture を対象としていない。                            |
+| terminal output なしで最終結果を再構築                                            | **適合**                       | ネイティブの session/result/status artifact で十分である。                                                                                                                   |
 
 ## 13. 確認した関連テストの証拠
 

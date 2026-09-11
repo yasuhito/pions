@@ -3,7 +3,10 @@ import { test } from "node:test";
 
 import { Effect } from "effect";
 
-import type { Operation, OperationIntent } from "../src/internal/event-store/index.js";
+import type {
+  Operation,
+  OperationIntent,
+} from "../src/internal/event-store/index.js";
 import {
   HerdrPresentation,
   type CommandExecutor,
@@ -17,7 +20,12 @@ import {
   makeTestRuntime,
 } from "../src/internal/testing.js";
 import { HerdrPreconditionError } from "../src/index.js";
-import { effectiveConfig, requestedConfig, retentionPolicy, workProductRequirements } from "./worker-protocol-fixtures.js";
+import {
+  effectiveConfig,
+  requestedConfig,
+  retentionPolicy,
+  workProductRequirements,
+} from "./worker-protocol-fixtures.js";
 
 class OwnershipFailingStore extends InMemoryEventStore {
   override advance(operationId: string, input: OperationIntent) {
@@ -39,14 +47,15 @@ class FakeCommandExecutor implements CommandExecutor {
       readonly stdout: string;
       readonly stderr?: string;
       readonly exitCode?: number;
-    }>,
+    }>
   ) {}
 
   execute(invocation: CommandInvocation) {
     return Effect.sync(() => {
       this.invocations.push(invocation);
       const output = this.outputs[this.invocations.length - 1];
-      if (output === undefined) throw new Error("FakeCommandExecutor exhausted");
+      if (output === undefined)
+        throw new Error("FakeCommandExecutor exhausted");
       return {
         stdout: output.stdout,
         stderr: output.stderr ?? "",
@@ -70,7 +79,11 @@ function operation(paneId?: string): Operation {
     state: "running",
     stateSeq: 3,
     workerLaunched: true,
-    task: { promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" },
+    task: {
+      promptRef: "private://prompt/1",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    },
     requestedConfig,
     effectiveConfig,
     workProductRequirements,
@@ -93,13 +106,19 @@ function operation(paneId?: string): Operation {
     cancellationEpoch: 0,
     ...(paneId === undefined
       ? {}
-      : { presentation: { kind: "herdr_pane" as const, paneId, ownedByPions: true as const } }),
+      : {
+          presentation: {
+            kind: "herdr_pane" as const,
+            paneId,
+            ownedByPions: true as const,
+          },
+        }),
   };
 }
 
 function presentation(
   executor: CommandExecutor,
-  environment: Readonly<Record<string, string | undefined>> = herdrEnvironment,
+  environment: Readonly<Record<string, string | undefined>> = herdrEnvironment
 ) {
   return new HerdrPresentation({
     cwd: "/work/project",
@@ -112,7 +131,10 @@ test("Herdr preflight reports missing context as a typed violation", async () =>
   const adapter = presentation(new FakeCommandExecutor([]), {});
   const result = await Effect.runPromise(Effect.either(adapter.preflight()));
 
-  assert.equal(result._tag === "Left" && result.left instanceof HerdrPreconditionError, true);
+  assert.equal(
+    result._tag === "Left" && result.left instanceof HerdrPreconditionError,
+    true
+  );
 });
 
 test("Herdr preflight does not invoke a command", async () => {
@@ -124,21 +146,40 @@ test("Herdr preflight does not invoke a command", async () => {
 
 test("pane creation uses shell-free argv, explicit cwd, and no focus", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
+    {
+      stdout: JSON.stringify({
+        result: { pane: { pane_id: "opaque:new-pane" } },
+      }),
+    },
   ]);
   await Effect.runPromise(presentation(executor).create(operation()));
 
-  assert.deepEqual(executor.invocations, [{
-    executable: "herdr",
-    args: ["pane", "split", "--current", "--direction", "right", "--cwd", "/work/project", "--no-focus"],
-    cwd: "/work/project",
-    shell: false,
-  }]);
+  assert.deepEqual(executor.invocations, [
+    {
+      executable: "herdr",
+      args: [
+        "pane",
+        "split",
+        "--current",
+        "--direction",
+        "right",
+        "--cwd",
+        "/work/project",
+        "--no-focus",
+      ],
+      cwd: "/work/project",
+      shell: false,
+    },
+  ]);
 });
 
 test("pane creation never targets existing or Qoral identifiers", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
+    {
+      stdout: JSON.stringify({
+        result: { pane: { pane_id: "opaque:new-pane" } },
+      }),
+    },
   ]);
   const adapter = new HerdrPresentation({
     cwd: "/work/project",
@@ -148,16 +189,27 @@ test("pane creation never targets existing or Qoral identifiers", async () => {
   await Effect.runPromise(adapter.create(operation()));
 
   assert.equal(
-    executor.invocations.flatMap(({ args }) => args).some((argument) =>
-      ["existing-workspace", "existing-tab", "existing-caller-pane", "qoral-pane"].includes(argument)
-    ),
-    false,
+    executor.invocations
+      .flatMap(({ args }) => args)
+      .some((argument) =>
+        [
+          "existing-workspace",
+          "existing-tab",
+          "existing-caller-pane",
+          "qoral-pane",
+        ].includes(argument)
+      ),
+    false
   );
 });
 
 test("pane creation splits below when the available area is portrait", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
+    {
+      stdout: JSON.stringify({
+        result: { pane: { pane_id: "opaque:new-pane" } },
+      }),
+    },
   ]);
   const adapter = new HerdrPresentation({
     cwd: "/work/project",
@@ -172,36 +224,60 @@ test("pane creation splits below when the available area is portrait", async () 
 
 test("pane creation returns only the opaque identifier from Herdr", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane", focused: false } } }) },
+    {
+      stdout: JSON.stringify({
+        result: { pane: { pane_id: "opaque:new-pane", focused: false } },
+      }),
+    },
   ]);
 
   assert.deepEqual(
     await Effect.runPromise(presentation(executor).create(operation())),
-    { kind: "herdr_pane", paneId: "opaque:new-pane" },
+    { kind: "herdr_pane", paneId: "opaque:new-pane" }
   );
 });
 
 test("projection targets the persisted Pions-owned pane", async () => {
-  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
-  await Effect.runPromise(presentation(executor).project(operation("opaque:new-pane")));
+  const executor = new FakeCommandExecutor([
+    { stdout: JSON.stringify({ result: {} }) },
+  ]);
+  await Effect.runPromise(
+    presentation(executor).project(operation("opaque:new-pane"))
+  );
 
   assert.deepEqual(executor.invocations[0]?.args, [
-    "pane", "report-metadata", "--source", "pions", "opaque:new-pane",
-    "--state-label", "working=running",
-    "--display-agent", "effective(model=test/test-model;thinking=medium;tools=read,bash;cwd=/test/workspace) observed(model=unavailable;thinking=unavailable;tools=unavailable;cwd=unavailable)",
-    "--seq", "3",
+    "pane",
+    "report-metadata",
+    "--source",
+    "pions",
+    "opaque:new-pane",
+    "--state-label",
+    "working=running",
+    "--display-agent",
+    "effective(model=test/test-model;thinking=medium;tools=read,bash;cwd=/test/workspace) observed(model=unavailable;thinking=unavailable;tools=unavailable;cwd=unavailable)",
+    "--seq",
+    "3",
   ]);
 });
 
 test("configuration projection excludes the private prompt reference", async () => {
-  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
-  await Effect.runPromise(presentation(executor).project(operation("opaque:new-pane")));
+  const executor = new FakeCommandExecutor([
+    { stdout: JSON.stringify({ result: {} }) },
+  ]);
+  await Effect.runPromise(
+    presentation(executor).project(operation("opaque:new-pane"))
+  );
 
-  assert.equal(JSON.stringify(executor.invocations).includes("private://prompt/1"), false);
+  assert.equal(
+    JSON.stringify(executor.invocations).includes("private://prompt/1"),
+    false
+  );
 });
 
 test("configuration projection is size-limited", async () => {
-  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
+  const executor = new FakeCommandExecutor([
+    { stdout: JSON.stringify({ result: {} }) },
+  ]);
   const current: Operation = {
     ...operation("opaque:new-pane"),
     effectiveConfig: {
@@ -210,7 +286,8 @@ test("configuration projection is size-limited", async () => {
     },
   };
   await Effect.runPromise(presentation(executor).project(current));
-  const displayIndex = executor.invocations[0]?.args.indexOf("--display-agent") ?? -1;
+  const displayIndex =
+    executor.invocations[0]?.args.indexOf("--display-agent") ?? -1;
   const projected = executor.invocations[0]?.args[displayIndex + 1] ?? "";
 
   assert.equal(Buffer.byteLength(projected, "utf8") <= 512, true);
@@ -225,14 +302,19 @@ test("investigation-worthy and phase-one terminal states retain their owned pane
     "completed",
   ];
   const executor = new FakeCommandExecutor(
-    retainedStates.map(() => ({ stdout: JSON.stringify({ result: {} }) })),
+    retainedStates.map(() => ({ stdout: JSON.stringify({ result: {} }) }))
   );
   const adapter = presentation(executor);
   for (const state of retainedStates) {
-    await Effect.runPromise(adapter.project({ ...operation("opaque:new-pane"), state }));
+    await Effect.runPromise(
+      adapter.project({ ...operation("opaque:new-pane"), state })
+    );
   }
 
-  assert.equal(executor.invocations.some(({ args }) => args.includes("close")), false);
+  assert.equal(
+    executor.invocations.some(({ args }) => args.includes("close")),
+    false
+  );
 });
 
 test("projection without durable ownership does not target a pane", async () => {
@@ -243,49 +325,83 @@ test("projection without durable ownership does not target a pane", async () => 
 });
 
 test("rollback targets exactly the newly-created pane", async () => {
-  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
+  const executor = new FakeCommandExecutor([
+    { stdout: JSON.stringify({ result: {} }) },
+  ]);
   const adapter = presentation(executor);
-  await Effect.runPromise(adapter.rollbackCreated({ kind: "herdr_pane", paneId: "opaque:new-pane" }));
+  await Effect.runPromise(
+    adapter.rollbackCreated({ kind: "herdr_pane", paneId: "opaque:new-pane" })
+  );
 
-  assert.deepEqual(executor.invocations[0]?.args, ["pane", "close", "opaque:new-pane"]);
+  assert.deepEqual(executor.invocations[0]?.args, [
+    "pane",
+    "close",
+    "opaque:new-pane",
+  ]);
 });
 
 test("owned pane inspection matches the persisted opaque identity", async () => {
-  const executor = new FakeCommandExecutor([{
-    stdout: JSON.stringify({ result: { panes: [{ pane_id: "opaque:owned-pane" }] } }),
-  }]);
+  const executor = new FakeCommandExecutor([
+    {
+      stdout: JSON.stringify({
+        result: { panes: [{ pane_id: "opaque:owned-pane" }] },
+      }),
+    },
+  ]);
 
   assert.equal(
-    await Effect.runPromise(presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))),
-    "matching",
+    await Effect.runPromise(
+      presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))
+    ),
+    "matching"
   );
 });
 
 test("owned pane inspection uses a read-only pane listing", async () => {
-  const executor = new FakeCommandExecutor([{
-    stdout: JSON.stringify({ result: { panes: [{ pane_id: "opaque:owned-pane" }] } }),
-  }]);
-  await Effect.runPromise(presentation(executor).inspectOwnedPane(operation("opaque:owned-pane")));
+  const executor = new FakeCommandExecutor([
+    {
+      stdout: JSON.stringify({
+        result: { panes: [{ pane_id: "opaque:owned-pane" }] },
+      }),
+    },
+  ]);
+  await Effect.runPromise(
+    presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))
+  );
 
   assert.deepEqual(executor.invocations[0]?.args, ["pane", "list"]);
 });
 
 test("owned pane inspection reports a missing persisted identity", async () => {
-  const executor = new FakeCommandExecutor([{
-    stdout: JSON.stringify({ result: { panes: [{ pane_id: "opaque:other-pane" }] } }),
-  }]);
+  const executor = new FakeCommandExecutor([
+    {
+      stdout: JSON.stringify({
+        result: { panes: [{ pane_id: "opaque:other-pane" }] },
+      }),
+    },
+  ]);
 
   assert.equal(
-    await Effect.runPromise(presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))),
-    "missing",
+    await Effect.runPromise(
+      presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))
+    ),
+    "missing"
   );
 });
 
 test("successful cleanup targets exactly the persistently owned pane", async () => {
-  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
-  await Effect.runPromise(presentation(executor).closeOwnedPane(operation("opaque:owned-pane")));
+  const executor = new FakeCommandExecutor([
+    { stdout: JSON.stringify({ result: {} }) },
+  ]);
+  await Effect.runPromise(
+    presentation(executor).closeOwnedPane(operation("opaque:owned-pane"))
+  );
 
-  assert.deepEqual(executor.invocations[0]?.args, ["pane", "close", "opaque:owned-pane"]);
+  assert.deepEqual(executor.invocations[0]?.args, [
+    "pane",
+    "close",
+    "opaque:owned-pane",
+  ]);
 });
 
 test("successful cleanup without durable ownership does not target a pane", async () => {
@@ -305,8 +421,12 @@ test("Runtime exposes a typed Herdr precondition violation", async () => {
   });
 
   await assert.rejects(
-    runtime.spawn({ promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" }),
-    (error) => error instanceof HerdrPreconditionError,
+    runtime.spawn({
+      promptRef: "private://prompt/1",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    }),
+    (error) => error instanceof HerdrPreconditionError
   );
 });
 
@@ -322,16 +442,31 @@ test("Runtime rejects missing Herdr before creating any resource", async () => {
     store,
   });
 
-  await runtime.spawn({ promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" }).catch(() => undefined);
+  await runtime
+    .spawn({
+      promptRef: "private://prompt/1",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    })
+    .catch(() => undefined);
 
-  const read = await Effect.runPromise(Effect.either(store.read("operation-1")));
+  const read = await Effect.runPromise(
+    Effect.either(store.read("operation-1"))
+  );
 
-  assert.deepEqual([ids.issuedCount, executor.invocations.length, read._tag], [0, 0, "Left"]);
+  assert.deepEqual(
+    [ids.issuedCount, executor.invocations.length, read._tag],
+    [0, 0, "Left"]
+  );
 });
 
 test("failed ownership persistence rolls back exactly the created pane", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
+    {
+      stdout: JSON.stringify({
+        result: { pane: { pane_id: "opaque:new-pane" } },
+      }),
+    },
     { stdout: JSON.stringify({ result: {} }) },
   ]);
   const runtime = makeTestRuntime({
@@ -342,34 +477,58 @@ test("failed ownership persistence rolls back exactly the created pane", async (
     store: new OwnershipFailingStore(),
   });
 
-  await runtime.spawn({ promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" }).catch(() => undefined);
+  await runtime
+    .spawn({
+      promptRef: "private://prompt/1",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    })
+    .catch(() => undefined);
 
-  assert.deepEqual(executor.invocations.at(-1)?.args, ["pane", "close", "opaque:new-pane"]);
+  assert.deepEqual(executor.invocations.at(-1)?.args, [
+    "pane",
+    "close",
+    "opaque:new-pane",
+  ]);
 });
 
 test("the default Worker-start failure policy retains the owned pane", async () => {
   const executor = new FakeCommandExecutor([]);
-  await Effect.runPromise(presentation(executor).onWorkerStartFailure(operation("opaque:new-pane")));
+  await Effect.runPromise(
+    presentation(executor).onWorkerStartFailure(operation("opaque:new-pane"))
+  );
 
   assert.equal(executor.invocations.length, 0);
 });
 
 test("configured Worker-start rollback closes exactly the owned pane", async () => {
-  const executor = new FakeCommandExecutor([{ stdout: JSON.stringify({ result: {} }) }]);
+  const executor = new FakeCommandExecutor([
+    { stdout: JSON.stringify({ result: {} }) },
+  ]);
   const adapter = new HerdrPresentation({
     cwd: "/work/project",
     environment: herdrEnvironment,
     executor,
     retainOnWorkerStartFailure: false,
   });
-  await Effect.runPromise(adapter.onWorkerStartFailure(operation("opaque:new-pane")));
+  await Effect.runPromise(
+    adapter.onWorkerStartFailure(operation("opaque:new-pane"))
+  );
 
-  assert.deepEqual(executor.invocations[0]?.args, ["pane", "close", "opaque:new-pane"]);
+  assert.deepEqual(executor.invocations[0]?.args, [
+    "pane",
+    "close",
+    "opaque:new-pane",
+  ]);
 });
 
 test("a Herdr projection failure cannot create Operation completion", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
+    {
+      stdout: JSON.stringify({
+        result: { pane: { pane_id: "opaque:new-pane" } },
+      }),
+    },
   ]);
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
@@ -377,21 +536,37 @@ test("a Herdr projection failure cannot create Operation completion", async () =
       messages: { body: "unused" },
       failure: "worker_start_failed",
     }),
-    clock: new FakeClock(Array.from({ length: 5 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    clock: new FakeClock(
+      Array.from(
+        { length: 5 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(executor),
     store,
   });
 
-  const handle = await runtime.spawn({ promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
   await handle.result().catch(() => undefined);
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "failed");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "failed"
+  );
 });
 
 test("Runtime persists ownership returned by Herdr", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: { pane: { pane_id: "opaque:new-pane" } } }) },
+    {
+      stdout: JSON.stringify({
+        result: { pane: { pane_id: "opaque:new-pane" } },
+      }),
+    },
     { stdout: JSON.stringify({ result: {} }) },
     { stdout: JSON.stringify({ result: {} }) },
     { stdout: JSON.stringify({ result: {} }) },
@@ -402,18 +577,30 @@ test("Runtime persists ownership returned by Herdr", async () => {
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
-    clock: new FakeClock(Array.from({ length: 10 }, (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`)),
+    clock: new FakeClock(
+      Array.from(
+        { length: 10 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(executor),
     store,
   });
 
-  const handle = await runtime.spawn({ promptRef: "private://prompt/1", profile: "coding", idempotencyKey: "task-1" });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
   await handle.result();
 
-  assert.deepEqual((await Effect.runPromise(store.read("operation-1"))).operation.presentation, {
-    kind: "herdr_pane",
-    paneId: "opaque:new-pane",
-    ownedByPions: true,
-  });
+  assert.deepEqual(
+    (await Effect.runPromise(store.read("operation-1"))).operation.presentation,
+    {
+      kind: "herdr_pane",
+      paneId: "opaque:new-pane",
+      ownedByPions: true,
+    }
+  );
 });

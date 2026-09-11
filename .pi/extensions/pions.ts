@@ -10,7 +10,9 @@ import {
 export default async function pionsExtension(pi: ExtensionAPI): Promise<void> {
   const claudeBridge = resolveClaudeBridgeExtension();
   validateClaudeBridgePolicy({ cwd: process.cwd() });
-  const extension = await import(pathToFileURL(claudeBridge.entryPath).href) as {
+  const extension = (await import(
+    pathToFileURL(claudeBridge.entryPath).href
+  )) as {
     readonly default: (api: ExtensionAPI) => void;
   };
   extension.default(pi);

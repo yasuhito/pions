@@ -4,7 +4,10 @@ import { isAbsolute, join } from "node:path";
 
 import { Effect } from "effect";
 
-import { HerdrPresentation, NodeCommandExecutor } from "./herdr-presentation.js";
+import {
+  HerdrPresentation,
+  NodeCommandExecutor,
+} from "./herdr-presentation.js";
 import { PrivateFileEventStore } from "./event-store/index.js";
 import { EventStoreResourceEvidenceRepository } from "./event-store-resource-evidence.js";
 import { makeResourceProofController } from "./resource-controller.js";
@@ -38,13 +41,18 @@ export interface VisibleRuntimeOptions {
   readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
   readonly revisionAuthenticator?: RevisionAuthenticator;
   readonly retryClearanceVerifier?: RetryClearanceVerifier;
-  readonly resourceAuthorities?: ReadonlyArray<Readonly<ResourceAuthorityRegistration>>;
+  readonly resourceAuthorities?: ReadonlyArray<
+    Readonly<ResourceAuthorityRegistration>
+  >;
   readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
 }
 
 const systemClock: RuntimeClock = {
   now: () => Effect.sync(() => new Date().toISOString()),
-  sleep: (milliseconds) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, milliseconds))),
+  sleep: (milliseconds) =>
+    Effect.promise(
+      () => new Promise((resolve) => setTimeout(resolve, milliseconds))
+    ),
   monotonicMilliseconds: () => performance.now(),
   recoveredElapsedTimeIsReliable: () => false,
 };
@@ -55,20 +63,31 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
   const environment = options.environment ?? process.env;
   const runtimeDirectory = environment.XDG_RUNTIME_DIR;
   const userId = process.getuid?.();
-  if ((runtimeDirectory === undefined || !isAbsolute(runtimeDirectory)) && userId === undefined) {
-    throw new Error("Pions requires XDG_RUNTIME_DIR or a numeric user identifier for Worker sockets");
+  if (
+    (runtimeDirectory === undefined || !isAbsolute(runtimeDirectory)) &&
+    userId === undefined
+  ) {
+    throw new Error(
+      "Pions requires XDG_RUNTIME_DIR or a numeric user identifier for Worker sockets"
+    );
   }
-  const socketDirectory = runtimeDirectory !== undefined && isAbsolute(runtimeDirectory)
-    ? join(runtimeDirectory, "pions")
-    : join(tmpdir(), `pions-${userId}`);
+  const socketDirectory =
+    runtimeDirectory !== undefined && isAbsolute(runtimeDirectory)
+      ? join(runtimeDirectory, "pions")
+      : join(tmpdir(), `pions-${userId}`);
   const presentation = new HerdrPresentation({
     cwd: options.cwd,
     environment,
     executor,
   });
   const providerExtension = resolveClaudeBridgeExtension();
-  if (Object.values(options.profiles).some((profile) =>
-    profile.modelCandidates.some((model) => model.provider === providerExtension.provider))) {
+  if (
+    Object.values(options.profiles).some((profile) =>
+      profile.modelCandidates.some(
+        (model) => model.provider === providerExtension.provider
+      )
+    )
+  ) {
     validateClaudeBridgePolicy({ cwd: options.cwd, environment });
   }
   const worker = new VisibleWorker({
@@ -77,13 +96,19 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     cwd: options.cwd,
     executor,
     extensionEntryPath: resolveWorkerExtensionEntryPath({
-      ...(options.extensionEntryPath === undefined ? {} : { explicitPath: options.extensionEntryPath }),
+      ...(options.extensionEntryPath === undefined
+        ? {}
+        : { explicitPath: options.extensionEntryPath }),
       cwd: options.cwd,
     }),
     providerExtension,
   });
   const store = new PrivateFileEventStore(options.stateDirectory, systemClock);
-  const artifactServices = runtimeArtifactStore(options.stateDirectory, store, () => new Date());
+  const artifactServices = runtimeArtifactStore(
+    options.stateDirectory,
+    store,
+    () => new Date()
+  );
   return makeRuntime({
     worker,
     clock: systemClock,
@@ -94,7 +119,10 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     artifactCredential: artifactServices.credential,
     ...(options.startAuthorizationAuthenticator === undefined
       ? {}
-      : { startAuthorizationAuthenticator: options.startAuthorizationAuthenticator }),
+      : {
+          startAuthorizationAuthenticator:
+            options.startAuthorizationAuthenticator,
+        }),
     ...(options.startAuthorizationAuthority === undefined
       ? {}
       : { startAuthorizationAuthority: options.startAuthorizationAuthority }),

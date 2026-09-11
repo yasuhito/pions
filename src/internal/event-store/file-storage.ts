@@ -69,7 +69,8 @@ async function createPrivateDirectoryTree(path: string): Promise<void> {
   while (!(await validateDirectory(current))) {
     missing.push(current);
     const parent = dirname(current);
-    if (parent === current) throw new Error(`Unable to find an existing parent directory: ${path}`);
+    if (parent === current)
+      throw new Error(`Unable to find an existing parent directory: ${path}`);
     current = parent;
   }
   for (const directory of missing.reverse()) {
@@ -91,18 +92,24 @@ export function operationDirectoryKey(operationId: string): string {
 export class PrivateFileEventStore extends ValidatedEventStore {
   constructor(
     private readonly rootDirectory: string,
-    clock: RuntimeClock,
+    clock: RuntimeClock
   ) {
     super(clock);
   }
 
-  private async operationDirectory(operationId: string, create: boolean): Promise<string | undefined> {
+  private async operationDirectory(
+    operationId: string,
+    create: boolean
+  ): Promise<string | undefined> {
     const rootExists = await validateDirectory(this.rootDirectory);
     if (!rootExists) {
       if (!create) return undefined;
       await createPrivateDirectoryTree(this.rootDirectory);
     }
-    const directory = join(this.rootDirectory, operationDirectoryKey(operationId));
+    const directory = join(
+      this.rootDirectory,
+      operationDirectoryKey(operationId)
+    );
     const exists = await validateDirectory(directory);
     if (!exists) {
       if (!create) return undefined;
@@ -138,45 +145,63 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     }
   }
 
-  protected async readRecord(operationId: string): Promise<unknown | undefined> {
+  protected async readRecord(
+    operationId: string
+  ): Promise<unknown | undefined> {
     const directory = await this.operationDirectory(operationId, false);
     if (directory === undefined) return undefined;
     const bytes = await this.readPrivateFile(join(directory, RECORD_FILE));
     if (bytes === undefined) {
-      const hasUnsupportedRecord = (await readdir(directory))
-        .some((entry) => /^events\.v\d+\.json$/u.test(entry));
+      const hasUnsupportedRecord = (await readdir(directory)).some((entry) =>
+        /^events\.v\d+\.json$/u.test(entry)
+      );
       if (hasUnsupportedRecord) {
-        throw new RecordDecodingError("unsupported_schema", "Unsupported Event Store record schema");
+        throw new RecordDecodingError(
+          "unsupported_schema",
+          "Unsupported Event Store record schema"
+        );
       }
       return undefined;
     }
     try {
       return JSON.parse(bytes.toString("utf8")) as unknown;
     } catch (error) {
-      throw new Error(`Invalid record JSON: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Invalid record JSON: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          cause: error,
+        }
+      );
     }
   }
 
   protected async writeRecord(
     operationId: string,
-    record: StoredOperationRecord,
+    record: StoredOperationRecord
   ): Promise<void> {
     const directory = await this.operationDirectory(operationId, true);
-    if (directory === undefined) throw new Error("Unable to create Operation directory");
+    if (directory === undefined)
+      throw new Error("Unable to create Operation directory");
     await this.atomicWrite(
       join(directory, RECORD_FILE),
-      Buffer.from(`${JSON.stringify(record)}\n`, "utf8"),
+      Buffer.from(`${JSON.stringify(record)}\n`, "utf8")
     );
   }
 
   protected async listOperationIds(): Promise<ReadonlyArray<string>> {
     if (!(await validateDirectory(this.rootDirectory))) return [];
     const operationIds: Array<string> = [];
-    for (const entry of await readdir(this.rootDirectory, { withFileTypes: true })) {
+    for (const entry of await readdir(this.rootDirectory, {
+      withFileTypes: true,
+    })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const bytes = await this.readPrivateFile(join(this.rootDirectory, entry.name, RECORD_FILE));
+      const bytes = await this.readPrivateFile(
+        join(this.rootDirectory, entry.name, RECORD_FILE)
+      );
       if (bytes === undefined) continue;
-      const value = JSON.parse(bytes.toString("utf8")) as { readonly operationId?: unknown };
+      const value = JSON.parse(bytes.toString("utf8")) as {
+        readonly operationId?: unknown;
+      };
       if (
         typeof value.operationId !== "string" ||
         operationDirectoryKey(value.operationId) !== entry.name
@@ -187,5 +212,4 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     }
     return operationIds.sort();
   }
-
 }

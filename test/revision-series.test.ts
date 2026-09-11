@@ -3,7 +3,10 @@ import { test } from "node:test";
 
 import { Effect } from "effect";
 
-import type { Operation, OperationEvent } from "../src/internal/event-store/index.js";
+import type {
+  Operation,
+  OperationEvent,
+} from "../src/internal/event-store/index.js";
 import type { Worker, WorkerAdapter } from "../src/internal/services.js";
 import {
   FakeClock,
@@ -19,7 +22,9 @@ class InterruptiblePresentation extends FakePresentation {
   failPreflight = false;
 
   override preflight(): Effect.Effect<void> {
-    return this.failPreflight ? Effect.die(new Error("injected preflight interruption")) : Effect.void;
+    return this.failPreflight
+      ? Effect.die(new Error("injected preflight interruption"))
+      : Effect.void;
   }
 }
 
@@ -30,12 +35,17 @@ class PausedCleanupPresentation extends FakePresentation {
   private inspectionStarted: Promise<void> | undefined;
 
   pauseInspection(): void {
-    this.inspectionGate = new Promise<void>((resolve) => { this.releaseInspection = resolve; });
-    this.inspectionStarted = new Promise<void>((resolve) => { this.reportInspectionStarted = resolve; });
+    this.inspectionGate = new Promise<void>((resolve) => {
+      this.releaseInspection = resolve;
+    });
+    this.inspectionStarted = new Promise<void>((resolve) => {
+      this.reportInspectionStarted = resolve;
+    });
   }
 
   waitForInspection(): Promise<void> {
-    if (this.inspectionStarted === undefined) throw new Error("Inspection is not paused");
+    if (this.inspectionStarted === undefined)
+      throw new Error("Inspection is not paused");
     return this.inspectionStarted;
   }
 
@@ -43,12 +53,15 @@ class PausedCleanupPresentation extends FakePresentation {
     this.releaseInspection?.();
   }
 
-  override inspectOwnedPane(operation: Operation): Effect.Effect<"matching" | "missing", Error> {
-    if (this.inspectionGate === undefined) return super.inspectOwnedPane(operation);
+  override inspectOwnedPane(
+    operation: Operation
+  ): Effect.Effect<"matching" | "missing", Error> {
+    if (this.inspectionGate === undefined)
+      return super.inspectOwnedPane(operation);
     this.reportInspectionStarted?.();
     return Effect.promise(() => this.inspectionGate!).pipe(
       Effect.orDie,
-      Effect.andThen(super.inspectOwnedPane(operation)),
+      Effect.andThen(super.inspectOwnedPane(operation))
     );
   }
 }
@@ -57,10 +70,11 @@ class CleanupRecoveryStore extends InMemoryEventStore {
   interruptCleanupPersistence = false;
 
   protected override willAppend(event: OperationEvent): void {
-    if (this.interruptCleanupPersistence && (
-      event.type === "presentation_cleanup_completed" ||
-      event.type === "presentation_cleanup_unconfirmed"
-    )) {
+    if (
+      this.interruptCleanupPersistence &&
+      (event.type === "presentation_cleanup_completed" ||
+        event.type === "presentation_cleanup_unconfirmed")
+    ) {
       throw new Error("injected Presentation cleanup persistence interruption");
     }
   }
@@ -79,7 +93,11 @@ class ClearanceFaultStore extends InMemoryEventStore {
 class SequencedWorkerAdapter implements WorkerAdapter {
   private index = 0;
 
-  constructor(private readonly failures: ReadonlyArray<"success" | "process-exited-without-result" | "liveness-unproven">) {}
+  constructor(
+    private readonly failures: ReadonlyArray<
+      "success" | "process-exited-without-result" | "liveness-unproven"
+    >
+  ) {}
 
   open(operation: Operation): Worker {
     const failure = this.failures[this.index++] ?? "success";
@@ -93,7 +111,9 @@ class SequencedWorkerAdapter implements WorkerAdapter {
   }
 }
 
-function authenticator(authority: () => "authorized" | "revoked" = () => "authorized"): RevisionAuthenticator {
+function authenticator(
+  authority: () => "authorized" | "revoked" = () => "authorized"
+): RevisionAuthenticator {
   return {
     authenticate: async () => ({
       subjectId: "coordinator-1",
@@ -103,10 +123,18 @@ function authenticator(authority: () => "authorized" | "revoked" = () => "author
   };
 }
 
-async function fixture(failures: ReadonlyArray<"success" | "process-exited-without-result" | "liveness-unproven"> = ["success", "success", "success"]) {
-  const clock = new FakeClock(Array.from({ length: 120 }, (_, index) =>
-    new Date(Date.parse("2026-09-06T10:00:00.000Z") + index * 1_000).toISOString(),
-  ));
+async function fixture(
+  failures: ReadonlyArray<
+    "success" | "process-exited-without-result" | "liveness-unproven"
+  > = ["success", "success", "success"]
+) {
+  const clock = new FakeClock(
+    Array.from({ length: 120 }, (_, index) =>
+      new Date(
+        Date.parse("2026-09-06T10:00:00.000Z") + index * 1_000
+      ).toISOString()
+    )
+  );
   const store = new InMemoryEventStore([], clock);
   const runtime = makeTestRuntime({
     worker: new SequencedWorkerAdapter(failures),
@@ -127,7 +155,12 @@ async function fixture(failures: ReadonlyArray<"success" | "process-exited-witho
   return { runtime, original, snapshot, store };
 }
 
-async function reserveFirst(runtime: Runtime, originalId: string, resultId: string, resultDigest: `sha256:${string}`) {
+async function reserveFirst(
+  runtime: Runtime,
+  originalId: string,
+  resultId: string,
+  resultDigest: `sha256:${string}`
+) {
   const revisions = await runtime.revisions("credential");
   return revisions.reserveRevision({
     requestId: "revision-request-1",
@@ -144,7 +177,11 @@ async function reserveFirst(runtime: Runtime, originalId: string, resultId: stri
   });
 }
 
-async function waitForState(runtime: Runtime, operationId: string, expected: string): Promise<void> {
+async function waitForState(
+  runtime: Runtime,
+  operationId: string,
+  expected: string
+): Promise<void> {
   let actual = "unread";
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
@@ -155,7 +192,9 @@ async function waitForState(runtime: Runtime, operationId: string, expected: str
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`Operation ${operationId} reached ${actual}, not ${expected}`);
+  throw new Error(
+    `Operation ${operationId} reached ${actual}, not ${expected}`
+  );
 }
 
 test("Revision予約は元Resultと系列上限を結び付けて永続化する", async () => {
@@ -164,23 +203,43 @@ test("Revision予約は元Resultと系列上限を結び付けて永続化する
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest,
+    snapshot.resultAcceptance!.manifestDigest
   );
 
-  assert.equal(outcome.status === "reserved" ? outcome.reservation.seriesId : outcome.status, "pions.revision-series.v1:original");
+  assert.equal(
+    outcome.status === "reserved"
+      ? outcome.reservation.seriesId
+      : outcome.status,
+    "pions.revision-series.v1:original"
+  );
 });
 
 test("同じRevision依頼の再送は同じ予約へ合流する", async () => {
   const { runtime, original, snapshot } = await fixture();
-  await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
-  const repeated = await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
+  await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
+  const repeated = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
 
   assert.equal(repeated.status, "idempotent");
 });
 
 test("同じRevision依頼IDの異なる内容は競合する", async () => {
   const { runtime, original, snapshot } = await fixture();
-  await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
+  await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
   const revisions = await runtime.revisions("credential");
   const conflict = await revisions.reserveRevision({
     requestId: "revision-request-1",
@@ -189,42 +248,73 @@ test("同じRevision依頼IDの異なる内容は競合する", async () => {
     targetResultDigest: snapshot.resultAcceptance!.manifestDigest,
     reason: "異なる理由",
     maxAttempts: 3,
-    task: { promptRef: "private://other", profile: "coding", idempotencyKey: "other" },
+    task: {
+      promptRef: "private://other",
+      profile: "coding",
+      idempotencyKey: "other",
+    },
   });
 
-  assert.deepEqual(conflict, { status: "rejected", reason: "request_conflict" });
+  assert.deepEqual(conflict, {
+    status: "rejected",
+    reason: "request_conflict",
+  });
 });
 
 test("表示終了処理が完了済みでもunknownのRetryは安全証明なしでは予約しない", async () => {
-  const { runtime, original, snapshot } = await fixture(["success", "liveness-unproven"]);
+  const { runtime, original, snapshot } = await fixture([
+    "success",
+    "liveness-unproven",
+  ]);
   if (snapshot.presentationCleanup?.state !== "completed") {
     throw new Error("Original Presentation cleanup did not complete");
   }
-  const revision = await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
-  await waitForState(runtime, revision.reservation.operationId, "unknown");
-  const outcome = await (await runtime.revisions("credential")).reserveRetry({
-    requestId: "retry-request-1",
-    seriesId: revision.reservation.seriesId,
-    failedOperationId: revision.reservation.operationId,
-    reason: "状態不明から安全に再試行する",
-    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
-  });
-
-  assert.deepEqual(outcome, { status: "rejected", reason: "retry_clearance_required" });
-});
-
-test("旧ワーカーの子プロセスへのアクセスが残るRetry clearanceを拒否する", async () => {
-  const { runtime, original, snapshot } = await fixture(["success", "liveness-unproven"]);
   const revision = await reserveFirst(
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest,
+    snapshot.resultAcceptance!.manifestDigest
   );
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
   await waitForState(runtime, revision.reservation.operationId, "unknown");
-  const outcome = await (await runtime.revisions("credential")).reserveRetry({
+  const outcome = await (
+    await runtime.revisions("credential")
+  ).reserveRetry({
+    requestId: "retry-request-1",
+    seriesId: revision.reservation.seriesId,
+    failedOperationId: revision.reservation.operationId,
+    reason: "状態不明から安全に再試行する",
+    task: {
+      promptRef: "private://retry",
+      profile: "coding",
+      idempotencyKey: "retry-1",
+    },
+  });
+
+  assert.deepEqual(outcome, {
+    status: "rejected",
+    reason: "retry_clearance_required",
+  });
+});
+
+test("旧ワーカーの子プロセスへのアクセスが残るRetry clearanceを拒否する", async () => {
+  const { runtime, original, snapshot } = await fixture([
+    "success",
+    "liveness-unproven",
+  ]);
+  const revision = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
+  await waitForState(runtime, revision.reservation.operationId, "unknown");
+  const outcome = await (
+    await runtime.revisions("credential")
+  ).reserveRetry({
     requestId: "retry-request-1",
     seriesId: revision.reservation.seriesId,
     failedOperationId: revision.reservation.operationId,
@@ -239,23 +329,36 @@ test("旧ワーカーの子プロセスへのアクセスが残るRetry clearanc
       verifiedBy: "resource-adapter-1",
       verifiedAt: "2026-09-06T10:01:00.000Z",
     } as never,
-    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
+    task: {
+      promptRef: "private://retry",
+      profile: "coding",
+      idempotencyKey: "retry-1",
+    },
   });
 
-  assert.deepEqual(outcome, { status: "rejected", reason: "retry_clearance_invalid" });
+  assert.deepEqual(outcome, {
+    status: "rejected",
+    reason: "retry_clearance_invalid",
+  });
 });
 
 test("外部ジョブの資源引き渡しが未確認のRetry clearanceを拒否する", async () => {
-  const { runtime, original, snapshot } = await fixture(["success", "liveness-unproven"]);
+  const { runtime, original, snapshot } = await fixture([
+    "success",
+    "liveness-unproven",
+  ]);
   const revision = await reserveFirst(
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest,
+    snapshot.resultAcceptance!.manifestDigest
   );
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
   await waitForState(runtime, revision.reservation.operationId, "unknown");
-  const outcome = await (await runtime.revisions("credential")).reserveRetry({
+  const outcome = await (
+    await runtime.revisions("credential")
+  ).reserveRetry({
     requestId: "retry-request-1",
     seriesId: revision.reservation.seriesId,
     failedOperationId: revision.reservation.operationId,
@@ -270,16 +373,27 @@ test("外部ジョブの資源引き渡しが未確認のRetry clearanceを拒�
       verifiedBy: "resource-adapter-1",
       verifiedAt: "2026-09-06T10:01:00.000Z",
     } as never,
-    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
+    task: {
+      promptRef: "private://retry",
+      profile: "coding",
+      idempotencyKey: "retry-1",
+    },
   });
 
-  assert.deepEqual(outcome, { status: "rejected", reason: "retry_clearance_invalid" });
+  assert.deepEqual(outcome, {
+    status: "rejected",
+    reason: "retry_clearance_invalid",
+  });
 });
 
 test("表示終了処理の復旧と同時でもunknownのRetryは安全証明なしでは予約しない", async (context) => {
-  const clock = new FakeClock(Array.from({ length: 180 }, (_, index) =>
-    new Date(Date.parse("2026-09-06T14:00:00.000Z") + index * 1_000).toISOString(),
-  ));
+  const clock = new FakeClock(
+    Array.from({ length: 180 }, (_, index) =>
+      new Date(
+        Date.parse("2026-09-06T14:00:00.000Z") + index * 1_000
+      ).toISOString()
+    )
+  );
   const store = new CleanupRecoveryStore([], clock);
   const presentation = new PausedCleanupPresentation();
   store.interruptCleanupPersistence = true;
@@ -302,9 +416,10 @@ test("表示終了処理の復旧と同時でもunknownのRetryは安全証明�
     firstRuntime,
     original.operationId,
     accepted.acceptanceId,
-    accepted.manifestDigest,
+    accepted.manifestDigest
   );
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
   await waitForState(firstRuntime, revision.reservation.operationId, "unknown");
   if ((await original.read()).presentationCleanup?.state !== "pending") {
     throw new Error("Presentation cleanup is not pending");
@@ -323,24 +438,45 @@ test("表示終了処理の復旧と同時でもunknownのRetryは安全証明�
   });
   context.after(() => recoveredRuntime.close());
   await presentation.waitForInspection();
-  const outcome = await (await recoveredRuntime.revisions("credential")).reserveRetry({
+  const outcome = await (
+    await recoveredRuntime.revisions("credential")
+  ).reserveRetry({
     requestId: "retry-request-1",
     seriesId: revision.reservation.seriesId,
     failedOperationId: revision.reservation.operationId,
     reason: "終了処理復旧中に安全証明なしで再試行する",
-    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
+    task: {
+      promptRef: "private://retry",
+      profile: "coding",
+      idempotencyKey: "retry-1",
+    },
   });
   presentation.resumeInspection();
 
-  assert.deepEqual(outcome, { status: "rejected", reason: "retry_clearance_required" });
+  assert.deepEqual(outcome, {
+    status: "rejected",
+    reason: "retry_clearance_required",
+  });
 });
 
 test("Retry clearanceを永続化してからunknownのRetryを予約する", async () => {
-  const { runtime, original, snapshot } = await fixture(["success", "liveness-unproven", "success"]);
-  const revision = await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  const { runtime, original, snapshot } = await fixture([
+    "success",
+    "liveness-unproven",
+    "success",
+  ]);
+  const revision = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
   await waitForState(runtime, revision.reservation.operationId, "unknown");
-  const outcome = await (await runtime.revisions("credential")).reserveRetry({
+  const outcome = await (
+    await runtime.revisions("credential")
+  ).reserveRetry({
     requestId: "retry-request-1",
     seriesId: revision.reservation.seriesId,
     failedOperationId: revision.reservation.operationId,
@@ -355,10 +491,19 @@ test("Retry clearanceを永続化してからunknownのRetryを予約する", as
       verifiedBy: "resource-adapter-1",
       verifiedAt: "2026-09-06T10:01:00.000Z",
     },
-    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
+    task: {
+      promptRef: "private://retry",
+      profile: "coding",
+      idempotencyKey: "retry-1",
+    },
   });
 
-  assert.equal(outcome.status === "reserved" ? outcome.reservation.retryClearanceId : outcome.status, "clearance-1");
+  assert.equal(
+    outcome.status === "reserved"
+      ? outcome.reservation.retryClearanceId
+      : outcome.status,
+    "clearance-1"
+  );
 });
 
 test("系列全体の上限に達した後は次のRevisionを予約しない", async () => {
@@ -371,11 +516,17 @@ test("系列全体の上限に達した後は次のRevisionを予約しない", 
     targetResultDigest: snapshot.resultAcceptance!.manifestDigest,
     reason: "唯一の改訂",
     maxAttempts: 1,
-    task: { promptRef: "private://revision", profile: "coding", idempotencyKey: "revision-1" },
+    task: {
+      promptRef: "private://revision",
+      profile: "coding",
+      idempotencyKey: "revision-1",
+    },
   });
   if (first.status === "rejected") throw new Error("Revision was not reserved");
   await waitForState(runtime, first.reservation.operationId, "completed");
-  const accepted = (await (await runtime.operation(first.reservation.operationId)).read()).resultAcceptance!;
+  const accepted = (
+    await (await runtime.operation(first.reservation.operationId)).read()
+  ).resultAcceptance!;
   const outcome = await revisions.reserveRevision({
     requestId: "revision-request-2",
     seriesId: first.reservation.seriesId,
@@ -383,16 +534,24 @@ test("系列全体の上限に達した後は次のRevisionを予約しない", 
     targetResultId: accepted.acceptanceId,
     targetResultDigest: accepted.manifestDigest,
     reason: "上限を超える改訂",
-    task: { promptRef: "private://revision-2", profile: "coding", idempotencyKey: "revision-2" },
+    task: {
+      promptRef: "private://revision-2",
+      profile: "coding",
+      idempotencyKey: "revision-2",
+    },
   });
 
   assert.deepEqual(outcome, { status: "rejected", reason: "limit_exceeded" });
 });
 
 test("Retry clearanceの保存失敗時はRetryを予約しない", async () => {
-  const clock = new FakeClock(Array.from({ length: 120 }, (_, index) =>
-    new Date(Date.parse("2026-09-06T12:00:00.000Z") + index * 1_000).toISOString()
-  ));
+  const clock = new FakeClock(
+    Array.from({ length: 120 }, (_, index) =>
+      new Date(
+        Date.parse("2026-09-06T12:00:00.000Z") + index * 1_000
+      ).toISOString()
+    )
+  );
   const store = new ClearanceFaultStore([], clock);
   const runtime = makeTestRuntime({
     worker: new SequencedWorkerAdapter(["success", "liveness-unproven"]),
@@ -403,39 +562,63 @@ test("Retry clearanceの保存失敗時はRetryを予約しない", async () => 
     revisionAuthenticator: authenticator(),
     retryClearanceVerifier: { verify: async () => true },
   });
-  const original = await runtime.spawn({ promptRef: "private://original", profile: "coding", idempotencyKey: "original" });
+  const original = await runtime.spawn({
+    promptRef: "private://original",
+    profile: "coding",
+    idempotencyKey: "original",
+  });
   await original.result();
   const accepted = (await original.read()).resultAcceptance!;
-  const revision = await reserveFirst(runtime, original.operationId, accepted.acceptanceId, accepted.manifestDigest);
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  const revision = await reserveFirst(
+    runtime,
+    original.operationId,
+    accepted.acceptanceId,
+    accepted.manifestDigest
+  );
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
   await waitForState(runtime, revision.reservation.operationId, "unknown");
   store.failClearance = true;
-  await (await runtime.revisions("credential")).reserveRetry({
-    requestId: "retry-request-1",
-    seriesId: revision.reservation.seriesId,
-    failedOperationId: revision.reservation.operationId,
-    reason: "保存失敗する再試行",
-    clearance: {
-      clearanceId: "clearance-1",
+  await (
+    await runtime.revisions("credential")
+  )
+    .reserveRetry({
+      requestId: "retry-request-1",
+      seriesId: revision.reservation.seriesId,
       failedOperationId: revision.reservation.operationId,
-      affectedResourceIds: ["workspace:writer"],
-      workerStoppedOrAccessBlocked: true,
-      noConflict: true,
-      handoffConfirmed: true,
-      verifiedBy: "resource-adapter-1",
-      verifiedAt: "2026-09-06T12:01:00.000Z",
-    },
-    task: { promptRef: "private://retry", profile: "coding", idempotencyKey: "retry-1" },
-  }).catch(() => undefined);
-  const series = await (await runtime.revisions("credential")).read(revision.reservation.seriesId);
+      reason: "保存失敗する再試行",
+      clearance: {
+        clearanceId: "clearance-1",
+        failedOperationId: revision.reservation.operationId,
+        affectedResourceIds: ["workspace:writer"],
+        workerStoppedOrAccessBlocked: true,
+        noConflict: true,
+        handoffConfirmed: true,
+        verifiedBy: "resource-adapter-1",
+        verifiedAt: "2026-09-06T12:01:00.000Z",
+      },
+      task: {
+        promptRef: "private://retry",
+        profile: "coding",
+        idempotencyKey: "retry-1",
+      },
+    })
+    .catch(() => undefined);
+  const series = await (
+    await runtime.revisions("credential")
+  ).read(revision.reservation.seriesId);
 
   assert.equal(series.reservations.length, 1);
 });
 
 test("予約後にOperation作成が中断しても再起動時に作成を再開する", async () => {
-  const clock = new FakeClock(Array.from({ length: 160 }, (_, index) =>
-    new Date(Date.parse("2026-09-06T13:00:00.000Z") + index * 1_000).toISOString()
-  ));
+  const clock = new FakeClock(
+    Array.from({ length: 160 }, (_, index) =>
+      new Date(
+        Date.parse("2026-09-06T13:00:00.000Z") + index * 1_000
+      ).toISOString()
+    )
+  );
   const store = new InMemoryEventStore([], clock);
   const presentation = new InterruptiblePresentation();
   const firstRuntime = makeTestRuntime({
@@ -446,11 +629,20 @@ test("予約後にOperation作成が中断しても再起動時に作成を再�
     store,
     revisionAuthenticator: authenticator(),
   });
-  const original = await firstRuntime.spawn({ promptRef: "private://original", profile: "coding", idempotencyKey: "original" });
+  const original = await firstRuntime.spawn({
+    promptRef: "private://original",
+    profile: "coding",
+    idempotencyKey: "original",
+  });
   await original.result();
   const accepted = (await original.read()).resultAcceptance!;
   presentation.failPreflight = true;
-  await reserveFirst(firstRuntime, original.operationId, accepted.acceptanceId, accepted.manifestDigest).catch(() => undefined);
+  await reserveFirst(
+    firstRuntime,
+    original.operationId,
+    accepted.acceptanceId,
+    accepted.manifestDigest
+  ).catch(() => undefined);
   const recovered = makeTestRuntime({
     worker: new SequencedWorkerAdapter(["success"]),
     clock,
@@ -461,16 +653,29 @@ test("予約後にOperation作成が中断しても再起動時に作成を再�
   });
   await waitForState(recovered, "revision-1", "completed");
 
-  assert.equal((await (await recovered.operation("revision-1")).read()).state, "completed");
+  assert.equal(
+    (await (await recovered.operation("revision-1")).read()).state,
+    "completed"
+  );
 });
 
 test("Retry成功は別の成果物採否判断で系列へ採用する", async () => {
   const { runtime, original, snapshot } = await fixture();
-  const revision = await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  const revision = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
   await waitForState(runtime, revision.reservation.operationId, "completed");
-  const result = (await (await runtime.operation(revision.reservation.operationId)).read()).resultAcceptance!;
-  const outcome = await (await runtime.revisions("credential")).adopt({
+  const result = (
+    await (await runtime.operation(revision.reservation.operationId)).read()
+  ).resultAcceptance!;
+  const outcome = await (
+    await runtime.revisions("credential")
+  ).adopt({
     decisionId: "adoption-1",
     seriesId: revision.reservation.seriesId,
     revisionNumber: 1,
@@ -479,15 +684,25 @@ test("Retry成功は別の成果物採否判断で系列へ採用する", async 
     resultDigest: result.manifestDigest,
   });
 
-  assert.equal(outcome.status === "adopted" ? outcome.adoption.resultId : outcome.status, result.acceptanceId);
+  assert.equal(
+    outcome.status === "adopted" ? outcome.adoption.resultId : outcome.status,
+    result.acceptanceId
+  );
 });
 
 test("直接RevisionのResultから次のRevisionを同じ系列へ予約する", async () => {
   const { runtime, original, snapshot } = await fixture();
-  const first = await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
+  const first = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
   if (first.status === "rejected") throw new Error("Revision was not reserved");
   await waitForState(runtime, first.reservation.operationId, "completed");
-  const result = (await (await runtime.operation(first.reservation.operationId)).read()).resultAcceptance!;
+  const result = (
+    await (await runtime.operation(first.reservation.operationId)).read()
+  ).resultAcceptance!;
   const revisions = await runtime.revisions("credential");
   const second = await revisions.reserveRevision({
     requestId: "revision-request-2",
@@ -496,26 +711,48 @@ test("直接RevisionのResultから次のRevisionを同じ系列へ予約する"
     targetResultId: result.acceptanceId,
     targetResultDigest: result.manifestDigest,
     reason: "追加のレビュー指摘を反映する",
-    task: { promptRef: "private://revision-2", profile: "coding", idempotencyKey: "revision-2" },
+    task: {
+      promptRef: "private://revision-2",
+      profile: "coding",
+      idempotencyKey: "revision-2",
+    },
   });
 
-  assert.equal(second.status === "reserved" ? second.reservation.revisionNumber : second.status, 2);
+  assert.equal(
+    second.status === "reserved"
+      ? second.reservation.revisionNumber
+      : second.status,
+    2
+  );
 });
 
 test("系列メンバーを別系列の起点にして上限を初期化できない", async () => {
   const { runtime, original, snapshot } = await fixture();
-  const first = await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
+  const first = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
   if (first.status === "rejected") throw new Error("Revision was not reserved");
   await waitForState(runtime, first.reservation.operationId, "completed");
-  const accepted = (await (await runtime.operation(first.reservation.operationId)).read()).resultAcceptance!;
-  const fork = await (await runtime.revisions("credential")).reserveRevision({
+  const accepted = (
+    await (await runtime.operation(first.reservation.operationId)).read()
+  ).resultAcceptance!;
+  const fork = await (
+    await runtime.revisions("credential")
+  ).reserveRevision({
     requestId: "fork-request",
     targetOperationId: first.reservation.operationId,
     targetResultId: accepted.acceptanceId,
     targetResultDigest: accepted.manifestDigest,
     reason: "別系列へ分岐する",
     maxAttempts: 10,
-    task: { promptRef: "private://fork", profile: "coding", idempotencyKey: "fork" },
+    task: {
+      promptRef: "private://fork",
+      profile: "coding",
+      idempotencyKey: "fork",
+    },
   });
 
   assert.deepEqual(fork, { status: "rejected", reason: "invalid_target" });
@@ -523,10 +760,18 @@ test("系列メンバーを別系列の起点にして上限を初期化でき�
 
 test("同じ成果物採否判断の再送は同じ採用へ合流する", async () => {
   const { runtime, original, snapshot } = await fixture();
-  const revision = await reserveFirst(runtime, original.operationId, snapshot.resultAcceptance!.acceptanceId, snapshot.resultAcceptance!.manifestDigest);
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  const revision = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  );
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
   await waitForState(runtime, revision.reservation.operationId, "completed");
-  const result = (await (await runtime.operation(revision.reservation.operationId)).read()).resultAcceptance!;
+  const result = (
+    await (await runtime.operation(revision.reservation.operationId)).read()
+  ).resultAcceptance!;
   const request = {
     decisionId: "adoption-1",
     seriesId: revision.reservation.seriesId,
@@ -544,9 +789,13 @@ test("同じ成果物採否判断の再送は同じ採用へ合流する", async
 
 test("失効した成果物採否主体の採用を拒否する", async () => {
   const state = { authority: "authorized" as "authorized" | "revoked" };
-  const clock = new FakeClock(Array.from({ length: 120 }, (_, index) =>
-    new Date(Date.parse("2026-09-06T11:00:00.000Z") + index * 1_000).toISOString()
-  ));
+  const clock = new FakeClock(
+    Array.from({ length: 120 }, (_, index) =>
+      new Date(
+        Date.parse("2026-09-06T11:00:00.000Z") + index * 1_000
+      ).toISOString()
+    )
+  );
   const runtime = makeTestRuntime({
     worker: new SequencedWorkerAdapter(["success", "success"]),
     clock,
@@ -556,15 +805,29 @@ test("失効した成果物採否主体の採用を拒否する", async () => {
     revisionAuthenticator: authenticator(() => state.authority),
     retryClearanceVerifier: { verify: async () => true },
   });
-  const original = await runtime.spawn({ promptRef: "private://original", profile: "coding", idempotencyKey: "original" });
+  const original = await runtime.spawn({
+    promptRef: "private://original",
+    profile: "coding",
+    idempotencyKey: "original",
+  });
   await original.result();
   const accepted = (await original.read()).resultAcceptance!;
-  const revision = await reserveFirst(runtime, original.operationId, accepted.acceptanceId, accepted.manifestDigest);
-  if (revision.status === "rejected") throw new Error("Revision was not reserved");
+  const revision = await reserveFirst(
+    runtime,
+    original.operationId,
+    accepted.acceptanceId,
+    accepted.manifestDigest
+  );
+  if (revision.status === "rejected")
+    throw new Error("Revision was not reserved");
   await waitForState(runtime, revision.reservation.operationId, "completed");
-  const result = (await (await runtime.operation(revision.reservation.operationId)).read()).resultAcceptance!;
+  const result = (
+    await (await runtime.operation(revision.reservation.operationId)).read()
+  ).resultAcceptance!;
   state.authority = "revoked";
-  const outcome = await (await runtime.revisions("credential")).adopt({
+  const outcome = await (
+    await runtime.revisions("credential")
+  ).adopt({
     decisionId: "adoption-1",
     seriesId: revision.reservation.seriesId,
     revisionNumber: 1,
@@ -573,5 +836,8 @@ test("失効した成果物採否主体の採用を拒否する", async () => {
     resultDigest: result.manifestDigest,
   });
 
-  assert.deepEqual(outcome, { status: "rejected", reason: "authority_revoked" });
+  assert.deepEqual(outcome, {
+    status: "rejected",
+    reason: "authority_revoked",
+  });
 });

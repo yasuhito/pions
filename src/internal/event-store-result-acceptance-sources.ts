@@ -11,9 +11,11 @@ import type { EventStore, Operation } from "./event-store/index.js";
 
 async function readOperation(
   store: EventStore,
-  operationId: string,
+  operationId: string
 ): Promise<Readonly<Operation> | "unknown"> {
-  const stored = await Effect.runPromise(Effect.either(store.read(operationId)));
+  const stored = await Effect.runPromise(
+    Effect.either(store.read(operationId))
+  );
   return stored._tag === "Left" ? "unknown" : stored.right.operation;
 }
 
@@ -27,20 +29,25 @@ export function eventStoreResultAcceptanceSources(store: EventStore): {
     requirements: {
       read: async (operationId) => {
         const operation = await readOperation(store, operationId);
-        return operation === "unknown" ? "unknown" : operation.workProductRequirements;
+        return operation === "unknown"
+          ? "unknown"
+          : operation.workProductRequirements;
       },
     },
     retentionPolicy: {
       read: async (operationId) => {
         const operation = await readOperation(store, operationId);
-        return operation === "unknown" ? "unknown" : operation.resultRetentionPolicy;
+        return operation === "unknown"
+          ? "unknown"
+          : operation.resultRetentionPolicy;
       },
     },
     eventEvidenceSource: {
       read: async (operationId, preparationId) => {
         const operation = await readOperation(store, operationId);
         const result = operation === "unknown" ? undefined : operation.result;
-        if (result === undefined || result.preparationId !== preparationId) return "unknown";
+        if (result === undefined || result.preparationId !== preparationId)
+          return "unknown";
         return {
           preparationId: result.preparationId,
           operationId: result.operationId,

@@ -11,8 +11,14 @@ import type {
   WorkerConfigurationFailureReason,
   WorkerProfilePolicy,
 } from "../public.js";
-import { ResourceProofRejectedError, WorkerConfigurationError } from "../public.js";
-import { normalizePermissionManifest, permissionManifestDocument } from "./resource-proof.js";
+import {
+  ResourceProofRejectedError,
+  WorkerConfigurationError,
+} from "../public.js";
+import {
+  normalizePermissionManifest,
+  permissionManifestDocument,
+} from "./resource-proof.js";
 import { resolveWorkProductRequirements } from "./result-acceptance-manifest.js";
 
 export const ModelReferenceSchema = Schema.Struct({
@@ -20,7 +26,13 @@ export const ModelReferenceSchema = Schema.Struct({
   id: Schema.NonEmptyString,
 });
 export const ThinkingLevelSchema = Schema.Literal(
-  "off", "minimal", "low", "medium", "high", "xhigh", "max",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
 );
 export const RequestedWorkerConfigSchema = Schema.Struct({
   model: Schema.optional(ModelReferenceSchema),
@@ -43,25 +55,43 @@ export const EffectiveWorkerConfigSchema = Schema.Struct({
 });
 export const ObservedWorkerConfigSchema = Schema.Struct({
   model: Schema.Union(
-    Schema.Struct({ state: Schema.Literal("observed"), value: ModelReferenceSchema }),
-    Schema.Struct({ state: Schema.Literal("unavailable") }),
+    Schema.Struct({
+      state: Schema.Literal("observed"),
+      value: ModelReferenceSchema,
+    }),
+    Schema.Struct({ state: Schema.Literal("unavailable") })
   ),
   thinkingLevel: Schema.Union(
-    Schema.Struct({ state: Schema.Literal("observed"), value: ThinkingLevelSchema }),
-    Schema.Struct({ state: Schema.Literal("unavailable") }),
+    Schema.Struct({
+      state: Schema.Literal("observed"),
+      value: ThinkingLevelSchema,
+    }),
+    Schema.Struct({ state: Schema.Literal("unavailable") })
   ),
   tools: Schema.Union(
-    Schema.Struct({ state: Schema.Literal("observed"), value: Schema.Array(Schema.NonEmptyString) }),
-    Schema.Struct({ state: Schema.Literal("unavailable") }),
+    Schema.Struct({
+      state: Schema.Literal("observed"),
+      value: Schema.Array(Schema.NonEmptyString),
+    }),
+    Schema.Struct({ state: Schema.Literal("unavailable") })
   ),
   cwd: Schema.Union(
-    Schema.Struct({ state: Schema.Literal("observed"), value: Schema.NonEmptyString }),
-    Schema.Struct({ state: Schema.Literal("unavailable") }),
+    Schema.Struct({
+      state: Schema.Literal("observed"),
+      value: Schema.NonEmptyString,
+    }),
+    Schema.Struct({ state: Schema.Literal("unavailable") })
   ),
 });
 
 const THINKING_LEVELS: ReadonlyArray<ThinkingLevel> = [
-  "off", "minimal", "low", "medium", "high", "xhigh", "max",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
 ];
 const MAX_CONFIG_STRING_BYTES = 512;
 const MAX_TOOLS = 16;
@@ -86,21 +116,32 @@ export const BODY_ONLY_WORK_PRODUCT_REQUIREMENTS = Object.freeze({
   maxTotalByteCount: 1_048_576,
 });
 
-export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze({
-  intendedUse: "reader",
-  modelCandidates: Object.freeze([{ provider: "test", id: "test-model" }]),
-  thinkingLevel: "medium",
-  tools: Object.freeze(["read", "bash"]),
-  resources: Object.freeze({ resourceProofPolicy: "disabled" }),
-  startAuthorization: Object.freeze({ policy: "disabled" }),
-  workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-  acceptedArtifactRetentionMs: 86_400_000,
-});
+export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
+  {
+    intendedUse: "reader",
+    modelCandidates: Object.freeze([{ provider: "test", id: "test-model" }]),
+    thinkingLevel: "medium",
+    tools: Object.freeze(["read", "bash"]),
+    resources: Object.freeze({ resourceProofPolicy: "disabled" }),
+    startAuthorization: Object.freeze({ policy: "disabled" }),
+    workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+    acceptedArtifactRetentionMs: 86_400_000,
+  }
+);
 
-export function validateWorkerResourcePolicy(profile: Readonly<WorkerProfilePolicy>): void {
+export function validateWorkerResourcePolicy(
+  profile: Readonly<WorkerProfilePolicy>
+): void {
   const resources = profile.resources;
-  if (resources === undefined || resources.resourceProofPolicy !== "disabled" && resources.resourceProofPolicy !== "required") {
-    throw new ResourceProofRejectedError("invalid_profile", "Resource proof policy must be explicit");
+  if (
+    resources === undefined ||
+    (resources.resourceProofPolicy !== "disabled" &&
+      resources.resourceProofPolicy !== "required")
+  ) {
+    throw new ResourceProofRejectedError(
+      "invalid_profile",
+      "Resource proof policy must be explicit"
+    );
   }
   if (resources.resourceProofPolicy === "disabled") return;
   if (
@@ -112,33 +153,59 @@ export function validateWorkerResourcePolicy(profile: Readonly<WorkerProfilePoli
     resources.workspace.normalizedPath.length === 0 ||
     resources.workspace.baseRevision.length === 0 ||
     resources.workspace.pionsMayDelete !== false ||
-    !Number.isSafeInteger(resources.cleanupTimeoutMs) || resources.cleanupTimeoutMs <= 0 ||
-    !Number.isSafeInteger(resources.maxCleanupAttempts) || resources.maxCleanupAttempts <= 0 ||
+    !Number.isSafeInteger(resources.cleanupTimeoutMs) ||
+    resources.cleanupTimeoutMs <= 0 ||
+    !Number.isSafeInteger(resources.maxCleanupAttempts) ||
+    resources.maxCleanupAttempts <= 0 ||
     resources.safetyCleanupOperations.length !== 3 ||
-    !["inspect", "revoke", "release"].every((operation) => resources.safetyCleanupOperations.includes(operation as "inspect" | "revoke" | "release"))
+    !["inspect", "revoke", "release"].every((operation) =>
+      resources.safetyCleanupOperations.includes(
+        operation as "inspect" | "revoke" | "release"
+      )
+    )
   ) {
-    throw new ResourceProofRejectedError("invalid_profile", "Required resource proof configuration is incomplete");
+    throw new ResourceProofRejectedError(
+      "invalid_profile",
+      "Required resource proof configuration is incomplete"
+    );
   }
   const manifest = normalizePermissionManifest(resources.permissionManifest);
   const profileTools = [...new Set(profile.tools)].sort();
-  if (manifest.tools.length !== profileTools.length || manifest.tools.some((tool, index) => tool !== profileTools[index])) {
-    throw new ResourceProofRejectedError("permission_contradiction", "Profile tools and permission manifest tools differ");
+  if (
+    manifest.tools.length !== profileTools.length ||
+    manifest.tools.some((tool, index) => tool !== profileTools[index])
+  ) {
+    throw new ResourceProofRejectedError(
+      "permission_contradiction",
+      "Profile tools and permission manifest tools differ"
+    );
   }
 }
 
-function validateStartAuthorizationPolicy(profile: Readonly<WorkerProfilePolicy>): void {
+function validateStartAuthorizationPolicy(
+  profile: Readonly<WorkerProfilePolicy>
+): void {
   const authorization = profile.startAuthorization;
   if (
     authorization.policy === "disabled" ||
-    authorization.policy === "optional" && authorization.resolution === "disabled"
-  ) return;
+    (authorization.policy === "optional" &&
+      authorization.resolution === "disabled")
+  )
+    return;
   if (
-    !Number.isSafeInteger(authorization.windowMs) || authorization.windowMs <= 0 ||
-    new Set(authorization.authorizedSubjectIds).size !== authorization.authorizedSubjectIds.length ||
-    authorization.authorizedSubjectIds.some((subjectId) => subjectId.length === 0) ||
+    !Number.isSafeInteger(authorization.windowMs) ||
+    authorization.windowMs <= 0 ||
+    new Set(authorization.authorizedSubjectIds).size !==
+      authorization.authorizedSubjectIds.length ||
+    authorization.authorizedSubjectIds.some(
+      (subjectId) => subjectId.length === 0
+    ) ||
     authorization.authorizedSubjectIds.length === 0
   ) {
-    throw new WorkerConfigurationError("unsupported_capability", "Start authorization policy is incomplete");
+    throw new WorkerConfigurationError(
+      "unsupported_capability",
+      "Start authorization policy is incomplete"
+    );
   }
 }
 
@@ -147,7 +214,7 @@ function validateIntendedUse(profile: Readonly<WorkerProfilePolicy>): void {
     if (profile.tools.includes("edit") || profile.tools.includes("write")) {
       throw new WorkerConfigurationError(
         "tool_policy_violation",
-        "A reader profile cannot provide editing tools",
+        "A reader profile cannot provide editing tools"
       );
     }
     return;
@@ -156,89 +223,125 @@ function validateIntendedUse(profile: Readonly<WorkerProfilePolicy>): void {
     if (profile.tools.includes("edit") || profile.tools.includes("write")) {
       throw new WorkerConfigurationError(
         "tool_policy_violation",
-        "A formal reviewer profile cannot provide editing tools",
+        "A formal reviewer profile cannot provide editing tools"
       );
     }
     if (profile.startAuthorization.policy !== "required") {
       throw new WorkerConfigurationError(
         "unsupported_capability",
-        "A formal reviewer profile requires Start authorization",
+        "A formal reviewer profile requires Start authorization"
       );
     }
-    if (profile.startAuthorization.receipt.reviewSubjectVerification !== "required") {
+    if (
+      profile.startAuthorization.receipt.reviewSubjectVerification !==
+      "required"
+    ) {
       throw new WorkerConfigurationError(
         "unsupported_capability",
-        "A formal reviewer profile requires fixed Review subject verification",
+        "A formal reviewer profile requires fixed Review subject verification"
       );
     }
     return;
   }
-  if (profile.intendedUse !== "writer" && profile.intendedUse !== "revision_retry") {
-    throw new WorkerConfigurationError("unsupported_capability", "Unknown Worker profile intended use");
+  if (
+    profile.intendedUse !== "writer" &&
+    profile.intendedUse !== "revision_retry"
+  ) {
+    throw new WorkerConfigurationError(
+      "unsupported_capability",
+      "Unknown Worker profile intended use"
+    );
   }
-  const intendedUse = profile.intendedUse === "writer" ? "Writer" : "Revision and Retry";
+  const intendedUse =
+    profile.intendedUse === "writer" ? "Writer" : "Revision and Retry";
   if (profile.startAuthorization.policy !== "required") {
     throw new WorkerConfigurationError(
       "unsupported_capability",
-      `A ${intendedUse} profile requires Start authorization`,
+      `A ${intendedUse} profile requires Start authorization`
     );
   }
   if (profile.resources.resourceProofPolicy !== "required") {
     throw new ResourceProofRejectedError(
       "invalid_profile",
-      `A ${intendedUse} profile requires resource proof`,
+      `A ${intendedUse} profile requires resource proof`
     );
   }
   if (profile.resources.permissionManifest.write.kind === "none") {
     throw new ResourceProofRejectedError(
       "invalid_profile",
-      `A ${intendedUse} profile requires a write permission manifest`,
+      `A ${intendedUse} profile requires a write permission manifest`
     );
   }
   const receipt = profile.startAuthorization.receipt;
   if (
     !isDeepStrictEqual(receipt.workspace, profile.resources.workspace) ||
-    receipt.permissionManifest.digest !== permissionManifestDocument(profile.resources.permissionManifest).digest
+    receipt.permissionManifest.digest !==
+      permissionManifestDocument(profile.resources.permissionManifest).digest
   ) {
     throw new ResourceProofRejectedError(
       "binding_mismatch",
-      `A ${intendedUse} profile Start receipt differs from its resource guarantees`,
+      `A ${intendedUse} profile Start receipt differs from its resource guarantees`
     );
   }
-  if (!profile.workProductRequirements.workProducts.some(({ minCount }) => minCount > 0)) {
+  if (
+    !profile.workProductRequirements.workProducts.some(
+      ({ minCount }) => minCount > 0
+    )
+  ) {
     throw new WorkerConfigurationError(
       "unsupported_capability",
-      `A ${intendedUse} profile requires at least one Work product`,
+      `A ${intendedUse} profile requires at least one Work product`
     );
   }
 }
 
-function sameModel(left: Readonly<ModelReference>, right: Readonly<ModelReference>): boolean {
+function sameModel(
+  left: Readonly<ModelReference>,
+  right: Readonly<ModelReference>
+): boolean {
   return left.provider === right.provider && left.id === right.id;
 }
 
-function fail(reason: WorkerConfigurationFailureReason, message: string): never {
+function fail(
+  reason: WorkerConfigurationFailureReason,
+  message: string
+): never {
   throw new WorkerConfigurationError(reason, message);
 }
 
 function boundedString(value: string, name: string): void {
-  if (value.length === 0 || Buffer.byteLength(value, "utf8") > MAX_CONFIG_STRING_BYTES) {
-    fail("unsupported_capability", `${name} is empty or exceeds its size limit`);
+  if (
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > MAX_CONFIG_STRING_BYTES
+  ) {
+    fail(
+      "unsupported_capability",
+      `${name} is empty or exceeds its size limit`
+    );
   }
 }
 
 function uniqueTools(tools: ReadonlyArray<string>): ReadonlyArray<string> {
   if (tools.length > MAX_TOOLS || new Set(tools).size !== tools.length) {
-    fail("tool_policy_violation", "Tool selection is duplicated or exceeds its count limit");
+    fail(
+      "tool_policy_violation",
+      "Tool selection is duplicated or exceeds its count limit"
+    );
   }
   for (const tool of tools) boundedString(tool, "tool name");
   return Object.freeze([...tools]);
 }
 
-export function requestedWorkerConfig(task: Readonly<RequestedWorkerConfig>): RequestedWorkerConfig {
+export function requestedWorkerConfig(
+  task: Readonly<RequestedWorkerConfig>
+): RequestedWorkerConfig {
   return Object.freeze({
-    ...(task.model === undefined ? {} : { model: Object.freeze({ ...task.model }) }),
-    ...(task.thinkingLevel === undefined ? {} : { thinkingLevel: task.thinkingLevel }),
+    ...(task.model === undefined
+      ? {}
+      : { model: Object.freeze({ ...task.model }) }),
+    ...(task.thinkingLevel === undefined
+      ? {}
+      : { thinkingLevel: task.thinkingLevel }),
     ...(task.tools === undefined ? {} : { tools: uniqueTools(task.tools) }),
     ...(task.cwd === undefined ? {} : { cwd: task.cwd }),
   });
@@ -251,49 +354,84 @@ export function resolveWorkerConfig(options: {
   readonly parent?: Readonly<EffectiveWorkerConfig>;
 }): EffectiveWorkerConfig {
   const { profile } = options;
-  if (profile === undefined) fail("unsupported_capability", "Unknown Worker profile");
+  if (profile === undefined)
+    fail("unsupported_capability", "Unknown Worker profile");
   validateWorkerResourcePolicy(profile);
   resolveWorkProductRequirements(profile);
   validateStartAuthorizationPolicy(profile);
   validateIntendedUse(profile);
   boundedString(options.runtimeCwd, "working directory");
   if (profile.modelCandidates.length !== 1) {
-    fail("model_mismatch", "Exactly one model candidate is required because fallback is forbidden");
+    fail(
+      "model_mismatch",
+      "Exactly one model candidate is required because fallback is forbidden"
+    );
   }
   const candidate = profile.modelCandidates[0];
-  if (candidate === undefined) fail("model_mismatch", "A model candidate is required");
+  if (candidate === undefined)
+    fail("model_mismatch", "A model candidate is required");
   boundedString(candidate.provider, "model provider");
   boundedString(candidate.id, "model identifier");
 
   const model = options.requested.model ?? candidate;
   if (!sameModel(model, candidate)) {
-    fail("model_mismatch", "Requested model is not the exact configured candidate");
+    fail(
+      "model_mismatch",
+      "Requested model is not the exact configured candidate"
+    );
   }
-  const thinkingLevel = options.requested.thinkingLevel ?? profile.thinkingLevel;
+  const thinkingLevel =
+    options.requested.thinkingLevel ?? profile.thinkingLevel;
   if (!THINKING_LEVELS.includes(thinkingLevel)) {
     fail("unsupported_capability", "Unsupported thinking level");
   }
-  if (THINKING_LEVELS.indexOf(thinkingLevel) > THINKING_LEVELS.indexOf(profile.thinkingLevel)) {
-    fail("unsupported_capability", "Requested thinking level exceeds the profile ceiling");
+  if (
+    THINKING_LEVELS.indexOf(thinkingLevel) >
+    THINKING_LEVELS.indexOf(profile.thinkingLevel)
+  ) {
+    fail(
+      "unsupported_capability",
+      "Requested thinking level exceeds the profile ceiling"
+    );
   }
   const profileTools = uniqueTools(profile.tools);
   if (profileTools.some((tool) => !PI_BUILTIN_TOOLS.has(tool))) {
-    fail("tool_policy_violation", "Profile requires a tool unavailable to the Pi Worker");
+    fail(
+      "tool_policy_violation",
+      "Profile requires a tool unavailable to the Pi Worker"
+    );
   }
   const tools = uniqueTools(options.requested.tools ?? profileTools);
   if (tools.some((tool) => !profileTools.includes(tool))) {
     fail("tool_policy_violation", "Requested tools exceed the profile ceiling");
   }
-  if (options.requested.cwd !== undefined && options.requested.cwd !== options.runtimeCwd) {
-    fail("unsupported_capability", "Requested working directory is unavailable");
+  if (
+    options.requested.cwd !== undefined &&
+    options.requested.cwd !== options.runtimeCwd
+  ) {
+    fail(
+      "unsupported_capability",
+      "Requested working directory is unavailable"
+    );
   }
   if (profile.resources.resourceProofPolicy === "required") {
     if (profile.resources.workspace.normalizedPath !== options.runtimeCwd) {
-      throw new ResourceProofRejectedError("invalid_profile", "Resource workspace differs from the Runtime workspace");
+      throw new ResourceProofRejectedError(
+        "invalid_profile",
+        "Resource workspace differs from the Runtime workspace"
+      );
     }
-    const manifestTools = normalizePermissionManifest(profile.resources.permissionManifest).tools;
-    if (manifestTools.length !== tools.length || manifestTools.some((tool, index) => tool !== [...tools].sort()[index])) {
-      throw new ResourceProofRejectedError("permission_mismatch", "Effective tools differ from the required permission manifest");
+    const manifestTools = normalizePermissionManifest(
+      profile.resources.permissionManifest
+    ).tools;
+    if (
+      manifestTools.length !== tools.length ||
+      manifestTools.some((tool, index) => tool !== [...tools].sort()[index])
+    ) {
+      throw new ResourceProofRejectedError(
+        "permission_mismatch",
+        "Effective tools differ from the required permission manifest"
+      );
     }
   }
 
@@ -302,8 +440,14 @@ export function resolveWorkerConfig(options: {
     if (tools.some((tool) => !parent.tools.includes(tool))) {
       fail("tool_policy_violation", "Child tools exceed the inherited ceiling");
     }
-    if (THINKING_LEVELS.indexOf(thinkingLevel) > THINKING_LEVELS.indexOf(parent.thinkingLevel)) {
-      fail("unsupported_capability", "Child thinking level exceeds the inherited ceiling");
+    if (
+      THINKING_LEVELS.indexOf(thinkingLevel) >
+      THINKING_LEVELS.indexOf(parent.thinkingLevel)
+    ) {
+      fail(
+        "unsupported_capability",
+        "Child thinking level exceeds the inherited ceiling"
+      );
     }
   }
 
@@ -324,21 +468,31 @@ export function resolveWorkerConfig(options: {
 
 export function configurationMismatch(
   effective: Readonly<EffectiveWorkerConfig>,
-  observed: Readonly<ObservedWorkerConfig>,
+  observed: Readonly<ObservedWorkerConfig>
 ): WorkerConfigurationFailureReason | undefined {
-  if (observed.model.state !== "observed" || !sameModel(effective.model, observed.model.value)) {
+  if (
+    observed.model.state !== "observed" ||
+    !sameModel(effective.model, observed.model.value)
+  ) {
     return "model_mismatch";
   }
-  if (observed.thinkingLevel.state !== "observed" ||
-      observed.thinkingLevel.value !== effective.thinkingLevel) {
+  if (
+    observed.thinkingLevel.state !== "observed" ||
+    observed.thinkingLevel.value !== effective.thinkingLevel
+  ) {
     return "thinking_level_mismatch";
   }
-  if (observed.tools.state !== "observed" ||
-      observed.tools.value.length !== effective.tools.length ||
-      observed.tools.value.some((tool) => !effective.tools.includes(tool))) {
+  if (
+    observed.tools.state !== "observed" ||
+    observed.tools.value.length !== effective.tools.length ||
+    observed.tools.value.some((tool) => !effective.tools.includes(tool))
+  ) {
     return "tool_policy_violation";
   }
-  if (observed.cwd.state !== "observed" || observed.cwd.value !== effective.cwd) {
+  if (
+    observed.cwd.state !== "observed" ||
+    observed.cwd.value !== effective.cwd
+  ) {
     return "unsupported_capability";
   }
   return undefined;
