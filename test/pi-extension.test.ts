@@ -51,14 +51,124 @@ import type {
   CleanupDiagnostic,
   OperationHandle,
   OperationReader,
+  OperationSnapshot,
   Result,
   Runtime,
+  RuntimeReviewSubjectAuthority,
+  SpawnOptions,
   TaskSpec,
+  WorkerProfilePolicy,
 } from "../src/index.js";
+
+const SNAPSHOT: OperationSnapshot = {
+  operationId: "operation-1",
+  version: { sequenceNumber: 4, recordedAt: "2026-04-01T00:00:03.000Z" },
+  state: "starting",
+  effectiveConfig: {
+    model: { provider: "anthropic", id: "claude-opus-5" },
+    thinkingLevel: "high",
+    tools: ["read"],
+    cwd: "/repository",
+    modelPolicy: {
+      candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
+      attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
+      maxAttempts: 1,
+      fallback: "forbidden",
+      aliases: [],
+    },
+  },
+  observedConfig: {
+    model: {
+      state: "observed",
+      value: { provider: "anthropic", id: "claude-opus-5" },
+    },
+    thinkingLevel: { state: "observed", value: "high" },
+    tools: { state: "observed", value: ["read"] },
+    cwd: { state: "observed", value: "/repository" },
+  },
+  startAuthorization: {
+    timing: {
+      createdAt: "2026-04-01T00:00:00.000Z",
+      windowMs: 60_000,
+      deadline: "2026-04-01T00:01:00.000Z",
+      configuredPolicy: "required",
+      policy: "required",
+      authorizedSubjectIds: ["coordinator-1"],
+    },
+    gate: "waiting",
+    receipt: {
+      operationId: "operation-1",
+      digest: `sha256:${"ef".repeat(32)}`,
+      recordedAt: "2026-04-01T00:00:03.000Z",
+      workerIdentity: {
+        processId: 123,
+        processInstanceId: "process-1",
+        processStartToken: "start-1",
+        piSessionId: "worker-session-1",
+        paneId: "pane-1",
+      },
+      requestedConfig: {
+        model: { provider: "anthropic", id: "claude-opus-5" },
+        thinkingLevel: "high",
+        tools: ["read"],
+        cwd: "/repository",
+      },
+      effectiveConfig: {
+        model: { provider: "anthropic", id: "claude-opus-5" },
+        thinkingLevel: "high",
+        tools: ["read"],
+        cwd: "/repository",
+        modelPolicy: {
+          candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
+          attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
+          maxAttempts: 1,
+          fallback: "forbidden",
+          aliases: [],
+        },
+      },
+      observedConfig: {
+        model: {
+          state: "observed",
+          value: { provider: "anthropic", id: "claude-opus-5" },
+        },
+        thinkingLevel: { state: "observed", value: "high" },
+        tools: { state: "observed", value: ["read"] },
+        cwd: { state: "observed", value: "/repository" },
+      },
+      workspace: {
+        workspaceId: "workspace-1",
+        normalizedPath: "/repository",
+        baseRevision: "revision-1",
+        owner: { state: "unknown" },
+        pionsMayDelete: false,
+      },
+      permissionManifest: {
+        manifestId: "manifest-1",
+        digest: `sha256:${"cd".repeat(32)}`,
+      },
+      reviewSubject: {
+        artifactId: "artifact-1",
+        byteCount: 42,
+        digest: `sha256:${"ab".repeat(32)}`,
+        format: "pions.review.patch.v1",
+        normalization: "identity",
+      },
+      reviewSubjectVerification: "required",
+      configuredAuthorizationPolicy: "required",
+      authorizationPolicy: "required",
+      authorizationDeadline: "2026-04-01T00:01:00.000Z",
+    },
+    rejectedDecisions: [],
+  },
+  startDeliveryHandoffs: [],
+  cleanupDiagnostics: [{ code: "pane_close_failed" }],
+};
 
 class FakeRuntime implements Runtime {
   readonly tasks: Array<TaskSpec> = [];
+  readonly spawnOptions: Array<Readonly<SpawnOptions> | undefined> = [];
   spawnCount = 0;
+  resultReadCount = 0;
   closeCount = 0;
 
   constructor(
@@ -69,16 +179,21 @@ class FakeRuntime implements Runtime {
     },
     private readonly cleanupDiagnostics: ReadonlyArray<
       Readonly<CleanupDiagnostic>
-    > = []
+    > = [],
+    private readonly snapshot: Readonly<OperationSnapshot> = SNAPSHOT
   ) {}
 
-  async spawn(task: TaskSpec): Promise<OperationHandle> {
+  async spawn(
+    task: TaskSpec,
+    options?: SpawnOptions
+  ): Promise<OperationHandle> {
     this.spawnCount += 1;
     this.tasks.push(task);
+    this.spawnOptions.push(options);
     const outcome = this.outcome;
     return {
       operationId: "operation-1",
-      read: () => Promise.reject(new Error("unused")),
+      read: () => Promise.resolve(this.snapshot),
       readResult: () => Promise.reject(new Error("unused")),
       readResultChunk: () => Promise.reject(new Error("unused")),
       waitForStartupReceipt: () => Promise.reject(new Error("unused")),
@@ -101,9 +216,13 @@ class FakeRuntime implements Runtime {
     const result = this.outcome;
     return {
       operationId,
-      read: () => Promise.reject(new Error("unused")),
-      readResult: () => Promise.resolve({ kind: "retrieved", result }),
+      read: () => Promise.resolve(this.snapshot),
+      readResult: () => {
+        this.resultReadCount += 1;
+        return Promise.resolve({ kind: "retrieved" as const, result });
+      },
       readResultChunk: ({ maxBytes, cursor }) => {
+        this.resultReadCount += 1;
         const startByte = cursor === undefined ? 0 : Number(cursor);
         const bytes = Buffer.from(result.body, "utf8");
         const endByte = Math.min(startByte + maxBytes, bytes.byteLength);
@@ -243,12 +362,54 @@ interface RegisteredTool {
   }>;
 }
 
+const FORMAL_REVIEW_PROFILE: WorkerProfilePolicy = {
+  intendedUse: "formal_reviewer",
+  modelCandidates: [{ provider: "anthropic", id: "claude-opus-5" }],
+  thinkingLevel: "high",
+  tools: ["read", "grep", "find", "ls", "bash"],
+  resources: { resourceProofPolicy: "disabled" },
+  startAuthorization: {
+    policy: "required",
+    windowMs: 60_000,
+    authorizedSubjectIds: ["coordinator-1"],
+    receipt: {
+      workspace: {
+        workspaceId: "workspace-1",
+        normalizedPath: "/repository",
+        baseRevision: "revision-1",
+        owner: { state: "unknown" },
+        pionsMayDelete: false,
+      },
+      permissionManifest: {
+        manifestId: "manifest-1",
+        digest: `sha256:${"cd".repeat(32)}`,
+      },
+      reviewSubjectVerification: "required",
+    },
+  },
+  workProductRequirements: {
+    body: {
+      formatId: "pions.result-body.utf8.v1",
+      normalizationId: "identity",
+      maxByteCount: 50_000,
+    },
+    workProducts: [],
+    maxTotalByteCount: 50_000,
+  },
+  acceptedArtifactRetentionMs: 86_400_000,
+};
+
+const REVIEW_SUBJECT_AUTHORITY: RuntimeReviewSubjectAuthority = {
+  currentUse: async () => "allowed",
+};
+
 async function fixture<TRuntime extends Runtime = FakeRuntime>(
   runtime: TRuntime = new FakeRuntime() as unknown as TRuntime,
   options: Omit<PionsExtensionOptions, "runtime" | "stateBaseDirectory"> & {
     readonly stateBaseDirectory?: string;
   } = {},
-  useDefaultStateDirectory = false
+  useDefaultStateDirectory = false,
+  fixtureOptions: { readonly enableFormalReview?: boolean } = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-extension-"));
   let registered: RegisteredTool | undefined;
@@ -274,6 +435,14 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   } as unknown as ExtensionAPI;
   installPionsExtension(pi, {
     ...(options.runtimeFactory === undefined ? { runtime } : {}),
+    ...(fixtureOptions.enableFormalReview !== false
+      ? {
+          formalReview: {
+            profile: FORMAL_REVIEW_PROFILE,
+            reviewSubjectAuthority: REVIEW_SUBJECT_AUTHORITY,
+          },
+        }
+      : {}),
     repositoryRoot: root,
     ...(useDefaultStateDirectory
       ? {}
@@ -311,6 +480,33 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       context
     );
   };
+  const review = (
+    artifactId = "artifact-1",
+    task = "Review the registered change"
+  ) => {
+    const reviewTool = tools.get("pions_review");
+    if (reviewTool === undefined)
+      throw new Error("pions_review was not registered");
+    return reviewTool.execute(
+      "review-call-1",
+      { artifactId, task },
+      undefined,
+      undefined,
+      context
+    );
+  };
+  const inspect = (operationId = "operation-1") => {
+    const operationTool = tools.get("pions_operation");
+    if (operationTool === undefined)
+      throw new Error("pions_operation was not registered");
+    return operationTool.execute(
+      "operation-call-1",
+      { operationId },
+      undefined,
+      undefined,
+      context
+    );
+  };
   const shutdown = (reason: "quit" | "reload" | "new" | "resume" | "fork") => {
     const handler = handlers.get("session_shutdown");
     if (handler === undefined)
@@ -322,14 +518,298 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   return {
     context,
     execute,
+    inspect,
     registered: tool,
     result,
+    review,
     root,
     runtime,
     shutdown,
     tools,
   };
 }
+
+test("project extension registers pions_review", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(value.tools.get("pions_review")?.name, "pions_review");
+});
+
+test("pions_review accepts only an Artifact identifier and review task", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(value.tools.get("pions_review")?.parameters, {
+    type: "object",
+    required: ["artifactId", "task"],
+    additionalProperties: false,
+    properties: {
+      artifactId: { type: "string", minLength: 1 },
+      task: {
+        type: "string",
+        minLength: 1,
+        description: "Self-contained formal review task",
+      },
+    },
+  });
+});
+
+test("pions_review returns the created Operation identifier", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    (await value.review()).content[0]?.text,
+    "[Operation: operation-1]"
+  );
+});
+
+test("pions_review fixes the registered Artifact as the Review subject", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review("artifact-42");
+
+  assert.equal(
+    value.runtime.spawnOptions[0]?.reviewSubjectArtifactId,
+    "artifact-42"
+  );
+});
+
+test("pions_review uses the formal reviewer profile", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.equal(value.runtime.tasks[0]?.profile, "formal-review");
+});
+
+test("pions_review uses the trusted formal-review model", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.deepEqual(value.runtime.tasks[0]?.model, {
+    provider: "anthropic",
+    id: "claude-opus-5",
+  });
+});
+
+test("pions_review uses the trusted formal-review thinking level", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.equal(value.runtime.tasks[0]?.thinkingLevel, "high");
+});
+
+test("pions_review passes the trusted Review subject authority to the Runtime", async (context) => {
+  let authority: RuntimeReviewSubjectAuthority | undefined;
+  const runtime = new FakeRuntime();
+  const value = await fixture(runtime, {
+    runtimeFactory: (options) => {
+      authority = options.reviewSubjectAuthority;
+      return runtime;
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.equal(authority, REVIEW_SUBJECT_AUTHORITY);
+});
+
+test("pions_review registers a required Start gate in the Runtime", async (context) => {
+  let profile: Readonly<WorkerProfilePolicy> | undefined;
+  const runtime = new FakeRuntime();
+  const value = await fixture(runtime, {
+    runtimeFactory: (options) => {
+      profile = options.profiles["formal-review"];
+      return runtime;
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.equal(profile?.startAuthorization.policy, "required");
+});
+
+test("pions_review fails closed without trusted formal-review configuration", async (context) => {
+  const value = await fixture(new FakeRuntime(), {}, false, {
+    enableFormalReview: false,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  await assert.rejects(
+    value.review(),
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "unsupported_capability"
+  );
+});
+
+test("pions_review does not wait for the Result", async (context) => {
+  const value = await fixture(new PendingRuntime());
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    (await value.review()).content[0]?.text,
+    "[Operation: operation-1]"
+  );
+});
+
+test("project extension registers pions_operation", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(value.tools.get("pions_operation")?.name, "pions_operation");
+});
+
+test("pions_operation accepts only an Operation identifier", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(value.tools.get("pions_operation")?.parameters, {
+    type: "object",
+    required: ["operationId"],
+    additionalProperties: false,
+    properties: { operationId: { type: "string", minLength: 1 } },
+  });
+});
+
+test("pions_operation returns the persisted Operation snapshot", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual((await value.inspect()).details, SNAPSHOT);
+});
+
+test("a newly requested formal review has no accepted Start instruction", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.equal(
+    ((await value.inspect()).details as OperationSnapshot)
+      .startInstructionAcceptance,
+    undefined
+  );
+});
+
+test("pions_operation returns the persisted Start gate", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    ((await value.inspect()).details as OperationSnapshot).startAuthorization
+      .gate,
+    "waiting"
+  );
+});
+
+test("pions_operation returns the authorization deadline", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    ((await value.inspect()).details as OperationSnapshot).startAuthorization
+      .timing.deadline,
+    "2026-04-01T00:01:00.000Z"
+  );
+});
+
+test("pions_operation returns the persisted Startup receipt", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    ((await value.inspect()).details as OperationSnapshot).startAuthorization
+      .receipt,
+    SNAPSHOT.startAuthorization.receipt
+  );
+});
+
+test("pions_operation returns the effective model", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    ((await value.inspect()).details as OperationSnapshot).effectiveConfig
+      .model,
+    { provider: "anthropic", id: "claude-opus-5" }
+  );
+});
+
+test("pions_operation returns the observed model", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    ((await value.inspect()).details as OperationSnapshot).observedConfig
+      ?.model,
+    SNAPSHOT.observedConfig?.model
+  );
+});
+
+test("pions_operation returns the effective thinking level", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    ((await value.inspect()).details as OperationSnapshot).effectiveConfig
+      .thinkingLevel,
+    "high"
+  );
+});
+
+test("pions_operation returns the observed thinking level", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    ((await value.inspect()).details as OperationSnapshot).observedConfig
+      ?.thinkingLevel,
+    { state: "observed", value: "high" }
+  );
+});
+
+test("pions_operation returns the fixed Review subject", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    ((await value.inspect()).details as OperationSnapshot).startAuthorization
+      .receipt?.reviewSubject,
+    SNAPSHOT.startAuthorization.receipt?.reviewSubject
+  );
+});
+
+test("pions_operation returns Cleanup diagnostics independently", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    ((await value.inspect()).details as OperationSnapshot).cleanupDiagnostics,
+    [{ code: "pane_close_failed" }]
+  );
+});
+
+test("pions_operation does not read Result bytes", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.inspect();
+
+  assert.equal(value.runtime.resultReadCount, 0);
+});
+
+test("pions_operation hides Operations outside the current repository", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  await assert.rejects(
+    value.inspect("other-operation"),
+    /Operation is unavailable in the current repository/u
+  );
+});
 
 test("project extension registers pions_delegate", async (context) => {
   const value = await fixture();

@@ -43,6 +43,7 @@ import type {
   OperationCompletion,
   OperationHandle,
   Runtime,
+  RuntimeReviewSubjectAuthority,
   ThinkingLevel,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -50,6 +51,7 @@ import type {
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const REVIEW_PROFILE = "review";
+const FORMAL_REVIEW_PROFILE = "formal-review";
 const REVIEW_TOOLS = Object.freeze(["read", "grep", "find", "ls", "bash"]);
 const THINKING_LEVELS: ReadonlyArray<ThinkingLevel> = [
   "off",
@@ -79,6 +81,22 @@ const DelegateParameters = Type.Object(
   { additionalProperties: false }
 );
 
+const FormalReviewParameters = Type.Object(
+  {
+    artifactId: Type.String({ minLength: 1 }),
+    task: Type.String({
+      minLength: 1,
+      description: "Self-contained formal review task",
+    }),
+  },
+  { additionalProperties: false }
+);
+
+const OperationParameters = Type.Object(
+  { operationId: Type.String({ minLength: 1 }) },
+  { additionalProperties: false }
+);
+
 const ResultParameters = Type.Object(
   {
     operationId: Type.String({ minLength: 1 }),
@@ -103,6 +121,10 @@ export interface PionsExtensionOptions {
   readonly runtime?: Runtime;
   readonly runtimeFactory?: typeof makeVisibleRuntime;
   readonly resultRuntimeFactory?: typeof makeResultRetrievalRuntime;
+  readonly formalReview?: Readonly<{
+    readonly profile: Readonly<WorkerProfilePolicy>;
+    readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
+  }>;
   readonly repositoryRoot?: string;
   readonly stateBaseDirectory?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -346,6 +368,22 @@ function workerPrompt(task: string): string {
   ].join("\n");
 }
 
+function formalReviewPrompt(
+  task: string,
+  tools: ReadonlyArray<string>
+): string {
+  return [
+    "You are a formal-review Worker with an independent context.",
+    "Follow the trusted project's AGENTS.md instructions.",
+    "Do not load skills, extensions, or prompt templates.",
+    `Use only the configured tools: ${tools.join(", ")}.`,
+    "Return a self-contained textual Result.",
+    "",
+    "Review task:",
+    task,
+  ].join("\n");
+}
+
 function boundedResultBody(
   body: string,
   operationId: string
@@ -477,6 +515,162 @@ export function installPionsExtension(
   const operationLifetime = new OperationLifetime();
   let shuttingDown = false;
 
+  async function resolveRepositoryContext(context: ExtensionContext): Promise<{
+    readonly normalizedRoot: string;
+    readonly repositoryState: string;
+  }> {
+    const root = options.repositoryRoot ?? (await repositoryRoot(context.cwd));
+    const normalizedRoot = await realpath(root);
+    const stateBase =
+      options.stateBaseDirectory ??
+      userStateDirectory(
+        options.environment ?? process.env,
+        options.homeDirectory ?? homedir()
+      );
+    const repositoryState = join(
+      stateBase,
+      "pions",
+      "repositories",
+      opaqueDigest(normalizedRoot)
+    );
+    await privateDirectory(repositoryState);
+    if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+    return { normalizedRoot, repositoryState };
+  }
+
+  async function useRepositoryRuntime<Value>(
+    context: ExtensionContext,
+    use: (runtime: Runtime) => Promise<Value>
+  ): Promise<Value> {
+    const { normalizedRoot, repositoryState } =
+      await resolveRepositoryContext(context);
+    const existingRuntime =
+      options.runtime ?? runtimesByRepository.get(normalizedRoot);
+    const temporaryRuntime =
+      existingRuntime === undefined
+        ? (options.resultRuntimeFactory ?? makeResultRetrievalRuntime)({
+            cwd: normalizedRoot,
+            stateDirectory: join(repositoryState, "runtime"),
+          })
+        : undefined;
+    const runtime = existingRuntime ?? temporaryRuntime!;
+    if (temporaryRuntime === undefined) knownRuntimes.add(runtime);
+    try {
+      return await use(runtime);
+    } finally {
+      await temporaryRuntime?.close();
+    }
+  }
+
+  async function prepareWorkerCall(
+    toolCallId: string,
+    prompt: string,
+    context: ExtensionContext,
+    requiredModel?: Readonly<ModelReference>
+  ): Promise<{
+    readonly idempotencyKey: string;
+    readonly normalizedRoot: string;
+    readonly promptRef: string;
+    readonly readerModel: Readonly<ModelReference>;
+    readonly readerThinkingLevel: ThinkingLevel;
+    readonly runtime: Runtime;
+  }> {
+    const inheritedModel = selectedModel(context);
+    const inheritedThinkingLevel = selectedThinkingLevel(context);
+    const { normalizedRoot, repositoryState } =
+      await resolveRepositoryContext(context);
+    const configured = await projectConfig(normalizedRoot);
+    const readerModel =
+      configured?.model === undefined
+        ? inheritedModel
+        : configuredModel(context, configured.model);
+    const usesClaudeBridge =
+      readerModel.provider === "claude-bridge" ||
+      requiredModel?.provider === "claude-bridge";
+    const claudeBridge = usesClaudeBridge
+      ? resolveClaudeBridgeExtension({
+          ...(options.claudeBridgePackagePath === undefined
+            ? {}
+            : { packagePath: options.claudeBridgePackagePath }),
+        })
+      : undefined;
+    if (claudeBridge !== undefined) {
+      validateClaudeBridgePolicy({
+        cwd: normalizedRoot,
+        environment: options.environment ?? process.env,
+        homeDirectory: options.homeDirectory ?? homedir(),
+      });
+    }
+    const readerThinkingLevel =
+      configured?.thinkingLevel ?? inheritedThinkingLevel;
+    const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
+    const promptRef = join(
+      repositoryState,
+      "requests",
+      `${idempotencyKey.slice("pi-tool:".length)}.utf8`
+    );
+    await writePrivatePrompt(promptRef, prompt);
+    const readerProfile: WorkerProfilePolicy = {
+      intendedUse: "reader",
+      modelCandidates: [readerModel],
+      thinkingLevel: readerThinkingLevel,
+      tools: REVIEW_TOOLS,
+      resources: { resourceProofPolicy: "disabled" },
+      startAuthorization: { policy: "disabled" },
+      workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+      acceptedArtifactRetentionMs: 86_400_000,
+    };
+    const formalProfileDigest =
+      options.formalReview === undefined
+        ? "disabled"
+        : opaqueDigest(JSON.stringify(options.formalReview.profile));
+    const configKey = `${normalizedRoot}\0${readerModel.provider}\0${readerModel.id}\0${readerThinkingLevel}\0${claudeBridge?.sourceDigest ?? "builtin"}\0${formalProfileDigest}`;
+    if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+    let runtime = options.runtime;
+    if (runtime === undefined) {
+      const extensionEntryPath = resolveWorkerExtensionEntryPath({
+        ...(options.extensionEntryPath === undefined
+          ? {}
+          : { explicitPath: options.extensionEntryPath }),
+        cwd: normalizedRoot,
+      });
+      runtime =
+        runtimesByCall.get(idempotencyKey) ?? runtimesByConfig.get(configKey);
+      if (runtime === undefined) {
+        runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
+          cwd: normalizedRoot,
+          stateDirectory: join(repositoryState, "runtime"),
+          profiles: {
+            [REVIEW_PROFILE]: readerProfile,
+            ...(options.formalReview === undefined
+              ? {}
+              : { [FORMAL_REVIEW_PROFILE]: options.formalReview.profile }),
+          },
+          environment: options.environment ?? process.env,
+          extensionEntryPath,
+          ...(options.formalReview === undefined
+            ? {}
+            : {
+                reviewSubjectAuthority:
+                  options.formalReview.reviewSubjectAuthority,
+              }),
+        });
+        runtimesByConfig.set(configKey, runtime);
+      }
+    }
+    runtimesByCall.set(idempotencyKey, runtime);
+    runtimesByRepository.set(normalizedRoot, runtime);
+    knownRuntimes.add(runtime);
+    return {
+      idempotencyKey,
+      normalizedRoot,
+      promptRef,
+      readerModel,
+      readerThinkingLevel,
+      runtime,
+    };
+  }
+
   pi.on("session_shutdown", async () => {
     shuttingDown = true;
     const failures: Array<unknown> = [];
@@ -512,47 +706,19 @@ export function installPionsExtension(
       if (!context.isProjectTrusted()) {
         throw new Error("pions_result requires a trusted project");
       }
-      const root =
-        options.repositoryRoot ?? (await repositoryRoot(context.cwd));
-      const normalizedRoot = await realpath(root);
-      const existingRuntime =
-        options.runtime ?? runtimesByRepository.get(normalizedRoot);
-      const stateBase =
-        options.stateBaseDirectory ??
-        userStateDirectory(
-          options.environment ?? process.env,
-          options.homeDirectory ?? homedir()
-        );
-      const repositoryState = join(
-        stateBase,
-        "pions",
-        "repositories",
-        opaqueDigest(normalizedRoot)
-      );
-      await privateDirectory(repositoryState);
-      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
-      const temporaryRuntime =
-        existingRuntime === undefined
-          ? (options.resultRuntimeFactory ?? makeResultRetrievalRuntime)({
-              cwd: normalizedRoot,
-              stateDirectory: join(repositoryState, "runtime"),
-            })
-          : undefined;
-      const runtime = existingRuntime ?? temporaryRuntime!;
-      if (temporaryRuntime === undefined) knownRuntimes.add(runtime);
-      try {
-        let reader;
+      return useRepositoryRuntime(context, async (runtime) => {
+        let outcome;
         try {
-          reader = await runtime.operation(parameters.operationId);
+          const reader = await runtime.operation(parameters.operationId);
+          outcome = await reader.readResultChunk({
+            maxBytes: RESULT_TOOL_CHUNK_BYTES,
+            ...(parameters.cursor === undefined
+              ? {}
+              : { cursor: parameters.cursor }),
+          });
         } catch {
           throw new Error("Result is unavailable in the current repository");
         }
-        const outcome = await reader.readResultChunk({
-          maxBytes: RESULT_TOOL_CHUNK_BYTES,
-          ...(parameters.cursor === undefined
-            ? {}
-            : { cursor: parameters.cursor }),
-        });
         if (outcome.kind === "not_accepted") {
           return {
             content: [
@@ -577,9 +743,89 @@ export function installPionsExtension(
           ],
           details: outcome.chunk,
         };
-      } finally {
-        await temporaryRuntime?.close();
+      });
+    },
+  });
+
+  pi.registerTool({
+    name: "pions_operation",
+    label: "Pions Operation",
+    description:
+      "Read the persisted state of an Operation in the current trusted repository without retrieving Result bytes.",
+    parameters: OperationParameters,
+    async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
+      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+      if (!context.isProjectTrusted()) {
+        throw new Error("pions_operation requires a trusted project");
       }
+      return useRepositoryRuntime(context, async (runtime) => {
+        let snapshot;
+        try {
+          const reader = await runtime.operation(parameters.operationId);
+          snapshot = await reader.read();
+        } catch {
+          throw new Error("Operation is unavailable in the current repository");
+        }
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify(snapshot, null, 2) },
+          ],
+          details: snapshot,
+        };
+      });
+    },
+  });
+
+  pi.registerTool({
+    name: "pions_review",
+    label: "Pions Formal Review",
+    description:
+      "Create a non-waiting formal-review Operation for a registered Artifact and return its Operation identifier.",
+    parameters: FormalReviewParameters,
+    async execute(toolCallId, parameters, _signal, _onUpdate, context) {
+      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+      if (!context.isProjectTrusted()) {
+        throw new Error("pions_review requires a trusted project");
+      }
+      const formalReview = options.formalReview;
+      if (formalReview === undefined) {
+        throw new WorkerConfigurationError(
+          "unsupported_capability",
+          "Formal review is not enabled by trusted configuration"
+        );
+      }
+      const modelCandidate = formalReview.profile.modelCandidates[0];
+      if (modelCandidate === undefined) {
+        throw new WorkerConfigurationError(
+          "unsupported_capability",
+          "Formal review has no configured model"
+        );
+      }
+      const model = configuredModel(context, modelCandidate);
+      const prepared = await prepareWorkerCall(
+        toolCallId,
+        formalReviewPrompt(parameters.task, formalReview.profile.tools),
+        context,
+        model
+      );
+      const handle = await prepared.runtime.spawn(
+        {
+          promptRef: prepared.promptRef,
+          profile: FORMAL_REVIEW_PROFILE,
+          idempotencyKey: prepared.idempotencyKey,
+          model,
+          thinkingLevel: formalReview.profile.thinkingLevel,
+          tools: formalReview.profile.tools,
+          cwd: prepared.normalizedRoot,
+        },
+        { reviewSubjectArtifactId: parameters.artifactId }
+      );
+      return {
+        content: [
+          { type: "text" as const, text: `[Operation: ${handle.operationId}]` },
+        ],
+        details: { operationId: handle.operationId },
+      };
     },
   });
 
@@ -602,98 +848,19 @@ export function installPionsExtension(
       if (!context.isProjectTrusted()) {
         throw new Error("pions_delegate requires a trusted project");
       }
-      const inheritedModel = selectedModel(context);
-      const inheritedThinkingLevel = selectedThinkingLevel(context);
-      const root =
-        options.repositoryRoot ?? (await repositoryRoot(context.cwd));
-      const normalizedRoot = await realpath(root);
-      const configured = await projectConfig(normalizedRoot);
-      const model =
-        configured?.model === undefined
-          ? inheritedModel
-          : configuredModel(context, configured.model);
-      const claudeBridge =
-        model.provider === "claude-bridge"
-          ? resolveClaudeBridgeExtension({
-              ...(options.claudeBridgePackagePath === undefined
-                ? {}
-                : { packagePath: options.claudeBridgePackagePath }),
-            })
-          : undefined;
-      if (claudeBridge !== undefined) {
-        validateClaudeBridgePolicy({
-          cwd: normalizedRoot,
-          environment: options.environment ?? process.env,
-          homeDirectory: options.homeDirectory ?? homedir(),
-        });
-      }
-      const thinkingLevel = configured?.thinkingLevel ?? inheritedThinkingLevel;
-      const stateBase =
-        options.stateBaseDirectory ??
-        userStateDirectory(
-          options.environment ?? process.env,
-          options.homeDirectory ?? homedir()
-        );
-      const repositoryState = join(
-        stateBase,
-        "pions",
-        "repositories",
-        opaqueDigest(normalizedRoot)
+      const prepared = await prepareWorkerCall(
+        toolCallId,
+        workerPrompt(parameters.task),
+        context
       );
-      await privateDirectory(repositoryState);
-
-      const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
-      const promptRef = join(
-        repositoryState,
-        "requests",
-        `${idempotencyKey.slice("pi-tool:".length)}.utf8`
-      );
-      await writePrivatePrompt(promptRef, workerPrompt(parameters.task));
-
-      const profile: WorkerProfilePolicy = {
-        intendedUse: "reader",
-        modelCandidates: [model],
-        thinkingLevel,
-        tools: REVIEW_TOOLS,
-        resources: { resourceProofPolicy: "disabled" },
-        startAuthorization: { policy: "disabled" },
-        workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-        acceptedArtifactRetentionMs: 86_400_000,
-      };
-      const configKey = `${normalizedRoot}\0${model.provider}\0${model.id}\0${thinkingLevel}\0${claudeBridge?.sourceDigest ?? "builtin"}`;
-      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
-      let runtime = options.runtime;
-      if (runtime === undefined) {
-        const extensionEntryPath = resolveWorkerExtensionEntryPath({
-          ...(options.extensionEntryPath === undefined
-            ? {}
-            : { explicitPath: options.extensionEntryPath }),
-          cwd: normalizedRoot,
-        });
-        runtime =
-          runtimesByCall.get(idempotencyKey) ?? runtimesByConfig.get(configKey);
-        if (runtime === undefined) {
-          runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
-            cwd: normalizedRoot,
-            stateDirectory: join(repositoryState, "runtime"),
-            profiles: { [REVIEW_PROFILE]: profile },
-            environment: options.environment ?? process.env,
-            extensionEntryPath,
-          });
-          runtimesByConfig.set(configKey, runtime);
-        }
-      }
-      runtimesByCall.set(idempotencyKey, runtime);
-      runtimesByRepository.set(normalizedRoot, runtime);
-      knownRuntimes.add(runtime);
-      const handle = await runtime.spawn({
-        promptRef,
+      const handle = await prepared.runtime.spawn({
+        promptRef: prepared.promptRef,
         profile: REVIEW_PROFILE,
-        idempotencyKey,
-        model,
-        thinkingLevel,
+        idempotencyKey: prepared.idempotencyKey,
+        model: prepared.readerModel,
+        thinkingLevel: prepared.readerThinkingLevel,
         tools: REVIEW_TOOLS,
-        cwd: normalizedRoot,
+        cwd: prepared.normalizedRoot,
       });
       const operation = operationLifetime.track(handle);
       const completion = await awaitOperation(
