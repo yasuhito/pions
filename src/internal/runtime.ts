@@ -22,6 +22,7 @@ import {
   permissionManifestDocument,
   validateWorkspaceScope,
 } from "./resource-proof.js";
+import { reviewSubjectUseBindingRequest } from "./review-subject.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
   RequestedWorkerConfigSchema,
@@ -49,6 +50,7 @@ import {
   ResourceProofRejectedError,
   ResultCursorError,
   ResultRetrievalError,
+  ReviewSubjectError,
   RevisionAuthenticationError,
   SpawnRejectedError,
   WorkerConfigurationError,
@@ -874,9 +876,28 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   };
 
-  const resolvedStartAuthorization = (
-    profile: Readonly<WorkerProfilePolicy>
+  const resolvedStartAuthorization = async (
+    profile: Readonly<WorkerProfilePolicy>,
+    reviewSubjectArtifactId: string | undefined
   ) => {
+    if (
+      profile.intendedUse === "formal_reviewer" &&
+      reviewSubjectArtifactId === undefined
+    ) {
+      throw new WorkerConfigurationError(
+        "unsupported_capability",
+        "A formal review Operation requires a Review subject Artifact"
+      );
+    }
+    if (
+      profile.intendedUse !== "formal_reviewer" &&
+      reviewSubjectArtifactId !== undefined
+    ) {
+      throw new WorkerConfigurationError(
+        "unsupported_capability",
+        "Only a formal review Operation accepts a Review subject Artifact"
+      );
+    }
     const configured = profile.startAuthorization;
     if (configured.policy === "disabled") {
       return {
@@ -897,12 +918,36 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         authorizedSubjectIds: [],
       };
     }
+    let reviewSubject: StartupReceiptPolicy["reviewSubject"];
+    if (reviewSubjectArtifactId !== undefined) {
+      const retrieval = await services.artifacts.resolveMetadata(
+        services.artifactCredential,
+        reviewSubjectArtifactId
+      );
+      if (retrieval.kind !== "resolved") {
+        throw new ReviewSubjectError(retrieval.reason);
+      }
+      reviewSubject = {
+        artifactId: retrieval.artifact.artifactId,
+        byteCount: retrieval.artifact.byteCount,
+        digest: retrieval.artifact.digest,
+        format: retrieval.artifact.formatId,
+        normalization: retrieval.artifact.normalizationId,
+      };
+    }
     return {
       configuredPolicy: configured.policy,
       policy: "required" as const,
       windowMs: configured.windowMs,
       authorizedSubjectIds: [...configured.authorizedSubjectIds],
-      receipt: structuredClone(configured.receipt),
+      receipt: {
+        workspace: structuredClone(configured.receipt.workspace),
+        permissionManifest: structuredClone(
+          configured.receipt.permissionManifest
+        ),
+        reviewSubjectVerification: configured.receipt.reviewSubjectVerification,
+        ...(reviewSubject === undefined ? {} : { reviewSubject }),
+      },
     };
   };
 
@@ -1045,18 +1090,21 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     prepare: boolean
   ): Promise<void> => {
     if (policy.reviewSubjectVerification === "disabled") return;
-    const bindingId = `${operationId}.review-subject`;
+    const subject = policy.reviewSubject;
+    if (subject === undefined) {
+      throw new ResourceProofRejectedError(
+        "binding_mismatch",
+        "Review subject is unavailable"
+      );
+    }
+    const bindingRequest = reviewSubjectUseBindingRequest(
+      operationId,
+      subject.artifactId
+    );
     if (prepare) {
       const binding = await services.artifacts.prepareUseBinding(
         services.artifactCredential,
-        {
-          bindingId,
-          operationId,
-          artifactId: policy.reviewSubject.artifactId,
-          purpose: "review_subject",
-          decisionId: `${operationId}.start-authorization`,
-          authorityBasis: "fixed-start-authorization-policy",
-        }
+        bindingRequest
       );
       if (binding.kind !== "available") {
         throw new ResourceProofRejectedError(
@@ -1067,9 +1115,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
     const retrieval = await services.artifacts.retrieveForUseBinding(
       services.artifactCredential,
-      bindingId
+      bindingRequest.bindingId
     );
-    const subject = policy.reviewSubject;
     if (
       retrieval.kind !== "retrieved" ||
       retrieval.integrity !== "verified" ||
@@ -1165,7 +1212,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           workspace: receiptPolicy.workspace,
           permissionManifest: receiptPolicy.permissionManifest,
           ...(resourceEvidence === undefined ? {} : { resourceEvidence }),
-          reviewSubject: receiptPolicy.reviewSubject,
+          ...(receiptPolicy.reviewSubject === undefined
+            ? {}
+            : { reviewSubject: receiptPolicy.reviewSubject }),
           reviewSubjectVerification: receiptPolicy.reviewSubjectVerification,
           configuredAuthorizationPolicy: authorization.configuredPolicy,
           authorizationPolicy: "required",
@@ -1906,7 +1955,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             depth: parentOperation.lineage.depth + 1,
           };
     const deferred = deferredResult();
-    const authorization = resolvedStartAuthorization(configuredProfile);
+    let authorization;
+    try {
+      authorization = await resolvedStartAuthorization(
+        configuredProfile,
+        options?.reviewSubjectArtifactId
+      );
+    } catch (error) {
+      if (parent !== undefined) parent.pendingAdmissions -= 1;
+      throw error;
+    }
     const authorizationMonotonicDeadline =
       services.clock.monotonicMilliseconds() + authorization.windowMs;
     const record: OperationRecord = {

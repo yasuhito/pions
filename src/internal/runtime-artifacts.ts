@@ -10,10 +10,12 @@ import {
 } from "./artifact-store.js";
 import { eventStoreResultAcceptanceSources } from "./event-store-result-acceptance-sources.js";
 import type { EventStore } from "./event-store/index.js";
+import { isReviewSubjectUseBindingRequest } from "./review-subject.js";
 import type {
   ArtifactAuthenticator,
   ArtifactPrincipal,
   ArtifactStore,
+  RuntimeReviewSubjectAuthority,
 } from "../public.js";
 
 const policy = {
@@ -34,8 +36,31 @@ const policy = {
 
 function runtimePrincipal(
   subjectId: string,
-  store: EventStore
+  store: EventStore,
+  reviewSubjectAuthority: RuntimeReviewSubjectAuthority | undefined
 ): ArtifactPrincipal {
+  const canBindReviewSubject: ArtifactPrincipal["canBindArtifactUse"] = async (
+    request,
+    artifactId
+  ) => {
+    const stored = await Effect.runPromise(
+      Effect.either(store.read(request.operationId))
+    );
+    if (stored._tag === "Left") {
+      return stored.left.code === "not_found" ? "denied" : "unknown";
+    }
+    const subject = stored.right.operation.startupReceiptPolicy?.reviewSubject;
+    if (
+      subject === undefined ||
+      !isReviewSubjectUseBindingRequest(request, subject.artifactId) ||
+      reviewSubjectAuthority === undefined
+    ) {
+      return "denied";
+    }
+    return reviewSubjectAuthority
+      .currentUse(request.operationId, artifactId)
+      .catch(() => "unknown");
+  };
   const canUseForResultAcceptance: ArtifactPrincipal["canPrepareResultAcceptance"] =
     async (request, artifactId) => {
       const stored = await Effect.runPromise(
@@ -57,7 +82,7 @@ function runtimePrincipal(
     canRegister: async () => "allowed",
     canReference: async () => "allowed",
     canRetrieve: async () => "allowed",
-    canBindArtifactUse: async () => "allowed",
+    canBindArtifactUse: canBindReviewSubject,
     canPinArtifact: async () => "allowed",
     canPrepareResultAcceptance: canUseForResultAcceptance,
     canReconcileResultAcceptance: async () => "allowed",
@@ -69,14 +94,19 @@ export function runtimeArtifactStore(
   stateDirectory: string,
   store: EventStore,
   now?: () => Date,
-  fault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>
+  fault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>,
+  reviewSubjectAuthority?: RuntimeReviewSubjectAuthority
 ): {
   readonly artifacts: ArtifactStore;
   readonly credential: string;
   readonly synchronizeClock: (timestamp: string) => void;
 } {
   const credential = randomBytes(32).toString("hex");
-  const principal = runtimePrincipal(`runtime.${randomUUID()}`, store);
+  const principal = runtimePrincipal(
+    `runtime.${randomUUID()}`,
+    store,
+    reviewSubjectAuthority
+  );
   const authenticator: ArtifactAuthenticator = {
     authenticate: async (value) => {
       if (value !== credential) throw new Error("invalid artifact credential");
@@ -123,6 +153,8 @@ export function runtimeArtifactStore(
       transfer: (...args) => open().then((value) => value.transfer(...args)),
       registrationStatus: (...args) =>
         open().then((value) => value.registrationStatus(...args)),
+      resolveMetadata: (...args) =>
+        open().then((value) => value.resolveMetadata(...args)),
       retrieve: (...args) => open().then((value) => value.retrieve(...args)),
       prepareUseBinding: (...args) =>
         open().then((value) => value.prepareUseBinding(...args)),

@@ -204,13 +204,17 @@ function sanitizedStartupReceipt(
     ...(receipt.resourceEvidence === undefined
       ? {}
       : { resourceEvidence: { ...receipt.resourceEvidence } }),
-    reviewSubject: {
-      artifactId: receipt.reviewSubject.artifactId,
-      byteCount: receipt.reviewSubject.byteCount,
-      digest: receipt.reviewSubject.digest,
-      format: receipt.reviewSubject.format,
-      normalization: receipt.reviewSubject.normalization,
-    },
+    ...(receipt.reviewSubject === undefined
+      ? {}
+      : {
+          reviewSubject: {
+            artifactId: receipt.reviewSubject.artifactId,
+            byteCount: receipt.reviewSubject.byteCount,
+            digest: receipt.reviewSubject.digest,
+            format: receipt.reviewSubject.format,
+            normalization: receipt.reviewSubject.normalization,
+          },
+        }),
     reviewSubjectVerification: receipt.reviewSubjectVerification,
     configuredAuthorizationPolicy: receipt.configuredAuthorizationPolicy,
     authorizationPolicy: receipt.authorizationPolicy,
@@ -312,6 +316,8 @@ export function reduceOperation(
       !validStartAuthorizationTiming(event) ||
       (event.startAuthorizationTiming.policy === "required") !==
         (event.startupReceiptPolicy !== undefined) ||
+      (event.startupReceiptPolicy?.reviewSubjectVerification === "required" &&
+        event.startupReceiptPolicy.reviewSubject === undefined) ||
       event.resultRetentionPolicy.operationId !== event.operationId ||
       (event.revisionMembership !== undefined &&
         (revisionSeriesOrigin(event.revisionMembership.seriesId) ===
@@ -511,7 +517,10 @@ export function reduceOperation(
         event.receipt.workspace.normalizedPath.length === 0 ||
         event.receipt.workspace.baseRevision.length === 0 ||
         event.receipt.permissionManifest.manifestId.length === 0 ||
-        event.receipt.reviewSubject.artifactId.length === 0 ||
+        (event.receipt.reviewSubjectVerification === "required" &&
+          event.receipt.reviewSubject === undefined) ||
+        (event.receipt.reviewSubject !== undefined &&
+          event.receipt.reviewSubject.artifactId.length === 0) ||
         event.receipt.workerIdentity.processInstanceId !==
           current.workerIdentity.processInstanceId ||
         !isDeepStrictEqual(

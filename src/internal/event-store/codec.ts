@@ -231,7 +231,7 @@ const ReviewSubjectReceipt = Schema.Struct({
 const StartupReceiptPolicy = Schema.Struct({
   workspace: WorkspaceReceipt,
   permissionManifest: PermissionManifestReceipt,
-  reviewSubject: ReviewSubjectReceipt,
+  reviewSubject: Schema.optional(ReviewSubjectReceipt),
   reviewSubjectVerification: Schema.Literal("disabled", "required"),
 });
 const StartupReceipt = Schema.Struct({
@@ -245,7 +245,7 @@ const StartupReceipt = Schema.Struct({
   workspace: WorkspaceReceipt,
   permissionManifest: PermissionManifestReceipt,
   resourceEvidence: Schema.optional(ResourceEvidenceReceipt),
-  reviewSubject: ReviewSubjectReceipt,
+  reviewSubject: Schema.optional(ReviewSubjectReceipt),
   reviewSubjectVerification: Schema.Literal("disabled", "required"),
   configuredAuthorizationPolicy: Schema.Literal(
     "disabled",

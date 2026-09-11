@@ -56,13 +56,6 @@ const requiredAuthorization = (
       digest: permissionManifestDigest,
     },
     reviewSubjectVerification,
-    reviewSubject: {
-      artifactId: "artifact-1",
-      byteCount: 1,
-      digest: `sha256:${"cd".repeat(32)}` as const,
-      format: "pions.opaque.v1",
-      normalization: "identity.v1",
-    },
   },
 });
 
@@ -155,6 +148,18 @@ test("a formal reviewer candidate without required Review subject verification i
         runtimeCwd: "/workspace",
       }),
     { name: "WorkerConfigurationError", reason: "unsupported_capability" }
+  );
+});
+
+test("a formal reviewer candidate with required profile guarantees is accepted", () => {
+  assert.doesNotThrow(() =>
+    resolveWorkerConfig({
+      requested: {},
+      profile: candidateProfile("formal_reviewer", {
+        startAuthorization: requiredAuthorization("required"),
+      }),
+      runtimeCwd: "/workspace",
+    })
   );
 });
 

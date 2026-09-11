@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
@@ -25,6 +25,7 @@ import {
   makeTestRuntime,
 } from "../src/internal/testing.js";
 import type {
+  ArtifactFailureReason,
   ArtifactStore,
   CurrentStartAuthorization,
   Runtime,
@@ -57,6 +58,15 @@ const receipt = {
     normalization: "identity.v1",
   },
 };
+
+class OpenCountingWorkerAdapter extends FakeWorkerAdapter {
+  openCount = 0;
+
+  override open(operation: Operation): Worker {
+    this.openCount += 1;
+    return super.open(operation);
+  }
+}
 
 class PausedWorkerAdapter extends FakeWorkerAdapter {
   private release!: () => void;
@@ -198,6 +208,158 @@ function profile(
   };
 }
 
+async function formalReviewAdmissionFixture(
+  context: TestContext,
+  options: {
+    readonly retrievalFailure?: ArtifactFailureReason;
+    readonly bindingFailure?: ArtifactFailureReason;
+    readonly reviewSubjectVerification?: "disabled" | "required";
+    readonly trace?: Array<string>;
+  } = {}
+) {
+  const root = await mkdtemp(join(tmpdir(), "pions-review-admission-"));
+  const clock = new FakeClock(timestamps);
+  const store = new InMemoryEventStore([], clock);
+  const artifactServices = runtimeArtifactStore(
+    root,
+    store,
+    () => new Date("2026-09-06T10:00:00.000Z"),
+    undefined,
+    {
+      currentUse: async () =>
+        options.bindingFailure === undefined ? "allowed" : "denied",
+    }
+  );
+  context.after(async () => {
+    await artifactServices.artifacts.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const dependencyBytes = Buffer.from("review dependency", "utf8");
+  const dependencyDigest =
+    `sha256:${createHash("sha256").update(dependencyBytes).digest("hex")}` as const;
+  await artifactServices.artifacts.startRegistration(
+    artifactServices.credential,
+    {
+      registrationId: "review-dependency-registration",
+      expectedByteCount: dependencyBytes.byteLength,
+      expectedDigest: dependencyDigest,
+      formatId: "pions.opaque.v1",
+      normalizationId: "identity.v1",
+      dependencies: [],
+      deadline: "2026-09-06T10:01:00.000Z",
+      recoveryBudget: 1,
+    }
+  );
+  const dependencyRegistration = await artifactServices.artifacts.transfer(
+    artifactServices.credential,
+    "review-dependency-registration",
+    dependencyBytes
+  );
+  if (dependencyRegistration.kind !== "registered")
+    throw new Error("Review dependency registration failed");
+  const bytes = Buffer.from("review input", "utf8");
+  const digest =
+    `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+  await artifactServices.artifacts.startRegistration(
+    artifactServices.credential,
+    {
+      registrationId: "review-registration",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: digest,
+      formatId: "pions.opaque.v1",
+      normalizationId: "identity.v1",
+      dependencies: [dependencyRegistration.artifact.artifactId],
+      deadline: "2026-09-06T10:01:00.000Z",
+      recoveryBudget: 1,
+    }
+  );
+  const registration = await artifactServices.artifacts.transfer(
+    artifactServices.credential,
+    "review-registration",
+    bytes
+  );
+  if (registration.kind !== "registered")
+    throw new Error("Review subject registration failed");
+  const artifacts: ArtifactStore = new Proxy(artifactServices.artifacts, {
+    get(target, property) {
+      if (
+        property === "resolveMetadata" &&
+        options.retrievalFailure !== undefined
+      ) {
+        return async () => ({
+          kind: "failed",
+          terminal: true,
+          reason: options.retrievalFailure!,
+        });
+      }
+      if (property === "prepareUseBinding") {
+        return async (
+          ...args: Parameters<ArtifactStore["prepareUseBinding"]>
+        ) => {
+          options.trace?.push("retain");
+          return target.prepareUseBinding(...args);
+        };
+      }
+      if (property === "retrieveForUseBinding") {
+        return async (
+          ...args: Parameters<ArtifactStore["retrieveForUseBinding"]>
+        ) => {
+          options.trace?.push("verify");
+          return target.retrieveForUseBinding(...args);
+        };
+      }
+      const value = target[property as keyof ArtifactStore];
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const worker = new OpenCountingWorkerAdapter();
+  const presentation = new FakePresentation();
+  const runtime = makeTestRuntime({
+    worker,
+    clock,
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation,
+    store,
+    artifacts,
+    artifactCredential: artifactServices.credential,
+    synchronizeArtifactClock: artifactServices.synchronizeClock,
+    startAuthorizationAuthenticator: {
+      authenticate: async () => ({
+        subjectId: "reviewer-1",
+        currentAuthorization: async () => "authorized",
+      }),
+    },
+    configuration: {
+      cwd: "/test/workspace",
+      profiles: {
+        review: profile(
+          {
+            policy: "required",
+            windowMs: 60_000,
+            authorizedSubjectIds: ["reviewer-1"],
+            receipt: {
+              workspace: receipt.workspace,
+              permissionManifest: receipt.permissionManifest,
+              reviewSubjectVerification:
+                options.reviewSubjectVerification ?? "required",
+            },
+          },
+          "formal_reviewer"
+        ),
+      },
+    },
+  });
+  return {
+    runtime,
+    worker,
+    presentation,
+    artifacts,
+    artifactCredential: artifactServices.credential,
+    artifact: registration.artifact,
+    artifactId: registration.artifact.artifactId,
+  };
+}
+
 async function fixture(
   options: {
     readonly policy?: WorkerProfilePolicy["startAuthorization"];
@@ -296,6 +458,15 @@ test("a required Start gate remains waiting before a decision", async () => {
   const { handle } = await fixture();
 
   assert.equal((await handle.read()).startAuthorization.gate, "waiting");
+});
+
+test("a non-review Startup receipt does not invent a Review subject", async () => {
+  const { handle } = await fixture();
+
+  assert.equal(
+    (await handle.waitForStartupReceipt())?.reviewSubject,
+    undefined
+  );
 });
 
 test("an authorized decision starts the waiting Operation", async () => {
@@ -397,117 +568,196 @@ test("the authorization decision is persisted before Worker execution begins", a
   );
 });
 
-test("a retained and verified Review subject can pass both Start checks", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "pions-start-review-"));
-  const clock = new FakeClock(timestamps);
-  const store = new InMemoryEventStore([], clock);
-  const artifactServices = runtimeArtifactStore(
-    root,
-    store,
-    () => new Date("2026-09-06T10:00:00.000Z")
-  );
-  context.after(async () => {
-    await artifactServices.artifacts.close();
-    await rm(root, { recursive: true, force: true });
-  });
-  const dependencyBytes = Buffer.from("review base", "utf8");
-  const dependencyDigest =
-    `sha256:${createHash("sha256").update(dependencyBytes).digest("hex")}` as const;
-  await artifactServices.artifacts.startRegistration(
-    artifactServices.credential,
+test("a formal review Operation fixes its registered Artifact as the Review subject", async (context) => {
+  const { runtime, artifact } = await formalReviewAdmissionFixture(context);
+  const handle = await runtime.spawn(
     {
-      registrationId: "review-dependency-registration-1",
-      expectedByteCount: dependencyBytes.byteLength,
-      expectedDigest: dependencyDigest,
-      formatId: "pions.opaque.v1",
-      normalizationId: "identity.v1",
-      dependencies: [],
-      deadline: "2026-09-06T10:01:00.000Z",
-      recoveryBudget: 1,
-    }
+      promptRef: "private://prompt/1",
+      profile: "review",
+      idempotencyKey: "task-1",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
   );
-  const dependencyRegistration = await artifactServices.artifacts.transfer(
-    artifactServices.credential,
-    "review-dependency-registration-1",
-    dependencyBytes
-  );
-  if (dependencyRegistration.kind !== "registered")
-    throw new Error("Review dependency registration failed");
-  const bytes = Buffer.from("review input", "utf8");
-  const digest =
-    `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
-  await artifactServices.artifacts.startRegistration(
-    artifactServices.credential,
+
+  assert.deepEqual((await handle.waitForStartupReceipt())?.reviewSubject, {
+    artifactId: artifact.artifactId,
+    byteCount: artifact.byteCount,
+    digest: artifact.digest,
+    format: artifact.formatId,
+    normalization: artifact.normalizationId,
+  });
+});
+
+for (const [description, reason] of [
+  ["an unregistered", "unauthorized"],
+  ["an unavailable", "storage_inspection_unavailable"],
+  ["a deleted", "artifact_deleted"],
+  ["a corrupt", "stored_artifact_corrupt"],
+] as const) {
+  test(`${description} Review subject does not publish a Start authorization request`, async (context) => {
+    const { runtime, artifactId } = await formalReviewAdmissionFixture(
+      context,
+      {
+        retrievalFailure: reason,
+      }
+    );
+    await runtime
+      .spawn(
+        {
+          promptRef: "private://prompt/1",
+          profile: "review",
+          idempotencyKey: "task-1",
+        },
+        { reviewSubjectArtifactId: artifactId }
+      )
+      .catch(() => undefined);
+    const inbox = await runtime.startAuthorizationInbox("credential");
+
+    assert.equal((await inbox.listWaiting()).length, 0);
+  });
+}
+
+test("an unauthorized Review subject does not publish a Start authorization request", async (context) => {
+  const { runtime, artifactId } = await formalReviewAdmissionFixture(context, {
+    bindingFailure: "unauthorized",
+  });
+  const handle = await runtime.spawn(
     {
-      registrationId: "review-registration-1",
-      expectedByteCount: bytes.byteLength,
-      expectedDigest: digest,
-      formatId: "pions.opaque.v1",
-      normalizationId: "identity.v1",
-      dependencies: [dependencyRegistration.artifact.artifactId],
-      deadline: "2026-09-06T10:01:00.000Z",
-      recoveryBudget: 1,
-    }
-  );
-  const registration = await artifactServices.artifacts.transfer(
-    artifactServices.credential,
-    "review-registration-1",
-    bytes
-  );
-  if (registration.kind !== "registered")
-    throw new Error("Review subject registration failed");
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter(),
-    clock,
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-    artifacts: artifactServices.artifacts,
-    artifactCredential: artifactServices.credential,
-    synchronizeArtifactClock: artifactServices.synchronizeClock,
-    startAuthorizationAuthenticator: {
-      authenticate: async () => ({
-        subjectId: "reviewer-1",
-        currentAuthorization: async () => "authorized",
-      }),
+      promptRef: "private://prompt/1",
+      profile: "review",
+      idempotencyKey: "task-1",
     },
-    configuration: {
-      cwd: "/test/workspace",
-      profiles: {
-        review: profile(
-          {
-            policy: "required",
-            windowMs: 60_000,
-            authorizedSubjectIds: ["reviewer-1"],
-            receipt: {
-              ...receipt,
-              reviewSubjectVerification: "required",
-              reviewSubject: {
-                artifactId: registration.artifact.artifactId,
-                byteCount: registration.artifact.byteCount,
-                digest: registration.artifact.digest,
-                format: registration.artifact.formatId,
-                normalization: registration.artifact.normalizationId,
-              },
-            },
-          },
-          "formal_reviewer"
-        ),
-      },
-    },
-  });
-  const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "review",
-    idempotencyKey: "task-1",
-  });
+    { reviewSubjectArtifactId: artifactId }
+  );
   await handle.waitForStartupReceipt();
-  await authorize(await runtime.startAuthorizationInbox("credential"));
-  await handle.result().catch(() => undefined);
+  const inbox = await runtime.startAuthorizationInbox("credential");
+
+  assert.equal((await inbox.listWaiting()).length, 0);
+});
+
+test("a Review subject dependency closure is retained before authorization publication", async (context) => {
+  const { runtime, artifactId, artifacts, artifactCredential } =
+    await formalReviewAdmissionFixture(context);
+  const handle = await runtime.spawn(
+    {
+      promptRef: "private://prompt/1",
+      profile: "review",
+      idempotencyKey: "task-1",
+    },
+    { reviewSubjectArtifactId: artifactId }
+  );
+  await handle.waitForStartupReceipt();
+  const binding = await artifacts.useBindingStatus(
+    artifactCredential,
+    "operation-1.review-subject"
+  );
 
   assert.equal(
-    (await handle.read()).startInstructionDelivery?.authorizationDecisionId,
-    "decision-1"
+    binding.kind === "available"
+      ? binding.binding.dependencyClosure.length
+      : undefined,
+    1
+  );
+});
+
+test("a Review subject is retained before its integrity is verified", async (context) => {
+  const trace: Array<string> = [];
+  const { runtime, artifactId } = await formalReviewAdmissionFixture(context, {
+    trace,
+  });
+  const handle = await runtime.spawn(
+    {
+      promptRef: "private://prompt/1",
+      profile: "review",
+      idempotencyKey: "task-1",
+    },
+    { reviewSubjectArtifactId: artifactId }
+  );
+  await handle.waitForStartupReceipt();
+
+  assert.deepEqual(trace.slice(0, 2), ["retain", "verify"]);
+});
+
+test("a formal review Operation requires an operation-specific Review subject", async (context) => {
+  const { runtime, presentation } = await formalReviewAdmissionFixture(context);
+  await runtime
+    .spawn({
+      promptRef: "private://prompt/1",
+      profile: "review",
+      idempotencyKey: "task-1",
+    })
+    .catch(() => undefined);
+
+  assert.equal(presentation.createdPaneIds.length, 0);
+});
+
+test("a formal review Operation without a Review subject does not create a Worker", async (context) => {
+  const { runtime, worker } = await formalReviewAdmissionFixture(context);
+  await runtime
+    .spawn({
+      promptRef: "private://prompt/1",
+      profile: "review",
+      idempotencyKey: "task-1",
+    })
+    .catch(() => undefined);
+
+  assert.equal(worker.openCount, 0);
+});
+
+test("an incomplete formal reviewer profile does not create a Pane", async (context) => {
+  const { runtime, artifactId, presentation } =
+    await formalReviewAdmissionFixture(context, {
+      reviewSubjectVerification: "disabled",
+    });
+  await runtime
+    .spawn(
+      {
+        promptRef: "private://prompt/1",
+        profile: "review",
+        idempotencyKey: "task-1",
+      },
+      { reviewSubjectArtifactId: artifactId }
+    )
+    .catch(() => undefined);
+
+  assert.equal(presentation.createdPaneIds.length, 0);
+});
+
+test("an incomplete formal reviewer profile does not create a Worker", async (context) => {
+  const { runtime, artifactId, worker } = await formalReviewAdmissionFixture(
+    context,
+    { reviewSubjectVerification: "disabled" }
+  );
+  await runtime
+    .spawn(
+      {
+        promptRef: "private://prompt/1",
+        profile: "review",
+        idempotencyKey: "task-1",
+      },
+      { reviewSubjectArtifactId: artifactId }
+    )
+    .catch(() => undefined);
+
+  assert.equal(worker.openCount, 0);
+});
+
+test("a formal review Operation keeps its Review subject after creation", async (context) => {
+  const { runtime, artifactId } = await formalReviewAdmissionFixture(context);
+  const options = { reviewSubjectArtifactId: artifactId };
+  const handle = await runtime.spawn(
+    {
+      promptRef: "private://prompt/1",
+      profile: "review",
+      idempotencyKey: "task-1",
+    },
+    options
+  );
+  options.reviewSubjectArtifactId = "another-artifact";
+
+  assert.equal(
+    (await handle.waitForStartupReceipt())?.reviewSubject?.artifactId,
+    artifactId
   );
 });
 
@@ -518,7 +768,9 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
   const artifactServices = runtimeArtifactStore(
     root,
     store,
-    () => new Date("2026-09-06T10:00:00.000Z")
+    () => new Date("2026-09-06T10:00:00.000Z"),
+    undefined,
+    { currentUse: async () => "allowed" }
   );
   context.after(async () => {
     await artifactServices.artifacts.close();
@@ -593,13 +845,6 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
             receipt: {
               ...receipt,
               reviewSubjectVerification: "required",
-              reviewSubject: {
-                artifactId: registration.artifact.artifactId,
-                byteCount: registration.artifact.byteCount,
-                digest: registration.artifact.digest,
-                format: registration.artifact.formatId,
-                normalization: registration.artifact.normalizationId,
-              },
             },
           },
           "formal_reviewer"
@@ -607,29 +852,18 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
       },
     },
   });
-  const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "review",
-    idempotencyKey: "task-1",
-  });
+  const handle = await runtime.spawn(
+    {
+      promptRef: "private://prompt/1",
+      profile: "review",
+      idempotencyKey: "task-1",
+    },
+    { reviewSubjectArtifactId: registration.artifact.artifactId }
+  );
   await handle.waitForStartupReceipt();
   await authorize(await runtime.startAuthorizationInbox("credential"));
 
   assert.equal((await handle.read()).startInstructionDelivery, undefined);
-});
-
-test("an unverifiable Review subject prevents authorization publication", async () => {
-  const { handle } = await fixture({
-    intendedUse: "formal_reviewer",
-    policy: {
-      policy: "required",
-      windowMs: 60_000,
-      authorizedSubjectIds: ["reviewer-1"],
-      receipt: { ...receipt, reviewSubjectVerification: "required" },
-    },
-  });
-
-  assert.equal(await handle.waitForStartupReceipt(), undefined);
 });
 
 test("an optional policy resolved as disabled keeps automatic start", async () => {

@@ -1470,13 +1470,6 @@ test("Runtime rejects a contradictory candidate profile without disabling its gu
                 digest: `sha256:${"ab".repeat(32)}`,
               },
               reviewSubjectVerification: "disabled",
-              reviewSubject: {
-                artifactId: "artifact-1",
-                byteCount: 1,
-                digest: `sha256:${"cd".repeat(32)}`,
-                format: "pions.opaque.v1",
-                normalization: "identity.v1",
-              },
             },
           },
           workProductRequirements: {

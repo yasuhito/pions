@@ -2150,6 +2150,22 @@ test("registration rechecks current authority before publication", async (contex
   );
 });
 
+test("metadata resolution returns the registered Artifact metadata", async (context) => {
+  const { store: artifacts } = await store(context);
+  const registered = await register(artifacts, "registration-1", "review");
+  if (registered.kind !== "registered") throw new Error("registration failed");
+
+  const resolved = await artifacts.resolveMetadata(
+    "credential",
+    registered.artifact.artifactId
+  );
+
+  assert.deepEqual(
+    resolved.kind === "resolved" ? resolved.artifact : undefined,
+    registered.artifact
+  );
+});
+
 test("retrieval verifies and returns the stored byte sequence", async (context) => {
   const { store: artifacts } = await store(context);
   const registered = await register(artifacts, "registration-1", "e\u0301\r\n");

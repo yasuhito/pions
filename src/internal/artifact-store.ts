@@ -21,6 +21,7 @@ import {
   type ArtifactGarbageCollectionOutcome,
   type ArtifactGarbageCollectionRequest,
   type ArtifactMetadata,
+  type ArtifactMetadataOutcome,
   type ArtifactPrincipal,
   type ArtifactRegistrationOutcome,
   type ArtifactRegistrationRequest,
@@ -381,6 +382,13 @@ function useBindingOutcome(
     record.failureReason ?? "storage_inspection_unavailable",
     record.state === "rejected"
   );
+}
+
+function metadataFailed(
+  reason: ArtifactFailureReason,
+  terminal = true
+): ArtifactMetadataOutcome {
+  return { kind: "failed", terminal, reason };
 }
 
 function retrievalFailed(
@@ -1670,31 +1678,56 @@ class FileArtifactStore implements ArtifactStore {
     return bytes;
   }
 
-  async retrieve(
+  private async loadRetrievableArtifact(
     credential: string,
     artifactId: string
-  ): Promise<ArtifactRetrievalOutcome> {
-    if (this.closed) return retrievalFailed("storage_inspection_unavailable");
+  ): Promise<
+    | {
+        readonly record: ArtifactRecord;
+        readonly principal: Readonly<ArtifactPrincipal>;
+      }
+    | { readonly reason: ArtifactFailureReason }
+  > {
+    if (this.closed) return { reason: "storage_inspection_unavailable" };
     const principal = await this.authenticate(credential);
-    if (principal === undefined) return retrievalFailed("unauthorized");
+    if (principal === undefined) return { reason: "unauthorized" };
     let decision: ArtifactAuthorityDecision;
     try {
       decision = await principal.canRetrieve(artifactId);
     } catch {
-      return retrievalFailed("unauthorized");
+      return { reason: "unauthorized" };
     }
-    if (decision !== "allowed") return retrievalFailed("unauthorized");
+    if (decision !== "allowed") return { reason: "unauthorized" };
     let record: ArtifactRecord | undefined;
     try {
       record = await this.readArtifactRecord(artifactId);
     } catch {
-      return retrievalFailed("storage_inspection_unavailable");
+      return { reason: "storage_inspection_unavailable" };
     }
-    if (record === undefined) return retrievalFailed("unauthorized");
+    if (record === undefined) return { reason: "unauthorized" };
     if (record.lifecycle === "deletion_pending")
-      return retrievalFailed("artifact_deletion_pending");
-    if (record.lifecycle === "deleted")
-      return retrievalFailed("artifact_deleted");
+      return { reason: "artifact_deletion_pending" };
+    if (record.lifecycle === "deleted") return { reason: "artifact_deleted" };
+    return { record, principal };
+  }
+
+  async resolveMetadata(
+    credential: string,
+    artifactId: string
+  ): Promise<ArtifactMetadataOutcome> {
+    const resolved = await this.loadRetrievableArtifact(credential, artifactId);
+    return "reason" in resolved
+      ? metadataFailed(resolved.reason)
+      : { kind: "resolved", artifact: resolved.record };
+  }
+
+  async retrieve(
+    credential: string,
+    artifactId: string
+  ): Promise<ArtifactRetrievalOutcome> {
+    const resolved = await this.loadRetrievableArtifact(credential, artifactId);
+    if ("reason" in resolved) return retrievalFailed(resolved.reason);
+    const { principal, record } = resolved;
     const closure = await this.dependencyClosure(
       record.dependencies,
       this.options.policy,

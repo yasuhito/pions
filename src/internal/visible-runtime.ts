@@ -23,6 +23,7 @@ import {
 import type {
   ResourceAuthorityRegistration,
   ResourceCleanupAuthenticator,
+  RuntimeReviewSubjectAuthority,
   RetryClearanceVerifier,
   RevisionAuthenticator,
   Runtime,
@@ -45,6 +46,7 @@ export interface VisibleRuntimeOptions {
     Readonly<ResourceAuthorityRegistration>
   >;
   readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
+  readonly reviewSubjectAuthority?: RuntimeReviewSubjectAuthority;
 }
 
 const systemClock: RuntimeClock = {
@@ -107,7 +109,9 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
   const artifactServices = runtimeArtifactStore(
     options.stateDirectory,
     store,
-    () => new Date()
+    () => new Date(),
+    undefined,
+    options.reviewSubjectAuthority
   );
   return makeRuntime({
     worker,

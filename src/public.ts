@@ -109,14 +109,17 @@ export interface ResolvedWorkProductRequirements extends WorkProductRequirements
   readonly canonicalJson: string;
 }
 
-export interface StartupReceiptPolicy {
+export interface ConfiguredStartupReceiptPolicy {
   readonly workspace: Readonly<ResourceWorkspace>;
   readonly permissionManifest: Readonly<{
     readonly manifestId: string;
     readonly digest: `sha256:${string}`;
   }>;
   readonly reviewSubjectVerification: "disabled" | "required";
-  readonly reviewSubject: Readonly<{
+}
+
+export interface StartupReceiptPolicy extends ConfiguredStartupReceiptPolicy {
+  readonly reviewSubject?: Readonly<{
     readonly artifactId: string;
     readonly byteCount: number;
     readonly digest: `sha256:${string}`;
@@ -131,7 +134,7 @@ export type WorkerStartAuthorizationPolicy =
       readonly policy: "required";
       readonly windowMs: number;
       readonly authorizedSubjectIds: ReadonlyArray<string>;
-      readonly receipt: Readonly<StartupReceiptPolicy>;
+      readonly receipt: Readonly<ConfiguredStartupReceiptPolicy>;
     }
   | { readonly policy: "optional"; readonly resolution: "disabled" }
   | {
@@ -139,7 +142,7 @@ export type WorkerStartAuthorizationPolicy =
       readonly resolution: "required";
       readonly windowMs: number;
       readonly authorizedSubjectIds: ReadonlyArray<string>;
-      readonly receipt: Readonly<StartupReceiptPolicy>;
+      readonly receipt: Readonly<ConfiguredStartupReceiptPolicy>;
     };
 
 export type WorkerProfileIntendedUse =
@@ -293,6 +296,7 @@ export class ProjectConfigurationError extends Error {
 
 export interface SpawnOptions {
   readonly parentOperationId?: string;
+  readonly reviewSubjectArtifactId?: string;
 }
 
 export interface Result {
@@ -372,7 +376,7 @@ export interface StartupReceipt {
     readonly acquisitionState: "held";
     readonly generation?: string;
   }>;
-  readonly reviewSubject: Readonly<{
+  readonly reviewSubject?: Readonly<{
     readonly artifactId: string;
     readonly byteCount: number;
     readonly digest: `sha256:${string}`;
@@ -1174,6 +1178,14 @@ export class ResultRetrievalError extends Error {
   }
 }
 
+export class ReviewSubjectError extends Error {
+  override readonly name = "ReviewSubjectError";
+
+  constructor(readonly reason: ArtifactFailureReason) {
+    super(`Review subject is unavailable: ${reason}`);
+  }
+}
+
 export interface CancelOptions {
   readonly scope: "subtree";
   readonly cancellationEpoch?: number;
@@ -1269,6 +1281,17 @@ export type ArtifactRegistrationOutcome =
       readonly kind: "continuable";
       readonly reason: "transfer_incomplete";
       readonly registration: Readonly<ArtifactRegistrationSnapshot>;
+    }
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason;
+    };
+
+export type ArtifactMetadataOutcome =
+  | {
+      readonly kind: "resolved";
+      readonly artifact: Readonly<ArtifactMetadata>;
     }
   | {
       readonly kind: "failed";
@@ -1564,6 +1587,13 @@ export type ArtifactGarbageCollectionOutcome =
       readonly reason: ArtifactFailureReason;
     };
 
+export interface RuntimeReviewSubjectAuthority {
+  currentUse(
+    operationId: string,
+    artifactId: string
+  ): Promise<ArtifactAuthorityDecision>;
+}
+
 export interface ArtifactPrincipal {
   readonly subjectId: string;
   canRegister(
@@ -1645,6 +1675,10 @@ export interface ArtifactStore {
     credential: string,
     registrationId: string
   ): Promise<ArtifactRegistrationOutcome>;
+  resolveMetadata(
+    credential: string,
+    artifactId: string
+  ): Promise<ArtifactMetadataOutcome>;
   retrieve(
     credential: string,
     artifactId: string

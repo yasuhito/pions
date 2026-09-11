@@ -293,13 +293,17 @@ export abstract class ValidatedEventStore implements EventStore {
               manifestId: receipt.permissionManifest.manifestId,
               digest: receipt.permissionManifest.digest,
             },
-            reviewSubject: {
-              artifactId: receipt.reviewSubject.artifactId,
-              byteCount: receipt.reviewSubject.byteCount,
-              digest: receipt.reviewSubject.digest,
-              format: receipt.reviewSubject.format,
-              normalization: receipt.reviewSubject.normalization,
-            },
+            ...(receipt.reviewSubject === undefined
+              ? {}
+              : {
+                  reviewSubject: {
+                    artifactId: receipt.reviewSubject.artifactId,
+                    byteCount: receipt.reviewSubject.byteCount,
+                    digest: receipt.reviewSubject.digest,
+                    format: receipt.reviewSubject.format,
+                    normalization: receipt.reviewSubject.normalization,
+                  },
+                }),
             reviewSubjectVerification: receipt.reviewSubjectVerification,
             configuredAuthorizationPolicy:
               receipt.configuredAuthorizationPolicy,
