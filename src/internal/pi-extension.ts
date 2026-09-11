@@ -422,8 +422,11 @@ function boundedResultBody(
 
 class TrackedOperation {
   private cancellation?: Promise<CancellationResult>;
+  readonly completion: Promise<Readonly<OperationCompletion>>;
 
-  constructor(readonly handle: OperationHandle) {}
+  constructor(readonly handle: OperationHandle) {
+    this.completion = handle.result();
+  }
 
   cancel(): Promise<CancellationResult> {
     if (this.cancellation !== undefined) return this.cancellation;
@@ -441,6 +444,8 @@ class OperationLifetime {
     if (existing !== undefined) return existing;
     const operation = new TrackedOperation(handle);
     this.active.set(handle.operationId, operation);
+    const complete = () => this.complete(operation);
+    void operation.completion.then(complete, complete);
     return operation;
   }
 
@@ -476,7 +481,6 @@ type ResultOutcome =
 
 async function awaitOperation(
   operation: TrackedOperation,
-  lifetime: OperationLifetime,
   signal: AbortSignal | undefined
 ): Promise<Readonly<OperationCompletion>> {
   let notifyInterrupted!: () => void;
@@ -486,7 +490,7 @@ async function awaitOperation(
   const onAbort = () => notifyInterrupted();
   signal?.addEventListener("abort", onAbort, { once: true });
 
-  const settled: Promise<ResultOutcome> = operation.handle.result().then(
+  const settled: Promise<ResultOutcome> = operation.completion.then(
     (completion) => ({ type: "result", completion }),
     (error: unknown) => ({ type: "failure", error })
   );
@@ -494,17 +498,10 @@ async function awaitOperation(
 
   try {
     const outcome = await Promise.race([settled, interrupted]);
-    if (outcome.type === "result") {
-      lifetime.complete(operation);
-      return outcome.completion;
-    }
-    if (outcome.type === "failure") {
-      lifetime.complete(operation);
-      throw outcome.error;
-    }
+    if (outcome.type === "result") return outcome.completion;
+    if (outcome.type === "failure") throw outcome.error;
 
     const cancellation = await operation.cancel();
-    lifetime.complete(operation);
     if (cancellation.state === "unknown") {
       throw new OperationUnknownError(
         operation.handle.operationId,
@@ -848,6 +845,7 @@ export function installPionsExtension(
         },
         { reviewSubjectArtifactId: parameters.artifactId }
       );
+      operationLifetime.track(handle);
       sessionOwnedFormalReviews.set(handle.operationId, {
         runtime: prepared.runtime,
         sessionId: context.sessionManager.getSessionId(),
@@ -946,11 +944,7 @@ export function installPionsExtension(
         cwd: prepared.normalizedRoot,
       });
       const operation = operationLifetime.track(handle);
-      const completion = await awaitOperation(
-        operation,
-        operationLifetime,
-        signal
-      );
+      const completion = await awaitOperation(operation, signal);
       const bounded = boundedResultBody(
         completion.result.body,
         handle.operationId

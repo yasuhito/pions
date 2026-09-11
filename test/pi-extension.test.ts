@@ -171,6 +171,7 @@ class FakeRuntime implements Runtime {
   readonly tasks: Array<TaskSpec> = [];
   readonly spawnOptions: Array<Readonly<SpawnOptions> | undefined> = [];
   spawnCount = 0;
+  operationReadCount = 0;
   resultReadCount = 0;
   closeCount = 0;
   readonly authorizationCredentials: Array<string> = [];
@@ -217,6 +218,7 @@ class FakeRuntime implements Runtime {
   }
 
   async operation(operationId: string): Promise<OperationReader> {
+    this.operationReadCount += 1;
     if (operationId !== "operation-1" || this.outcome instanceof Error) {
       throw new Error("unknown Operation");
     }
@@ -722,6 +724,65 @@ test("pions_review does not wait for the Result", async (context) => {
   );
 });
 
+for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
+  test(`session shutdown caused by ${reason} cancels an active formal review`, async (context) => {
+    const runtime = new PendingRuntime();
+    const value = await fixture(runtime);
+    context.after(() => rm(value.root, { recursive: true, force: true }));
+    await value.review();
+    await value.shutdown(reason);
+
+    assert.deepEqual(runtime.cancellations, [
+      { operationId: "operation-1", scope: "subtree" },
+    ]);
+  });
+}
+
+test("session shutdown does not cancel a completed formal review", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  runtime.results.get("operation-1")?.resolve({
+    body: "done",
+    byteCount: 4,
+    digest: `sha256:${"ab".repeat(32)}`,
+  });
+  await new Promise(setImmediate);
+  await value.shutdown("quit");
+
+  assert.equal(runtime.cancellations.length, 0);
+});
+
+test("session shutdown does not cancel a failed formal review", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  runtime.results
+    .get("operation-1")
+    ?.reject(new OperationFailedError("operation-1", "agent_failed"));
+  await new Promise(setImmediate);
+  await value.shutdown("quit");
+
+  assert.equal(runtime.cancellations.length, 0);
+});
+
+test("formal review shutdown keeps the Runtime open until cancellation is classified", async (context) => {
+  const runtime = new PendingRuntime();
+  const classification = deferred<CancellationResult>();
+  runtime.cancellationResponse = classification.promise;
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  const shutdown = value.shutdown("quit");
+  await new Promise(setImmediate);
+
+  assert.equal(runtime.closeCount, 0);
+  classification.resolve({ cancellationEpoch: 1, state: "cancelled" });
+  await shutdown;
+});
+
 test("project extension registers pions_review_decision", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -924,6 +985,19 @@ test("pions_operation returns the persisted Operation snapshot", async (context)
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.deepEqual((await value.inspect()).details, SNAPSHOT);
+});
+
+test("pions_operation reads an earlier session snapshot through a retrieval Runtime", async (context) => {
+  const retrievalRuntime = new FakeRuntime();
+  const value = await fixture(undefined, {
+    runtimeFactory: () => new FakeRuntime(),
+    resultRuntimeFactory: () => retrievalRuntime,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  value.setSessionId("pi-session-2");
+  await value.inspect();
+
+  assert.equal(retrievalRuntime.operationReadCount, 1);
 });
 
 test("a newly requested formal review has no accepted Start instruction", async (context) => {
