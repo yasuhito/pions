@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -23,6 +24,15 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
+import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
+import {
+  FakeClock,
+  FakeIdGenerator,
+  FakePresentation,
+  FakeWorkerAdapter,
+  makeTestRuntime,
+} from "../src/internal/testing.js";
 import {
   installPionsExtension,
   type PionsDelegateDetails,
@@ -40,6 +50,7 @@ import type {
   CancellationResult,
   CleanupDiagnostic,
   OperationHandle,
+  OperationReader,
   Result,
   Runtime,
   TaskSpec,
@@ -68,6 +79,8 @@ class FakeRuntime implements Runtime {
     return {
       operationId: "operation-1",
       read: () => Promise.reject(new Error("unused")),
+      readResult: () => Promise.reject(new Error("unused")),
+      readResultChunk: () => Promise.reject(new Error("unused")),
       waitForStartupReceipt: () => Promise.reject(new Error("unused")),
       result: () =>
         outcome instanceof Error
@@ -81,8 +94,34 @@ class FakeRuntime implements Runtime {
     };
   }
 
-  operation(): Promise<never> {
-    return Promise.reject(new Error("unused"));
+  async operation(operationId: string): Promise<OperationReader> {
+    if (operationId !== "operation-1" || this.outcome instanceof Error) {
+      throw new Error("unknown Operation");
+    }
+    const result = this.outcome;
+    return {
+      operationId,
+      read: () => Promise.reject(new Error("unused")),
+      readResult: () => Promise.resolve({ kind: "retrieved", result }),
+      readResultChunk: ({ maxBytes, cursor }) => {
+        const startByte = cursor === undefined ? 0 : Number(cursor);
+        const bytes = Buffer.from(result.body, "utf8");
+        const endByte = Math.min(startByte + maxBytes, bytes.byteLength);
+        return Promise.resolve({
+          kind: "retrieved" as const,
+          chunk: {
+            body: bytes.subarray(startByte, endByte).toString("utf8"),
+            startByte,
+            totalByteCount: bytes.byteLength,
+            digest: result.digest,
+            ...(endByte === bytes.byteLength
+              ? {}
+              : { nextCursor: String(endByte) }),
+          },
+        });
+      },
+      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
+    };
   }
 
   startAuthorizationInbox(): Promise<never> {
@@ -141,6 +180,8 @@ class PendingRuntime implements Runtime {
     return {
       operationId,
       read: () => Promise.reject(new Error("unused")),
+      readResult: () => Promise.reject(new Error("unused")),
+      readResultChunk: () => Promise.reject(new Error("unused")),
       waitForStartupReceipt: () => Promise.reject(new Error("unused")),
       result: () =>
         result.promise.then((accepted) => ({
@@ -189,7 +230,7 @@ interface RegisteredTool {
   readonly parameters: Readonly<Record<string, unknown>>;
   execute(
     toolCallId: string,
-    params: { readonly task: string },
+    params: Readonly<Record<string, string | undefined>>,
     signal: AbortSignal | undefined,
     onUpdate: undefined,
     context: ExtensionContext
@@ -211,6 +252,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-extension-"));
   let registered: RegisteredTool | undefined;
+  const tools = new Map<string, RegisteredTool>();
   const handlers = new Map<
     string,
     (event: unknown, context: ExtensionContext) => Promise<unknown> | unknown
@@ -218,6 +260,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   const pi = {
     registerTool(tool: ToolDefinition) {
       registered = tool as unknown as RegisteredTool;
+      tools.set(tool.name, tool as unknown as RegisteredTool);
     },
     on(
       event: string,
@@ -256,6 +299,18 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
     task = "Review the change",
     signal?: AbortSignal
   ) => tool.execute(toolCallId, { task }, signal, undefined, context);
+  const result = (operationId = "operation-1", cursor?: string) => {
+    const resultTool = tools.get("pions_result");
+    if (resultTool === undefined)
+      throw new Error("pions_result was not registered");
+    return resultTool.execute(
+      "result-call-1",
+      { operationId, ...(cursor === undefined ? {} : { cursor }) },
+      undefined,
+      undefined,
+      context
+    );
+  };
   const shutdown = (reason: "quit" | "reload" | "new" | "resume" | "fork") => {
     const handler = handlers.get("session_shutdown");
     if (handler === undefined)
@@ -264,7 +319,16 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       handler({ type: "session_shutdown", reason }, context)
     );
   };
-  return { context, execute, registered: tool, root, runtime, shutdown };
+  return {
+    context,
+    execute,
+    registered: tool,
+    result,
+    root,
+    runtime,
+    shutdown,
+    tools,
+  };
 }
 
 test("project extension registers pions_delegate", async (context) => {
@@ -324,7 +388,10 @@ test("accepted Result body becomes the tool result", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal((await value.execute()).content[0]?.text, "review complete");
+  assert.equal(
+    (await value.execute()).content[0]?.text,
+    "review complete\n\n[Operation: operation-1]"
+  );
 });
 
 test("successful delegation returns Result diagnostics", async (context) => {
@@ -363,7 +430,10 @@ test("cleanup diagnostics do not change the accepted Result body", async (contex
   );
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal((await value.execute()).content[0]?.text, "review complete");
+  assert.equal(
+    (await value.execute()).content[0]?.text,
+    "review complete\n\n[Operation: operation-1]"
+  );
 });
 
 test("cleanup diagnostics do not change the accepted Result byte count", async (context) => {
@@ -437,7 +507,7 @@ test("a truncated tool Result identifies its complete persisted Operation", asyn
 
   assert.match(
     (await value.execute()).content[0]?.text ?? "",
-    /truncated.*Operation operation-1/is
+    /truncated.*Operation: operation-1/is
   );
 });
 
@@ -1316,7 +1386,7 @@ test("one concurrent failure does not discard the other accepted Result", async 
     acceptedOutcome?.status === "fulfilled"
       ? acceptedOutcome.value.content[0]?.text
       : undefined,
-    "Standards review"
+    "Standards review\n\n[Operation: operation-1]"
   );
 });
 
@@ -1352,4 +1422,171 @@ test("a failed terminal Operation is no longer tracked at shutdown", async (cont
   await value.shutdown("quit");
 
   assert.equal(runtime.cancellations.length, 0);
+});
+
+test("project extension registers pions_result", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(value.tools.get("pions_result")?.name, "pions_result");
+});
+
+test("pions_result accepts only an Operation identifier and optional cursor", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(value.tools.get("pions_result")?.parameters, {
+    type: "object",
+    required: ["operationId"],
+    additionalProperties: false,
+    properties: {
+      operationId: { type: "string", minLength: 1 },
+      cursor: { type: "string", minLength: 1 },
+    },
+  });
+});
+
+test("pions_result retrieves the first persisted Result chunk", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.match(
+    (await value.result()).content[0]?.text ?? "",
+    /^review complete/
+  );
+});
+
+test("pions_result retrieves the next persisted Result chunk", async (context) => {
+  const body = "x".repeat(DEFAULT_MAX_LINES * 2);
+  const value = await fixture(
+    new FakeRuntime({
+      body,
+      byteCount: Buffer.byteLength(body),
+      digest: `sha256:${"ab".repeat(32)}`,
+    })
+  );
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const first = await value.result();
+  const cursor = (first.details as { readonly nextCursor?: string }).nextCursor;
+  if (cursor === undefined) throw new Error("Missing cursor");
+
+  assert.equal(
+    (
+      (await value.result("operation-1", cursor)).details as {
+        readonly startByte: number;
+      }
+    ).startByte,
+    Number(cursor)
+  );
+});
+
+test("pions_result output stays within Pi's byte limit", async (context) => {
+  const body = "x".repeat(DEFAULT_MAX_BYTES * 2);
+  const value = await fixture(
+    new FakeRuntime({
+      body,
+      byteCount: Buffer.byteLength(body),
+      digest: `sha256:${"ab".repeat(32)}`,
+    })
+  );
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.ok(
+    Buffer.byteLength((await value.result()).content[0]?.text ?? "") <=
+      DEFAULT_MAX_BYTES
+  );
+});
+
+test("pions_result output stays within Pi's line limit", async (context) => {
+  const body = "x\n".repeat(DEFAULT_MAX_LINES * 2);
+  const value = await fixture(
+    new FakeRuntime({
+      body,
+      byteCount: Buffer.byteLength(body),
+      digest: `sha256:${"ab".repeat(32)}`,
+    })
+  );
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.ok(
+    ((await value.result()).content[0]?.text.split("\n").length ?? 0) <=
+      DEFAULT_MAX_LINES
+  );
+});
+
+test("pions_result hides Operations outside the current repository", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  await assert.rejects(
+    value.result("other-operation"),
+    /unavailable in the current repository/
+  );
+});
+
+test("pions_result closes its temporary retrieval Runtime", async (context) => {
+  const retrievalRuntime = new FakeRuntime();
+  const value = await fixture(new FakeRuntime(), {
+    runtimeFactory: () => new FakeRuntime(),
+    resultRuntimeFactory: () => retrievalRuntime,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.result();
+
+  assert.equal(retrievalRuntime.closeCount, 1);
+});
+
+test("pions_result retrieves a persisted Result after Pi session restart", async (context) => {
+  const repository = await mkdtemp(join(tmpdir(), "pions-result-repository-"));
+  const stateBase = await mkdtemp(join(tmpdir(), "pions-result-state-"));
+  context.after(() => rm(repository, { recursive: true, force: true }));
+  context.after(() => rm(stateBase, { recursive: true, force: true }));
+  const repositoryKey = createHash("sha256")
+    .update(repository, "utf8")
+    .digest("hex");
+  const state = join(
+    stateBase,
+    "pions",
+    "repositories",
+    repositoryKey,
+    "runtime"
+  );
+  const timestamps = Array.from(
+    { length: 30 },
+    (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+  );
+  const clock = new FakeClock(timestamps);
+  const store = new PrivateFileEventStore(state, clock);
+  const artifactServices = runtimeArtifactStore(state, store);
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter({
+      messages: { body: "persisted result" },
+      successfulExitConfirmed: true,
+    }),
+    clock,
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+    artifacts: artifactServices.artifacts,
+    artifactCredential: artifactServices.credential,
+    synchronizeArtifactClock: artifactServices.synchronizeClock,
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  await runtime.close();
+  const value = await fixture(new FakeRuntime(), {
+    repositoryRoot: repository,
+    stateBaseDirectory: stateBase,
+    runtimeFactory: () => new FakeRuntime(),
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.match(
+    (await value.result()).content[0]?.text ?? "",
+    /^persisted result/
+  );
 });

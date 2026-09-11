@@ -29,8 +29,8 @@ export type {
   CreatedPresentation,
   OperationIntent,
   PresentationOwnership,
-  WorkerIdentity,
 } from "./intent.js";
+export type { WorkerIdentity } from "../../public.js";
 export type {
   Operation,
   OperationEvent,

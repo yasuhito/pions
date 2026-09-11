@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import { Cause, Effect, Exit, Schema } from "effect";
@@ -46,6 +47,7 @@ import {
   OperationUnknownError,
   StartAuthorizationAuthenticationError,
   ResourceProofRejectedError,
+  ResultCursorError,
   ResultRetrievalError,
   RevisionAuthenticationError,
   SpawnRejectedError,
@@ -61,6 +63,8 @@ import type {
   OperationReader,
   OperationSnapshot as PublicOperationSnapshot,
   Result,
+  ResultChunkReadOutcome,
+  ResultReadOutcome,
   RevisionCoordinator,
   RevisionReservation,
   RevisionReservationOutcome,
@@ -262,6 +266,36 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ...(operation.failureReason === undefined
         ? {}
         : { failureReason: operation.failureReason }),
+      ...(operation.workerIdentity === undefined
+        ? {}
+        : { workerIdentity: structuredClone(operation.workerIdentity) }),
+      effectiveConfig: structuredClone(operation.effectiveConfig),
+      ...(operation.observedConfig === undefined
+        ? {}
+        : { observedConfig: structuredClone(operation.observedConfig) }),
+      ...(operation.agentRunEvidence === undefined
+        ? {}
+        : {
+            workerExecutionEvidence: Object.freeze({
+              usage: Object.freeze({
+                input: operation.agentRunEvidence.usage.input,
+                output: operation.agentRunEvidence.usage.output,
+                cacheRead: operation.agentRunEvidence.usage.cacheRead,
+                cacheWrite: operation.agentRunEvidence.usage.cacheWrite,
+                totalTokens: operation.agentRunEvidence.usage.totalTokens,
+                cost: operation.agentRunEvidence.usage.cost,
+              }),
+              toolUses: Object.freeze(
+                operation.agentRunEvidence.toolUses.map((toolUse) =>
+                  Object.freeze({
+                    toolCallId: toolUse.toolCallId,
+                    toolName: toolUse.toolName,
+                    isError: toolUse.isError,
+                  })
+                )
+              ),
+            }),
+          }),
       startAuthorization: Object.freeze({
         timing: Object.freeze({
           ...operation.startAuthorizationTiming,
@@ -361,19 +395,29 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       () => Effect.void
     );
 
-  const readResult = (
-    operationId: string
-  ): Effect.Effect<Result, OperationPersistenceError | ResultRetrievalError> =>
+  const notAcceptedResult = (
+    snapshot: Readonly<StoredOperationSnapshot>
+  ): Exclude<ResultReadOutcome, { readonly kind: "retrieved" }> => ({
+    kind: "not_accepted",
+    version: Object.freeze({ ...snapshot.version }),
+    state: snapshot.operation.state,
+    ...(snapshot.operation.failureReason === undefined
+      ? {}
+      : { failureReason: snapshot.operation.failureReason }),
+  });
+
+  const retrieveAcceptedResult = (
+    operationId: string,
+    accepted: NonNullable<StoredOperationSnapshot["operation"]["result"]>
+  ): Effect.Effect<
+    {
+      readonly result: Readonly<Result>;
+      readonly bytes: Buffer;
+      readonly acceptanceId: string;
+    },
+    ResultRetrievalError
+  > =>
     Effect.gen(function* () {
-      const snapshot = yield* services.store
-        .read(operationId)
-        .pipe(Effect.mapError((error) => persistenceError(operationId, error)));
-      const accepted = snapshot.operation.result;
-      if (accepted === undefined) {
-        return yield* Effect.fail(
-          new OperationPersistenceError(operationId, "incomplete_record")
-        );
-      }
       const manifest = resultAcceptanceManifestDocument({
         formatId: accepted.manifestFormatId,
         normalizationId: accepted.manifestNormalizationId,
@@ -406,11 +450,167 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       }
       const bytes = Buffer.from(retrieved.bytes);
       return {
-        body: bytes.toString("utf8"),
-        byteCount: bytes.byteLength,
-        digest: retrieved.artifact.digest,
-      } as Result;
+        result: {
+          body: bytes.toString("utf8"),
+          byteCount: bytes.byteLength,
+          digest: retrieved.artifact.digest,
+        },
+        bytes,
+        acceptanceId: accepted.acceptanceId,
+      };
     });
+
+  const readResult = (
+    operationId: string
+  ): Effect.Effect<
+    ResultReadOutcome,
+    OperationPersistenceError | ResultRetrievalError
+  > =>
+    Effect.gen(function* () {
+      const snapshot = yield* services.store
+        .read(operationId)
+        .pipe(Effect.mapError((error) => persistenceError(operationId, error)));
+      if (snapshot.operation.result === undefined) {
+        return notAcceptedResult(snapshot);
+      }
+      const retrieved = yield* retrieveAcceptedResult(
+        operationId,
+        snapshot.operation.result
+      );
+      return { kind: "retrieved", result: retrieved.result } as const;
+    });
+
+  interface ResultCursorPayload {
+    readonly version: 1;
+    readonly operationId: string;
+    readonly acceptanceId: string;
+    readonly digest: string;
+    readonly maxBytes: number;
+    readonly startByte: number;
+  }
+
+  const encodeResultCursor = (payload: ResultCursorPayload): string => {
+    const document = JSON.stringify(payload);
+    const checksum = createHash("sha256").update(document).digest("base64url");
+    return Buffer.from(JSON.stringify({ document, checksum })).toString(
+      "base64url"
+    );
+  };
+
+  const decodeResultCursor = (
+    operationId: string,
+    cursor: string
+  ): ResultCursorPayload => {
+    try {
+      const decoded = Buffer.from(cursor, "base64url");
+      if (decoded.toString("base64url") !== cursor) {
+        throw new Error("non-canonical cursor");
+      }
+      const envelope = JSON.parse(decoded.toString("utf8")) as {
+        readonly document?: unknown;
+        readonly checksum?: unknown;
+      };
+      if (
+        typeof envelope.document !== "string" ||
+        typeof envelope.checksum !== "string" ||
+        createHash("sha256").update(envelope.document).digest("base64url") !==
+          envelope.checksum
+      ) {
+        throw new Error("invalid checksum");
+      }
+      const payload = JSON.parse(
+        envelope.document
+      ) as Partial<ResultCursorPayload>;
+      if (
+        payload.version !== 1 ||
+        typeof payload.operationId !== "string" ||
+        typeof payload.acceptanceId !== "string" ||
+        typeof payload.digest !== "string" ||
+        !Number.isSafeInteger(payload.maxBytes) ||
+        !Number.isSafeInteger(payload.startByte)
+      ) {
+        throw new Error("invalid payload");
+      }
+      if (payload.operationId !== operationId) {
+        throw new ResultCursorError(operationId, "wrong_operation");
+      }
+      return payload as ResultCursorPayload;
+    } catch (error) {
+      if (error instanceof ResultCursorError) throw error;
+      throw new ResultCursorError(operationId, "invalid");
+    }
+  };
+
+  const readResultChunk = async (
+    operationId: string,
+    options: { readonly maxBytes: number; readonly cursor?: string }
+  ): Promise<Readonly<ResultChunkReadOutcome>> => {
+    if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 4) {
+      throw new RangeError("maxBytes must be a safe integer of at least 4");
+    }
+    const cursor =
+      options.cursor === undefined
+        ? undefined
+        : decodeResultCursor(operationId, options.cursor);
+    const snapshot = await readStoredSnapshot(operationId);
+    if (snapshot.operation.result === undefined) {
+      return notAcceptedResult(snapshot);
+    }
+    const retrieved = await runEffect(
+      retrieveAcceptedResult(operationId, snapshot.operation.result)
+    );
+    if (
+      cursor !== undefined &&
+      (cursor.acceptanceId !== retrieved.acceptanceId ||
+        cursor.digest !== retrieved.result.digest ||
+        cursor.maxBytes !== options.maxBytes)
+    ) {
+      throw new ResultCursorError(operationId, "result_mismatch");
+    }
+    const bytes = retrieved.bytes;
+    const startByte = cursor?.startByte ?? 0;
+    if (
+      startByte < 0 ||
+      startByte > bytes.byteLength ||
+      (startByte === bytes.byteLength && cursor !== undefined)
+    ) {
+      throw new ResultCursorError(operationId, "invalid");
+    }
+    let endByte = Math.min(startByte + options.maxBytes, bytes.byteLength);
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    while (endByte > startByte) {
+      try {
+        decoder.decode(bytes.subarray(startByte, endByte));
+        break;
+      } catch {
+        endByte -= 1;
+      }
+    }
+    if (endByte === startByte && bytes.byteLength > 0) {
+      throw new ResultCursorError(operationId, "invalid");
+    }
+    const nextCursor =
+      endByte === bytes.byteLength
+        ? undefined
+        : encodeResultCursor({
+            version: 1,
+            operationId,
+            acceptanceId: retrieved.acceptanceId,
+            digest: retrieved.result.digest,
+            maxBytes: options.maxBytes,
+            startByte: endByte,
+          });
+    return {
+      kind: "retrieved",
+      chunk: {
+        body: bytes.subarray(startByte, endByte).toString("utf8"),
+        startByte,
+        totalByteCount: bytes.byteLength,
+        digest: retrieved.result.digest,
+        ...(nextCursor === undefined ? {} : { nextCursor }),
+      },
+    };
+  };
 
   const runEffect = async <Value>(
     effect: Effect.Effect<Value, unknown>
@@ -541,7 +741,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
     if (operation.state === "completed") {
       await performPresentationCleanup(operation, true);
-      const result = await runEffect(readResult(record.operationId));
+      const outcome = await runEffect(readResult(record.operationId));
+      if (outcome.kind !== "retrieved") {
+        throw new OperationPersistenceError(
+          record.operationId,
+          "incomplete_record"
+        );
+      }
+      const result = outcome.result;
       const cleanupSnapshot = await readPublicSnapshot(record.operationId);
       const volatileDiagnostics = [
         ...(volatileCleanupDiagnostics.get(record.operationId) ?? []),
@@ -2020,6 +2227,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const createReader = (operationId: string): OperationReader => ({
     operationId,
     read: () => readPublicSnapshot(operationId),
+    readResult: () => runEffect(readResult(operationId)),
+    readResultChunk: (options) => readResultChunk(operationId, options),
     waitForStartupReceipt: async () => {
       while (true) {
         const snapshot = await readPublicSnapshot(operationId);
@@ -2100,13 +2309,17 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     await settleTerminal(record, cancelled);
   };
 
-  const workerRecovery = runEffect(
-    services.store
-      .listRecoverableOperations()
-      .pipe(
-        Effect.mapError((error) => persistenceError("runtime-recovery", error))
-      )
-  ).then((snapshots) => {
+  const recoverWorkers = async (): Promise<void> => {
+    if (services.recovery === "disabled") return;
+    const snapshots = await runEffect(
+      services.store
+        .listRecoverableOperations()
+        .pipe(
+          Effect.mapError((error) =>
+            persistenceError("runtime-recovery", error)
+          )
+        )
+    );
     for (const { operation } of snapshots) {
       if (records.has(operation.operationId)) continue;
       const deferred = deferredResult();
@@ -2127,35 +2340,42 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         void execute(record, true);
       }
     }
-  });
-  const revisionRecovery = runEffect(
-    services.store
-      .listPendingRevisionReservations()
-      .pipe(
-        Effect.mapError((error) =>
-          persistenceError("revision-reservation-recovery", error)
+  };
+  const recoverRevisions = async (): Promise<void> => {
+    if (services.recovery === "disabled") return;
+    const reservations = await runEffect(
+      services.store
+        .listPendingRevisionReservations()
+        .pipe(
+          Effect.mapError((error) =>
+            persistenceError("revision-reservation-recovery", error)
+          )
         )
-      )
-  ).then(async (reservations) => {
+    );
     for (const reservation of reservations) {
       const record = await serializeTreeMutation(() =>
         createOperationUnlocked(reservation.task, undefined, reservation)
       );
       if (record.executionRejected !== true) void execute(record);
     }
-  });
-  const cleanupRecovery = runEffect(
-    services.store
-      .listPendingPresentationCleanups()
-      .pipe(
-        Effect.mapError((error) =>
-          persistenceError("presentation-cleanup-recovery", error)
+  };
+  const recoverCleanups = async (): Promise<void> => {
+    if (services.recovery === "disabled") return;
+    const snapshots = await runEffect(
+      services.store
+        .listPendingPresentationCleanups()
+        .pipe(
+          Effect.mapError((error) =>
+            persistenceError("presentation-cleanup-recovery", error)
+          )
         )
-      )
-  ).then(async (snapshots) => {
+    );
     for (const { operation } of snapshots)
       await performPresentationCleanup(operation, false);
-  });
+  };
+  const workerRecovery = recoverWorkers();
+  const revisionRecovery = recoverRevisions();
+  const cleanupRecovery = recoverCleanups();
   const recovery = Promise.all([
     workerRecovery,
     revisionRecovery,

@@ -22,6 +22,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { makeResultRetrievalRuntime } from "./result-runtime.js";
 import { makeVisibleRuntime } from "./visible-runtime.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "./worker-configuration.js";
 import {
@@ -78,6 +79,18 @@ const DelegateParameters = Type.Object(
   { additionalProperties: false }
 );
 
+const ResultParameters = Type.Object(
+  {
+    operationId: Type.String({ minLength: 1 }),
+    cursor: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false }
+);
+
+// A one-byte line is the worst case, so this byte budget also leaves four
+// lines for the body boundary and continuation metadata.
+const RESULT_TOOL_CHUNK_BYTES = DEFAULT_MAX_LINES - 4;
+
 export interface PionsDelegateDetails {
   readonly operationId: string;
   readonly byteCount: number;
@@ -89,6 +102,7 @@ export interface PionsDelegateDetails {
 export interface PionsExtensionOptions {
   readonly runtime?: Runtime;
   readonly runtimeFactory?: typeof makeVisibleRuntime;
+  readonly resultRuntimeFactory?: typeof makeResultRetrievalRuntime;
   readonly repositoryRoot?: string;
   readonly stateBaseDirectory?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -336,18 +350,22 @@ function boundedResultBody(
   body: string,
   operationId: string
 ): { readonly text: string; readonly truncated: boolean } {
+  const identity = `[Operation: ${operationId}]`;
   const initial = truncateHead(body, {
-    maxLines: DEFAULT_MAX_LINES,
-    maxBytes: DEFAULT_MAX_BYTES,
-  });
-  if (!initial.truncated) return { text: initial.content, truncated: false };
-
-  const suffix = `\n\n[Result truncated: complete Result persisted for Operation ${operationId}.]`;
-  const bounded = truncateHead(body, {
     maxLines: DEFAULT_MAX_LINES - 2,
-    maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(suffix, "utf8"),
+    maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(`\n\n${identity}`, "utf8"),
   });
-  return { text: `${bounded.content}${suffix}`, truncated: true };
+  const status = initial.truncated
+    ? `[Result truncated]\n${identity}`
+    : identity;
+  if (!initial.truncated) {
+    return { text: `${initial.content}\n\n${status}`, truncated: false };
+  }
+  const bounded = truncateHead(body, {
+    maxLines: DEFAULT_MAX_LINES - 3,
+    maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(`\n\n${status}`, "utf8"),
+  });
+  return { text: `${bounded.content}\n\n${status}`, truncated: true };
 }
 
 class TrackedOperation {
@@ -453,7 +471,9 @@ export function installPionsExtension(
   options: PionsExtensionOptions = {}
 ): void {
   const runtimesByConfig = new Map<string, Runtime>();
+  const runtimesByRepository = new Map<string, Runtime>();
   const runtimesByCall = new Map<string, Runtime>();
+  const knownRuntimes = new Set<Runtime>();
   const operationLifetime = new OperationLifetime();
   let shuttingDown = false;
 
@@ -466,7 +486,7 @@ export function installPionsExtension(
       failures.push(error);
     }
     const closeOutcomes = await Promise.allSettled(
-      [...new Set(runtimesByCall.values())].map((runtime) => runtime.close())
+      [...knownRuntimes].map((runtime) => runtime.close())
     );
     failures.push(
       ...closeOutcomes.flatMap((outcome) =>
@@ -479,6 +499,88 @@ export function installPionsExtension(
         "Failed to shut down the Pions Runtime"
       );
     }
+  });
+
+  pi.registerTool({
+    name: "pions_result",
+    label: "Pions Result",
+    description:
+      "Retrieve a verified persisted Result chunk for an Operation in the current trusted repository.",
+    parameters: ResultParameters,
+    async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
+      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+      if (!context.isProjectTrusted()) {
+        throw new Error("pions_result requires a trusted project");
+      }
+      const root =
+        options.repositoryRoot ?? (await repositoryRoot(context.cwd));
+      const normalizedRoot = await realpath(root);
+      const existingRuntime =
+        options.runtime ?? runtimesByRepository.get(normalizedRoot);
+      const stateBase =
+        options.stateBaseDirectory ??
+        userStateDirectory(
+          options.environment ?? process.env,
+          options.homeDirectory ?? homedir()
+        );
+      const repositoryState = join(
+        stateBase,
+        "pions",
+        "repositories",
+        opaqueDigest(normalizedRoot)
+      );
+      await privateDirectory(repositoryState);
+      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+      const temporaryRuntime =
+        existingRuntime === undefined
+          ? (options.resultRuntimeFactory ?? makeResultRetrievalRuntime)({
+              cwd: normalizedRoot,
+              stateDirectory: join(repositoryState, "runtime"),
+            })
+          : undefined;
+      const runtime = existingRuntime ?? temporaryRuntime!;
+      if (temporaryRuntime === undefined) knownRuntimes.add(runtime);
+      try {
+        let reader;
+        try {
+          reader = await runtime.operation(parameters.operationId);
+        } catch {
+          throw new Error("Result is unavailable in the current repository");
+        }
+        const outcome = await reader.readResultChunk({
+          maxBytes: RESULT_TOOL_CHUNK_BYTES,
+          ...(parameters.cursor === undefined
+            ? {}
+            : { cursor: parameters.cursor }),
+        });
+        if (outcome.kind === "not_accepted") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `[Operation: ${parameters.operationId}; Result not accepted; state: ${outcome.state}]`,
+              },
+            ],
+            details: outcome,
+          };
+        }
+        const continuation =
+          outcome.chunk.nextCursor === undefined
+            ? `[Operation: ${parameters.operationId}; Result complete]`
+            : `[Operation: ${parameters.operationId}; next cursor: ${outcome.chunk.nextCursor}]`;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${outcome.chunk.body}\n\n${continuation}`,
+            },
+          ],
+          details: outcome.chunk,
+        };
+      } finally {
+        await temporaryRuntime?.close();
+      }
+    },
   });
 
   pi.registerTool({
@@ -582,6 +684,8 @@ export function installPionsExtension(
         }
       }
       runtimesByCall.set(idempotencyKey, runtime);
+      runtimesByRepository.set(normalizedRoot, runtime);
+      knownRuntimes.add(runtime);
       const handle = await runtime.spawn({
         promptRef,
         profile: REVIEW_PROFILE,

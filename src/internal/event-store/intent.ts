@@ -10,6 +10,7 @@ import type {
   StartAuthorizationDecisionRecord,
   StartInstructionReference,
   StartupReceipt,
+  WorkerIdentity,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
 import type { PersistedResourceRecord } from "../resource-controller.js";
@@ -21,14 +22,6 @@ export interface CreatedPresentation {
 
 export interface PresentationOwnership extends CreatedPresentation {
   readonly ownedByPions: true;
-}
-
-export interface WorkerIdentity {
-  readonly processId: number;
-  readonly processInstanceId: string;
-  readonly processStartToken: string;
-  readonly piSessionId: string;
-  readonly paneId: string;
 }
 
 export type OperationIntent =

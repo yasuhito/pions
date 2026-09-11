@@ -29,20 +29,17 @@ import type {
   StartupReceipt,
   StartupReceiptPolicy,
   TaskSpec,
+  WorkerIdentity,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
 import type { PersistedResourceRecord } from "../resource-controller.js";
 import type {
   PersistableOperationIntent,
   PresentationOwnership,
-  WorkerIdentity,
 } from "./intent.js";
 
-export type {
-  CreatedPresentation,
-  PresentationOwnership,
-  WorkerIdentity,
-} from "./intent.js";
+export type { CreatedPresentation, PresentationOwnership } from "./intent.js";
+export type { WorkerIdentity } from "../../public.js";
 
 export interface RevisionMembership {
   readonly seriesId: RevisionReservation["seriesId"];

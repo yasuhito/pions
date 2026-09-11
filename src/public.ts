@@ -893,11 +893,43 @@ export interface RevisionCoordinator {
   read(seriesId: string): Promise<Readonly<RevisionSeriesSnapshot>>;
 }
 
+export interface WorkerIdentity {
+  readonly processId: number;
+  readonly processInstanceId: string;
+  readonly processStartToken: string;
+  readonly piSessionId: string;
+  readonly paneId: string;
+}
+
+export interface WorkerExecutionUsage {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly totalTokens: number;
+  readonly cost: number;
+}
+
+export interface WorkerToolUseEvidence {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly isError: boolean;
+}
+
+export interface WorkerExecutionEvidence {
+  readonly usage: Readonly<WorkerExecutionUsage>;
+  readonly toolUses: ReadonlyArray<Readonly<WorkerToolUseEvidence>>;
+}
+
 export interface OperationSnapshot {
   readonly operationId: string;
   readonly version: Readonly<OperationVersion>;
   readonly state: OperationState;
   readonly failureReason?: OperationFailureReason;
+  readonly workerIdentity?: Readonly<WorkerIdentity>;
+  readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
+  readonly observedConfig?: Readonly<ObservedWorkerConfig>;
+  readonly workerExecutionEvidence?: Readonly<WorkerExecutionEvidence>;
   readonly startAuthorization: Readonly<StartAuthorizationSnapshot>;
   readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
   readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
@@ -915,9 +947,46 @@ export interface OperationSnapshot {
   readonly revisionSeries?: Readonly<RevisionSeriesSnapshot>;
 }
 
+export type ResultReadOutcome =
+  | { readonly kind: "retrieved"; readonly result: Readonly<Result> }
+  | {
+      readonly kind: "not_accepted";
+      readonly version: Readonly<OperationVersion>;
+      readonly state: OperationState;
+      readonly failureReason?: OperationFailureReason;
+    };
+
+export interface ResultChunk {
+  readonly body: string;
+  readonly startByte: number;
+  readonly totalByteCount: number;
+  readonly digest: ArtifactDigest;
+  readonly nextCursor?: string;
+}
+
+export type ResultChunkReadOutcome =
+  | { readonly kind: "retrieved"; readonly chunk: Readonly<ResultChunk> }
+  | Exclude<ResultReadOutcome, { readonly kind: "retrieved" }>;
+
+export class ResultCursorError extends Error {
+  override readonly name = "ResultCursorError";
+
+  constructor(
+    readonly operationId: string,
+    readonly reason: "invalid" | "wrong_operation" | "result_mismatch"
+  ) {
+    super(`Result cursor rejected for Operation ${operationId}: ${reason}`);
+  }
+}
+
 export interface OperationReader {
   readonly operationId: string;
   read(): Promise<Readonly<OperationSnapshot>>;
+  readResult(): Promise<Readonly<ResultReadOutcome>>;
+  readResultChunk(options: {
+    readonly maxBytes: number;
+    readonly cursor?: string;
+  }): Promise<Readonly<ResultChunkReadOutcome>>;
   /** Returns undefined after a profile without an external Start gate terminates. */
   waitForStartupReceipt(): Promise<Readonly<StartupReceipt> | undefined>;
 }

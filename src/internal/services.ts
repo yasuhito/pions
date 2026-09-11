@@ -224,6 +224,7 @@ export interface RuntimeServices {
   readonly revisionAuthenticator?: RevisionAuthenticator;
   readonly retryClearanceVerifier?: RetryClearanceVerifier;
   readonly resourceProofController?: InternalResourceProofController;
+  readonly recovery?: "enabled" | "disabled";
   readonly configuration?: Readonly<{
     readonly cwd: string;
     readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
