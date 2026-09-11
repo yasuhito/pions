@@ -37,9 +37,10 @@ import {
 } from "../public.js";
 import type {
   CancellationResult,
+  CleanupDiagnostic,
   ModelReference,
+  OperationCompletion,
   OperationHandle,
-  Result,
   Runtime,
   ThinkingLevel,
   WorkerProfilePolicy,
@@ -82,6 +83,7 @@ export interface PionsDelegateDetails {
   readonly byteCount: number;
   readonly digest: `sha256:${string}`;
   readonly truncated: boolean;
+  readonly cleanupDiagnostics: ReadonlyArray<Readonly<CleanupDiagnostic>>;
 }
 
 export interface PionsExtensionOptions {
@@ -395,7 +397,10 @@ class OperationLifetime {
 }
 
 type ResultOutcome =
-  | { readonly type: "result"; readonly result: Result }
+  | {
+      readonly type: "result";
+      readonly completion: Readonly<OperationCompletion>;
+    }
   | { readonly type: "failure"; readonly error: unknown }
   | { readonly type: "interrupted" };
 
@@ -403,7 +408,7 @@ async function awaitOperation(
   operation: TrackedOperation,
   lifetime: OperationLifetime,
   signal: AbortSignal | undefined
-): Promise<Result> {
+): Promise<Readonly<OperationCompletion>> {
   let notifyInterrupted!: () => void;
   const interrupted = new Promise<ResultOutcome>((resolve) => {
     notifyInterrupted = () => resolve({ type: "interrupted" });
@@ -412,7 +417,7 @@ async function awaitOperation(
   signal?.addEventListener("abort", onAbort, { once: true });
 
   const settled: Promise<ResultOutcome> = operation.handle.result().then(
-    (completion) => ({ type: "result", result: completion.result }),
+    (completion) => ({ type: "result", completion }),
     (error: unknown) => ({ type: "failure", error })
   );
   if (signal?.aborted) notifyInterrupted();
@@ -421,7 +426,7 @@ async function awaitOperation(
     const outcome = await Promise.race([settled, interrupted]);
     if (outcome.type === "result") {
       lifetime.complete(operation);
-      return outcome.result;
+      return outcome.completion;
     }
     if (outcome.type === "failure") {
       lifetime.complete(operation);
@@ -587,15 +592,23 @@ export function installPionsExtension(
         cwd: normalizedRoot,
       });
       const operation = operationLifetime.track(handle);
-      const result = await awaitOperation(operation, operationLifetime, signal);
-      const bounded = boundedResultBody(result.body, handle.operationId);
+      const completion = await awaitOperation(
+        operation,
+        operationLifetime,
+        signal
+      );
+      const bounded = boundedResultBody(
+        completion.result.body,
+        handle.operationId
+      );
       return {
         content: [{ type: "text", text: bounded.text }],
         details: {
           operationId: handle.operationId,
-          byteCount: result.byteCount,
-          digest: result.digest,
+          byteCount: completion.result.byteCount,
+          digest: completion.result.digest,
           truncated: bounded.truncated,
+          cleanupDiagnostics: completion.cleanupDiagnostics,
         } satisfies PionsDelegateDetails,
       };
     },

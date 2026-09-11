@@ -38,6 +38,7 @@ import {
 } from "../src/index.js";
 import type {
   CancellationResult,
+  CleanupDiagnostic,
   OperationHandle,
   Result,
   Runtime,
@@ -54,7 +55,10 @@ class FakeRuntime implements Runtime {
       body: "review complete",
       byteCount: 15,
       digest: `sha256:${"ab".repeat(32)}`,
-    }
+    },
+    private readonly cleanupDiagnostics: ReadonlyArray<
+      Readonly<CleanupDiagnostic>
+    > = []
   ) {}
 
   async spawn(task: TaskSpec): Promise<OperationHandle> {
@@ -68,7 +72,10 @@ class FakeRuntime implements Runtime {
       result: () =>
         outcome instanceof Error
           ? Promise.reject(outcome)
-          : Promise.resolve({ result: outcome, cleanupDiagnostics: [] }),
+          : Promise.resolve({
+              result: outcome,
+              cleanupDiagnostics: this.cleanupDiagnostics,
+            }),
       cancel: () =>
         Promise.resolve({ cancellationEpoch: 1, state: "cancelled" }),
     };
@@ -329,7 +336,58 @@ test("successful delegation returns Result diagnostics", async (context) => {
     byteCount: 15,
     digest: `sha256:${"ab".repeat(32)}`,
     truncated: false,
+    cleanupDiagnostics: [],
   });
+});
+
+test("successful delegation returns every cleanup failure", async (context) => {
+  const value = await fixture(
+    new FakeRuntime(undefined, [
+      { code: "pane_close_failed" },
+      { code: "cleanup_record_unavailable" },
+    ])
+  );
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    (
+      (await value.execute()).details as PionsDelegateDetails
+    ).cleanupDiagnostics.map(({ code }) => code),
+    ["pane_close_failed", "cleanup_record_unavailable"]
+  );
+});
+
+test("cleanup diagnostics do not change the accepted Result body", async (context) => {
+  const value = await fixture(
+    new FakeRuntime(undefined, [{ code: "pane_close_failed" }])
+  );
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal((await value.execute()).content[0]?.text, "review complete");
+});
+
+test("cleanup diagnostics do not change the accepted Result byte count", async (context) => {
+  const value = await fixture(
+    new FakeRuntime(undefined, [{ code: "pane_close_failed" }])
+  );
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    ((await value.execute()).details as PionsDelegateDetails).byteCount,
+    15
+  );
+});
+
+test("cleanup diagnostics do not change the accepted Result digest", async (context) => {
+  const value = await fixture(
+    new FakeRuntime(undefined, [{ code: "pane_close_failed" }])
+  );
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    ((await value.execute()).details as PionsDelegateDetails).digest,
+    `sha256:${"ab".repeat(32)}`
+  );
 });
 
 test("a truncated tool Result stays within Pi's byte limit", async (context) => {
