@@ -56,6 +56,9 @@ import type {
   Runtime,
   RuntimeReviewSubjectAuthority,
   SpawnOptions,
+  StartAuthorizationAuthenticator,
+  StartAuthorizationDecisionRequest,
+  StartAuthorizationDecisionOutcome,
   TaskSpec,
   WorkerProfilePolicy,
 } from "../src/index.js";
@@ -170,6 +173,10 @@ class FakeRuntime implements Runtime {
   spawnCount = 0;
   resultReadCount = 0;
   closeCount = 0;
+  readonly authorizationCredentials: Array<string> = [];
+  readonly authorizationDecisions: Array<
+    Readonly<StartAuthorizationDecisionRequest>
+  > = [];
 
   constructor(
     private readonly outcome: Result | Error = {
@@ -243,8 +250,25 @@ class FakeRuntime implements Runtime {
     };
   }
 
-  startAuthorizationInbox(): Promise<never> {
-    return Promise.reject(new Error("unused"));
+  startAuthorizationInbox(credential: string) {
+    this.authorizationCredentials.push(credential);
+    return Promise.resolve({
+      listWaiting: () => Promise.resolve([]),
+      decide: (request: Readonly<StartAuthorizationDecisionRequest>) => {
+        this.authorizationDecisions.push(request);
+        return Promise.resolve({
+          status: "accepted",
+          decision: {
+            decisionId: request.decisionId,
+            actorId: "coordinator-1",
+            kind: request.kind,
+            receiptDigest: request.receiptDigest,
+            decidedAt: "2026-04-01T00:00:04.000Z",
+          },
+          gate: request.kind === "authorize" ? "authorized" : "rejected",
+        } satisfies StartAuthorizationDecisionOutcome);
+      },
+    });
   }
 
   revisions(): Promise<never> {
@@ -403,13 +427,25 @@ const REVIEW_SUBJECT_AUTHORITY: RuntimeReviewSubjectAuthority = {
   currentUse: async () => "allowed",
 };
 
+const START_AUTHORIZATION_AUTHENTICATOR: StartAuthorizationAuthenticator = {
+  authenticate: async () => ({
+    subjectId: "coordinator-1",
+    currentAuthorization: async () => "authorized",
+  }),
+};
+
+const COORDINATOR_CREDENTIAL = "private-coordinator-credential";
+
 async function fixture<TRuntime extends Runtime = FakeRuntime>(
   runtime: TRuntime = new FakeRuntime() as unknown as TRuntime,
   options: Omit<PionsExtensionOptions, "runtime" | "stateBaseDirectory"> & {
     readonly stateBaseDirectory?: string;
   } = {},
   useDefaultStateDirectory = false,
-  fixtureOptions: { readonly enableFormalReview?: boolean } = {}
+  fixtureOptions: {
+    readonly enableFormalReview?: boolean;
+    readonly enableCoordinator?: boolean;
+  } = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-extension-"));
   let registered: RegisteredTool | undefined;
@@ -440,6 +476,14 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
           formalReview: {
             profile: FORMAL_REVIEW_PROFILE,
             reviewSubjectAuthority: REVIEW_SUBJECT_AUTHORITY,
+            ...(fixtureOptions.enableCoordinator === false
+              ? {}
+              : {
+                  coordinator: {
+                    credential: COORDINATOR_CREDENTIAL,
+                    authenticator: START_AUTHORIZATION_AUTHENTICATOR,
+                  },
+                }),
           },
         }
       : {}),
@@ -452,6 +496,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   if (registered === undefined)
     throw new Error("pions_delegate was not registered");
   const tool = registered;
+  let sessionId = "pi-session-1";
   const context = {
     cwd: root,
     model: { provider: "anthropic", id: "claude-opus-5" },
@@ -460,7 +505,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       find: (provider: string, id: string) => ({ provider, id }),
       hasConfiguredAuth: () => true,
     },
-    sessionManager: { getSessionId: () => "pi-session-1" },
+    sessionManager: { getSessionId: () => sessionId },
     isProjectTrusted: () => true,
   } as unknown as ExtensionContext;
   const execute = (
@@ -495,6 +540,22 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       context
     );
   };
+  const decide = (
+    kind: "authorize" | "reject" = "authorize",
+    operationId = "operation-1",
+    receiptDigest = `sha256:${"ef".repeat(32)}`
+  ) => {
+    const decisionTool = tools.get("pions_review_decision");
+    if (decisionTool === undefined)
+      throw new Error("pions_review_decision was not registered");
+    return decisionTool.execute(
+      "decision-call-1",
+      { operationId, receiptDigest, decision: kind },
+      undefined,
+      undefined,
+      context
+    );
+  };
   const inspect = (operationId = "operation-1") => {
     const operationTool = tools.get("pions_operation");
     if (operationTool === undefined)
@@ -517,12 +578,16 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   };
   return {
     context,
+    decide,
     execute,
     inspect,
     registered: tool,
     result,
     review,
     root,
+    setSessionId: (value: string) => {
+      sessionId = value;
+    },
     runtime,
     shutdown,
     tools,
@@ -655,6 +720,184 @@ test("pions_review does not wait for the Result", async (context) => {
     (await value.review()).content[0]?.text,
     "[Operation: operation-1]"
   );
+});
+
+test("project extension registers pions_review_decision", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    value.tools.get("pions_review_decision")?.name,
+    "pions_review_decision"
+  );
+});
+
+test("pions_review_decision accepts no Coordinator identity or credential", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const parameters = value.tools.get("pions_review_decision")?.parameters as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+
+  assert.deepEqual(Object.keys(parameters.properties ?? {}).sort(), [
+    "decision",
+    "operationId",
+    "receiptDigest",
+  ]);
+});
+
+test("pions_review_decision submits authorization for the owned Operation", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  await value.decide("authorize");
+
+  assert.equal(value.runtime.authorizationDecisions[0]?.kind, "authorize");
+});
+
+test("pions_review_decision submits rejection for the owned Operation", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  await value.decide("reject");
+
+  assert.equal(value.runtime.authorizationDecisions[0]?.kind, "reject");
+});
+
+test("pions_review_decision binds the decision to the Operation identifier", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  await value.decide();
+
+  assert.equal(
+    value.runtime.authorizationDecisions[0]?.operationId,
+    "operation-1"
+  );
+});
+
+test("pions_review_decision binds the decision to the inspected Startup receipt", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  await value.decide();
+
+  assert.equal(
+    value.runtime.authorizationDecisions[0]?.receiptDigest,
+    `sha256:${"ef".repeat(32)}`
+  );
+});
+
+test("pions_review_decision derives a stable decision identifier from the Pi tool call", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  await value.decide();
+  await value.decide();
+
+  assert.equal(
+    value.runtime.authorizationDecisions[0]?.decisionId,
+    value.runtime.authorizationDecisions[1]?.decisionId
+  );
+});
+
+test("pions_review_decision uses the trusted Coordinator credential", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  await value.decide();
+
+  assert.equal(
+    value.runtime.authorizationCredentials[0],
+    COORDINATOR_CREDENTIAL
+  );
+});
+
+test("pions_review_decision returns the Runtime decision outcome", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.equal(
+    (await value.decide()).content[0]?.text,
+    "[Operation: operation-1; decision: accepted; gate: authorized]"
+  );
+});
+
+test("pions_review_decision does not expose the Coordinator identity", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.deepEqual((await value.decide()).details, {
+    status: "accepted",
+    gate: "authorized",
+  });
+});
+
+test("pions_review_decision fails closed without trusted Coordinator configuration", async (context) => {
+  const value = await fixture(new FakeRuntime(), {}, false, {
+    enableCoordinator: false,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  await assert.rejects(
+    value.decide(),
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "unsupported_capability"
+  );
+});
+
+test("pions_review_decision refuses an Operation not owned by the current session", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  await assert.rejects(
+    value.decide(),
+    /Operation is not owned by the current Pi session/u
+  );
+});
+
+test("pions_review_decision refuses an Operation owned by another Pi session", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  value.setSessionId("pi-session-2");
+
+  await assert.rejects(
+    value.decide(),
+    /Operation is not owned by the current Pi session/u
+  );
+});
+
+test("pions_review does not pass the Coordinator credential to the Worker", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+  const promptRef = value.runtime.tasks[0]?.promptRef;
+  if (promptRef === undefined) throw new Error("Worker prompt was not stored");
+
+  assert.equal(
+    (await readFile(promptRef, "utf8")).includes(COORDINATOR_CREDENTIAL),
+    false
+  );
+});
+
+test("pions_review passes the trusted Start authorization authenticator to the Runtime", async (context) => {
+  let authenticator: StartAuthorizationAuthenticator | undefined;
+  const runtime = new FakeRuntime();
+  const value = await fixture(runtime, {
+    runtimeFactory: (options) => {
+      authenticator = options.startAuthorizationAuthenticator;
+      return runtime;
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.equal(authenticator, START_AUTHORIZATION_AUTHENTICATOR);
 });
 
 test("project extension registers pions_operation", async (context) => {

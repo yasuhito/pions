@@ -44,6 +44,7 @@ import type {
   OperationHandle,
   Runtime,
   RuntimeReviewSubjectAuthority,
+  StartAuthorizationAuthenticator,
   ThinkingLevel,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -97,6 +98,15 @@ const OperationParameters = Type.Object(
   { additionalProperties: false }
 );
 
+const FormalReviewDecisionParameters = Type.Object(
+  {
+    operationId: Type.String({ minLength: 1 }),
+    receiptDigest: Type.String({ pattern: "^sha256:[0-9a-f]{64}$" }),
+    decision: Type.Union([Type.Literal("authorize"), Type.Literal("reject")]),
+  },
+  { additionalProperties: false }
+);
+
 const ResultParameters = Type.Object(
   {
     operationId: Type.String({ minLength: 1 }),
@@ -124,6 +134,10 @@ export interface PionsExtensionOptions {
   readonly formalReview?: Readonly<{
     readonly profile: Readonly<WorkerProfilePolicy>;
     readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
+    readonly coordinator?: Readonly<{
+      readonly credential: string;
+      readonly authenticator: StartAuthorizationAuthenticator;
+    }>;
   }>;
   readonly repositoryRoot?: string;
   readonly stateBaseDirectory?: string;
@@ -511,6 +525,14 @@ export function installPionsExtension(
   const runtimesByConfig = new Map<string, Runtime>();
   const runtimesByRepository = new Map<string, Runtime>();
   const runtimesByCall = new Map<string, Runtime>();
+  const sessionOwnedFormalReviews = new Map<
+    string,
+    {
+      readonly runtime: Runtime;
+      readonly sessionId: string;
+      readonly repositoryRoot: string;
+    }
+  >();
   const knownRuntimes = new Set<Runtime>();
   const operationLifetime = new OperationLifetime();
   let shuttingDown = false;
@@ -653,6 +675,12 @@ export function installPionsExtension(
             : {
                 reviewSubjectAuthority:
                   options.formalReview.reviewSubjectAuthority,
+                ...(options.formalReview.coordinator === undefined
+                  ? {}
+                  : {
+                      startAuthorizationAuthenticator:
+                        options.formalReview.coordinator.authenticator,
+                    }),
               }),
         });
         runtimesByConfig.set(configKey, runtime);
@@ -820,11 +848,66 @@ export function installPionsExtension(
         },
         { reviewSubjectArtifactId: parameters.artifactId }
       );
+      sessionOwnedFormalReviews.set(handle.operationId, {
+        runtime: prepared.runtime,
+        sessionId: context.sessionManager.getSessionId(),
+        repositoryRoot: prepared.normalizedRoot,
+      });
       return {
         content: [
           { type: "text" as const, text: `[Operation: ${handle.operationId}]` },
         ],
         details: { operationId: handle.operationId },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "pions_review_decision",
+    label: "Pions Formal Review Decision",
+    description:
+      "Authorize or reject the inspected Startup receipt for a formal-review Operation owned by this Pi session.",
+    parameters: FormalReviewDecisionParameters,
+    async execute(toolCallId, parameters, _signal, _onUpdate, context) {
+      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+      if (!context.isProjectTrusted()) {
+        throw new Error("pions_review_decision requires a trusted project");
+      }
+      const coordinator = options.formalReview?.coordinator;
+      if (coordinator === undefined) {
+        throw new WorkerConfigurationError(
+          "unsupported_capability",
+          "Formal review decisions are not enabled by trusted Coordinator configuration"
+        );
+      }
+      const ownedReview = sessionOwnedFormalReviews.get(parameters.operationId);
+      const currentRepository = await resolveRepositoryContext(context);
+      if (
+        ownedReview === undefined ||
+        ownedReview.sessionId !== context.sessionManager.getSessionId() ||
+        ownedReview.repositoryRoot !== currentRepository.normalizedRoot
+      ) {
+        throw new Error("Operation is not owned by the current Pi session");
+      }
+      const inbox = await ownedReview.runtime.startAuthorizationInbox(
+        coordinator.credential
+      );
+      const outcome = await inbox.decide({
+        operationId: parameters.operationId,
+        decisionId: `pi-decision:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`,
+        kind: parameters.decision,
+        receiptDigest: parameters.receiptDigest as `sha256:${string}`,
+      });
+      const summary =
+        outcome.status === "rejected"
+          ? `[Operation: ${parameters.operationId}; decision: rejected; reason: ${outcome.reason}]`
+          : `[Operation: ${parameters.operationId}; decision: ${outcome.status}; gate: ${outcome.gate}]`;
+      return {
+        content: [{ type: "text" as const, text: summary }],
+        details:
+          outcome.status === "rejected"
+            ? { status: outcome.status, reason: outcome.reason }
+            : { status: outcome.status, gate: outcome.gate },
       };
     },
   });
