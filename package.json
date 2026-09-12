@@ -3,8 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "exports": {
-    ".": "./dist/src/index.js"
+    ".": "./dist/src/index.js",
+    "./formal-review": "./dist/src/formal-review.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

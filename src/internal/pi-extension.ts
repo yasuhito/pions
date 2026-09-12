@@ -1,14 +1,6 @@
-import { createHash } from "node:crypto";
-import {
-  chmod,
-  mkdir,
-  readFile,
-  realpath,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, parse } from "node:path";
+import { join } from "node:path";
 
 import {
   DEFAULT_MAX_BYTES,
@@ -23,6 +15,11 @@ import type {
 import { Type } from "typebox";
 
 import { makeResultRetrievalRuntime } from "./result-runtime.js";
+import {
+  opaqueDigest,
+  resolveRepositoryState,
+  writePrivatePrompt,
+} from "./repository-state.js";
 import { makeVisibleRuntime } from "./visible-runtime.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "./worker-configuration.js";
 import {
@@ -45,12 +42,11 @@ import type {
   Runtime,
   RuntimeReviewSubjectAuthority,
   StartAuthorizationAuthenticator,
+  StartAuthorizationAuthority,
   ThinkingLevel,
   WorkerProfilePolicy,
 } from "../public.js";
 
-const DIRECTORY_MODE = 0o700;
-const FILE_MODE = 0o600;
 const REVIEW_PROFILE = "review";
 const FORMAL_REVIEW_PROFILE = "formal-review";
 const REVIEW_TOOLS = Object.freeze(["read", "grep", "find", "ls", "bash"]);
@@ -137,6 +133,7 @@ export interface PionsExtensionOptions {
     readonly coordinator?: Readonly<{
       readonly credential: string;
       readonly authenticator: StartAuthorizationAuthenticator;
+      readonly authority?: StartAuthorizationAuthority;
     }>;
   }>;
   readonly repositoryRoot?: string;
@@ -145,73 +142,6 @@ export interface PionsExtensionOptions {
   readonly homeDirectory?: string;
   readonly extensionEntryPath?: string;
   readonly claudeBridgePackagePath?: string;
-}
-
-function opaqueDigest(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "ENOENT"
-    ) {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function repositoryRoot(cwd: string): Promise<string> {
-  let current = await realpath(cwd);
-  const filesystemRoot = parse(current).root;
-  while (true) {
-    if (await pathExists(join(current, ".git"))) return current;
-    if (current === filesystemRoot) return await realpath(cwd);
-    current = dirname(current);
-  }
-}
-
-function userStateDirectory(
-  environment: Readonly<Record<string, string | undefined>>,
-  home: string
-): string {
-  const configured = environment.XDG_STATE_HOME;
-  return configured !== undefined && isAbsolute(configured)
-    ? configured
-    : join(home, ".local", "state");
-}
-
-async function privateDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: DIRECTORY_MODE });
-  await chmod(path, DIRECTORY_MODE);
-}
-
-async function writePrivatePrompt(path: string, body: string): Promise<void> {
-  await privateDirectory(dirname(path));
-  try {
-    await writeFile(path, body, {
-      encoding: "utf8",
-      mode: FILE_MODE,
-      flag: "wx",
-    });
-  } catch (error) {
-    if (!(
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "EEXIST"
-    )) {
-      throw error;
-    }
-  }
-  await chmod(path, FILE_MODE);
 }
 
 function selectedModel(context: ExtensionContext): ModelReference {
@@ -538,21 +468,17 @@ export function installPionsExtension(
     readonly normalizedRoot: string;
     readonly repositoryState: string;
   }> {
-    const root = options.repositoryRoot ?? (await repositoryRoot(context.cwd));
-    const normalizedRoot = await realpath(root);
-    const stateBase =
-      options.stateBaseDirectory ??
-      userStateDirectory(
-        options.environment ?? process.env,
-        options.homeDirectory ?? homedir()
-      );
-    const repositoryState = join(
-      stateBase,
-      "pions",
-      "repositories",
-      opaqueDigest(normalizedRoot)
-    );
-    await privateDirectory(repositoryState);
+    const { normalizedRoot, repositoryState } = await resolveRepositoryState({
+      cwd: context.cwd,
+      ...(options.repositoryRoot === undefined
+        ? {}
+        : { repositoryRoot: options.repositoryRoot }),
+      ...(options.stateBaseDirectory === undefined
+        ? {}
+        : { stateBaseDirectory: options.stateBaseDirectory }),
+      environment: options.environment ?? process.env,
+      homeDirectory: options.homeDirectory ?? homedir(),
+    });
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
     return { normalizedRoot, repositoryState };
   }
@@ -677,6 +603,13 @@ export function installPionsExtension(
                   : {
                       startAuthorizationAuthenticator:
                         options.formalReview.coordinator.authenticator,
+                      ...(options.formalReview.coordinator.authority ===
+                      undefined
+                        ? {}
+                        : {
+                            startAuthorizationAuthority:
+                              options.formalReview.coordinator.authority,
+                          }),
                     }),
               }),
         });

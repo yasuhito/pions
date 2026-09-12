@@ -88,7 +88,7 @@ This is careful process plumbing, not an OS sandbox. Permission manifests descri
 
 ## Pi tools
 
-Pions installs two tools in trusted projects.
+Pions installs delegation, result retrieval, operation inspection, and formal-review tools in trusted projects. Formal-review tools remain visible but fail closed unless trusted host configuration enables them.
 
 ### `pions_delegate`
 
@@ -111,6 +111,30 @@ operationId: <operation-id>
 ```
 
 If another chunk is available, pass the returned cursor to the next call. The tool does not expose storage paths or allow callers to select chunk sizes. It only reads operations belonging to the current trusted repository.
+
+## Trusted formal-review integration
+
+Trusted host code can use the supported `pions/formal-review` entry point instead of importing runtime or storage internals:
+
+```ts
+import { createFormalReviewIntegration } from "pions/formal-review";
+
+const integration = createFormalReviewIntegration({
+  repositoryRoot,
+  formalReview: trustedFormalReviewConfiguration,
+});
+
+const subject = await integration.registerReviewSubject({
+  registrationId,
+  bytes,
+  formatId: "pions.opaque.v1",
+  normalizationId: "identity.v1",
+});
+
+integration.installPiExtension(pi);
+```
+
+The integration exposes only review-subject registration and configured Pi extension installation. It owns Runtime construction, Artifact Store access, repository state paths, credentials, and recovery wiring. Root registration intentionally does not accept dependencies; bundle registration is not part of this interface. A configured candidate profile does not enable production formal review by itself.
 
 ## Pions and pi-subagents
 

@@ -95,15 +95,19 @@ export function runtimeArtifactStore(
   store: EventStore,
   now?: () => Date,
   fault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>,
-  reviewSubjectAuthority?: RuntimeReviewSubjectAuthority
+  reviewSubjectAuthority?: RuntimeReviewSubjectAuthority,
+  identity?: Readonly<{
+    readonly subjectId: string;
+    readonly credential: string;
+  }>
 ): {
   readonly artifacts: ArtifactStore;
   readonly credential: string;
   readonly synchronizeClock: (timestamp: string) => void;
 } {
-  const credential = randomBytes(32).toString("hex");
+  const credential = identity?.credential ?? randomBytes(32).toString("hex");
   const principal = runtimePrincipal(
-    `runtime.${randomUUID()}`,
+    identity?.subjectId ?? `runtime.${randomUUID()}`,
     store,
     reviewSubjectAuthority
   );
