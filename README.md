@@ -126,15 +126,27 @@ const integration = createFormalReviewIntegration({
 
 const subject = await integration.registerReviewSubject({
   registrationId,
-  bytes,
+  bytes: manifestBytes,
+  expectedByteCount: manifestBytes.byteLength,
+  expectedDigest: sha256Digest(manifestBytes),
   formatId: "pions.opaque.v1",
   normalizationId: "identity.v1",
+  dependencies: [
+    {
+      path: "spec.md",
+      expectedByteCount: specBytes.byteLength,
+      expectedDigest: sha256Digest(specBytes),
+      formatId: "pions.opaque.v1",
+      normalizationId: "identity.v1",
+    },
+  ],
+  dependencyFiles: [{ path: "spec.md", bytes: specBytes }],
 });
 
 integration.installPiExtension(pi);
 ```
 
-The integration exposes only review-subject registration and configured Pi extension installation. It owns Runtime construction, Artifact Store access, repository state paths, credentials, and recovery wiring. Root registration intentionally does not accept dependencies; bundle registration is not part of this interface. A configured candidate profile does not enable production formal review by itself.
+The integration exposes only review-subject registration and configured Pi extension installation. It owns Runtime construction, Artifact Store access, repository state paths, credentials, and recovery wiring. Registration verifies that dependency manifest entries and supplied files form the same closed set, registers dependencies first, and then registers the unchanged root bytes with those dependencies. Paths must be normalized relative paths, and every supplied byte count and digest must match. A configured candidate profile does not enable production formal review by itself.
 
 ## Pions and pi-subagents
 

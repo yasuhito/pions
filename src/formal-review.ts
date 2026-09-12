@@ -24,11 +24,32 @@ export interface FormalReviewIntegrationConfiguration {
   readonly formalReview?: Readonly<FormalReviewConfiguration>;
 }
 
+export interface ReviewSubjectDependencyManifestEntry {
+  readonly path: string;
+  readonly expectedByteCount: number;
+  readonly expectedDigest: ArtifactMetadata["digest"];
+  readonly formatId: string;
+  readonly normalizationId: string;
+}
+
+export interface ReviewSubjectDependencyFile {
+  readonly path: string;
+  readonly bytes: Uint8Array;
+}
+
 export interface ReviewSubjectRegistrationRequest {
   readonly registrationId: string;
   readonly bytes: Uint8Array;
+  readonly expectedByteCount: number;
+  readonly expectedDigest: ArtifactMetadata["digest"];
   readonly formatId: string;
   readonly normalizationId: string;
+  readonly dependencies: ReadonlyArray<
+    Readonly<ReviewSubjectDependencyManifestEntry>
+  >;
+  readonly dependencyFiles: ReadonlyArray<
+    Readonly<ReviewSubjectDependencyFile>
+  >;
 }
 
 export type ReviewSubjectRegistrationFailureReason =
