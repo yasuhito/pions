@@ -333,9 +333,78 @@ export class ProjectConfigurationError extends Error {
   }
 }
 
+export interface ExternalReviewAllocation {
+  readonly allocationId: string;
+  readonly issuerId: string;
+  readonly reviewSubjectArtifactId: string;
+  readonly registrationEvidenceId: string;
+  readonly registrationEvidenceDigest: ArtifactDigest;
+  readonly profileId: string;
+  readonly expiresAt: string;
+  readonly useLimit: number;
+  readonly bundle: string;
+  readonly handoff: string;
+  readonly subjectVersion: string;
+  readonly axis: string;
+  readonly externalExecutionId: string;
+}
+
+export interface ExternalReviewAllocationRequest {
+  readonly requestId: string;
+  readonly allocation: Readonly<ExternalReviewAllocation>;
+  readonly credential: string;
+}
+
+export type ExternalReviewAllocationAuthentication =
+  "authenticated" | "denied" | "unknown";
+
+export interface ExternalReviewAllocationAuthenticator {
+  authenticate(
+    allocation: Readonly<ExternalReviewAllocation>,
+    credential: string
+  ): Promise<ExternalReviewAllocationAuthentication>;
+}
+
+export interface ExternalReviewAllocationBinding extends ExternalReviewAllocation {
+  readonly requestId: string;
+  readonly operationId: string;
+  readonly boundAt: string;
+  readonly digest: ArtifactDigest;
+}
+
+export type ExternalReviewAllocationFailureReason =
+  | "invalid_allocation"
+  | "issuer_authentication_failed"
+  | "allocation_mismatch"
+  | "request_mismatch"
+  | "allocation_already_bound"
+  | "expired"
+  | "use_limit_exceeded"
+  | "persistence_failed";
+
+export class ExternalReviewAllocationError extends Error {
+  override readonly name = "ExternalReviewAllocationError";
+
+  constructor(
+    readonly reason: ExternalReviewAllocationFailureReason,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+export class ExternalReviewAllocationRejoinedError extends Error {
+  override readonly name = "ExternalReviewAllocationRejoinedError";
+
+  constructor(readonly operationId: string) {
+    super(`External review allocation already belongs to ${operationId}`);
+  }
+}
+
 export interface SpawnOptions {
   readonly parentOperationId?: string;
   readonly reviewSubjectArtifactId?: string;
+  readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationRequest>;
 }
 
 export interface Result {
@@ -1064,6 +1133,7 @@ export interface OperationSnapshot {
   readonly workerExecutionEvidence?: Readonly<WorkerExecutionEvidence>;
   readonly resultFormat?: Readonly<PinnedResultFormat>;
   readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
+  readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
   readonly startAuthorization: Readonly<StartAuthorizationSnapshot>;
   readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
   readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;

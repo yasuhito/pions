@@ -10,6 +10,7 @@ import {
 } from "./herdr-presentation.js";
 import { PrivateFileEventStore } from "./event-store/index.js";
 import { EventStoreResourceEvidenceRepository } from "./event-store-resource-evidence.js";
+import { makeExternalReviewAllocationRegistry } from "./external-review-allocation.js";
 import { makeResourceProofController } from "./resource-controller.js";
 import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import { makeRuntime } from "./runtime.js";
@@ -22,6 +23,7 @@ import {
   validateClaudeBridgePolicy,
 } from "./worker-extension-entry.js";
 import type {
+  ExternalReviewAllocationAuthenticator,
   ResourceAuthorityRegistration,
   ResourceCleanupAuthenticator,
   RuntimeReviewSubjectAuthority,
@@ -49,6 +51,7 @@ export interface VisibleRuntimeOptions {
   readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
   readonly reviewSubjectAuthority?: RuntimeReviewSubjectAuthority;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
+  readonly externalReviewAllocationAuthenticator?: ExternalReviewAllocationAuthenticator;
 }
 
 const systemClock: RuntimeClock = {
@@ -126,6 +129,15 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     ...(options.formalReviewResultFormats === undefined
       ? {}
       : { formalReviewResultFormats: options.formalReviewResultFormats }),
+    ...(options.externalReviewAllocationAuthenticator === undefined
+      ? {}
+      : {
+          externalReviewAllocations: makeExternalReviewAllocationRegistry({
+            stateDirectory: options.stateDirectory,
+            authenticator: options.externalReviewAllocationAuthenticator,
+            now: () => new Date(),
+          }),
+        }),
     ...(options.startAuthorizationAuthenticator === undefined
       ? {}
       : {

@@ -4,6 +4,8 @@ import { makeFormalReviewIntegration } from "./internal/formal-review-integratio
 import type {
   ArtifactMetadata,
   CurrentStartAuthorization,
+  ExternalReviewAllocationAuthenticator,
+  ExternalReviewAllocationRequest,
   ReviewSubjectRegistrationEvidence,
   ResultFormatValidationFailureReason,
   RuntimeReviewSubjectAuthority,
@@ -52,10 +54,18 @@ export interface FormalReviewResultFormatConfiguration {
   >;
 }
 
+export interface FormalReviewExternalAllocationConfiguration {
+  readonly authenticator: ExternalReviewAllocationAuthenticator;
+  allocationFor(input: {
+    readonly reviewSubjectArtifactId: string;
+  }): Promise<Readonly<ExternalReviewAllocationRequest>>;
+}
+
 export interface FormalReviewConfiguration {
   readonly profile: Readonly<WorkerProfilePolicy>;
   readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
   readonly resultFormat: Readonly<FormalReviewResultFormatConfiguration>;
+  readonly externalAllocation?: Readonly<FormalReviewExternalAllocationConfiguration>;
   readonly coordinator?: Readonly<FormalReviewCoordinatorConfiguration>;
 }
 
@@ -173,6 +183,19 @@ export interface FormalReviewIntegration {
   ): Promise<Readonly<ReviewSubjectRegistrationResult>>;
   installPiExtension(pi: ExtensionAPI): void;
 }
+
+export type {
+  ExternalReviewAllocation,
+  ExternalReviewAllocationAuthentication,
+  ExternalReviewAllocationAuthenticator,
+  ExternalReviewAllocationBinding,
+  ExternalReviewAllocationFailureReason,
+  ExternalReviewAllocationRequest,
+} from "./public.js";
+export {
+  ExternalReviewAllocationError,
+  ExternalReviewAllocationRejoinedError,
+} from "./public.js";
 
 export function createFormalReviewIntegration(
   configuration: Readonly<FormalReviewIntegrationConfiguration>

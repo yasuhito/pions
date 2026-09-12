@@ -540,6 +540,13 @@ export function makeFormalReviewIntegration(
               reviewSubjectAuthority:
                 formalReviewSetup.configuration.reviewSubjectAuthority,
               resultFormats: formalReviewSetup.resultFormats,
+              ...(formalReviewSetup.configuration.externalAllocation ===
+              undefined
+                ? {}
+                : {
+                    externalAllocation:
+                      formalReviewSetup.configuration.externalAllocation,
+                  }),
               ...(coordinator === undefined
                 ? {}
                 : {

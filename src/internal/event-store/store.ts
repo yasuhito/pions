@@ -218,6 +218,13 @@ export abstract class ValidatedEventStore implements EventStore {
           ...(request.resultFormat === undefined
             ? {}
             : { resultFormat: structuredClone(request.resultFormat) }),
+          ...(request.externalReviewAllocation === undefined
+            ? {}
+            : {
+                externalReviewAllocation: structuredClone(
+                  request.externalReviewAllocation
+                ),
+              }),
           lineage: request.lineage,
           ...(request.revisionMembership === undefined
             ? {}

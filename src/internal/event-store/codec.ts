@@ -334,6 +334,25 @@ const PinnedResultFormat = Schema.Struct({
   expectations: Schema.Record({ key: Schema.String, value: Schema.String }),
   validator: ResultFormatValidatorIdentity,
 });
+const ExternalReviewAllocationBinding = Schema.Struct({
+  allocationId: Schema.NonEmptyString,
+  issuerId: Schema.NonEmptyString,
+  reviewSubjectArtifactId: Schema.NonEmptyString,
+  registrationEvidenceId: Schema.NonEmptyString,
+  registrationEvidenceDigest: Digest,
+  profileId: Schema.NonEmptyString,
+  expiresAt: Schema.NonEmptyString,
+  useLimit: NonNegativeSafeInteger,
+  bundle: Schema.NonEmptyString,
+  handoff: Schema.NonEmptyString,
+  subjectVersion: Schema.NonEmptyString,
+  axis: Schema.NonEmptyString,
+  externalExecutionId: Schema.NonEmptyString,
+  requestId: Schema.NonEmptyString,
+  operationId: Schema.NonEmptyString,
+  boundAt: Schema.NonEmptyString,
+  digest: Digest,
+});
 const ResultFormatRejectionReason = Schema.Literal(
   "invalid_encoding",
   "invalid_json",
@@ -562,6 +581,7 @@ const OperationEventSchema = Schema.Union(
     workProductRequirements: ResolvedWorkProductRequirements,
     resultRetentionPolicy: ResultAcceptanceRetentionPolicy,
     resultFormat: Schema.optional(PinnedResultFormat),
+    externalReviewAllocation: Schema.optional(ExternalReviewAllocationBinding),
     lineage: Lineage,
     revisionMembership: Schema.optional(RevisionMembership),
     startAuthorizationTiming: StartAuthorizationTiming,

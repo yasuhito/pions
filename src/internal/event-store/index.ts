@@ -2,6 +2,7 @@ import type { Effect } from "effect";
 
 import type {
   EffectiveWorkerConfig,
+  ExternalReviewAllocationBinding,
   OperationState,
   PinnedResultFormat,
   RequestedWorkerConfig,
@@ -61,6 +62,7 @@ export interface OperationRequest {
   readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
   readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
   readonly resultFormat?: Readonly<PinnedResultFormat>;
+  readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
   readonly lineage: Readonly<OperationLineage>;
   readonly revisionMembership?: Readonly<RevisionMembership>;
   readonly startAuthorization: Readonly<{

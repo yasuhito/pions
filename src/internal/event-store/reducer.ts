@@ -10,6 +10,7 @@ import type {
   StartupReceipt,
 } from "../../public.js";
 import type { Operation, OperationEvent } from "./model.js";
+import { validExternalReviewAllocationBinding } from "../external-review-allocation.js";
 import { revisionSeriesId, revisionSeriesOrigin } from "../revision-series.js";
 import { validReviewInputReadiness } from "../review-input-readiness.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
@@ -334,6 +335,19 @@ export function reduceOperation(
       (event.startupReceiptPolicy?.reviewInputPreparation === "required" &&
         event.startupReceiptPolicy.reviewSubjectVerification !== "required") ||
       event.resultRetentionPolicy.operationId !== event.operationId ||
+      (event.externalReviewAllocation !== undefined &&
+        (!validExternalReviewAllocationBinding(
+          event.externalReviewAllocation
+        ) ||
+          event.externalReviewAllocation.operationId !== event.operationId ||
+          event.externalReviewAllocation.profileId !== event.task.profile ||
+          event.externalReviewAllocation.reviewSubjectArtifactId !==
+            event.startupReceiptPolicy?.reviewSubject?.artifactId ||
+          event.externalReviewAllocation.registrationEvidenceId !==
+            event.startupReceiptPolicy?.reviewSubject?.registrationEvidenceId ||
+          event.externalReviewAllocation.registrationEvidenceDigest !==
+            event.startupReceiptPolicy?.reviewSubject
+              ?.registrationEvidenceDigest)) ||
       (event.revisionMembership !== undefined &&
         (revisionSeriesOrigin(event.revisionMembership.seriesId) ===
           undefined ||
@@ -394,6 +408,13 @@ export function reduceOperation(
       ...(event.resultFormat === undefined
         ? {}
         : { resultFormat: structuredClone(event.resultFormat) }),
+      ...(event.externalReviewAllocation === undefined
+        ? {}
+        : {
+            externalReviewAllocation: structuredClone(
+              event.externalReviewAllocation
+            ),
+          }),
       startGate: "not_required",
       rejectedStartAuthorizationDecisions: [],
       startDeliveryHandoffs: [],

@@ -5,6 +5,7 @@ import type {
   EventStore,
   Operation,
 } from "./event-store/index.js";
+import type { ExternalReviewAllocationRegistry } from "./external-review-allocation.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
 import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import type { InternalResourceProofController } from "./resource-controller.js";
@@ -239,6 +240,7 @@ export interface RuntimeServices {
   readonly artifactCredential: string;
   readonly synchronizeArtifactClock?: (timestamp: string) => void;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
+  readonly externalReviewAllocations?: ExternalReviewAllocationRegistry;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
   readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
   readonly revisionAuthenticator?: RevisionAuthenticator;

@@ -28,7 +28,9 @@ import {
   resolveWorkerExtensionEntryPath,
   validateClaudeBridgePolicy,
 } from "./worker-extension-entry.js";
+import type { FormalReviewExternalAllocationConfiguration } from "../formal-review.js";
 import {
+  ExternalReviewAllocationRejoinedError,
   OperationCancelledError,
   OperationUnknownError,
   ProjectConfigurationError,
@@ -132,6 +134,7 @@ export interface PionsExtensionOptions {
     readonly profile: Readonly<WorkerProfilePolicy>;
     readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
     readonly resultFormats: Readonly<ConfiguredResultFormats>;
+    readonly externalAllocation?: Readonly<FormalReviewExternalAllocationConfiguration>;
     readonly coordinator?: Readonly<{
       readonly credential: string;
       readonly authenticator: StartAuthorizationAuthenticator;
@@ -612,6 +615,12 @@ export function installPionsExtension(
                 reviewSubjectAuthority:
                   options.formalReview.reviewSubjectAuthority,
                 formalReviewResultFormats: options.formalReview.resultFormats,
+                ...(options.formalReview.externalAllocation === undefined
+                  ? {}
+                  : {
+                      externalReviewAllocationAuthenticator:
+                        options.formalReview.externalAllocation.authenticator,
+                    }),
                 ...(options.formalReview.coordinator === undefined
                   ? {}
                   : {
@@ -780,18 +789,44 @@ export function installPionsExtension(
         context,
         model
       );
-      const handle = await prepared.runtime.spawn(
-        {
-          promptRef: prepared.promptRef,
-          profile: FORMAL_REVIEW_PROFILE,
-          idempotencyKey: prepared.idempotencyKey,
-          model,
-          thinkingLevel: formalReview.profile.thinkingLevel,
-          tools: formalReview.profile.tools,
-          cwd: prepared.normalizedRoot,
-        },
-        { reviewSubjectArtifactId: parameters.artifactId }
-      );
+      const externalReviewAllocation =
+        formalReview.externalAllocation === undefined
+          ? undefined
+          : await formalReview.externalAllocation.allocationFor({
+              reviewSubjectArtifactId: parameters.artifactId,
+            });
+      let handle: OperationHandle;
+      try {
+        handle = await prepared.runtime.spawn(
+          {
+            promptRef: prepared.promptRef,
+            profile: FORMAL_REVIEW_PROFILE,
+            idempotencyKey: prepared.idempotencyKey,
+            model,
+            thinkingLevel: formalReview.profile.thinkingLevel,
+            tools: formalReview.profile.tools,
+            cwd: prepared.normalizedRoot,
+          },
+          {
+            reviewSubjectArtifactId: parameters.artifactId,
+            ...(externalReviewAllocation === undefined
+              ? {}
+              : { externalReviewAllocation }),
+          }
+        );
+      } catch (error) {
+        if (!(error instanceof ExternalReviewAllocationRejoinedError))
+          throw error;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `[Operation: ${error.operationId}]`,
+            },
+          ],
+          details: { operationId: error.operationId, rejoined: true },
+        };
+      }
       operationLifetime.track(handle);
       sessionOwnedFormalReviews.set(handle.operationId, {
         runtime: prepared.runtime,
@@ -802,7 +837,7 @@ export function installPionsExtension(
         content: [
           { type: "text" as const, text: `[Operation: ${handle.operationId}]` },
         ],
-        details: { operationId: handle.operationId },
+        details: { operationId: handle.operationId, rejoined: false },
       };
     },
   });

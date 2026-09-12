@@ -3,6 +3,7 @@ import type {
   ArtifactWriterOwnership,
   CleanupDiagnosticCode,
   EffectiveWorkerConfig,
+  ExternalReviewAllocationBinding,
   ObservedWorkerConfig,
   OperationFailureReason,
   OperationState,
@@ -78,6 +79,7 @@ export interface Operation {
   readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
   readonly resultFormat?: Readonly<PinnedResultFormat>;
   readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
+  readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
   readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
   readonly startupReceiptPolicy?: Readonly<StartupReceiptPolicy>;
   readonly startGate: StartGateState;
@@ -116,7 +118,7 @@ export interface Operation {
     OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 23 as const;
+export const EVENT_SCHEMA_VERSION = 24 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -140,6 +142,7 @@ export type OperationEvent = EventMetadata &
         readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
         readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
         readonly resultFormat?: Readonly<PinnedResultFormat>;
+        readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
         readonly lineage: Readonly<OperationLineage>;
         readonly revisionMembership?: Readonly<RevisionMembership>;
         readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;

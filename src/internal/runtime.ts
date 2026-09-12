@@ -46,6 +46,7 @@ import {
 } from "./start-instruction.js";
 import {
   CancellationRejectedError,
+  ExternalReviewAllocationRejoinedError,
   OperationCancelledError,
   OperationFailedError,
   OperationPersistenceError,
@@ -290,6 +291,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         : {
             resultFormatRejection: structuredClone(
               operation.resultFormatRejection
+            ),
+          }),
+      ...(operation.externalReviewAllocation === undefined
+        ? {}
+        : {
+            externalReviewAllocation: structuredClone(
+              operation.externalReviewAllocation
             ),
           }),
       ...(operation.agentRunEvidence === undefined
@@ -1047,6 +1055,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       services.clock.monotonicMilliseconds() >= monotonicDeadline
     );
   };
+
+  const externalAllocationDeadlineElapsed = (
+    operation: Readonly<Operation>,
+    observedAt: string
+  ): boolean =>
+    operation.externalReviewAllocation !== undefined &&
+    Date.parse(observedAt) >=
+      Date.parse(operation.externalReviewAllocation.expiresAt);
 
   const expireStartAuthorization = async (
     operationId: string
@@ -2113,14 +2129,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       throw error;
     }
 
-    const lineage: OperationLineage =
-      parentOperation === undefined
-        ? { rootOperationId: operationId, depth: 0 }
-        : {
-            rootOperationId: parentOperation.lineage.rootOperationId,
-            parentOperationId: parentOperation.operationId,
-            depth: parentOperation.lineage.depth + 1,
-          };
     const deferred = deferredResult();
     let authorization;
     try {
@@ -2132,6 +2140,73 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
       throw error;
     }
+    let externalReviewAllocation;
+    let externalReviewAllocationReservation:
+      | Awaited<
+          ReturnType<
+            NonNullable<RuntimeServices["externalReviewAllocations"]>["reserve"]
+          >
+        >
+      | undefined;
+    if (options?.externalReviewAllocation !== undefined) {
+      if (
+        !isFormalReview ||
+        authorization.receipt?.reviewSubject === undefined ||
+        services.externalReviewAllocations === undefined
+      ) {
+        if (parent !== undefined) parent.pendingAdmissions -= 1;
+        throw new WorkerConfigurationError(
+          "unsupported_capability",
+          "External review allocation binding is unavailable"
+        );
+      }
+      try {
+        externalReviewAllocationReservation =
+          await services.externalReviewAllocations.reserve({
+            request: options.externalReviewAllocation,
+            operationId,
+            profileId: task.profile,
+            reviewSubject: {
+              artifactId: authorization.receipt.reviewSubject.artifactId,
+              registrationEvidenceId:
+                authorization.receipt.reviewSubject.registrationEvidenceId,
+              registrationEvidenceDigest:
+                authorization.receipt.reviewSubject.registrationEvidenceDigest,
+            },
+          });
+        externalReviewAllocation = externalReviewAllocationReservation.binding;
+        operationId = externalReviewAllocation.operationId;
+        const persistedAllocationLookup = await Effect.runPromise(
+          services.store.read(operationId).pipe(Effect.either)
+        );
+        if (
+          persistedAllocationLookup._tag === "Left" &&
+          persistedAllocationLookup.left.code !== "not_found"
+        ) {
+          throw persistenceError(operationId, persistedAllocationLookup.left);
+        }
+        if (persistedAllocationLookup._tag === "Right") {
+          const persistedBinding =
+            persistedAllocationLookup.right.operation.externalReviewAllocation;
+          if (!isDeepStrictEqual(persistedBinding, externalReviewAllocation)) {
+            throw new OperationPersistenceError(operationId, "corrupt_record");
+          }
+          throw new ExternalReviewAllocationRejoinedError(operationId);
+        }
+      } catch (error) {
+        await externalReviewAllocationReservation?.release();
+        if (parent !== undefined) parent.pendingAdmissions -= 1;
+        throw error;
+      }
+    }
+    const lineage: OperationLineage =
+      parentOperation === undefined
+        ? { rootOperationId: operationId, depth: 0 }
+        : {
+            rootOperationId: parentOperation.lineage.rootOperationId,
+            parentOperationId: parentOperation.operationId,
+            depth: parentOperation.lineage.depth + 1,
+          };
     const authorizationMonotonicDeadline =
       services.clock.monotonicMilliseconds() + authorization.windowMs;
     const record: OperationRecord = {
@@ -2142,52 +2217,60 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       pendingAdmissions: 0,
     };
 
-    if (parent !== undefined) {
-      const updatedParent = await runEffect(
-        advanceOperation(parent.operationId, {
-          type: "child_attached",
-          childOperationId: operationId,
-        })
-      );
-      parent.pendingAdmissions -= 1;
-      await runEffect(project(updatedParent));
-    }
+    let operation: Operation;
+    try {
+      if (parent !== undefined) {
+        const updatedParent = await runEffect(
+          advanceOperation(parent.operationId, {
+            type: "child_attached",
+            childOperationId: operationId,
+          })
+        );
+        parent.pendingAdmissions -= 1;
+        await runEffect(project(updatedParent));
+      }
 
-    records.set(operationId, record);
-    authorizationMonotonicDeadlines.set(
-      operationId,
-      authorizationMonotonicDeadline
-    );
-    let operation = await runEffect(
-      services.store
-        .create({
-          operationId,
-          task,
-          requestedConfig,
-          effectiveConfig,
-          workProductRequirements,
-          resultRetentionPolicy: resultAcceptanceRetentionPolicy(
+      records.set(operationId, record);
+      authorizationMonotonicDeadlines.set(
+        operationId,
+        authorizationMonotonicDeadline
+      );
+      operation = await runEffect(
+        services.store
+          .create({
             operationId,
-            configuredProfile.acceptedArtifactRetentionMs
-          ),
-          ...(resultFormat === undefined ? {} : { resultFormat }),
-          lineage,
-          ...(revisionReservation === undefined
-            ? {}
-            : {
-                revisionMembership: {
-                  seriesId: revisionReservation.seriesId,
-                  revisionNumber: revisionReservation.revisionNumber,
-                  attemptNumber: revisionReservation.attemptNumber,
-                },
-              }),
-          startAuthorization: authorization,
-        })
-        .pipe(
-          Effect.map((snapshot) => snapshot.operation),
-          Effect.mapError((error) => persistenceError(operationId, error))
-        )
-    );
+            task,
+            requestedConfig,
+            effectiveConfig,
+            workProductRequirements,
+            resultRetentionPolicy: resultAcceptanceRetentionPolicy(
+              operationId,
+              configuredProfile.acceptedArtifactRetentionMs
+            ),
+            ...(resultFormat === undefined ? {} : { resultFormat }),
+            ...(externalReviewAllocation === undefined
+              ? {}
+              : { externalReviewAllocation }),
+            lineage,
+            ...(revisionReservation === undefined
+              ? {}
+              : {
+                  revisionMembership: {
+                    seriesId: revisionReservation.seriesId,
+                    revisionNumber: revisionReservation.revisionNumber,
+                    attemptNumber: revisionReservation.attemptNumber,
+                  },
+                }),
+            startAuthorization: authorization,
+          })
+          .pipe(
+            Effect.map((snapshot) => snapshot.operation),
+            Effect.mapError((error) => persistenceError(operationId, error))
+          )
+      );
+    } finally {
+      await externalReviewAllocationReservation?.release();
+    }
     await runEffect(project(operation));
 
     if (resourceAdmissionRejected) {
@@ -3116,11 +3199,19 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               latest.startupReceipt?.digest === request.receiptDigest &&
               latest.workerIdentity?.processInstanceId ===
                 latest.startupReceipt.workerIdentity.processInstanceId;
-            const deadlineStillOpen = !authorizationDeadlineElapsed(
-              request.operationId,
-              latest.startAuthorizationTiming.deadline,
-              await runEffect(services.clock.now())
+            const authorizationCheckedAt = await runEffect(
+              services.clock.now()
             );
+            const deadlineStillOpen =
+              !authorizationDeadlineElapsed(
+                request.operationId,
+                latest.startAuthorizationTiming.deadline,
+                authorizationCheckedAt
+              ) &&
+              !externalAllocationDeadlineElapsed(
+                latest,
+                authorizationCheckedAt
+              );
             const currentlyAuthorized = await currentAuthorization(
               request.operationId
             ).then((authorization) => authorization === "authorized");
@@ -3162,13 +3253,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                   revalidated.startAuthorizationTiming.deadline,
                   revalidatedAt
                 ) ||
+                externalAllocationDeadlineElapsed(revalidated, revalidatedAt) ||
                 !authorityStillCurrent
               ) {
-                const timedOut = authorizationDeadlineElapsed(
-                  request.operationId,
-                  revalidated.startAuthorizationTiming.deadline,
-                  revalidatedAt
-                );
+                const timedOut =
+                  authorizationDeadlineElapsed(
+                    request.operationId,
+                    revalidated.startAuthorizationTiming.deadline,
+                    revalidatedAt
+                  ) ||
+                  externalAllocationDeadlineElapsed(revalidated, revalidatedAt);
                 throw new StartRevalidationError(
                   timedOut ? "timed_out" : "invalidated"
                 );
@@ -3192,6 +3286,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 authorizationDeadlineElapsed(
                   request.operationId,
                   revalidated.startAuthorizationTiming.deadline,
+                  dispatchCheckedAt
+                ) ||
+                externalAllocationDeadlineElapsed(
+                  revalidated,
                   dispatchCheckedAt
                 )
               ) {

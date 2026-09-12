@@ -15,8 +15,16 @@ import {
   createFormalReviewIntegration,
   type ReviewSubjectRegistrationEvidenceConfiguration,
   type ReviewSubjectRegistrationRequest,
+  type ReviewSubjectRegistrationResult,
 } from "../src/formal-review.js";
-import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
+import {
+  PrivateFileEventStore,
+  type OperationEvent,
+} from "../src/internal/event-store/index.js";
+import {
+  makeExternalReviewAllocationRegistry,
+  validExternalReviewAllocationBinding,
+} from "../src/internal/external-review-allocation.js";
 import { configureFormalReviewIntegrationForTest } from "../src/internal/formal-review-integration.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import {
@@ -26,7 +34,11 @@ import {
   FakeWorkerAdapter,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import type { Runtime, WorkerProfilePolicy } from "../src/public.js";
+import type {
+  ExternalReviewAllocationRequest,
+  Runtime,
+  WorkerProfilePolicy,
+} from "../src/public.js";
 
 function digest(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -1243,4 +1255,405 @@ test("a registered dependent root is available to the configured extension Runti
     registrationEvidenceId: registration.evidence.evidenceId,
     registrationEvidenceDigest: registration.evidence.digest,
   });
+});
+
+interface ExternalAllocationFixtureOptions {
+  readonly now?: Date;
+  readonly operationIds?: ReadonlyArray<string>;
+  readonly failOperationCreationOnce?: boolean;
+  authenticate?(authentication: string): "authenticated" | "denied" | "unknown";
+  allocationFor?(
+    bindingRequestId: string,
+    registration: Readonly<ReviewSubjectRegistrationResult>
+  ): Readonly<ExternalReviewAllocationRequest>;
+}
+
+function externalAllocationRequest(
+  requestId: string,
+  registration: Readonly<ReviewSubjectRegistrationResult>,
+  overrides: Partial<ExternalReviewAllocationRequest["allocation"]> = {}
+): ExternalReviewAllocationRequest {
+  return {
+    requestId,
+    credential: "trusted-allocation-proof",
+    allocation: {
+      allocationId: "allocation-standards-1",
+      issuerId: "trusted-bootstrap",
+      reviewSubjectArtifactId: registration.artifact.artifactId,
+      registrationEvidenceId: registration.evidence.evidenceId,
+      registrationEvidenceDigest: registration.evidence.digest,
+      profileId: "formal-review",
+      expiresAt: "2026-09-12T11:00:00.000Z",
+      useLimit: 1,
+      bundle: "bundle opaque value",
+      handoff: "handoff opaque value",
+      subjectVersion: "subject version opaque value",
+      axis: "standards opaque value",
+      externalExecutionId: "external execution opaque value",
+      ...overrides,
+    },
+  };
+}
+
+async function externalAllocationFixture(
+  context: test.TestContext,
+  options: Readonly<ExternalAllocationFixtureOptions> = {}
+) {
+  const root = await mkdtemp(join(tmpdir(), "pions-formal-review-allocation-"));
+  const stateBaseDirectory = join(root, "state");
+  const now = options.now ?? new Date("2026-09-12T10:00:00.000Z");
+  let runtime: Runtime | undefined;
+  let registration: ReviewSubjectRegistrationResult | undefined;
+  let allocationResolutionCount = 0;
+  const allocationAuthenticator = {
+    authenticate: async (_allocation: unknown, authentication: string) =>
+      options.authenticate?.(authentication) ??
+      (authentication === "trusted-allocation-proof"
+        ? ("authenticated" as const)
+        : ("denied" as const)),
+  };
+  const configuration = {
+    repositoryRoot: root,
+    reviewSubjectRegistration,
+    formalReview: {
+      profile: formalReviewProfile(root),
+      reviewSubjectAuthority: { currentUse: async () => "allowed" as const },
+      resultFormat: {
+        formatId: "test.formal-review-result",
+        version: "1",
+        expectations: { axis: "standards" },
+        registrations: [
+          {
+            formatId: "test.formal-review-result",
+            version: "1",
+            normalizationId: "identity.v1",
+            validator: {
+              validatorId: "test.formal-review-result-validator",
+              validatorVersion: "1",
+              registrationArtifact: Buffer.from("test validator v1", "utf8"),
+              validate: async () => ({ kind: "valid" as const }),
+            },
+          },
+        ],
+      },
+      externalAllocation: {
+        authenticator: allocationAuthenticator,
+        allocationFor: async () => {
+          if (registration === undefined)
+            throw new Error("subject not registered");
+          allocationResolutionCount += 1;
+          const bindingRequestId = `allocation-request-${allocationResolutionCount}`;
+          return (
+            options.allocationFor?.(bindingRequestId, registration) ??
+            externalAllocationRequest(bindingRequestId, registration)
+          );
+        },
+      },
+    },
+  } as const;
+  configureFormalReviewIntegrationForTest(configuration, {
+    stateBaseDirectory,
+    runtimeFactory: (runtimeOptions) => {
+      const clock = new FakeClock(
+        Array.from({ length: 100 }, (_, index) =>
+          new Date(Date.UTC(2026, 8, 12, 10, 0, index)).toISOString()
+        )
+      );
+      class AllocationEventStore extends PrivateFileEventStore {
+        private rejectCreation = options.failOperationCreationOnce === true;
+
+        protected override willAppend(event: OperationEvent): void {
+          if (this.rejectCreation && event.type === "operation_requested") {
+            this.rejectCreation = false;
+            throw new Error("injected allocation Operation creation failure");
+          }
+        }
+      }
+      const store = new AllocationEventStore(
+        runtimeOptions.stateDirectory,
+        clock
+      );
+      const artifactServices = runtimeArtifactStore(
+        runtimeOptions.stateDirectory,
+        store,
+        () => now,
+        undefined,
+        runtimeOptions.reviewSubjectAuthority
+      );
+      runtime = makeTestRuntime({
+        worker: new FakeWorkerAdapter(),
+        clock,
+        ids: new FakeIdGenerator(
+          options.operationIds ?? ["operation-allocation-1"]
+        ),
+        presentation: new FakePresentation(),
+        store,
+        artifacts: artifactServices.artifacts,
+        artifactCredential: artifactServices.credential,
+        synchronizeArtifactClock: artifactServices.synchronizeClock,
+        externalReviewAllocations: makeExternalReviewAllocationRegistry({
+          stateDirectory: runtimeOptions.stateDirectory,
+          authenticator: allocationAuthenticator,
+          now: () => now,
+        }),
+        ...(runtimeOptions.formalReviewResultFormats === undefined
+          ? {}
+          : {
+              formalReviewResultFormats:
+                runtimeOptions.formalReviewResultFormats,
+            }),
+        configuration: {
+          cwd: runtimeOptions.cwd,
+          profiles: runtimeOptions.profiles,
+        },
+      });
+      return runtime;
+    },
+  });
+  const integration = createFormalReviewIntegration(configuration);
+  context.after(async () => {
+    await runtime?.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  registration = await integration.registerReviewSubject(
+    rootRegistration(Buffer.from("fixed allocation subject", "utf8"))
+  );
+  const tools = new Map<string, RegisteredTool>();
+  integration.installPiExtension({
+    registerTool(tool: ToolDefinition) {
+      tools.set(tool.name, tool as unknown as RegisteredTool);
+    },
+    on() {},
+  } as unknown as ExtensionAPI);
+  const review = tools.get("pions_review");
+  if (review === undefined) throw new Error("pions_review was not registered");
+  const registered = registration;
+  const reviewTool = review;
+  const extensionContext = {
+    cwd: root,
+    model: { provider: "test", id: "review-model" },
+    thinkingLevel: "medium",
+    modelRegistry: {
+      find: () => ({ provider: "test", id: "review-model" }),
+      hasConfiguredAuth: () => true,
+    },
+    sessionManager: { getSessionId: () => "session-1" },
+    isProjectTrusted: () => true,
+  } as unknown as ExtensionContext;
+  async function reviewOutcome(toolCallId: string) {
+    const result = await reviewTool.execute(
+      toolCallId,
+      {
+        artifactId: registered.artifact.artifactId,
+        task: "Review this Artifact",
+      },
+      undefined,
+      undefined,
+      extensionContext
+    );
+    return result.details as {
+      readonly operationId: string;
+      readonly rejoined: boolean;
+    };
+  }
+  return {
+    registration: registered,
+    reviewOutcome,
+    async review(toolCallId: string) {
+      return (await reviewOutcome(toolCallId)).operationId;
+    },
+    async snapshot(operationId: string) {
+      return (await runtime!.operation(operationId)).read();
+    },
+  };
+}
+
+test("a trusted external review allocation is bound to the created Operation", async (context) => {
+  const fixture = await externalAllocationFixture(context);
+  const operationId = await fixture.review("allocation-request-1");
+  const snapshot = await fixture.snapshot(operationId);
+  const { digest: _digest, ...binding } = snapshot.externalReviewAllocation!;
+
+  assert.deepEqual(binding, {
+    ...externalAllocationRequest("allocation-request-1", fixture.registration)
+      .allocation,
+    requestId: "allocation-request-1",
+    operationId: "operation-allocation-1",
+    boundAt: "2026-09-12T10:00:00.000Z",
+  });
+});
+
+test("an external review allocation binding has an integrity digest", async (context) => {
+  const fixture = await externalAllocationFixture(context);
+  const operationId = await fixture.review("allocation-request-1");
+  const snapshot = await fixture.snapshot(operationId);
+
+  assert.match(
+    snapshot.externalReviewAllocation!.digest,
+    /^sha256:[0-9a-f]{64}$/u
+  );
+});
+
+test("an unauthenticated external review allocation is rejected", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    authenticate: () => "denied",
+  });
+
+  await assert.rejects(fixture.review("allocation-request-1"), {
+    name: "ExternalReviewAllocationError",
+    reason: "issuer_authentication_failed",
+  });
+});
+
+test("an external review allocation for another registration evidence is rejected", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    allocationFor: (requestId, registration) =>
+      externalAllocationRequest(requestId, registration, {
+        registrationEvidenceId: "different-evidence",
+      }),
+  });
+
+  await assert.rejects(fixture.review("allocation-request-1"), {
+    name: "ExternalReviewAllocationError",
+    reason: "allocation_mismatch",
+  });
+});
+
+test("an expired external review allocation is rejected", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    now: new Date("2026-09-12T11:00:00.000Z"),
+  });
+
+  await assert.rejects(fixture.review("allocation-request-1"), {
+    name: "ExternalReviewAllocationError",
+    reason: "expired",
+  });
+});
+
+test("an exhausted external review allocation is rejected", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    allocationFor: (requestId, registration) =>
+      externalAllocationRequest(requestId, registration, { useLimit: 0 }),
+  });
+
+  await assert.rejects(fixture.review("allocation-request-1"), {
+    name: "ExternalReviewAllocationError",
+    reason: "use_limit_exceeded",
+  });
+});
+
+test("one external review allocation cannot bind a second Operation", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    operationIds: ["operation-allocation-1", "operation-allocation-2"],
+  });
+  await fixture.review("allocation-request-1");
+
+  await assert.rejects(fixture.review("allocation-request-2"), {
+    name: "ExternalReviewAllocationError",
+    reason: "allocation_already_bound",
+  });
+});
+
+test("a binding request identifier cannot replace its external allocation", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    operationIds: ["operation-allocation-1", "operation-allocation-2"],
+    allocationFor: (bindingRequestId, registration) =>
+      externalAllocationRequest("fixed-binding-request", registration, {
+        axis:
+          bindingRequestId === "allocation-request-1"
+            ? "standards opaque value"
+            : "specification opaque value",
+      }),
+  });
+  await fixture.review("allocation-request-1");
+
+  await assert.rejects(fixture.review("allocation-request-2"), {
+    name: "ExternalReviewAllocationError",
+    reason: "request_mismatch",
+  });
+});
+
+test("an identical binding request rejoins its reserved Operation", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    operationIds: ["operation-allocation-1", "operation-allocation-2"],
+    allocationFor: (_bindingRequestId, registration) =>
+      externalAllocationRequest("fixed-binding-request", registration),
+  });
+  const firstOperationId = await fixture.review("allocation-request-1");
+
+  assert.deepEqual(await fixture.reviewOutcome("allocation-request-2"), {
+    operationId: firstOperationId,
+    rejoined: true,
+  });
+});
+
+async function requireInjectedOperationCreationFailure(
+  operation: Promise<string>
+): Promise<void> {
+  try {
+    await operation;
+  } catch (error) {
+    if (error instanceof Error && error.name === "OperationPersistenceError") {
+      return;
+    }
+    throw error;
+  }
+  throw new Error("Expected the injected Operation creation failure");
+}
+
+test("an interrupted allocation binding resumes with its reserved Operation identifier", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    failOperationCreationOnce: true,
+    operationIds: ["operation-allocation-1", "operation-allocation-2"],
+    allocationFor: (_bindingRequestId, registration) =>
+      externalAllocationRequest("fixed-binding-request", registration),
+  });
+  await requireInjectedOperationCreationFailure(
+    fixture.review("allocation-request-1")
+  );
+
+  assert.equal(
+    await fixture.review("allocation-request-2"),
+    "operation-allocation-1"
+  );
+});
+
+test("an unresolved external allocation reservation is not reusable", async (context) => {
+  const fixture = await externalAllocationFixture(context, {
+    failOperationCreationOnce: true,
+    operationIds: ["operation-allocation-1", "operation-allocation-2"],
+  });
+  await requireInjectedOperationCreationFailure(
+    fixture.review("allocation-request-1")
+  );
+
+  await assert.rejects(fixture.review("allocation-request-2"), {
+    name: "ExternalReviewAllocationError",
+    reason: "allocation_already_bound",
+  });
+});
+
+test("an external review allocation binding rejects changed opaque content", async (context) => {
+  const fixture = await externalAllocationFixture(context);
+  const operationId = await fixture.review("allocation-request-1");
+  const snapshot = await fixture.snapshot(operationId);
+
+  assert.equal(
+    validExternalReviewAllocationBinding({
+      ...snapshot.externalReviewAllocation,
+      axis: "changed axis",
+    }),
+    false
+  );
+});
+
+test("external review allocation integrity is independent of object key order", async (context) => {
+  const fixture = await externalAllocationFixture(context);
+  const operationId = await fixture.review("allocation-request-1");
+  const snapshot = await fixture.snapshot(operationId);
+  const reordered = Object.fromEntries(
+    Object.entries(snapshot.externalReviewAllocation!).reverse()
+  );
+
+  assert.equal(validExternalReviewAllocationBinding(reordered), true);
 });
