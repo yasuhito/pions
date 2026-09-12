@@ -25,6 +25,7 @@ export type FormalReviewResultFormatValidation =
 export interface FormalReviewResultFormatValidator {
   readonly validatorId: string;
   readonly validatorVersion: string;
+  /** Exact bytes of the validation rules and implementation used by validate. */
   readonly registrationArtifact: Uint8Array;
   validate(input: {
     readonly bytes: Uint8Array;

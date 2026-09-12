@@ -238,6 +238,7 @@ async function formalReviewAdmissionFixture(
     readonly bindingFailure?: ArtifactFailureReason;
     readonly reviewSubjectVerification?: "disabled" | "required";
     readonly trace?: Array<string>;
+    readonly resultFormatConfigured?: boolean;
   } = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-review-admission-"));
@@ -387,10 +388,14 @@ async function formalReviewAdmissionFixture(
     artifacts,
     artifactCredential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
-    formalReviewResultFormats: {
-      registry: resultFormats,
-      resultFormat: formalReviewResultFormat,
-    },
+    ...(options.resultFormatConfigured === false
+      ? {}
+      : {
+          formalReviewResultFormats: {
+            registry: resultFormats,
+            resultFormat: formalReviewResultFormat,
+          },
+        }),
     startAuthorizationAuthenticator: {
       authenticate: async () => ({
         subjectId: "reviewer-1",
@@ -634,6 +639,24 @@ test("the authorization decision is persisted before Worker execution begins", a
     trace.findIndex((entry) => entry.includes("start_authorization_decided")) <
       trace.indexOf("worker-protocol:receive-result"),
     true
+  );
+});
+
+test("a formal review without a trusted Result validator is rejected before Worker creation", async (context) => {
+  const { runtime, artifactId } = await formalReviewAdmissionFixture(context, {
+    resultFormatConfigured: false,
+  });
+
+  await assert.rejects(
+    runtime.spawn(
+      {
+        promptRef: "private://prompt/review",
+        profile: "review",
+        idempotencyKey: "review-without-result-validator",
+      },
+      { reviewSubjectArtifactId: artifactId }
+    ),
+    { name: "WorkerConfigurationError", reason: "unsupported_capability" }
   );
 });
 
