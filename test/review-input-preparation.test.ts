@@ -527,7 +527,14 @@ async function fixture(
     artifacts: artifactServices.artifacts,
     artifactCredential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
-    resultFormats,
+    formalReviewResultFormats: {
+      registry: resultFormats,
+      resultFormat: resultFormats.pin({
+        formatId: "test.formal-review-result",
+        version: "1",
+        expectations: { axis: "standards" },
+      }),
+    },
     resourceProofController,
     startAuthorizationAuthenticator: {
       authenticate: async () => ({
@@ -538,11 +545,6 @@ async function fixture(
     configuration: {
       cwd: workspacePath,
       profiles: { review: profile },
-      formalReviewResultFormat: resultFormats.pin({
-        formatId: "test.formal-review-result",
-        version: "1",
-        expectations: { axis: "standards" },
-      }),
     },
   });
   context.after(async () => {
@@ -643,16 +645,15 @@ test("a Result format rejection is a typed Operation failure", async (context) =
 
   const snapshot = await operation.read();
 
-  assert.deepEqual(
-    {
-      failureReason: snapshot.failureReason,
-      rejectionReason: snapshot.resultFormatRejection?.reason,
-    },
-    {
-      failureReason: "result_format_rejected",
-      rejectionReason: "invalid_json",
-    }
-  );
+  assert.equal(snapshot.failureReason, "result_format_rejected");
+});
+
+test("a Result format rejection preserves its typed rejection evidence", async (context) => {
+  const operation = await rejectedFormalReview(context, "invalid_json");
+
+  const snapshot = await operation.read();
+
+  assert.equal(snapshot.resultFormatRejection?.reason, "invalid_json");
 });
 
 test("a Result format rejection leaves no retrievable Result", async (context) => {

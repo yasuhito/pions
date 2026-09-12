@@ -387,7 +387,10 @@ async function formalReviewAdmissionFixture(
     artifacts,
     artifactCredential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
-    resultFormats,
+    formalReviewResultFormats: {
+      registry: resultFormats,
+      resultFormat: formalReviewResultFormat,
+    },
     startAuthorizationAuthenticator: {
       authenticate: async () => ({
         subjectId: "reviewer-1",
@@ -412,7 +415,6 @@ async function formalReviewAdmissionFixture(
           "formal_reviewer"
         ),
       },
-      formalReviewResultFormat,
     },
   });
   return {
@@ -931,7 +933,10 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
     artifacts,
     artifactCredential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
-    resultFormats,
+    formalReviewResultFormats: {
+      registry: resultFormats,
+      resultFormat: formalReviewResultFormat,
+    },
     startAuthorizationAuthenticator: {
       authenticate: async () => ({
         subjectId: "reviewer-1",
@@ -954,7 +959,6 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
           "formal_reviewer"
         ),
       },
-      formalReviewResultFormat,
     },
   });
   const handle = await runtime.spawn(

@@ -150,6 +150,9 @@ async function fixture(
 function configuredResultFormat(
   validate: (input: {
     readonly bytes: Uint8Array;
+    readonly formatId: string;
+    readonly version: string;
+    readonly normalizationId: string;
     readonly expectations: Readonly<Record<string, string>>;
   }) => Promise<
     | { readonly kind: "valid" }
@@ -217,6 +220,42 @@ for (const reason of [
     );
   });
 }
+
+test("a formal review validator receives the pinned format contract", async (context) => {
+  let received:
+    | Readonly<{
+        formatId: string;
+        version: string;
+        normalizationId: string;
+        expectations: Readonly<Record<string, string>>;
+      }>
+    | undefined;
+  const format = configuredResultFormat(async (input) => {
+    received = {
+      formatId: input.formatId,
+      version: input.version,
+      normalizationId: input.normalizationId,
+      expectations: input.expectations,
+    };
+    return { kind: "valid" };
+  });
+  const { acceptance } = await fixture(
+    context,
+    undefined,
+    workProductRequirements,
+    undefined,
+    format
+  );
+
+  await Effect.runPromise(acceptance.accept("operation-1", produced()));
+
+  assert.deepEqual(received, {
+    formatId: "test.formal-review-result",
+    version: "1",
+    normalizationId: "test.canonical-json.v1",
+    expectations: { axis: "standards" },
+  });
+});
 
 test("a rejected formal review Result is not published", async (context) => {
   const format = configuredResultFormat(async () => ({
@@ -288,6 +327,41 @@ test("an unavailable validator rejects a formal review Result", async (context) 
       ? outcome.resultFormatRejection?.reason
       : undefined,
     "validator_unavailable"
+  );
+});
+
+test("a changed validator identity rejects an unaccepted formal review Result", async (context) => {
+  const original = configuredResultFormat(async () => ({ kind: "valid" }));
+  const replacement = makeResultFormatRegistry([
+    {
+      formatId: "test.formal-review-result",
+      version: "1",
+      normalizationId: "test.canonical-json.v1",
+      validator: {
+        validatorId: "test.formal-review-result-validator",
+        validatorVersion: "2",
+        registrationArtifact: Buffer.from("replacement validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
+    },
+  ]);
+  const { acceptance } = await fixture(
+    context,
+    undefined,
+    workProductRequirements,
+    undefined,
+    { registry: replacement, pinned: original.pinned }
+  );
+
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", produced())
+  );
+
+  assert.equal(
+    outcome.state === "failed"
+      ? outcome.resultFormatRejection?.reason
+      : undefined,
+    "validator_identity_mismatch"
   );
 });
 

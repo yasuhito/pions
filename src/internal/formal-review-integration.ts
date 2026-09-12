@@ -224,7 +224,7 @@ export function makeFormalReviewIntegration(
   const now = dependencies.now ?? (() => new Date());
   const artifactCredential = randomBytes(32).toString("hex");
   const coordinator = coordinatorConfiguration(configuration);
-  const resultFormat =
+  const resultFormats =
     configuration.formalReview === undefined
       ? undefined
       : configuredResultFormat(configuration.formalReview.resultFormat);
@@ -246,6 +246,7 @@ export function makeFormalReviewIntegration(
   ): Promise<Readonly<ReviewSubjectRegistrationResult>> {
     const { normalizedRoot, repositoryState } = await repositoryContext();
     const stateDirectory = join(repositoryState, "runtime");
+    await resultFormats?.registry.register(stateDirectory);
     const eventStore = new PrivateFileEventStore(
       stateDirectory,
       makeRegistrationClock(now)
@@ -526,15 +527,15 @@ export function makeFormalReviewIntegration(
       ...(dependencies.resultRuntimeFactory === undefined
         ? {}
         : { resultRuntimeFactory: dependencies.resultRuntimeFactory }),
-      ...(configuration.formalReview === undefined
+      ...(configuration.formalReview === undefined ||
+      resultFormats === undefined
         ? {}
         : {
             formalReview: {
               profile: configuration.formalReview.profile,
               reviewSubjectAuthority:
                 configuration.formalReview.reviewSubjectAuthority,
-              resultFormats: resultFormat!.registry,
-              resultFormat: resultFormat!.pinned,
+              resultFormats,
               ...(coordinator === undefined
                 ? {}
                 : {

@@ -446,6 +446,10 @@ const FORMAL_REVIEW_RESULT_FORMAT = FORMAL_REVIEW_RESULT_FORMATS.pin({
   version: "1",
   expectations: { axis: "standards" },
 });
+const CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS = {
+  registry: FORMAL_REVIEW_RESULT_FORMATS,
+  resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
+};
 
 const REVIEW_SUBJECT_AUTHORITY: RuntimeReviewSubjectAuthority = {
   currentUse: async () => "allowed",
@@ -500,8 +504,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
           formalReview: {
             profile: FORMAL_REVIEW_PROFILE,
             reviewSubjectAuthority: REVIEW_SUBJECT_AUTHORITY,
-            resultFormats: FORMAL_REVIEW_RESULT_FORMATS,
-            resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
+            resultFormats: CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS,
             ...(fixtureOptions.enableCoordinator === false
               ? {}
               : {

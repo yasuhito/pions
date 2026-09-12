@@ -127,14 +127,13 @@ async function acceptedResultOutcome(
   return { state: "accepted", proof: acceptanceProof(operationId, acceptance) };
 }
 
-type MaterializedArtifact<Artifact extends WorkerProducedArtifact> = Omit<
-  Artifact,
-  "bytes"
-> & { readonly bytes: Uint8Array };
+type MaterializedArtifact = Omit<WorkerProducedArtifact, "bytes"> & {
+  readonly bytes: Uint8Array;
+};
 
 async function materializeArtifact(
   artifact: Readonly<WorkerProducedArtifact>
-): Promise<Readonly<MaterializedArtifact<WorkerProducedArtifact>> | undefined> {
+): Promise<Readonly<MaterializedArtifact> | undefined> {
   const chunks: Array<Buffer> = [];
   let byteCount = 0;
   if (artifact.bytes instanceof Uint8Array) {

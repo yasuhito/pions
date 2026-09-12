@@ -164,9 +164,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     ...(artifactServices.synchronizeClock === undefined
       ? {}
       : { synchronizeArtifactClock: artifactServices.synchronizeClock }),
-    ...(services.resultFormats === undefined
+    ...(services.formalReviewResultFormats === undefined
       ? {}
-      : { resultFormats: services.resultFormats }),
+      : { resultFormats: services.formalReviewResultFormats.registry }),
   });
   const records = new Map<string, OperationRecord>();
   const volatileCleanupDiagnostics = new Map<
@@ -2068,7 +2068,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       resolveWorkProductRequirements(configuredProfile);
     const resultFormat =
       configuredProfile.intendedUse === "formal_reviewer"
-        ? runtimeConfiguration.formalReviewResultFormat
+        ? services.formalReviewResultFormats?.resultFormat
         : undefined;
     if (
       configuredProfile.intendedUse === "formal_reviewer" &&

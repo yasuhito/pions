@@ -6,7 +6,7 @@ import type {
   Operation,
 } from "./event-store/index.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
-import type { ResultFormatRegistry } from "./result-format-registry.js";
+import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import type { InternalResourceProofController } from "./resource-controller.js";
 import type {
   ResultAcceptanceProof,
@@ -15,6 +15,7 @@ import type {
 import type {
   ArtifactStore,
   ObservedWorkerConfig,
+  ResultFormatRejectionEvidence,
   OperationPersistenceError,
   StartAuthorizationAuthenticator,
   StartAuthorizationAuthority,
@@ -23,7 +24,6 @@ import type {
   RetryClearanceVerifier,
   WorkerProducedResult,
   WorkerProfilePolicy,
-  PinnedResultFormat,
 } from "../public.js";
 
 export interface WorkerProcessIdentity {
@@ -118,12 +118,7 @@ export type WorkerRunOutcome = (
   | { readonly state: "worker_protocol_failed" }
   | {
       readonly state: "result_format_rejected";
-      readonly rejection: NonNullable<
-        Extract<
-          ResultAcceptanceOutcome,
-          { readonly state: "failed" }
-        >["resultFormatRejection"]
-      >;
+      readonly rejection: Readonly<ResultFormatRejectionEvidence>;
     }
   | { readonly state: "process-exited-without-result" }
   | { readonly state: "liveness-unproven" }
@@ -243,7 +238,7 @@ export interface RuntimeServices {
   readonly artifacts: ArtifactStore;
   readonly artifactCredential: string;
   readonly synchronizeArtifactClock?: (timestamp: string) => void;
-  readonly resultFormats?: ResultFormatRegistry;
+  readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
   readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
   readonly revisionAuthenticator?: RevisionAuthenticator;
@@ -253,6 +248,5 @@ export interface RuntimeServices {
   readonly configuration?: Readonly<{
     readonly cwd: string;
     readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
-    readonly formalReviewResultFormat?: Readonly<PinnedResultFormat>;
   }>;
 }

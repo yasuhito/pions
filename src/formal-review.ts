@@ -5,6 +5,7 @@ import type {
   ArtifactMetadata,
   CurrentStartAuthorization,
   ReviewSubjectRegistrationEvidence,
+  ResultFormatValidationFailureReason,
   RuntimeReviewSubjectAuthority,
   WorkerProfilePolicy,
 } from "./public.js";
@@ -15,14 +16,7 @@ export interface FormalReviewCoordinatorConfiguration {
 }
 
 export type FormalReviewResultFormatRejectionReason =
-  | "invalid_encoding"
-  | "invalid_json"
-  | "duplicate_key"
-  | "unknown_key"
-  | "missing_key"
-  | "invalid_verdict"
-  | "invalid_finding"
-  | "expectation_mismatch";
+  ResultFormatValidationFailureReason;
 
 export type FormalReviewResultFormatValidation =
   | { readonly kind: "valid" }
@@ -37,6 +31,9 @@ export interface FormalReviewResultFormatValidator {
   readonly registrationArtifact: Uint8Array;
   validate(input: {
     readonly bytes: Uint8Array;
+    readonly formatId: string;
+    readonly version: string;
+    readonly normalizationId: string;
     readonly expectations: Readonly<Record<string, string>>;
   }): Promise<FormalReviewResultFormatValidation>;
 }

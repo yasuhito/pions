@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type {
@@ -8,14 +11,24 @@ import type {
 import type {
   PinnedResultFormat,
   ResultFormatRejectionReason,
+  ResultFormatValidatorIdentity,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
+const REGISTRY_FORMAT = "pions.result-format-validator-registry.v1";
+const REGISTRY_FILE = "result-format-validators.v1.json";
+const REGISTRY_LOCK = `${REGISTRY_FILE}.lock`;
+const LOCK_ATTEMPTS = 100;
 
 interface RegisteredResultFormat {
   readonly pinned: Omit<PinnedResultFormat, "expectations">;
   readonly validate: FormalReviewResultFormatRegistration["validator"]["validate"];
+}
+
+interface PersistedRegistry {
+  readonly formatId: typeof REGISTRY_FORMAT;
+  readonly validators: ReadonlyArray<Readonly<ResultFormatValidatorIdentity>>;
 }
 
 export class ResultFormatRegistrationError extends Error {
@@ -38,11 +51,17 @@ export interface ResultFormatRegistry {
     readonly version: string;
     readonly expectations: Readonly<Record<string, string>>;
   }): Readonly<PinnedResultFormat>;
+  register(stateDirectory: string): Promise<void>;
   validate(
     pinned: Readonly<PinnedResultFormat>,
     bytes: Uint8Array
   ): Promise<ResultFormatValidationOutcome>;
   readonly digest: `sha256:${string}`;
+}
+
+export interface ConfiguredResultFormats {
+  readonly registry: ResultFormatRegistry;
+  readonly resultFormat: Readonly<PinnedResultFormat>;
 }
 
 function formatKey(formatId: string, version: string): string {
@@ -56,16 +75,129 @@ function validatorKey(validatorId: string, version: string): string {
 function validExpectations(
   expectations: Readonly<Record<string, string>>
 ): boolean {
-  return Object.entries(expectations).every(
-    ([key, value]) => IDENTIFIER.test(key) && typeof value === "string"
+  return Object.keys(expectations).every((key) => IDENTIFIER.test(key));
+}
+
+function validPersistedIdentity(
+  value: unknown
+): value is ResultFormatValidatorIdentity {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 3 &&
+    typeof candidate.validatorId === "string" &&
+    IDENTIFIER.test(candidate.validatorId) &&
+    typeof candidate.version === "string" &&
+    IDENTIFIER.test(candidate.version) &&
+    typeof candidate.digest === "string" &&
+    /^sha256:[0-9a-f]{64}$/u.test(candidate.digest)
   );
+}
+
+function decodePersistedRegistry(source: string): PersistedRegistry {
+  let value: unknown;
+  try {
+    value = JSON.parse(source) as unknown;
+  } catch {
+    throw new ResultFormatRegistrationError(
+      "The persisted Result format validator registry is corrupt"
+    );
+  }
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    (value as { readonly formatId?: unknown }).formatId !== REGISTRY_FORMAT ||
+    !Array.isArray((value as { readonly validators?: unknown }).validators) ||
+    !(
+      value as { readonly validators: ReadonlyArray<unknown> }
+    ).validators.every(validPersistedIdentity)
+  ) {
+    throw new ResultFormatRegistrationError(
+      "The persisted Result format validator registry is corrupt"
+    );
+  }
+  return value as PersistedRegistry;
+}
+
+async function readPersistedRegistry(path: string): Promise<PersistedRegistry> {
+  try {
+    return decodePersistedRegistry(await readFile(path, "utf8"));
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return { formatId: REGISTRY_FORMAT, validators: [] };
+    }
+    throw error;
+  }
+}
+
+async function acquireRegistryLock(path: string) {
+  for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
+    try {
+      return await open(path, "wx", 0o600);
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "EEXIST"
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new ResultFormatRegistrationError(
+    "The Result format validator registry is locked"
+  );
+}
+
+function mergedRegistry(
+  persisted: Readonly<PersistedRegistry>,
+  registrations: ReadonlyMap<string, Readonly<ResultFormatValidatorIdentity>>
+): PersistedRegistry {
+  const validators = new Map(
+    persisted.validators.map((identity) => [
+      validatorKey(identity.validatorId, identity.version),
+      identity,
+    ])
+  );
+  if (validators.size !== persisted.validators.length) {
+    throw new ResultFormatRegistrationError(
+      "The persisted Result format validator registry is corrupt"
+    );
+  }
+  for (const [key, identity] of registrations) {
+    const existing = validators.get(key);
+    if (existing !== undefined && existing.digest !== identity.digest) {
+      throw new ResultFormatRegistrationError(
+        "A Result format validator identity cannot be replaced"
+      );
+    }
+    validators.set(key, identity);
+  }
+  return {
+    formatId: REGISTRY_FORMAT,
+    validators: [...validators.values()].sort((left, right) =>
+      validatorKey(left.validatorId, left.version).localeCompare(
+        validatorKey(right.validatorId, right.version)
+      )
+    ),
+  };
 }
 
 export function makeResultFormatRegistry(
   registrations: ReadonlyArray<Readonly<FormalReviewResultFormatRegistration>>
 ): ResultFormatRegistry {
   const formats = new Map<string, RegisteredResultFormat>();
-  const validatorDigests = new Map<string, `sha256:${string}`>();
+  const validators = new Map<string, Readonly<ResultFormatValidatorIdentity>>();
 
   for (const registration of registrations) {
     const validator = registration.validator;
@@ -81,28 +213,31 @@ export function makeResultFormatRegistry(
         "Formal review Result format registration is invalid"
       );
     }
-    const digest = sha256Digest(validator.registrationArtifact);
-    const identityKey = validatorKey(
-      validator.validatorId,
-      validator.validatorVersion
+    const registrationArtifact = Uint8Array.from(
+      validator.registrationArtifact
     );
-    const existingDigest = validatorDigests.get(identityKey);
-    if (existingDigest !== undefined && existingDigest !== digest) {
+    const identity = {
+      validatorId: validator.validatorId,
+      version: validator.validatorVersion,
+      digest: sha256Digest(registrationArtifact),
+    } as const;
+    const identityKey = validatorKey(identity.validatorId, identity.version);
+    const existingIdentity = validators.get(identityKey);
+    if (
+      existingIdentity !== undefined &&
+      existingIdentity.digest !== identity.digest
+    ) {
       throw new ResultFormatRegistrationError(
         "A Result format validator identity cannot be replaced"
       );
     }
-    validatorDigests.set(identityKey, digest);
+    validators.set(identityKey, identity);
 
     const pinned = {
       formatId: registration.formatId,
       version: registration.version,
       normalizationId: registration.normalizationId,
-      validator: {
-        validatorId: validator.validatorId,
-        version: validator.validatorVersion,
-        digest,
-      },
+      validator: identity,
     };
     const key = formatKey(registration.formatId, registration.version);
     const existing = formats.get(key);
@@ -147,6 +282,29 @@ export function makeResultFormatRegistry(
         expectations: Object.freeze({ ...configuration.expectations }),
       });
     },
+    async register(stateDirectory): Promise<void> {
+      await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+      const registryPath = join(stateDirectory, REGISTRY_FILE);
+      const lockPath = join(stateDirectory, REGISTRY_LOCK);
+      const lock = await acquireRegistryLock(lockPath);
+      const temporaryPath = `${registryPath}.${randomUUID()}.tmp`;
+      try {
+        const persisted = await readPersistedRegistry(registryPath);
+        const merged = mergedRegistry(persisted, validators);
+        if (!isDeepStrictEqual(merged, persisted)) {
+          await writeFile(temporaryPath, `${JSON.stringify(merged)}\n`, {
+            encoding: "utf8",
+            mode: 0o600,
+            flag: "wx",
+          });
+          await rename(temporaryPath, registryPath);
+        }
+      } finally {
+        await lock.close().catch(() => undefined);
+        await rm(temporaryPath, { force: true }).catch(() => undefined);
+        await rm(lockPath, { force: true }).catch(() => undefined);
+      }
+    },
     async validate(pinned, bytes): Promise<ResultFormatValidationOutcome> {
       const registered = formats.get(
         formatKey(pinned.formatId, pinned.version)
@@ -167,6 +325,9 @@ export function makeResultFormatRegistry(
       try {
         return await registered.validate({
           bytes,
+          formatId: pinned.formatId,
+          version: pinned.version,
+          normalizationId: pinned.normalizationId,
           expectations: pinned.expectations,
         });
       } catch {
@@ -178,10 +339,7 @@ export function makeResultFormatRegistry(
 
 export function configuredResultFormat(
   configuration: Readonly<FormalReviewResultFormatConfiguration>
-): {
-  readonly registry: ResultFormatRegistry;
-  readonly pinned: Readonly<PinnedResultFormat>;
-} {
+): ConfiguredResultFormats {
   const registry = makeResultFormatRegistry(configuration.registrations);
-  return { registry, pinned: registry.pin(configuration) };
+  return { registry, resultFormat: registry.pin(configuration) };
 }

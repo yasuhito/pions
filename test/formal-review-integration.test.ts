@@ -989,6 +989,64 @@ test("the integration rejects a validator version backed by different registrati
   );
 });
 
+test("a persisted validator version cannot be replaced after integration restart", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-result-format-restart-"));
+  const stateBaseDirectory = join(root, "state");
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const configuration = (registrationArtifact: Uint8Array) => ({
+    repositoryRoot: root,
+    reviewSubjectRegistration,
+    formalReview: {
+      profile: formalReviewProfile(root),
+      reviewSubjectAuthority: {
+        currentUse: async () => "allowed" as const,
+      },
+      resultFormat: {
+        formatId: "test.review-result",
+        version: "1",
+        expectations: { axis: "standards" },
+        registrations: [
+          {
+            formatId: "test.review-result",
+            version: "1",
+            normalizationId: "identity.v1",
+            validator: {
+              validatorId: "test-result-validator",
+              validatorVersion: "1",
+              registrationArtifact,
+              validate: async () => ({ kind: "valid" as const }),
+            },
+          },
+        ],
+      },
+    },
+  });
+  const firstConfiguration = configuration(
+    Buffer.from("validator one", "utf8")
+  );
+  configureFormalReviewIntegrationForTest(firstConfiguration, {
+    stateBaseDirectory,
+  });
+  await createFormalReviewIntegration(firstConfiguration).registerReviewSubject(
+    rootRegistration(Buffer.from("fixed review subject", "utf8"))
+  );
+  const replacementConfiguration = configuration(
+    Buffer.from("validator replacement", "utf8")
+  );
+  configureFormalReviewIntegrationForTest(replacementConfiguration, {
+    stateBaseDirectory,
+  });
+
+  await assert.rejects(
+    createFormalReviewIntegration(
+      replacementConfiguration
+    ).registerReviewSubject(
+      rootRegistration(Buffer.from("fixed review subject", "utf8"))
+    ),
+    { name: "ResultFormatRegistrationError" }
+  );
+});
+
 test("an unconfigured integration keeps the formal review tool registered and rejects its use", async (context) => {
   const integration = await fixture(context);
   const tools = new Map<string, RegisteredTool>();
@@ -1079,9 +1137,11 @@ test("a registered dependent root is available to the configured extension Runti
         artifacts: artifactServices.artifacts,
         artifactCredential: artifactServices.credential,
         synchronizeArtifactClock: artifactServices.synchronizeClock,
-        ...(options.resultFormats === undefined
+        ...(options.formalReviewResultFormats === undefined
           ? {}
-          : { resultFormats: options.resultFormats }),
+          : {
+              formalReviewResultFormats: options.formalReviewResultFormats,
+            }),
         ...(options.startAuthorizationAuthenticator === undefined
           ? {}
           : {
@@ -1093,15 +1153,7 @@ test("a registered dependent root is available to the configured extension Runti
           : {
               startAuthorizationAuthority: options.startAuthorizationAuthority,
             }),
-        configuration: {
-          cwd: options.cwd,
-          profiles: options.profiles,
-          ...(options.formalReviewResultFormat === undefined
-            ? {}
-            : {
-                formalReviewResultFormat: options.formalReviewResultFormat,
-              }),
-        },
+        configuration: { cwd: options.cwd, profiles: options.profiles },
       });
       return runtime;
     },

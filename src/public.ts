@@ -190,7 +190,7 @@ export interface PinnedResultFormat {
   readonly validator: Readonly<ResultFormatValidatorIdentity>;
 }
 
-export type ResultFormatRejectionReason =
+export type ResultFormatValidationFailureReason =
   | "invalid_encoding"
   | "invalid_json"
   | "duplicate_key"
@@ -198,7 +198,10 @@ export type ResultFormatRejectionReason =
   | "missing_key"
   | "invalid_verdict"
   | "invalid_finding"
-  | "expectation_mismatch"
+  | "expectation_mismatch";
+
+export type ResultFormatRejectionReason =
+  | ResultFormatValidationFailureReason
   | "validator_identity_mismatch"
   | "validator_unavailable";
 
