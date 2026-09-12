@@ -354,7 +354,7 @@ export function makeFormalReviewIntegration(
 
       const dependencyArtifactIds: Array<string> = [];
       for (const [path, dependency] of [...requirementsByPath].sort(
-        ([left], [right]) => left.localeCompare(right)
+        ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)
       )) {
         const bytes = filesByPath.get(path);
         if (bytes === undefined) {

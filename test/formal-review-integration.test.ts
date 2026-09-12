@@ -362,6 +362,34 @@ test("repeating a review subject registration returns the same Artifact", async 
   assert.equal(replay.artifactId, first.artifactId);
 });
 
+test("dependency input order does not change registration identity", async (context) => {
+  const integration = await fixture(context);
+  const specification = dependencyRegistration(
+    "docs/spec.md",
+    Buffer.from("fixed specification", "utf8")
+  );
+  const standards = dependencyRegistration(
+    "docs/standards.md",
+    Buffer.from("fixed standards", "utf8")
+  );
+  const rootBytes = Buffer.from("fixed manifest", "utf8");
+  const first = await integration.registerReviewSubject(
+    rootRegistration(rootBytes, {
+      dependencies: [specification.manifest, standards.manifest],
+      dependencyFiles: [specification.file, standards.file],
+    })
+  );
+
+  const replay = await integration.registerReviewSubject(
+    rootRegistration(rootBytes, {
+      dependencies: [standards.manifest, specification.manifest],
+      dependencyFiles: [standards.file, specification.file],
+    })
+  );
+
+  assert.equal(replay.artifactId, first.artifactId);
+});
+
 test("a registration identifier cannot replace a fixed dependency", async (context) => {
   const integration = await fixture(context);
   const firstDependency = dependencyRegistration(
@@ -434,7 +462,7 @@ test("an unconfigured integration keeps the formal review tool registered and re
   );
 });
 
-test("a registered dependency closure is available to the configured extension Runtime", async (context) => {
+test("a registered dependent root is available to the configured extension Runtime", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pions-formal-review-runtime-"));
   const stateBaseDirectory = join(root, "state");
   const profile: WorkerProfilePolicy = {

@@ -117,7 +117,11 @@ If another chunk is available, pass the returned cursor to the next call. The to
 Trusted host code can use the supported `pions/formal-review` entry point instead of importing runtime or storage internals:
 
 ```ts
+import { createHash } from "node:crypto";
 import { createFormalReviewIntegration } from "pions/formal-review";
+
+const sha256Digest = (bytes: Uint8Array): `sha256:${string}` =>
+  `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 const integration = createFormalReviewIntegration({
   repositoryRoot,
