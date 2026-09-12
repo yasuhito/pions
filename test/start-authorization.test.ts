@@ -8,6 +8,7 @@ import { test, type TestContext } from "node:test";
 import { Effect } from "effect";
 
 import type { Operation } from "../src/internal/event-store/index.js";
+import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import { makeSingleRunWorker } from "../src/internal/services.js";
 import type {
@@ -33,6 +34,25 @@ import type {
   StartAuthorizationInbox,
   WorkerProfilePolicy,
 } from "../src/public.js";
+
+const resultFormats = makeResultFormatRegistry([
+  {
+    formatId: "test.formal-review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    validator: {
+      validatorId: "test.formal-review-result-validator",
+      validatorVersion: "1",
+      registrationArtifact: Buffer.from("test validator v1", "utf8"),
+      validate: async () => ({ kind: "valid" }),
+    },
+  },
+]);
+const formalReviewResultFormat = resultFormats.pin({
+  formatId: "test.formal-review-result",
+  version: "1",
+  expectations: { axis: "standards" },
+});
 
 const timestamps = Array.from({ length: 50 }, (_, index) =>
   new Date(Date.UTC(2026, 8, 6, 10, 0, index)).toISOString()
@@ -367,6 +387,7 @@ async function formalReviewAdmissionFixture(
     artifacts,
     artifactCredential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
+    resultFormats,
     startAuthorizationAuthenticator: {
       authenticate: async () => ({
         subjectId: "reviewer-1",
@@ -391,6 +412,7 @@ async function formalReviewAdmissionFixture(
           "formal_reviewer"
         ),
       },
+      formalReviewResultFormat,
     },
   });
   return {
@@ -909,6 +931,7 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
     artifacts,
     artifactCredential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
+    resultFormats,
     startAuthorizationAuthenticator: {
       authenticate: async () => ({
         subjectId: "reviewer-1",
@@ -931,6 +954,7 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
           "formal_reviewer"
         ),
       },
+      formalReviewResultFormat,
     },
   });
   const handle = await runtime.spawn(

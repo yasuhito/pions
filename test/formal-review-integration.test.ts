@@ -97,6 +97,45 @@ function rootRegistration(
   };
 }
 
+function formalReviewProfile(root: string): WorkerProfilePolicy {
+  return {
+    intendedUse: "formal_reviewer",
+    modelCandidates: [{ provider: "test", id: "review-model" }],
+    thinkingLevel: "medium",
+    tools: ["read"],
+    resources: { resourceProofPolicy: "disabled" },
+    startAuthorization: {
+      policy: "required",
+      windowMs: 60_000,
+      authorizedSubjectIds: ["coordinator-1"],
+      receipt: {
+        workspace: {
+          workspaceId: "workspace-1",
+          normalizedPath: root,
+          baseRevision: "revision-1",
+          owner: { state: "unknown" },
+          pionsMayDelete: false,
+        },
+        permissionManifest: {
+          manifestId: "manifest-1",
+          digest: `sha256:${"ab".repeat(32)}`,
+        },
+        reviewSubjectVerification: "required",
+      },
+    },
+    workProductRequirements: {
+      body: {
+        formatId: "pions.result-body.utf8.v1",
+        normalizationId: "identity",
+        maxByteCount: 50_000,
+      },
+      workProducts: [],
+      maxTotalByteCount: 50_000,
+    },
+    acceptedArtifactRetentionMs: 86_400_000,
+  };
+}
+
 const reviewSubjectRegistration = {
   authenticator: {
     authenticate: async (declaration: { readonly authentication: string }) =>
@@ -899,6 +938,57 @@ test("a registration identifier cannot replace its fixed root Artifact", async (
   );
 });
 
+test("the integration rejects a validator version backed by different registration Artifacts", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-result-format-conflict-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const validator = {
+    validatorId: "test-result-validator",
+    validatorVersion: "1",
+    registrationArtifact: Buffer.from("validator one", "utf8"),
+    validate: async () => ({ kind: "valid" as const }),
+  };
+
+  assert.throws(
+    () =>
+      createFormalReviewIntegration({
+        repositoryRoot: root,
+        reviewSubjectRegistration,
+        formalReview: {
+          profile: formalReviewProfile(root),
+          reviewSubjectAuthority: {
+            currentUse: async () => "allowed" as const,
+          },
+          resultFormat: {
+            formatId: "test.review-result",
+            version: "1",
+            expectations: { axis: "standards" },
+            registrations: [
+              {
+                formatId: "test.review-result",
+                version: "1",
+                normalizationId: "identity.v1",
+                validator,
+              },
+              {
+                formatId: "test.other-review-result",
+                version: "1",
+                normalizationId: "identity.v1",
+                validator: {
+                  ...validator,
+                  registrationArtifact: Buffer.from(
+                    "validator replacement",
+                    "utf8"
+                  ),
+                },
+              },
+            ],
+          },
+        },
+      }),
+    { name: "ResultFormatRegistrationError" }
+  );
+});
+
 test("an unconfigured integration keeps the formal review tool registered and rejects its use", async (context) => {
   const integration = await fixture(context);
   const tools = new Map<string, RegisteredTool>();
@@ -932,42 +1022,7 @@ test("an unconfigured integration keeps the formal review tool registered and re
 test("a registered dependent root is available to the configured extension Runtime", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pions-formal-review-runtime-"));
   const stateBaseDirectory = join(root, "state");
-  const profile: WorkerProfilePolicy = {
-    intendedUse: "formal_reviewer",
-    modelCandidates: [{ provider: "test", id: "review-model" }],
-    thinkingLevel: "medium",
-    tools: ["read"],
-    resources: { resourceProofPolicy: "disabled" },
-    startAuthorization: {
-      policy: "required",
-      windowMs: 60_000,
-      authorizedSubjectIds: ["coordinator-1"],
-      receipt: {
-        workspace: {
-          workspaceId: "workspace-1",
-          normalizedPath: root,
-          baseRevision: "revision-1",
-          owner: { state: "unknown" },
-          pionsMayDelete: false,
-        },
-        permissionManifest: {
-          manifestId: "manifest-1",
-          digest: `sha256:${"ab".repeat(32)}`,
-        },
-        reviewSubjectVerification: "required",
-      },
-    },
-    workProductRequirements: {
-      body: {
-        formatId: "pions.result-body.utf8.v1",
-        normalizationId: "identity",
-        maxByteCount: 50_000,
-      },
-      workProducts: [],
-      maxTotalByteCount: 50_000,
-    },
-    acceptedArtifactRetentionMs: 86_400_000,
-  };
+  const profile = formalReviewProfile(root);
   let runtime: Runtime | undefined;
   const configuration = {
     repositoryRoot: root,
@@ -975,6 +1030,24 @@ test("a registered dependent root is available to the configured extension Runti
     formalReview: {
       profile,
       reviewSubjectAuthority: { currentUse: async () => "allowed" as const },
+      resultFormat: {
+        formatId: "test.formal-review-result",
+        version: "1",
+        expectations: { axis: "standards" },
+        registrations: [
+          {
+            formatId: "test.formal-review-result",
+            version: "1",
+            normalizationId: "identity.v1",
+            validator: {
+              validatorId: "test.formal-review-result-validator",
+              validatorVersion: "1",
+              registrationArtifact: Buffer.from("test validator v1", "utf8"),
+              validate: async () => ({ kind: "valid" as const }),
+            },
+          },
+        ],
+      },
       coordinator: {
         subjectId: "coordinator-1",
         currentAuthorization: async () => "authorized" as const,
@@ -1006,6 +1079,9 @@ test("a registered dependent root is available to the configured extension Runti
         artifacts: artifactServices.artifacts,
         artifactCredential: artifactServices.credential,
         synchronizeArtifactClock: artifactServices.synchronizeClock,
+        ...(options.resultFormats === undefined
+          ? {}
+          : { resultFormats: options.resultFormats }),
         ...(options.startAuthorizationAuthenticator === undefined
           ? {}
           : {
@@ -1017,7 +1093,15 @@ test("a registered dependent root is available to the configured extension Runti
           : {
               startAuthorizationAuthority: options.startAuthorizationAuthority,
             }),
-        configuration: { cwd: options.cwd, profiles: options.profiles },
+        configuration: {
+          cwd: options.cwd,
+          profiles: options.profiles,
+          ...(options.formalReviewResultFormat === undefined
+            ? {}
+            : {
+                formalReviewResultFormat: options.formalReviewResultFormat,
+              }),
+        },
       });
       return runtime;
     },

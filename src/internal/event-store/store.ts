@@ -215,6 +215,9 @@ export abstract class ValidatedEventStore implements EventStore {
           effectiveConfig: request.effectiveConfig,
           workProductRequirements: request.workProductRequirements,
           resultRetentionPolicy: request.resultRetentionPolicy,
+          ...(request.resultFormat === undefined
+            ? {}
+            : { resultFormat: structuredClone(request.resultFormat) }),
           lineage: request.lineage,
           ...(request.revisionMembership === undefined
             ? {}

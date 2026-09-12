@@ -3,6 +3,7 @@ import type { Effect } from "effect";
 import type {
   EffectiveWorkerConfig,
   OperationState,
+  PinnedResultFormat,
   RequestedWorkerConfig,
   ResolvedWorkProductRequirements,
   ResultAcceptancePreparationEvidence,
@@ -59,6 +60,7 @@ export interface OperationRequest {
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
   readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
+  readonly resultFormat?: Readonly<PinnedResultFormat>;
   readonly lineage: Readonly<OperationLineage>;
   readonly revisionMembership?: Readonly<RevisionMembership>;
   readonly startAuthorization: Readonly<{

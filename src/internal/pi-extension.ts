@@ -15,6 +15,7 @@ import type {
 import { Type } from "typebox";
 
 import { makeResultRetrievalRuntime } from "./result-runtime.js";
+import type { ResultFormatRegistry } from "./result-format-registry.js";
 import {
   opaqueDigest,
   resolveRepositoryState,
@@ -39,6 +40,7 @@ import type {
   ModelReference,
   OperationCompletion,
   OperationHandle,
+  PinnedResultFormat,
   Runtime,
   RuntimeReviewSubjectAuthority,
   StartAuthorizationAuthenticator,
@@ -130,6 +132,8 @@ export interface PionsExtensionOptions {
   readonly formalReview?: Readonly<{
     readonly profile: Readonly<WorkerProfilePolicy>;
     readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
+    readonly resultFormats: ResultFormatRegistry;
+    readonly resultFormat: Readonly<PinnedResultFormat>;
     readonly coordinator?: Readonly<{
       readonly credential: string;
       readonly authenticator: StartAuthorizationAuthenticator;
@@ -568,7 +572,13 @@ export function installPionsExtension(
     const formalProfileDigest =
       options.formalReview === undefined
         ? "disabled"
-        : opaqueDigest(JSON.stringify(options.formalReview.profile));
+        : opaqueDigest(
+            JSON.stringify({
+              profile: options.formalReview.profile,
+              resultFormat: options.formalReview.resultFormat,
+              registryDigest: options.formalReview.resultFormats.digest,
+            })
+          );
     const configKey = `${normalizedRoot}\0${readerModel.provider}\0${readerModel.id}\0${readerThinkingLevel}\0${claudeBridge?.sourceDigest ?? "builtin"}\0${formalProfileDigest}`;
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
     let runtime = options.runtime;
@@ -598,6 +608,8 @@ export function installPionsExtension(
             : {
                 reviewSubjectAuthority:
                   options.formalReview.reviewSubjectAuthority,
+                resultFormats: options.formalReview.resultFormats,
+                formalReviewResultFormat: options.formalReview.resultFormat,
                 ...(options.formalReview.coordinator === undefined
                   ? {}
                   : {

@@ -14,9 +14,53 @@ export interface FormalReviewCoordinatorConfiguration {
   currentAuthorization(operationId: string): Promise<CurrentStartAuthorization>;
 }
 
+export type FormalReviewResultFormatRejectionReason =
+  | "invalid_encoding"
+  | "invalid_json"
+  | "duplicate_key"
+  | "unknown_key"
+  | "missing_key"
+  | "invalid_verdict"
+  | "invalid_finding"
+  | "expectation_mismatch";
+
+export type FormalReviewResultFormatValidation =
+  | { readonly kind: "valid" }
+  | {
+      readonly kind: "invalid";
+      readonly reason: FormalReviewResultFormatRejectionReason;
+    };
+
+export interface FormalReviewResultFormatValidator {
+  readonly validatorId: string;
+  readonly validatorVersion: string;
+  readonly registrationArtifact: Uint8Array;
+  validate(input: {
+    readonly bytes: Uint8Array;
+    readonly expectations: Readonly<Record<string, string>>;
+  }): Promise<FormalReviewResultFormatValidation>;
+}
+
+export interface FormalReviewResultFormatRegistration {
+  readonly formatId: string;
+  readonly version: string;
+  readonly normalizationId: string;
+  readonly validator: Readonly<FormalReviewResultFormatValidator>;
+}
+
+export interface FormalReviewResultFormatConfiguration {
+  readonly formatId: string;
+  readonly version: string;
+  readonly expectations: Readonly<Record<string, string>>;
+  readonly registrations: ReadonlyArray<
+    Readonly<FormalReviewResultFormatRegistration>
+  >;
+}
+
 export interface FormalReviewConfiguration {
   readonly profile: Readonly<WorkerProfilePolicy>;
   readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
+  readonly resultFormat: Readonly<FormalReviewResultFormatConfiguration>;
   readonly coordinator?: Readonly<FormalReviewCoordinatorConfiguration>;
 }
 

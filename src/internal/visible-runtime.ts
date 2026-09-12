@@ -11,6 +11,7 @@ import {
 import { PrivateFileEventStore } from "./event-store/index.js";
 import { EventStoreResourceEvidenceRepository } from "./event-store-resource-evidence.js";
 import { makeResourceProofController } from "./resource-controller.js";
+import type { ResultFormatRegistry } from "./result-format-registry.js";
 import { makeRuntime } from "./runtime.js";
 import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import type { RuntimeClock } from "./services.js";
@@ -21,6 +22,7 @@ import {
   validateClaudeBridgePolicy,
 } from "./worker-extension-entry.js";
 import type {
+  PinnedResultFormat,
   ResourceAuthorityRegistration,
   ResourceCleanupAuthenticator,
   RuntimeReviewSubjectAuthority,
@@ -47,6 +49,8 @@ export interface VisibleRuntimeOptions {
   >;
   readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
   readonly reviewSubjectAuthority?: RuntimeReviewSubjectAuthority;
+  readonly resultFormats?: ResultFormatRegistry;
+  readonly formalReviewResultFormat?: Readonly<PinnedResultFormat>;
 }
 
 const systemClock: RuntimeClock = {
@@ -121,6 +125,9 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     store,
     artifacts: artifactServices.artifacts,
     artifactCredential: artifactServices.credential,
+    ...(options.resultFormats === undefined
+      ? {}
+      : { resultFormats: options.resultFormats }),
     ...(options.startAuthorizationAuthenticator === undefined
       ? {}
       : {
@@ -147,6 +154,12 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
               : { cleanupAuthenticator: options.resourceCleanupAuthenticator }),
           }),
         }),
-    configuration: { cwd: options.cwd, profiles: options.profiles },
+    configuration: {
+      cwd: options.cwd,
+      profiles: options.profiles,
+      ...(options.formalReviewResultFormat === undefined
+        ? {}
+        : { formalReviewResultFormat: options.formalReviewResultFormat }),
+    },
   });
 }

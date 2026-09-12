@@ -11,6 +11,7 @@ import {
   type PionsExtensionOptions,
 } from "./pi-extension.js";
 import { resolveRepositoryState } from "./repository-state.js";
+import { configuredResultFormat } from "./result-format-registry.js";
 import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import type { RuntimeClock } from "./services.js";
 import { sha256Digest } from "./result-digest.js";
@@ -223,6 +224,10 @@ export function makeFormalReviewIntegration(
   const now = dependencies.now ?? (() => new Date());
   const artifactCredential = randomBytes(32).toString("hex");
   const coordinator = coordinatorConfiguration(configuration);
+  const resultFormat =
+    configuration.formalReview === undefined
+      ? undefined
+      : configuredResultFormat(configuration.formalReview.resultFormat);
 
   async function repositoryContext() {
     return resolveRepositoryState({
@@ -528,6 +533,8 @@ export function makeFormalReviewIntegration(
               profile: configuration.formalReview.profile,
               reviewSubjectAuthority:
                 configuration.formalReview.reviewSubjectAuthority,
+              resultFormats: resultFormat!.registry,
+              resultFormat: resultFormat!.pinned,
               ...(coordinator === undefined
                 ? {}
                 : {

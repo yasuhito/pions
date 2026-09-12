@@ -6,6 +6,7 @@ import type {
   Operation,
 } from "./event-store/index.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
+import type { ResultFormatRegistry } from "./result-format-registry.js";
 import type { InternalResourceProofController } from "./resource-controller.js";
 import type {
   ResultAcceptanceProof,
@@ -22,6 +23,7 @@ import type {
   RetryClearanceVerifier,
   WorkerProducedResult,
   WorkerProfilePolicy,
+  PinnedResultFormat,
 } from "../public.js";
 
 export interface WorkerProcessIdentity {
@@ -114,6 +116,15 @@ export type WorkerRunOutcome = (
     }
   | { readonly state: "worker_start_failed" }
   | { readonly state: "worker_protocol_failed" }
+  | {
+      readonly state: "result_format_rejected";
+      readonly rejection: NonNullable<
+        Extract<
+          ResultAcceptanceOutcome,
+          { readonly state: "failed" }
+        >["resultFormatRejection"]
+      >;
+    }
   | { readonly state: "process-exited-without-result" }
   | { readonly state: "liveness-unproven" }
   | { readonly state: "model_mismatch" }
@@ -166,6 +177,16 @@ export function acknowledgeResultAcceptance(
     proof: Readonly<ResultAcceptanceProof>
   ) => Effect.Effect<void, unknown>
 ): Effect.Effect<WorkerRunOutcome> {
+  if (
+    acceptance.state === "failed" &&
+    acceptance.reason === "result_format_rejected" &&
+    acceptance.resultFormatRejection !== undefined
+  ) {
+    return Effect.succeed({
+      state: "result_format_rejected",
+      rejection: acceptance.resultFormatRejection,
+    } as const);
+  }
   if (acceptance.state !== "accepted") {
     return Effect.succeed({ state: "worker_protocol_failed" } as const);
   }
@@ -222,6 +243,7 @@ export interface RuntimeServices {
   readonly artifacts: ArtifactStore;
   readonly artifactCredential: string;
   readonly synchronizeArtifactClock?: (timestamp: string) => void;
+  readonly resultFormats?: ResultFormatRegistry;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
   readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
   readonly revisionAuthenticator?: RevisionAuthenticator;
@@ -231,5 +253,6 @@ export interface RuntimeServices {
   readonly configuration?: Readonly<{
     readonly cwd: string;
     readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
+    readonly formalReviewResultFormat?: Readonly<PinnedResultFormat>;
   }>;
 }

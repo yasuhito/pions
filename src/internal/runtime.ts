@@ -164,6 +164,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     ...(artifactServices.synchronizeClock === undefined
       ? {}
       : { synchronizeArtifactClock: artifactServices.synchronizeClock }),
+    ...(services.resultFormats === undefined
+      ? {}
+      : { resultFormats: services.resultFormats }),
   });
   const records = new Map<string, OperationRecord>();
   const volatileCleanupDiagnostics = new Map<
@@ -279,6 +282,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ...(operation.observedConfig === undefined
         ? {}
         : { observedConfig: structuredClone(operation.observedConfig) }),
+      ...(operation.resultFormat === undefined
+        ? {}
+        : { resultFormat: structuredClone(operation.resultFormat) }),
+      ...(operation.resultFormatRejection === undefined
+        ? {}
+        : {
+            resultFormatRejection: structuredClone(
+              operation.resultFormatRejection
+            ),
+          }),
       ...(operation.agentRunEvidence === undefined
         ? {}
         : {
@@ -1833,6 +1846,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             type: "self_settled",
             outcome: "failed",
             reason: workerOutcome.state,
+            ...(workerOutcome.state === "result_format_rejected"
+              ? { resultFormatRejection: workerOutcome.rejection }
+              : {}),
           })
         );
         await runEffect(project(operation));
@@ -2050,6 +2066,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
     const workProductRequirements =
       resolveWorkProductRequirements(configuredProfile);
+    const resultFormat =
+      configuredProfile.intendedUse === "formal_reviewer"
+        ? runtimeConfiguration.formalReviewResultFormat
+        : undefined;
+    if (
+      configuredProfile.intendedUse === "formal_reviewer" &&
+      resultFormat === undefined
+    ) {
+      if (parent !== undefined) parent.pendingAdmissions -= 1;
+      throw new WorkerConfigurationError(
+        "unsupported_capability",
+        "A formal reviewer requires a trusted Result format"
+      );
+    }
     if (
       services.worker.producesWorkProducts !== true &&
       workProductRequirements.workProducts.some(({ minCount }) => minCount > 0)
@@ -2143,6 +2173,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             operationId,
             configuredProfile.acceptedArtifactRetentionMs
           ),
+          ...(resultFormat === undefined ? {} : { resultFormat }),
           lineage,
           ...(revisionReservation === undefined
             ? {}

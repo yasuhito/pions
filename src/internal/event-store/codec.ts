@@ -322,9 +322,40 @@ const StartAuthorizationDecisionAttempt = Schema.Struct({
   ),
   attemptedAt: Schema.String,
 });
+const ResultFormatValidatorIdentity = Schema.Struct({
+  validatorId: Schema.NonEmptyString,
+  version: Schema.NonEmptyString,
+  digest: Digest,
+});
+const PinnedResultFormat = Schema.Struct({
+  formatId: Schema.NonEmptyString,
+  version: Schema.NonEmptyString,
+  normalizationId: Schema.NonEmptyString,
+  expectations: Schema.Record({ key: Schema.String, value: Schema.String }),
+  validator: ResultFormatValidatorIdentity,
+});
+const ResultFormatRejectionReason = Schema.Literal(
+  "invalid_encoding",
+  "invalid_json",
+  "duplicate_key",
+  "unknown_key",
+  "missing_key",
+  "invalid_verdict",
+  "invalid_finding",
+  "expectation_mismatch",
+  "validator_identity_mismatch",
+  "validator_unavailable"
+);
+const ResultFormatRejectionEvidence = Schema.Struct({
+  formatId: Schema.NonEmptyString,
+  version: Schema.NonEmptyString,
+  validator: ResultFormatValidatorIdentity,
+  reason: ResultFormatRejectionReason,
+});
 const FailureReason = Schema.Literal(
   "worker_start_failed",
   "worker_protocol_failed",
+  "result_format_rejected",
   "process-exited-without-result",
   "agent_failed",
   "model_mismatch",
@@ -530,6 +561,7 @@ const OperationEventSchema = Schema.Union(
     effectiveConfig: EffectiveWorkerConfigSchema,
     workProductRequirements: ResolvedWorkProductRequirements,
     resultRetentionPolicy: ResultAcceptanceRetentionPolicy,
+    resultFormat: Schema.optional(PinnedResultFormat),
     lineage: Lineage,
     revisionMembership: Schema.optional(RevisionMembership),
     startAuthorizationTiming: StartAuthorizationTiming,
@@ -713,6 +745,7 @@ const OperationEventSchema = Schema.Union(
     type: Schema.Literal("self_settled"),
     outcome: Schema.Literal("failed"),
     reason: FailureReason,
+    resultFormatRejection: Schema.optional(ResultFormatRejectionEvidence),
   }),
   Schema.Struct({
     ...EventMetadataFields,

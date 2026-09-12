@@ -78,6 +78,9 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.effectiveConfig);
   deepFreeze(operation.workProductRequirements);
   deepFreeze(operation.resultRetentionPolicy);
+  if (operation.resultFormat !== undefined) deepFreeze(operation.resultFormat);
+  if (operation.resultFormatRejection !== undefined)
+    deepFreeze(operation.resultFormatRejection);
   if (operation.observedConfig !== undefined) {
     if (operation.observedConfig.model.state === "observed")
       Object.freeze(operation.observedConfig.model.value);
@@ -388,6 +391,9 @@ export function reduceOperation(
           }),
       workProductRequirements: structuredClone(event.workProductRequirements),
       resultRetentionPolicy: structuredClone(event.resultRetentionPolicy),
+      ...(event.resultFormat === undefined
+        ? {}
+        : { resultFormat: structuredClone(event.resultFormat) }),
       startGate: "not_required",
       rejectedStartAuthorizationDecisions: [],
       startDeliveryHandoffs: [],
@@ -1292,9 +1298,32 @@ export function reduceOperation(
           stateSeq: event.seq,
         });
       }
+      if (
+        (event.reason === "result_format_rejected") !==
+          (event.resultFormatRejection !== undefined) ||
+        (event.resultFormatRejection !== undefined &&
+          (current.resultFormat === undefined ||
+            event.resultFormatRejection.formatId !==
+              current.resultFormat.formatId ||
+            event.resultFormatRejection.version !==
+              current.resultFormat.version ||
+            !isDeepStrictEqual(
+              event.resultFormatRejection.validator,
+              current.resultFormat.validator
+            )))
+      ) {
+        throw new TransitionError("illegal_transition");
+      }
       return immutable({
         ...current,
         failureReason: event.reason,
+        ...(event.resultFormatRejection === undefined
+          ? {}
+          : {
+              resultFormatRejection: structuredClone(
+                event.resultFormatRejection
+              ),
+            }),
         selfOutcome: "failed",
         state: hasUnsettledChildren(current)
           ? "draining_descendants"

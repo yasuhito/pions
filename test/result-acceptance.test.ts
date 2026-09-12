@@ -7,8 +7,13 @@ import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
+import type { FormalReviewResultFormatRejectionReason } from "../src/formal-review.js";
 import type { ArtifactStoreFaultPoint } from "../src/internal/artifact-store.js";
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
+import {
+  makeResultFormatRegistry,
+  type ResultFormatRegistry,
+} from "../src/internal/result-format-registry.js";
 import {
   resolveWorkProductRequirements,
   validateResultAcceptanceManifest,
@@ -20,6 +25,7 @@ import {
   advanceTestOperationToRunning,
 } from "../src/internal/testing.js";
 import type {
+  PinnedResultFormat,
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceTransactionOutcome,
   WorkerProducedResult,
@@ -73,7 +79,11 @@ async function fixture(
   storeFactory: (clock: FakeClock) => InMemoryEventStore = (clock) =>
     new InMemoryEventStore([], clock),
   requirements = workProductRequirements,
-  artifactFault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>
+  artifactFault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>,
+  resultFormat?: Readonly<{
+    readonly registry: ResultFormatRegistry;
+    readonly pinned: Readonly<PinnedResultFormat>;
+  }>
 ) {
   const clock = new FakeClock(
     Array.from(
@@ -94,6 +104,9 @@ async function fixture(
       effectiveConfig,
       workProductRequirements: requirements,
       resultRetentionPolicy: retentionPolicy("operation-1"),
+      ...(resultFormat === undefined
+        ? {}
+        : { resultFormat: resultFormat.pinned }),
       lineage: { rootOperationId: "operation-1", depth: 0 },
       startAuthorization: {
         configuredPolicy: "disabled",
@@ -117,6 +130,7 @@ async function fixture(
   });
   return {
     store,
+    clock,
     artifacts: artifactServices.artifacts,
     credential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
@@ -126,9 +140,204 @@ async function fixture(
       artifactCredential: artifactServices.credential,
       clock,
       synchronizeArtifactClock: artifactServices.synchronizeClock,
+      ...(resultFormat === undefined
+        ? {}
+        : { resultFormats: resultFormat.registry }),
     }),
   };
 }
+
+function configuredResultFormat(
+  validate: (input: {
+    readonly bytes: Uint8Array;
+    readonly expectations: Readonly<Record<string, string>>;
+  }) => Promise<
+    | { readonly kind: "valid" }
+    | {
+        readonly kind: "invalid";
+        readonly reason: FormalReviewResultFormatRejectionReason;
+      }
+  >
+) {
+  const registry = makeResultFormatRegistry([
+    {
+      formatId: "test.formal-review-result",
+      version: "1",
+      normalizationId: "test.canonical-json.v1",
+      validator: {
+        validatorId: "test.formal-review-result-validator",
+        validatorVersion: "1",
+        registrationArtifact: Buffer.from("test validator v1", "utf8"),
+        validate,
+      },
+    },
+  ]);
+  return {
+    registry,
+    pinned: registry.pin({
+      formatId: "test.formal-review-result",
+      version: "1",
+      expectations: { axis: "standards" },
+    }),
+  };
+}
+
+for (const reason of [
+  "invalid_encoding",
+  "invalid_json",
+  "duplicate_key",
+  "unknown_key",
+  "missing_key",
+  "invalid_verdict",
+  "invalid_finding",
+  "expectation_mismatch",
+] as const) {
+  test(`a formal review Result rejected for ${reason} is not accepted`, async (context) => {
+    const format = configuredResultFormat(async () => ({
+      kind: "invalid",
+      reason,
+    }));
+    const { acceptance } = await fixture(
+      context,
+      undefined,
+      workProductRequirements,
+      undefined,
+      format
+    );
+
+    const outcome = await Effect.runPromise(
+      acceptance.accept("operation-1", produced())
+    );
+
+    assert.equal(
+      outcome.state === "failed"
+        ? outcome.resultFormatRejection?.reason
+        : undefined,
+      reason
+    );
+  });
+}
+
+test("a rejected formal review Result is not published", async (context) => {
+  const format = configuredResultFormat(async () => ({
+    kind: "invalid",
+    reason: "invalid_json",
+  }));
+  const { acceptance, store } = await fixture(
+    context,
+    undefined,
+    workProductRequirements,
+    undefined,
+    format
+  );
+
+  await Effect.runPromise(acceptance.accept("operation-1", produced()));
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.result,
+    undefined
+  );
+});
+
+test("a valid formal review Result preserves its original bytes", async (context) => {
+  const body = '{ "axis": "standards" }\n';
+  const format = configuredResultFormat(async ({ bytes }) => {
+    bytes.fill(0x78);
+    return { kind: "valid" };
+  });
+  const { acceptance, store, artifacts, credential } = await fixture(
+    context,
+    undefined,
+    workProductRequirements,
+    undefined,
+    format
+  );
+  await Effect.runPromise(acceptance.accept("operation-1", produced(body)));
+  const accepted = (await Effect.runPromise(store.read("operation-1")))
+    .operation.result!;
+
+  const retrieved = await artifacts.retrieve(
+    credential,
+    accepted.bodyArtifactId
+  );
+
+  assert.equal(
+    retrieved.kind === "retrieved"
+      ? Buffer.from(retrieved.bytes).toString("utf8")
+      : undefined,
+    body
+  );
+});
+
+test("an unavailable validator rejects a formal review Result", async (context) => {
+  const format = configuredResultFormat(async () => ({ kind: "valid" }));
+  const { acceptance } = await fixture(
+    context,
+    undefined,
+    workProductRequirements,
+    undefined,
+    { ...format, registry: makeResultFormatRegistry([]) }
+  );
+
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", produced())
+  );
+
+  assert.equal(
+    outcome.state === "failed"
+      ? outcome.resultFormatRejection?.reason
+      : undefined,
+    "validator_unavailable"
+  );
+});
+
+test("an accepted Result replay is not reinterpreted by a changed validator", async (context) => {
+  const original = configuredResultFormat(async () => ({ kind: "valid" }));
+  const { acceptance, store, clock, artifacts, credential } = await fixture(
+    context,
+    undefined,
+    workProductRequirements,
+    undefined,
+    original
+  );
+  const first = await Effect.runPromise(
+    acceptance.accept("operation-1", produced())
+  );
+  const replacement = makeResultFormatRegistry([
+    {
+      formatId: "test.formal-review-result",
+      version: "1",
+      normalizationId: "test.canonical-json.v1",
+      validator: {
+        validatorId: "test.formal-review-result-validator",
+        validatorVersion: "2",
+        registrationArtifact: Buffer.from("replacement validator", "utf8"),
+        validate: async () => ({
+          kind: "invalid" as const,
+          reason: "invalid_json" as const,
+        }),
+      },
+    },
+  ]);
+  const replayAcceptance = makeResultAcceptance({
+    store,
+    artifacts,
+    artifactCredential: credential,
+    clock,
+    resultFormats: replacement,
+  });
+
+  const replay = await Effect.runPromise(
+    replayAcceptance.accept("operation-1", produced())
+  );
+
+  assert.equal(
+    replay.state === "accepted" && first.state === "accepted"
+      ? replay.proof.acceptanceId
+      : undefined,
+    first.state === "accepted" ? first.proof.acceptanceId : undefined
+  );
+});
 
 test("Artifact Store denies Result use before the Event Store reserves the Operation", async (context) => {
   const { artifacts, credential, synchronizeArtifactClock } =

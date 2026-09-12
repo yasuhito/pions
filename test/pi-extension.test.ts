@@ -25,6 +25,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
+import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import {
   FakeClock,
@@ -427,6 +428,25 @@ const FORMAL_REVIEW_PROFILE: WorkerProfilePolicy = {
   acceptedArtifactRetentionMs: 86_400_000,
 };
 
+const FORMAL_REVIEW_RESULT_FORMATS = makeResultFormatRegistry([
+  {
+    formatId: "test.formal-review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    validator: {
+      validatorId: "test.formal-review-result-validator",
+      validatorVersion: "1",
+      registrationArtifact: Buffer.from("test validator v1", "utf8"),
+      validate: async () => ({ kind: "valid" }),
+    },
+  },
+]);
+const FORMAL_REVIEW_RESULT_FORMAT = FORMAL_REVIEW_RESULT_FORMATS.pin({
+  formatId: "test.formal-review-result",
+  version: "1",
+  expectations: { axis: "standards" },
+});
+
 const REVIEW_SUBJECT_AUTHORITY: RuntimeReviewSubjectAuthority = {
   currentUse: async () => "allowed",
 };
@@ -480,6 +500,8 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
           formalReview: {
             profile: FORMAL_REVIEW_PROFILE,
             reviewSubjectAuthority: REVIEW_SUBJECT_AUTHORITY,
+            resultFormats: FORMAL_REVIEW_RESULT_FORMATS,
+            resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
             ...(fixtureOptions.enableCoordinator === false
               ? {}
               : {

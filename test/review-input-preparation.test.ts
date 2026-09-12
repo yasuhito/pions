@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { makeResourceProofController } from "../src/internal/resource-controller.js";
+import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import {
   parseProofDocument,
   permissionManifestDocument,
@@ -20,6 +21,7 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
+import type { FormalReviewResultFormatRejectionReason } from "../src/formal-review.js";
 import type {
   ArtifactMetadata,
   ArtifactStore,
@@ -384,6 +386,7 @@ async function fixture(
     authorityTrustFromCheck?: number;
     operationIds?: ReadonlyArray<string>;
     writeAccess?: boolean;
+    resultFormatRejection?: FormalReviewResultFormatRejectionReason;
   }> = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-review-input-"));
@@ -496,6 +499,25 @@ async function fixture(
     },
     acceptedArtifactRetentionMs: 86_400_000,
   };
+  const resultFormats = makeResultFormatRegistry([
+    {
+      formatId: "test.formal-review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "test.formal-review-result-validator",
+        validatorVersion: "1",
+        registrationArtifact: Buffer.from("test validator v1", "utf8"),
+        validate: async () =>
+          options.resultFormatRejection === undefined
+            ? ({ kind: "valid" } as const)
+            : ({
+                kind: "invalid",
+                reason: options.resultFormatRejection,
+              } as const),
+      },
+    },
+  ]);
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock,
@@ -505,6 +527,7 @@ async function fixture(
     artifacts: artifactServices.artifacts,
     artifactCredential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
+    resultFormats,
     resourceProofController,
     startAuthorizationAuthenticator: {
       authenticate: async () => ({
@@ -512,7 +535,15 @@ async function fixture(
         currentAuthorization: async () => "authorized" as const,
       }),
     },
-    configuration: { cwd: workspacePath, profiles: { review: profile } },
+    configuration: {
+      cwd: workspacePath,
+      profiles: { review: profile },
+      formalReviewResultFormat: resultFormats.pin({
+        formatId: "test.formal-review-result",
+        version: "1",
+        expectations: { axis: "standards" },
+      }),
+    },
   });
   context.after(async () => {
     await runtime.close();
@@ -558,6 +589,79 @@ async function authorizeReview(
     receiptDigest: waiting.receipt.digest,
   });
 }
+
+async function rejectedFormalReview(
+  context: TestContext,
+  reason: FormalReviewResultFormatRejectionReason
+) {
+  const { runtime, artifact } = await fixture(context, {
+    resultFormatRejection: reason,
+  });
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review the fixed subject",
+      profile: "review",
+      idempotencyKey: `rejected-${reason}`,
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.waitForStartupReceipt();
+  await authorizeReview(runtime);
+  await operation.result().catch(() => undefined);
+  return operation;
+}
+
+test("a formal review fixes its trusted Result format at Operation creation", async (context) => {
+  const { runtime, artifact } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review the fixed subject",
+      profile: "review",
+      idempotencyKey: "fixed-result-format",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.waitForStartupReceipt();
+
+  const snapshot = await operation.read();
+
+  assert.deepEqual(snapshot.resultFormat, {
+    formatId: "test.formal-review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    expectations: { axis: "standards" },
+    validator: {
+      validatorId: "test.formal-review-result-validator",
+      version: "1",
+      digest: digest(Buffer.from("test validator v1", "utf8")),
+    },
+  });
+});
+
+test("a Result format rejection is a typed Operation failure", async (context) => {
+  const operation = await rejectedFormalReview(context, "invalid_json");
+
+  const snapshot = await operation.read();
+
+  assert.deepEqual(
+    {
+      failureReason: snapshot.failureReason,
+      rejectionReason: snapshot.resultFormatRejection?.reason,
+    },
+    {
+      failureReason: "result_format_rejected",
+      rejectionReason: "invalid_json",
+    }
+  );
+});
+
+test("a Result format rejection leaves no retrievable Result", async (context) => {
+  const operation = await rejectedFormalReview(context, "duplicate_key");
+
+  const outcome = await operation.readResult();
+
+  assert.equal(outcome.kind, "not_accepted");
+});
 
 test("an untrusted review input authority receives no files", async (context) => {
   const { runtime, artifact, connection } = await fixture(context, {

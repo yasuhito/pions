@@ -176,6 +176,39 @@ export class WorkProductRequirementsError extends Error {
   }
 }
 
+export interface ResultFormatValidatorIdentity {
+  readonly validatorId: string;
+  readonly version: string;
+  readonly digest: ArtifactDigest;
+}
+
+export interface PinnedResultFormat {
+  readonly formatId: string;
+  readonly version: string;
+  readonly normalizationId: string;
+  readonly expectations: Readonly<Record<string, string>>;
+  readonly validator: Readonly<ResultFormatValidatorIdentity>;
+}
+
+export type ResultFormatRejectionReason =
+  | "invalid_encoding"
+  | "invalid_json"
+  | "duplicate_key"
+  | "unknown_key"
+  | "missing_key"
+  | "invalid_verdict"
+  | "invalid_finding"
+  | "expectation_mismatch"
+  | "validator_identity_mismatch"
+  | "validator_unavailable";
+
+export interface ResultFormatRejectionEvidence {
+  readonly formatId: string;
+  readonly version: string;
+  readonly validator: Readonly<ResultFormatValidatorIdentity>;
+  readonly reason: ResultFormatRejectionReason;
+}
+
 export interface WorkerProducedArtifact {
   readonly formatId: string;
   readonly normalizationId: string;
@@ -1026,6 +1059,8 @@ export interface OperationSnapshot {
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
   readonly workerExecutionEvidence?: Readonly<WorkerExecutionEvidence>;
+  readonly resultFormat?: Readonly<PinnedResultFormat>;
+  readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
   readonly startAuthorization: Readonly<StartAuthorizationSnapshot>;
   readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
   readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
@@ -1158,6 +1193,7 @@ export class StartAuthorizationAuthenticationError extends Error {
 export type OperationFailureReason =
   | "worker_start_failed"
   | "worker_protocol_failed"
+  | "result_format_rejected"
   | "process-exited-without-result"
   | "agent_failed"
   | "model_mismatch"

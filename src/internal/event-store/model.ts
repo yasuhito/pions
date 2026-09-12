@@ -6,6 +6,8 @@ import type {
   ObservedWorkerConfig,
   OperationFailureReason,
   OperationState,
+  PinnedResultFormat,
+  ResultFormatRejectionEvidence,
   RequestedWorkerConfig,
   ResolvedWorkProductRequirements,
   ResultAcceptancePreparationEvidence,
@@ -74,6 +76,8 @@ export interface Operation {
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
   readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
+  readonly resultFormat?: Readonly<PinnedResultFormat>;
+  readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
   readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
   readonly startupReceiptPolicy?: Readonly<StartupReceiptPolicy>;
   readonly startGate: StartGateState;
@@ -112,7 +116,7 @@ export interface Operation {
     OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 22 as const;
+export const EVENT_SCHEMA_VERSION = 23 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -135,6 +139,7 @@ export type OperationEvent = EventMetadata &
         readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
         readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
         readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
+        readonly resultFormat?: Readonly<PinnedResultFormat>;
         readonly lineage: Readonly<OperationLineage>;
         readonly revisionMembership?: Readonly<RevisionMembership>;
         readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;

@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import type { EventStore } from "./event-store/index.js";
 import { sha256Digest } from "./result-digest.js";
 import { validateResultAcceptanceManifest } from "./result-acceptance-manifest.js";
+import type { ResultFormatRegistry } from "./result-format-registry.js";
 import type { RuntimeClock } from "./services.js";
 import type { ResultAcceptanceProof } from "./worker-protocol.js";
 import type {
@@ -12,6 +13,8 @@ import type {
   ArtifactMetadata,
   ResolvedWorkProductRequirements,
   ArtifactStore,
+  PinnedResultFormat,
+  ResultFormatRejectionEvidence,
   ResultAcceptanceEventEvidence,
   ResultAcceptanceManifestFailureReason,
   ResultAcceptanceTransactionFailureReason,
@@ -36,7 +39,9 @@ export type ResultAcceptanceOutcome =
       readonly reason:
         | ArtifactFailureReason
         | ResultAcceptanceManifestFailureReason
-        | ResultAcceptanceTransactionFailureReason;
+        | ResultAcceptanceTransactionFailureReason
+        | "result_format_rejected";
+      readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
     };
 
 type ResultAcceptanceFailureReason = Extract<
@@ -74,6 +79,7 @@ interface ResultAcceptanceDependencies {
   readonly artifactCredential: string;
   readonly clock: RuntimeClock;
   readonly synchronizeArtifactClock?: (timestamp: string) => void;
+  readonly resultFormats?: ResultFormatRegistry;
 }
 
 function deterministicIdentifier(
@@ -121,9 +127,14 @@ async function acceptedResultOutcome(
   return { state: "accepted", proof: acceptanceProof(operationId, acceptance) };
 }
 
+type MaterializedArtifact<Artifact extends WorkerProducedArtifact> = Omit<
+  Artifact,
+  "bytes"
+> & { readonly bytes: Uint8Array };
+
 async function materializeArtifact(
   artifact: Readonly<WorkerProducedArtifact>
-): Promise<Readonly<WorkerProducedArtifact> | undefined> {
+): Promise<Readonly<MaterializedArtifact<WorkerProducedArtifact>> | undefined> {
   const chunks: Array<Buffer> = [];
   let byteCount = 0;
   if (artifact.bytes instanceof Uint8Array) {
@@ -375,8 +386,41 @@ async function registerAndPublishAcceptance(
   operationId: string,
   requirements: Readonly<ResolvedWorkProductRequirements>,
   retentionPolicyDigest: ArtifactDigest,
+  resultFormat: Readonly<PinnedResultFormat> | undefined,
   produced: Readonly<WorkerProducedResult>
 ): Promise<ResultAcceptanceOutcome> {
+  let acceptedInput = produced;
+  if (resultFormat !== undefined) {
+    const body = await materializeArtifact(produced.body);
+    if (body === undefined) {
+      return {
+        state: "failed",
+        terminal: true,
+        reason: "input_integrity_mismatch",
+      };
+    }
+    const validation =
+      dependencies.resultFormats === undefined
+        ? ({ kind: "invalid", reason: "validator_unavailable" } as const)
+        : await dependencies.resultFormats.validate(
+            resultFormat,
+            Uint8Array.from(body.bytes)
+          );
+    if (validation.kind === "invalid") {
+      return {
+        state: "failed",
+        terminal: true,
+        reason: "result_format_rejected",
+        resultFormatRejection: {
+          formatId: resultFormat.formatId,
+          version: resultFormat.version,
+          validator: structuredClone(resultFormat.validator),
+          reason: validation.reason,
+        },
+      };
+    }
+    acceptedInput = { ...produced, body };
+  }
   const artifacts: Array<Readonly<ArtifactMetadata>> = [];
   const now = await Effect.runPromise(dependencies.clock.now());
   dependencies.synchronizeArtifactClock?.(now);
@@ -384,19 +428,19 @@ async function registerAndPublishAcceptance(
   const body = await registerArtifact(
     dependencies,
     operationId,
-    produced.acceptanceRequestId,
+    acceptedInput.acceptanceRequestId,
     "body",
-    produced.body,
+    acceptedInput.body,
     deadline
   );
   if (!("artifactId" in body)) return body;
   artifacts.push(body);
   const grouped = new Map<string, Array<string>>();
-  for (const [index, workProduct] of produced.workProducts.entries()) {
+  for (const [index, workProduct] of acceptedInput.workProducts.entries()) {
     const registered = await registerArtifact(
       dependencies,
       operationId,
-      produced.acceptanceRequestId,
+      acceptedInput.acceptanceRequestId,
       `work-product.${workProduct.key}.${index}`,
       workProduct,
       deadline
@@ -435,13 +479,13 @@ async function registerAndPublishAcceptance(
   const preparationId = deterministicIdentifier(
     "acceptance",
     operationId,
-    produced.acceptanceRequestId
+    acceptedInput.acceptanceRequestId
   );
   const reservation = await Effect.runPromise(
     dependencies.store.prepareResultAcceptance({
       preparationId,
       operationId,
-      acceptanceRequestId: produced.acceptanceRequestId,
+      acceptanceRequestId: acceptedInput.acceptanceRequestId,
       manifest: validated,
       requirements: requirements,
     })
@@ -568,6 +612,7 @@ export function makeResultAcceptance(
           operationId,
           snapshot.operation.workProductRequirements,
           snapshot.operation.resultRetentionPolicy.digest,
+          snapshot.operation.resultFormat,
           produced
         );
       }),

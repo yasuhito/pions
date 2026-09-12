@@ -3,6 +3,7 @@ import type {
   CleanupDiagnosticCode,
   ObservedWorkerConfig,
   OperationFailureReason,
+  ResultFormatRejectionEvidence,
   RetryClearanceEvidence,
   RevisionReservation,
   RevisionResultAdoptionRecord,
@@ -143,6 +144,7 @@ export type OperationIntent =
       readonly type: "self_settled";
       readonly outcome: "failed";
       readonly reason: OperationFailureReason;
+      readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
     }
   | { readonly type: "operation_completed" }
   | {
