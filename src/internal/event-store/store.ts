@@ -302,6 +302,10 @@ export abstract class ValidatedEventStore implements EventStore {
                     digest: receipt.reviewSubject.digest,
                     format: receipt.reviewSubject.format,
                     normalization: receipt.reviewSubject.normalization,
+                    registrationEvidenceId:
+                      receipt.reviewSubject.registrationEvidenceId,
+                    registrationEvidenceDigest:
+                      receipt.reviewSubject.registrationEvidenceDigest,
                   },
                 }),
             reviewSubjectVerification: receipt.reviewSubjectVerification,

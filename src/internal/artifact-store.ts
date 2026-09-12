@@ -43,8 +43,15 @@ import {
   type ResultAcceptancePreparationSnapshot,
   type ResultAcceptanceRetentionPolicyEvidence,
   type ResolvedWorkProductRequirements,
+  type ReviewSubjectRegistrationEvidence,
+  type ReviewSubjectRegistrationEvidenceOutcome,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
+import {
+  artifactMetadataMatches,
+  reviewSubjectRegistrationEvidenceDigest,
+  reviewSubjectRegistrationEvidenceDocument,
+} from "./review-subject-registration-evidence.js";
 import {
   resultAcceptanceManifestDocument,
   validateResultAcceptanceManifest,
@@ -104,7 +111,7 @@ class ArtifactStoreInjectedFault extends Error {
   override readonly name = "ArtifactStoreInjectedFault";
 }
 
-const ROOT_SCHEMA = "pions-artifacts.v3";
+const ROOT_SCHEMA = "pions-artifacts.v4";
 const RECORD_SCHEMA = "pions-artifact-registration.v2";
 const ARTIFACT_SCHEMA = "pions-artifact.v2";
 const USE_SCHEMA = "pions-artifact-use-binding.v1";
@@ -116,6 +123,8 @@ const RESULT_ACCEPTANCE_PREPARATION_SCHEMA =
   "pions-result-acceptance-preparation.v1";
 const RESULT_ACCEPTANCE_RETENTION_SCHEMA =
   "pions-result-acceptance-retention.v1";
+const REVIEW_SUBJECT_REGISTRATION_EVIDENCE_SCHEMA =
+  "pions-review-subject-registration-evidence.v1";
 const ROOT_FILE = "root.json";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
 
@@ -193,6 +202,11 @@ interface ResultAcceptancePreparationRecord {
   readonly retentionUntil?: string;
   readonly eventEvidence?: ResultAcceptanceEventEvidence;
   readonly failureReason?: ArtifactFailureReason;
+}
+
+interface ReviewSubjectRegistrationEvidenceRecord {
+  readonly schema: typeof REVIEW_SUBJECT_REGISTRATION_EVIDENCE_SCHEMA;
+  readonly evidence: ReviewSubjectRegistrationEvidence;
 }
 
 interface ResultAcceptanceRetentionRecord {
@@ -303,6 +317,13 @@ function resultAcceptanceRequestDigest(
       manifest: resultAcceptanceManifestDocument(request.manifest).value,
     })
   );
+}
+
+function reviewSubjectRegistrationEvidenceFailed(
+  reason: ArtifactFailureReason,
+  terminal = true
+): ReviewSubjectRegistrationEvidenceOutcome {
+  return { kind: "failed", terminal, reason };
 }
 
 function resultAcceptanceEvidenceDigest(
@@ -576,6 +597,7 @@ class FileArtifactStore implements ArtifactStore {
   private readonly pinDirectory: string;
   private readonly retentionDirectory: string;
   private readonly explicitPinDirectory: string;
+  private readonly reviewSubjectRegistrationEvidenceDirectory: string;
   private readonly resultAcceptancePreparationDirectory: string;
   private readonly resultAcceptanceRetentionDirectory: string;
   private readonly garbageCollectionDiagnosticDirectory: string;
@@ -603,6 +625,10 @@ class FileArtifactStore implements ArtifactStore {
     this.pinDirectory = join(options.rootDirectory, "pins");
     this.retentionDirectory = join(options.rootDirectory, "retentions");
     this.explicitPinDirectory = join(options.rootDirectory, "explicit-pins");
+    this.reviewSubjectRegistrationEvidenceDirectory = join(
+      options.rootDirectory,
+      "review-subject-registration-evidence"
+    );
     this.resultAcceptancePreparationDirectory = join(
       options.rootDirectory,
       "result-acceptance-preparations"
@@ -712,6 +738,15 @@ class FileArtifactStore implements ArtifactStore {
     return join(this.explicitPinDirectory, `${pinId}.json`);
   }
 
+  private reviewSubjectRegistrationEvidencePath(
+    rootArtifactId: string
+  ): string {
+    return join(
+      this.reviewSubjectRegistrationEvidenceDirectory,
+      `${rootArtifactId}.json`
+    );
+  }
+
   private resultAcceptancePreparationPath(preparationId: string): string {
     return join(
       this.resultAcceptancePreparationDirectory,
@@ -724,6 +759,40 @@ class FileArtifactStore implements ArtifactStore {
       this.resultAcceptanceRetentionDirectory,
       `${preparationId}.json`
     );
+  }
+
+  private async readReviewSubjectRegistrationEvidence(
+    rootArtifactId: string
+  ): Promise<ReviewSubjectRegistrationEvidenceRecord | undefined> {
+    if (!IDENTIFIER.test(rootArtifactId)) return undefined;
+    try {
+      const value = (await readJson(
+        this.reviewSubjectRegistrationEvidencePath(rootArtifactId)
+      )) as Partial<ReviewSubjectRegistrationEvidenceRecord>;
+      const evidence = value.evidence;
+      if (
+        value.schema !== REVIEW_SUBJECT_REGISTRATION_EVIDENCE_SCHEMA ||
+        evidence?.formatId !==
+          "pions.review-subject-registration-evidence.v1" ||
+        !IDENTIFIER.test(evidence.evidenceId ?? "") ||
+        !IDENTIFIER.test(evidence.issuerId ?? "") ||
+        evidence.root?.artifactId !== rootArtifactId ||
+        !Array.isArray(evidence.root?.dependencies) ||
+        !Array.isArray(evidence.files) ||
+        !evidence.files.every(
+          (file) =>
+            typeof file.path === "string" &&
+            IDENTIFIER.test(file.artifactId ?? "")
+        ) ||
+        evidence.digest !== reviewSubjectRegistrationEvidenceDigest(evidence)
+      ) {
+        throw new Error("Invalid Review subject registration evidence record");
+      }
+      return value as ReviewSubjectRegistrationEvidenceRecord;
+    } catch (error) {
+      if (hasCode(error, "ENOENT")) return undefined;
+      throw error;
+    }
   }
 
   private async readResultAcceptancePreparation(
@@ -1719,6 +1788,109 @@ class FileArtifactStore implements ArtifactStore {
     return "reason" in resolved
       ? metadataFailed(resolved.reason)
       : { kind: "resolved", artifact: resolved.record };
+  }
+
+  async recordReviewSubjectRegistrationEvidence(
+    credential: string,
+    evidence: Readonly<ReviewSubjectRegistrationEvidence>
+  ): Promise<ReviewSubjectRegistrationEvidenceOutcome> {
+    try {
+      return await this.serialize(async () => {
+        if (this.closed)
+          return reviewSubjectRegistrationEvidenceFailed(
+            "storage_inspection_unavailable",
+            false
+          );
+        const principal = await this.authenticate(credential);
+        if (principal === undefined)
+          return reviewSubjectRegistrationEvidenceFailed("unauthorized");
+        const artifactIds = [
+          evidence.root.artifactId,
+          ...evidence.files.map((file) => file.artifactId),
+        ];
+        for (const artifactId of artifactIds) {
+          const decision = await principal.canReference(artifactId);
+          if (decision !== "allowed")
+            return reviewSubjectRegistrationEvidenceFailed("unauthorized");
+        }
+        const existing = await this.readReviewSubjectRegistrationEvidence(
+          evidence.root.artifactId
+        );
+        if (existing !== undefined) {
+          return existing.evidence.digest === evidence.digest
+            ? { kind: "resolved", evidence: existing.evidence }
+            : reviewSubjectRegistrationEvidenceFailed("request_mismatch");
+        }
+        const root = await this.readArtifactRecord(evidence.root.artifactId);
+        if (
+          root === undefined ||
+          !artifactMetadataMatches(root, evidence.root) ||
+          evidence.root.dependencies.length !== evidence.files.length ||
+          evidence.root.dependencies.some(
+            (artifactId, index) =>
+              artifactId !== evidence.files[index]?.artifactId
+          ) ||
+          evidence.digest !== reviewSubjectRegistrationEvidenceDigest(evidence)
+        ) {
+          return reviewSubjectRegistrationEvidenceFailed("request_mismatch");
+        }
+        for (const file of evidence.files) {
+          const artifact = await this.readArtifactRecord(file.artifactId);
+          if (
+            artifact === undefined ||
+            artifact.byteCount !== file.byteCount ||
+            artifact.digest !== file.digest ||
+            artifact.formatId !== file.formatId ||
+            artifact.normalizationId !== file.normalizationId ||
+            artifact.dependencies.length !== 0
+          ) {
+            return reviewSubjectRegistrationEvidenceFailed("request_mismatch");
+          }
+        }
+        await writeJson(
+          this.reviewSubjectRegistrationEvidencePath(evidence.root.artifactId),
+          {
+            schema: REVIEW_SUBJECT_REGISTRATION_EVIDENCE_SCHEMA,
+            evidence: {
+              ...reviewSubjectRegistrationEvidenceDocument(evidence),
+              digest: evidence.digest,
+            },
+          } satisfies ReviewSubjectRegistrationEvidenceRecord
+        );
+        return { kind: "resolved", evidence };
+      });
+    } catch {
+      return reviewSubjectRegistrationEvidenceFailed(
+        "storage_inspection_unavailable",
+        false
+      );
+    }
+  }
+
+  async resolveReviewSubjectRegistrationEvidence(
+    credential: string,
+    rootArtifactId: string
+  ): Promise<ReviewSubjectRegistrationEvidenceOutcome> {
+    const resolved = await this.loadRetrievableArtifact(
+      credential,
+      rootArtifactId
+    );
+    if ("reason" in resolved)
+      return reviewSubjectRegistrationEvidenceFailed(resolved.reason);
+    try {
+      const record =
+        await this.readReviewSubjectRegistrationEvidence(rootArtifactId);
+      return record === undefined
+        ? reviewSubjectRegistrationEvidenceFailed(
+            "registration_evidence_not_found"
+          )
+        : { kind: "resolved", evidence: record.evidence };
+    } catch {
+      return reviewSubjectRegistrationEvidenceFailed(
+        "storage_inspection_unavailable",
+        false
+      );
+    }
   }
 
   async retrieve(
@@ -3774,6 +3946,9 @@ async function initializeRoot(
     await mkdir(join(rootDirectory, "pins"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "retentions"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "explicit-pins"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "review-subject-registration-evidence"), {
+      mode: 0o700,
+    });
     await mkdir(join(rootDirectory, "result-acceptance-preparations"), {
       mode: 0o700,
     });
@@ -3798,6 +3973,9 @@ async function initializeRoot(
     await mkdir(join(rootDirectory, "pins"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "retentions"), { mode: 0o700 });
     await mkdir(join(rootDirectory, "explicit-pins"), { mode: 0o700 });
+    await mkdir(join(rootDirectory, "review-subject-registration-evidence"), {
+      mode: 0o700,
+    });
     await mkdir(join(rootDirectory, "result-acceptance-preparations"), {
       mode: 0o700,
     });
@@ -3828,6 +4006,7 @@ async function initializeRoot(
     join(rootDirectory, "pins"),
     join(rootDirectory, "retentions"),
     join(rootDirectory, "explicit-pins"),
+    join(rootDirectory, "review-subject-registration-evidence"),
     join(rootDirectory, "result-acceptance-preparations"),
     join(rootDirectory, "result-acceptance-retentions"),
     join(rootDirectory, "gc-diagnostics"),

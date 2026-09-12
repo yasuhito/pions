@@ -155,6 +155,8 @@ const SNAPSHOT: OperationSnapshot = {
         digest: `sha256:${"ab".repeat(32)}`,
         format: "pions.review.patch.v1",
         normalization: "identity",
+        registrationEvidenceId: "review-subject-evidence-1",
+        registrationEvidenceDigest: `sha256:${"12".repeat(32)}`,
       },
       reviewSubjectVerification: "required",
       configuredAuthorizationPolicy: "required",

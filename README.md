@@ -125,10 +125,11 @@ const sha256Digest = (bytes: Uint8Array): `sha256:${string}` =>
 
 const integration = createFormalReviewIntegration({
   repositoryRoot,
+  reviewSubjectRegistration: trustedRegistrationEvidenceConfiguration,
   formalReview: trustedFormalReviewConfiguration,
 });
 
-const subject = await integration.registerReviewSubject({
+const registration = await integration.registerReviewSubject({
   registrationId,
   bytes: manifestBytes,
   expectedByteCount: manifestBytes.byteLength,
@@ -145,12 +146,31 @@ const subject = await integration.registerReviewSubject({
     },
   ],
   dependencyFiles: [{ path: "spec.md", bytes: specBytes }],
+  evidence: {
+    issuerId: "trusted-review-subject-issuer",
+    authentication: issuerAuthentication,
+    validatorId: "review-bundle-validator",
+    validatorVersion: "1",
+    root: {
+      byteCount: manifestBytes.byteLength,
+      digest: sha256Digest(manifestBytes),
+    },
+    dependencies: [
+      {
+        path: "spec.md",
+        byteCount: specBytes.byteLength,
+        digest: sha256Digest(specBytes),
+      },
+    ],
+    collectionDigest,
+  },
 });
 
+console.log(registration.evidence.evidenceId, registration.evidence.digest);
 integration.installPiExtension(pi);
 ```
 
-The integration exposes only review-subject registration and configured Pi extension installation. It owns Runtime construction, Artifact Store access, repository state paths, credentials, and recovery wiring. Registration verifies that dependency requirements and supplied files form the same closed set, registers dependencies first, and then registers the unchanged root bytes with those dependencies. Paths must be normalized relative paths, and every supplied byte count and digest must match. A configured candidate profile does not enable production formal review by itself.
+The integration exposes only review-subject registration and configured Pi extension installation. It owns Runtime construction, Artifact Store access, repository state paths, credentials, and recovery wiring. Registration verifies that dependency requirements and supplied files form the same closed set, authenticates the evidence issuer separately from content validation, registers dependencies first, registers the unchanged root bytes, and finally persists immutable registration evidence. The returned evidence identifier and digest are fixed into later Operation inspection data. Paths must be normalized relative paths, and every supplied byte count, digest, and collection digest must match the trusted versioned validator. Registration evidence is not a root dependency and does not grant Artifact use, Start authorization, Result acceptance, or Artifact adoption. A configured candidate profile does not enable production formal review by itself.
 
 ## Pions and pi-subagents
 

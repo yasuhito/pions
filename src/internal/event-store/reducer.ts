@@ -213,6 +213,10 @@ function sanitizedStartupReceipt(
             digest: receipt.reviewSubject.digest,
             format: receipt.reviewSubject.format,
             normalization: receipt.reviewSubject.normalization,
+            registrationEvidenceId:
+              receipt.reviewSubject.registrationEvidenceId,
+            registrationEvidenceDigest:
+              receipt.reviewSubject.registrationEvidenceDigest,
           },
         }),
     reviewSubjectVerification: receipt.reviewSubjectVerification,
@@ -520,7 +524,8 @@ export function reduceOperation(
         (event.receipt.reviewSubjectVerification === "required" &&
           event.receipt.reviewSubject === undefined) ||
         (event.receipt.reviewSubject !== undefined &&
-          event.receipt.reviewSubject.artifactId.length === 0) ||
+          (event.receipt.reviewSubject.artifactId.length === 0 ||
+            event.receipt.reviewSubject.registrationEvidenceId.length === 0)) ||
         event.receipt.workerIdentity.processInstanceId !==
           current.workerIdentity.processInstanceId ||
         !isDeepStrictEqual(

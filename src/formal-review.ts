@@ -4,6 +4,7 @@ import { makeFormalReviewIntegration } from "./internal/formal-review-integratio
 import type {
   ArtifactMetadata,
   CurrentStartAuthorization,
+  ReviewSubjectRegistrationEvidence,
   RuntimeReviewSubjectAuthority,
   WorkerProfilePolicy,
 } from "./public.js";
@@ -21,6 +22,7 @@ export interface FormalReviewConfiguration {
 
 export interface FormalReviewIntegrationConfiguration {
   readonly repositoryRoot: string;
+  readonly reviewSubjectRegistration: Readonly<ReviewSubjectRegistrationEvidenceConfiguration>;
   readonly formalReview?: Readonly<FormalReviewConfiguration>;
 }
 
@@ -37,6 +39,25 @@ export interface ReviewSubjectDependencyFile {
   readonly bytes: Uint8Array;
 }
 
+export interface ReviewSubjectRegistrationEvidenceDeclaration {
+  readonly issuerId: string;
+  readonly authentication: string;
+  readonly validatorId: string;
+  readonly validatorVersion: string;
+  readonly root: Readonly<{
+    readonly byteCount: number;
+    readonly digest: ArtifactMetadata["digest"];
+  }>;
+  readonly dependencies: ReadonlyArray<
+    Readonly<{
+      readonly path: string;
+      readonly byteCount: number;
+      readonly digest: ArtifactMetadata["digest"];
+    }>
+  >;
+  readonly collectionDigest: ArtifactMetadata["digest"];
+}
+
 export interface ReviewSubjectRegistrationRequest {
   readonly registrationId: string;
   readonly bytes: Uint8Array;
@@ -50,10 +71,51 @@ export interface ReviewSubjectRegistrationRequest {
   readonly dependencyFiles: ReadonlyArray<
     Readonly<ReviewSubjectDependencyFile>
   >;
+  readonly evidence: Readonly<ReviewSubjectRegistrationEvidenceDeclaration>;
+}
+
+export type ReviewSubjectEvidenceAuthentication =
+  "authenticated" | "denied" | "unknown";
+
+export interface ReviewSubjectRegistrationEvidenceAuthenticator {
+  authenticate(
+    declaration: Readonly<ReviewSubjectRegistrationEvidenceDeclaration>
+  ): Promise<ReviewSubjectEvidenceAuthentication>;
+}
+
+export type ReviewSubjectRegistrationValidation =
+  | {
+      readonly kind: "valid";
+      readonly collectionDigest: ArtifactMetadata["digest"];
+    }
+  | { readonly kind: "invalid" };
+
+export interface ReviewSubjectRegistrationEvidenceValidator {
+  readonly validatorId: string;
+  readonly validatorVersion: string;
+  validate(input: {
+    readonly root: Uint8Array;
+    readonly dependencies: ReadonlyArray<
+      Readonly<{ readonly path: string; readonly bytes: Uint8Array }>
+    >;
+  }): Promise<ReviewSubjectRegistrationValidation>;
+}
+
+export interface ReviewSubjectRegistrationEvidenceConfiguration {
+  readonly authenticator: ReviewSubjectRegistrationEvidenceAuthenticator;
+  readonly validator: ReviewSubjectRegistrationEvidenceValidator;
+}
+
+export interface ReviewSubjectRegistrationResult {
+  readonly artifact: Readonly<ArtifactMetadata>;
+  readonly evidence: Readonly<ReviewSubjectRegistrationEvidence>;
 }
 
 export type ReviewSubjectRegistrationFailureReason =
-  "request_mismatch" | "registration_failed";
+  | "request_mismatch"
+  | "issuer_authentication_failed"
+  | "evidence_validation_failed"
+  | "registration_failed";
 
 export class ReviewSubjectRegistrationError extends Error {
   override readonly name = "ReviewSubjectRegistrationError";
@@ -69,7 +131,7 @@ export class ReviewSubjectRegistrationError extends Error {
 export interface FormalReviewIntegration {
   registerReviewSubject(
     request: Readonly<ReviewSubjectRegistrationRequest>
-  ): Promise<Readonly<ArtifactMetadata>>;
+  ): Promise<Readonly<ReviewSubjectRegistrationResult>>;
   installPiExtension(pi: ExtensionAPI): void;
 }
 

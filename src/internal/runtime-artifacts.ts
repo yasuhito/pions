@@ -159,6 +159,14 @@ export function runtimeArtifactStore(
         open().then((value) => value.registrationStatus(...args)),
       resolveMetadata: (...args) =>
         open().then((value) => value.resolveMetadata(...args)),
+      recordReviewSubjectRegistrationEvidence: (...args) =>
+        open().then((value) =>
+          value.recordReviewSubjectRegistrationEvidence(...args)
+        ),
+      resolveReviewSubjectRegistrationEvidence: (...args) =>
+        open().then((value) =>
+          value.resolveReviewSubjectRegistrationEvidence(...args)
+        ),
       retrieve: (...args) => open().then((value) => value.retrieve(...args)),
       prepareUseBinding: (...args) =>
         open().then((value) => value.prepareUseBinding(...args)),

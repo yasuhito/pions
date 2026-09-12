@@ -13,6 +13,7 @@ import type {
 
 import {
   createFormalReviewIntegration,
+  type ReviewSubjectRegistrationEvidenceConfiguration,
   type ReviewSubjectRegistrationRequest,
 } from "../src/formal-review.js";
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
@@ -31,22 +32,98 @@ function digest(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+function collectionDigest(
+  root: Readonly<{ readonly digest: `sha256:${string}` }>,
+  dependencies: ReadonlyArray<
+    Readonly<{ readonly path: string; readonly digest: `sha256:${string}` }>
+  >
+): `sha256:${string}` {
+  return digest(
+    Buffer.from(
+      JSON.stringify({
+        root: root.digest,
+        files: [...dependencies]
+          .sort((left, right) =>
+            left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+          )
+          .map(({ path, digest: fileDigest }) => ({
+            path,
+            digest: fileDigest,
+          })),
+      }),
+      "utf8"
+    )
+  );
+}
+
 function rootRegistration(
   bytes: Uint8Array,
   overrides: Partial<ReviewSubjectRegistrationRequest> = {}
 ): ReviewSubjectRegistrationRequest {
+  const dependencies = overrides.dependencies ?? [];
+  const root = {
+    byteCount: overrides.expectedByteCount ?? bytes.byteLength,
+    digest: overrides.expectedDigest ?? digest(bytes),
+  };
   return {
     registrationId: "review-subject-1",
     bytes,
-    expectedByteCount: bytes.byteLength,
-    expectedDigest: digest(bytes),
+    expectedByteCount: root.byteCount,
+    expectedDigest: root.digest,
     formatId: "pions.opaque.v1",
     normalizationId: "identity.v1",
-    dependencies: [],
+    dependencies,
     dependencyFiles: [],
+    evidence: {
+      issuerId: "trusted-review-subject-issuer",
+      authentication: "trusted-proof",
+      validatorId: "test-review-subject-validator",
+      validatorVersion: "1",
+      root,
+      dependencies: dependencies.map((dependency) => ({
+        path: dependency.path,
+        byteCount: dependency.expectedByteCount,
+        digest: dependency.expectedDigest,
+      })),
+      collectionDigest: collectionDigest(
+        root,
+        dependencies.map((dependency) => ({
+          path: dependency.path,
+          digest: dependency.expectedDigest,
+        }))
+      ),
+    },
     ...overrides,
   };
 }
+
+const reviewSubjectRegistration = {
+  authenticator: {
+    authenticate: async (declaration: { readonly authentication: string }) =>
+      declaration.authentication === "trusted-proof"
+        ? ("authenticated" as const)
+        : ("denied" as const),
+  },
+  validator: {
+    validatorId: "test-review-subject-validator",
+    validatorVersion: "1",
+    validate: async (input: {
+      readonly root: Uint8Array;
+      readonly dependencies: ReadonlyArray<
+        Readonly<{ readonly path: string; readonly bytes: Uint8Array }>
+      >;
+    }) => ({
+      kind: "valid" as const,
+      collectionDigest: collectionDigest(
+        { digest: digest(input.root) },
+        input.dependencies.map(({ path, bytes: fileBytes }) => ({
+          path,
+          digest: digest(fileBytes),
+        }))
+      ),
+    }),
+  },
+} as const;
 
 function dependencyRegistration(path: string, bytes: Uint8Array) {
   return {
@@ -74,7 +151,10 @@ interface RegisteredTool {
   }>;
 }
 
-async function fixture(context: test.TestContext) {
+async function fixture(
+  context: test.TestContext,
+  registrationConfiguration: Readonly<ReviewSubjectRegistrationEvidenceConfiguration> = reviewSubjectRegistration
+) {
   const root = await mkdtemp(
     join(tmpdir(), "pions-formal-review-integration-")
   );
@@ -85,7 +165,10 @@ async function fixture(context: test.TestContext) {
     else process.env.XDG_STATE_HOME = previousStateHome;
     await rm(root, { recursive: true, force: true });
   });
-  return createFormalReviewIntegration({ repositoryRoot: root });
+  return createFormalReviewIntegration({
+    repositoryRoot: root,
+    reviewSubjectRegistration: registrationConfiguration,
+  });
 }
 
 test("the package publishes the stable formal review integration entry", async () => {
@@ -122,12 +205,12 @@ test("a fixed root review subject is registered in the integration Artifact Stor
   const bytes = Buffer.from("fixed review subject", "utf8");
   const expectedDigest = digest(bytes);
 
-  const artifact = await integration.registerReviewSubject(
+  const registration = await integration.registerReviewSubject(
     rootRegistration(bytes)
   );
 
-  assert.deepEqual(artifact, {
-    artifactId: artifact.artifactId,
+  assert.deepEqual(registration.artifact, {
+    artifactId: registration.artifact.artifactId,
     byteCount: bytes.byteLength,
     digest: expectedDigest,
     formatId: "pions.opaque.v1",
@@ -141,7 +224,7 @@ test("a root review subject references its registered dependency", async (contex
   const rootBytes = Buffer.from("fixed manifest", "utf8");
   const dependencyBytes = Buffer.from("fixed specification", "utf8");
 
-  const artifact = await integration.registerReviewSubject(
+  const registration = await integration.registerReviewSubject(
     rootRegistration(rootBytes, {
       dependencies: [
         {
@@ -156,7 +239,335 @@ test("a root review subject references its registered dependency", async (contex
     })
   );
 
-  assert.equal(artifact.dependencies.length, 1);
+  assert.equal(registration.artifact.dependencies.length, 1);
+});
+
+test("registration evidence binds the verified root and dependency mapping", async (context) => {
+  const integration = await fixture(context);
+  const rootBytes = Buffer.from("fixed manifest", "utf8");
+  const dependency = dependencyRegistration(
+    "docs/spec.md",
+    Buffer.from("fixed specification", "utf8")
+  );
+
+  const registration = await integration.registerReviewSubject(
+    rootRegistration(rootBytes, {
+      dependencies: [dependency.manifest],
+      dependencyFiles: [dependency.file],
+    })
+  );
+
+  assert.deepEqual(registration.evidence, {
+    formatId: "pions.review-subject-registration-evidence.v1",
+    evidenceId: registration.evidence.evidenceId,
+    issuerId: "trusted-review-subject-issuer",
+    root: registration.artifact,
+    files: [
+      {
+        path: "docs/spec.md",
+        artifactId: registration.artifact.dependencies[0],
+        byteCount: dependency.manifest.expectedByteCount,
+        digest: dependency.manifest.expectedDigest,
+        formatId: dependency.manifest.formatId,
+        normalizationId: dependency.manifest.normalizationId,
+      },
+    ],
+    collectionDigest: collectionDigest({ digest: digest(rootBytes) }, [
+      {
+        path: dependency.manifest.path,
+        digest: dependency.manifest.expectedDigest,
+      },
+    ]),
+    validator: {
+      validatorId: "test-review-subject-validator",
+      version: "1",
+    },
+    digest: registration.evidence.digest,
+  });
+});
+
+test("registration evidence keeps root and collection digests distinct", async (context) => {
+  const integration = await fixture(context);
+  const registration = await integration.registerReviewSubject(
+    rootRegistration(Buffer.from("fixed manifest", "utf8"))
+  );
+
+  assert.notEqual(
+    registration.evidence.root.digest,
+    registration.evidence.collectionDigest
+  );
+});
+
+test("registration evidence rejects an unauthenticated issuer", async (context) => {
+  const integration = await fixture(context);
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"));
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: { ...request.evidence, authentication: "untrusted-proof" },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "issuer_authentication_failed",
+    }
+  );
+});
+
+test("registration evidence rejects an unknown issuer", async (context) => {
+  const integration = await fixture(context, {
+    ...reviewSubjectRegistration,
+    authenticator: {
+      authenticate: async () => {
+        throw new Error("issuer state unavailable");
+      },
+    },
+  });
+
+  await assert.rejects(
+    integration.registerReviewSubject(
+      rootRegistration(Buffer.from("fixed manifest", "utf8"))
+    ),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "issuer_authentication_failed",
+    }
+  );
+});
+
+test("registration evidence rejects a collection digest mismatch", async (context) => {
+  const integration = await fixture(context);
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"));
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: {
+        ...request.evidence,
+        collectionDigest: `sha256:${"0".repeat(64)}`,
+      },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence rejects extra dependency metadata", async (context) => {
+  const integration = await fixture(context);
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"));
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: {
+        ...request.evidence,
+        dependencies: [
+          {
+            path: "extra.md",
+            byteCount: 1,
+            digest: `sha256:${"0".repeat(64)}`,
+          },
+        ],
+      },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence rejects an invalid dependency path", async (context) => {
+  const integration = await fixture(context);
+  const dependency = dependencyRegistration(
+    "docs/spec.md",
+    Buffer.from("fixed specification", "utf8")
+  );
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"), {
+    dependencies: [dependency.manifest],
+    dependencyFiles: [dependency.file],
+  });
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: {
+        ...request.evidence,
+        dependencies: [
+          { ...request.evidence.dependencies[0]!, path: "../spec.md" },
+        ],
+      },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence rejects a missing dependency", async (context) => {
+  const integration = await fixture(context);
+  const dependency = dependencyRegistration(
+    "docs/spec.md",
+    Buffer.from("fixed specification", "utf8")
+  );
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"), {
+    dependencies: [dependency.manifest],
+    dependencyFiles: [dependency.file],
+  });
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: { ...request.evidence, dependencies: [] },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence rejects duplicate dependency paths", async (context) => {
+  const integration = await fixture(context);
+  const dependency = dependencyRegistration(
+    "docs/spec.md",
+    Buffer.from("fixed specification", "utf8")
+  );
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"), {
+    dependencies: [dependency.manifest],
+    dependencyFiles: [dependency.file],
+  });
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: {
+        ...request.evidence,
+        dependencies: [
+          request.evidence.dependencies[0]!,
+          request.evidence.dependencies[0]!,
+        ],
+      },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence rejects a dependency digest mismatch", async (context) => {
+  const integration = await fixture(context);
+  const dependency = dependencyRegistration(
+    "docs/spec.md",
+    Buffer.from("fixed specification", "utf8")
+  );
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"), {
+    dependencies: [dependency.manifest],
+    dependencyFiles: [dependency.file],
+  });
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: {
+        ...request.evidence,
+        dependencies: [
+          {
+            ...request.evidence.dependencies[0]!,
+            digest: `sha256:${"0".repeat(64)}`,
+          },
+        ],
+      },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence rejects a dependency byte-count mismatch", async (context) => {
+  const integration = await fixture(context);
+  const dependency = dependencyRegistration(
+    "docs/spec.md",
+    Buffer.from("fixed specification", "utf8")
+  );
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"), {
+    dependencies: [dependency.manifest],
+    dependencyFiles: [dependency.file],
+  });
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: {
+        ...request.evidence,
+        dependencies: [
+          {
+            ...request.evidence.dependencies[0]!,
+            byteCount: dependency.manifest.expectedByteCount + 1,
+          },
+        ],
+      },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence rejects a root digest mismatch", async (context) => {
+  const integration = await fixture(context);
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"));
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: {
+        ...request.evidence,
+        root: { ...request.evidence.root, digest: `sha256:${"0".repeat(64)}` },
+      },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence rejects a validator mismatch", async (context) => {
+  const integration = await fixture(context);
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"));
+
+  await assert.rejects(
+    integration.registerReviewSubject({
+      ...request,
+      evidence: { ...request.evidence, validatorVersion: "2" },
+    }),
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
+  );
+});
+
+test("registration evidence is not a root Artifact dependency", async (context) => {
+  const integration = await fixture(context);
+  const registration = await integration.registerReviewSubject(
+    rootRegistration(Buffer.from("fixed manifest", "utf8"))
+  );
+
+  assert.equal(
+    registration.artifact.dependencies.includes(
+      registration.evidence.evidenceId
+    ),
+    false
+  );
 });
 
 test("a dependency manifest rejects a missing file", async (context) => {
@@ -273,8 +684,43 @@ test("a dependency manifest rejects a digest mismatch", async (context) => {
         dependencyFiles: [dependency.file],
       })
     ),
-    { name: "ReviewSubjectRegistrationError", reason: "registration_failed" }
+    {
+      name: "ReviewSubjectRegistrationError",
+      reason: "evidence_validation_failed",
+    }
   );
+});
+
+test("Pions rejects dependency bytes independently of the configured validator", async (context) => {
+  const rootBytes = Buffer.from("fixed manifest", "utf8");
+  const dependency = dependencyRegistration(
+    "docs/spec.md",
+    Buffer.from("fixed specification", "utf8")
+  );
+  const request = rootRegistration(rootBytes, {
+    dependencies: [
+      {
+        ...dependency.manifest,
+        expectedDigest: `sha256:${"0".repeat(64)}`,
+      },
+    ],
+    dependencyFiles: [dependency.file],
+  });
+  const integration = await fixture(context, {
+    ...reviewSubjectRegistration,
+    validator: {
+      ...reviewSubjectRegistration.validator,
+      validate: async () => ({
+        kind: "valid" as const,
+        collectionDigest: request.evidence.collectionDigest,
+      }),
+    },
+  });
+
+  await assert.rejects(integration.registerReviewSubject(request), {
+    name: "ReviewSubjectRegistrationError",
+    reason: "registration_failed",
+  });
 });
 
 test("dependency files reject duplicate paths", async (context) => {
@@ -359,7 +805,28 @@ test("repeating a review subject registration returns the same Artifact", async 
   const first = await integration.registerReviewSubject(request);
   const replay = await integration.registerReviewSubject(request);
 
-  assert.equal(replay.artifactId, first.artifactId);
+  assert.equal(replay.artifact.artifactId, first.artifact.artifactId);
+});
+
+test("registration evidence digest is stable after reopening the integration", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-formal-review-reopen-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const configuration = {
+    repositoryRoot: root,
+    reviewSubjectRegistration,
+  } as const;
+  const request = rootRegistration(Buffer.from("fixed manifest", "utf8"));
+  const first =
+    await createFormalReviewIntegration(configuration).registerReviewSubject(
+      request
+    );
+
+  const reopened =
+    await createFormalReviewIntegration(configuration).registerReviewSubject(
+      request
+    );
+
+  assert.equal(reopened.evidence.digest, first.evidence.digest);
 });
 
 test("dependency input order does not change registration identity", async (context) => {
@@ -387,7 +854,7 @@ test("dependency input order does not change registration identity", async (cont
     })
   );
 
-  assert.equal(replay.artifactId, first.artifactId);
+  assert.equal(replay.artifact.artifactId, first.artifact.artifactId);
 });
 
 test("a registration identifier cannot replace a fixed dependency", async (context) => {
@@ -504,6 +971,7 @@ test("a registered dependent root is available to the configured extension Runti
   let runtime: Runtime | undefined;
   const configuration = {
     repositoryRoot: root,
+    reviewSubjectRegistration,
     formalReview: {
       profile,
       reviewSubjectAuthority: { currentUse: async () => "allowed" as const },
@@ -564,7 +1032,7 @@ test("a registered dependent root is available to the configured extension Runti
     "docs/spec.md",
     Buffer.from("fixed specification", "utf8")
   );
-  const artifact = await integration.registerReviewSubject(
+  const registration = await integration.registerReviewSubject(
     rootRegistration(bytes, {
       dependencies: [dependency.manifest],
       dependencyFiles: [dependency.file],
@@ -593,16 +1061,27 @@ test("a registered dependent root is available to the configured extension Runti
   } as unknown as ExtensionContext;
   const result = await review.execute(
     "review-call-1",
-    { artifactId: artifact.artifactId, task: "Review this Artifact" },
+    {
+      artifactId: registration.artifact.artifactId,
+      task: "Review this Artifact",
+    },
     undefined,
     undefined,
     extensionContext
   );
   const operationId = (result.details as { readonly operationId: string })
     .operationId;
-  const receipt = await (
-    await runtime!.operation(operationId)
-  ).waitForStartupReceipt();
+  const operation = await runtime!.operation(operationId);
+  await operation.waitForStartupReceipt();
+  const snapshot = await operation.read();
 
-  assert.equal(receipt?.reviewSubject?.artifactId, artifact.artifactId);
+  assert.deepEqual(snapshot.startAuthorization.receipt?.reviewSubject, {
+    artifactId: registration.artifact.artifactId,
+    byteCount: registration.artifact.byteCount,
+    digest: registration.artifact.digest,
+    format: registration.artifact.formatId,
+    normalization: registration.artifact.normalizationId,
+    registrationEvidenceId: registration.evidence.evidenceId,
+    registrationEvidenceDigest: registration.evidence.digest,
+  });
 });

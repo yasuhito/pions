@@ -27,6 +27,7 @@ import {
 import type {
   ArtifactFailureReason,
   ArtifactStore,
+  ReviewSubjectRegistrationEvidence,
   CurrentStartAuthorization,
   Runtime,
   StartAuthorizationInbox,
@@ -56,6 +57,8 @@ const receipt = {
     digest: `sha256:${"cd".repeat(32)}` as const,
     format: "text/plain",
     normalization: "identity.v1",
+    registrationEvidenceId: "review-subject-evidence-1",
+    registrationEvidenceDigest: `sha256:${"12".repeat(32)}` as const,
   },
 };
 
@@ -280,6 +283,47 @@ async function formalReviewAdmissionFixture(
   );
   if (registration.kind !== "registered")
     throw new Error("Review subject registration failed");
+  const evidenceWithoutDigest: Omit<
+    ReviewSubjectRegistrationEvidence,
+    "digest"
+  > = {
+    formatId: "pions.review-subject-registration-evidence.v1",
+    evidenceId: "review-subject-evidence-1",
+    issuerId: "test-review-subject-issuer",
+    root: {
+      artifactId: registration.artifact.artifactId,
+      byteCount: registration.artifact.byteCount,
+      digest: registration.artifact.digest,
+      formatId: registration.artifact.formatId,
+      normalizationId: registration.artifact.normalizationId,
+      dependencies: [...registration.artifact.dependencies],
+    },
+    files: [
+      {
+        path: "docs/spec.md",
+        artifactId: dependencyRegistration.artifact.artifactId,
+        byteCount: dependencyRegistration.artifact.byteCount,
+        digest: dependencyRegistration.artifact.digest,
+        formatId: dependencyRegistration.artifact.formatId,
+        normalizationId: dependencyRegistration.artifact.normalizationId,
+      },
+    ],
+    collectionDigest: `sha256:${"12".repeat(32)}`,
+    validator: { validatorId: "test-validator", version: "1" },
+  };
+  const evidence: ReviewSubjectRegistrationEvidence = {
+    ...evidenceWithoutDigest,
+    digest: `sha256:${createHash("sha256")
+      .update(JSON.stringify(evidenceWithoutDigest))
+      .digest("hex")}`,
+  };
+  const recorded =
+    await artifactServices.artifacts.recordReviewSubjectRegistrationEvidence(
+      artifactServices.credential,
+      evidence
+    );
+  if (recorded.kind !== "resolved")
+    throw new Error("Review subject registration evidence failed");
   const artifacts: ArtifactStore = new Proxy(artifactServices.artifacts, {
     get(target, property) {
       if (
@@ -357,6 +401,7 @@ async function formalReviewAdmissionFixture(
     artifactCredential: artifactServices.credential,
     artifact: registration.artifact,
     artifactId: registration.artifact.artifactId,
+    evidence,
   };
 }
 
@@ -569,7 +614,8 @@ test("the authorization decision is persisted before Worker execution begins", a
 });
 
 test("a formal review Operation fixes its registered Artifact as the Review subject", async (context) => {
-  const { runtime, artifact } = await formalReviewAdmissionFixture(context);
+  const { runtime, artifact, evidence } =
+    await formalReviewAdmissionFixture(context);
   const handle = await runtime.spawn(
     {
       promptRef: "private://prompt/1",
@@ -585,6 +631,8 @@ test("a formal review Operation fixes its registered Artifact as the Review subj
     digest: artifact.digest,
     format: artifact.formatId,
     normalization: artifact.normalizationId,
+    registrationEvidenceId: evidence.evidenceId,
+    registrationEvidenceDigest: evidence.digest,
   });
 });
 
@@ -799,6 +847,39 @@ test("a formal reviewer does not begin when its Review subject fails immediate r
   );
   if (registration.kind !== "registered")
     throw new Error("Review subject registration failed");
+  const rootMetadata = {
+    artifactId: registration.artifact.artifactId,
+    byteCount: registration.artifact.byteCount,
+    digest: registration.artifact.digest,
+    formatId: registration.artifact.formatId,
+    normalizationId: registration.artifact.normalizationId,
+    dependencies: [...registration.artifact.dependencies],
+  };
+  const evidenceWithoutDigest: Omit<
+    ReviewSubjectRegistrationEvidence,
+    "digest"
+  > = {
+    formatId: "pions.review-subject-registration-evidence.v1",
+    evidenceId: "review-subject-evidence-1",
+    issuerId: "test-review-subject-issuer",
+    root: rootMetadata,
+    files: [],
+    collectionDigest: `sha256:${"12".repeat(32)}`,
+    validator: { validatorId: "test-validator", version: "1" },
+  };
+  const evidence: ReviewSubjectRegistrationEvidence = {
+    ...evidenceWithoutDigest,
+    digest: `sha256:${createHash("sha256")
+      .update(JSON.stringify(evidenceWithoutDigest))
+      .digest("hex")}`,
+  };
+  const recorded =
+    await artifactServices.artifacts.recordReviewSubjectRegistrationEvidence(
+      artifactServices.credential,
+      evidence
+    );
+  if (recorded.kind !== "resolved")
+    throw new Error("Review subject registration evidence failed");
   let retrievalCount = 0;
   const artifacts: ArtifactStore = new Proxy(artifactServices.artifacts, {
     get(target, property) {

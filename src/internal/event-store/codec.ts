@@ -227,6 +227,8 @@ const ReviewSubjectReceipt = Schema.Struct({
   digest: Digest,
   format: Schema.String,
   normalization: Schema.String,
+  registrationEvidenceId: Schema.String,
+  registrationEvidenceDigest: Digest,
 });
 const StartupReceiptPolicy = Schema.Struct({
   workspace: WorkspaceReceipt,

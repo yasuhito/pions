@@ -14,6 +14,10 @@ import { resolveRepositoryState } from "./repository-state.js";
 import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import type { RuntimeClock } from "./services.js";
 import { sha256Digest } from "./result-digest.js";
+import {
+  reviewSubjectRegistrationEvidenceDigest,
+  reviewSubjectRegistrationEvidenceId,
+} from "./review-subject-registration-evidence.js";
 import type { VisibleRuntimeOptions } from "./visible-runtime.js";
 import type {
   FormalReviewIntegration,
@@ -25,10 +29,12 @@ import type {
   ArtifactDigest,
   ArtifactMetadata,
   ArtifactRegistrationOutcome,
+  ReviewSubjectRegistrationEvidence,
   Runtime,
   StartAuthorizationAuthenticator,
   StartAuthorizationAuthority,
 } from "../public.js";
+import type { ReviewSubjectRegistrationResult } from "../formal-review.js";
 
 const REGISTRATION_WINDOW_MS = 60_000;
 const REGISTRATION_RECOVERY_BUDGET = 3;
@@ -232,7 +238,7 @@ export function makeFormalReviewIntegration(
 
   async function registerReviewSubject(
     request: Readonly<ReviewSubjectRegistrationRequest>
-  ): Promise<Readonly<ArtifactMetadata>> {
+  ): Promise<Readonly<ReviewSubjectRegistrationResult>> {
     const { normalizedRoot, repositoryState } = await repositoryContext();
     const stateDirectory = join(repositoryState, "runtime");
     const eventStore = new PrivateFileEventStore(
@@ -299,6 +305,79 @@ export function makeFormalReviewIntegration(
         );
       }
 
+      const declaration = request.evidence;
+      const declarationDependencies = new Map(
+        declaration.dependencies.map((dependency) => [
+          dependency.path,
+          dependency,
+        ])
+      );
+      const registrationConfiguration = configuration.reviewSubjectRegistration;
+      if (
+        !REGISTRATION_ID.test(declaration.issuerId) ||
+        declarationDependencies.size !== declaration.dependencies.length ||
+        declaration.validatorId !==
+          registrationConfiguration.validator.validatorId ||
+        declaration.validatorVersion !==
+          registrationConfiguration.validator.validatorVersion ||
+        declaration.root.byteCount !== request.expectedByteCount ||
+        declaration.root.digest !== request.expectedDigest ||
+        declarationDependencies.size !== requirementsByPath.size ||
+        [...requirementsByPath].some(([path, dependency]) => {
+          const declared = declarationDependencies.get(path);
+          return (
+            declared === undefined ||
+            declared.byteCount !== dependency.expectedByteCount ||
+            declared.digest !== dependency.expectedDigest
+          );
+        })
+      ) {
+        throw new ReviewSubjectRegistrationError(
+          "evidence_validation_failed",
+          "Review subject registration evidence does not match the manifest"
+        );
+      }
+      let authentication: "authenticated" | "denied" | "unknown";
+      try {
+        authentication =
+          await registrationConfiguration.authenticator.authenticate(
+            declaration
+          );
+      } catch {
+        authentication = "unknown";
+      }
+      if (authentication !== "authenticated") {
+        throw new ReviewSubjectRegistrationError(
+          "issuer_authentication_failed",
+          "Review subject registration evidence issuer is not authenticated"
+        );
+      }
+      const sortedFiles = [...filesByPath]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([path, bytes]) => ({ path, bytes }));
+      let validation:
+        | Awaited<
+            ReturnType<typeof registrationConfiguration.validator.validate>
+          >
+        | undefined;
+      try {
+        validation = await registrationConfiguration.validator.validate({
+          root: request.bytes,
+          dependencies: sortedFiles,
+        });
+      } catch {
+        validation = undefined;
+      }
+      if (
+        validation?.kind !== "valid" ||
+        validation.collectionDigest !== declaration.collectionDigest
+      ) {
+        throw new ReviewSubjectRegistrationError(
+          "evidence_validation_failed",
+          "Review subject registration evidence collection digest is invalid"
+        );
+      }
+
       async function registerArtifact(
         input: Readonly<ArtifactRegistrationInput>
       ): Promise<Readonly<ArtifactMetadata>> {
@@ -352,7 +431,9 @@ export function makeFormalReviewIntegration(
         return toPublicArtifactMetadata(transferred.artifact);
       }
 
-      const dependencyArtifactIds: Array<string> = [];
+      const dependencyArtifacts: Array<
+        Readonly<{ readonly path: string; readonly artifact: ArtifactMetadata }>
+      > = [];
       for (const [path, dependency] of [...requirementsByPath].sort(
         ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)
       )) {
@@ -372,13 +453,55 @@ export function makeFormalReviewIntegration(
           normalizationId: dependency.normalizationId,
           dependencies: [],
         });
-        dependencyArtifactIds.push(artifact.artifactId);
+        dependencyArtifacts.push({ path, artifact });
       }
 
-      return await registerArtifact({
+      const artifact = await registerArtifact({
         ...rootInputWithoutDependencies,
-        dependencies: dependencyArtifactIds,
+        dependencies: dependencyArtifacts.map(
+          ({ artifact: dependency }) => dependency.artifactId
+        ),
       });
+      const evidenceWithoutDigest: Omit<
+        ReviewSubjectRegistrationEvidence,
+        "digest"
+      > = {
+        formatId: "pions.review-subject-registration-evidence.v1",
+        evidenceId: reviewSubjectRegistrationEvidenceId(artifact.artifactId),
+        issuerId: declaration.issuerId,
+        root: artifact,
+        files: dependencyArtifacts.map(({ path, artifact: dependency }) => ({
+          path,
+          artifactId: dependency.artifactId,
+          byteCount: dependency.byteCount,
+          digest: dependency.digest,
+          formatId: dependency.formatId,
+          normalizationId: dependency.normalizationId,
+        })),
+        collectionDigest: declaration.collectionDigest,
+        validator: {
+          validatorId: registrationConfiguration.validator.validatorId,
+          version: registrationConfiguration.validator.validatorVersion,
+        },
+      };
+      const evidence: ReviewSubjectRegistrationEvidence = {
+        ...evidenceWithoutDigest,
+        digest: reviewSubjectRegistrationEvidenceDigest(evidenceWithoutDigest),
+      };
+      const recorded =
+        await artifactServices.artifacts.recordReviewSubjectRegistrationEvidence(
+          artifactServices.credential,
+          evidence
+        );
+      if (recorded.kind !== "resolved") {
+        throw new ReviewSubjectRegistrationError(
+          recorded.reason === "request_mismatch"
+            ? "request_mismatch"
+            : "registration_failed",
+          `Review subject registration evidence failed: ${recorded.reason}`
+        );
+      }
+      return { artifact, evidence: recorded.evidence };
     } finally {
       await artifactServices.artifacts.close();
     }

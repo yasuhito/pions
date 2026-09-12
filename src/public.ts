@@ -125,6 +125,8 @@ export interface StartupReceiptPolicy extends ConfiguredStartupReceiptPolicy {
     readonly digest: `sha256:${string}`;
     readonly format: string;
     readonly normalization: string;
+    readonly registrationEvidenceId: string;
+    readonly registrationEvidenceDigest: ArtifactDigest;
   }>;
 }
 
@@ -382,6 +384,8 @@ export interface StartupReceipt {
     readonly digest: `sha256:${string}`;
     readonly format: string;
     readonly normalization: string;
+    readonly registrationEvidenceId: string;
+    readonly registrationEvidenceDigest: ArtifactDigest;
   }>;
   readonly reviewSubjectVerification: "disabled" | "required";
   readonly configuredAuthorizationPolicy: "disabled" | "optional" | "required";
@@ -1229,6 +1233,40 @@ export interface ArtifactMetadata {
   readonly dependencies: ReadonlyArray<string>;
 }
 
+export interface ReviewSubjectRegistrationEvidence {
+  readonly formatId: "pions.review-subject-registration-evidence.v1";
+  readonly evidenceId: string;
+  readonly issuerId: string;
+  readonly validator: Readonly<{
+    readonly validatorId: string;
+    readonly version: string;
+  }>;
+  readonly root: Readonly<ArtifactMetadata>;
+  readonly files: ReadonlyArray<
+    Readonly<{
+      readonly path: string;
+      readonly artifactId: string;
+      readonly byteCount: number;
+      readonly digest: ArtifactDigest;
+      readonly formatId: string;
+      readonly normalizationId: string;
+    }>
+  >;
+  readonly collectionDigest: ArtifactDigest;
+  readonly digest: ArtifactDigest;
+}
+
+export type ReviewSubjectRegistrationEvidenceOutcome =
+  | {
+      readonly kind: "resolved";
+      readonly evidence: Readonly<ReviewSubjectRegistrationEvidence>;
+    }
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason;
+    };
+
 export interface ArtifactRegistrationRequest {
   readonly registrationId: string;
   readonly expectedByteCount: number;
@@ -1270,7 +1308,8 @@ export type ArtifactFailureReason =
   | "storage_inspection_unavailable"
   | "recovery_budget_exceeded"
   | "dependency_not_found"
-  | "dependency_cycle";
+  | "dependency_cycle"
+  | "registration_evidence_not_found";
 
 export type ArtifactRegistrationOutcome =
   | {
@@ -1679,6 +1718,14 @@ export interface ArtifactStore {
     credential: string,
     artifactId: string
   ): Promise<ArtifactMetadataOutcome>;
+  recordReviewSubjectRegistrationEvidence(
+    credential: string,
+    evidence: Readonly<ReviewSubjectRegistrationEvidence>
+  ): Promise<ReviewSubjectRegistrationEvidenceOutcome>;
+  resolveReviewSubjectRegistrationEvidence(
+    credential: string,
+    rootArtifactId: string
+  ): Promise<ReviewSubjectRegistrationEvidenceOutcome>;
   retrieve(
     credential: string,
     artifactId: string

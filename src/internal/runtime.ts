@@ -927,12 +927,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (retrieval.kind !== "resolved") {
         throw new ReviewSubjectError(retrieval.reason);
       }
+      const evidence =
+        await services.artifacts.resolveReviewSubjectRegistrationEvidence(
+          services.artifactCredential,
+          retrieval.artifact.artifactId
+        );
+      if (evidence.kind !== "resolved") {
+        throw new ReviewSubjectError(evidence.reason);
+      }
       reviewSubject = {
         artifactId: retrieval.artifact.artifactId,
         byteCount: retrieval.artifact.byteCount,
         digest: retrieval.artifact.digest,
         format: retrieval.artifact.formatId,
         normalization: retrieval.artifact.normalizationId,
+        registrationEvidenceId: evidence.evidence.evidenceId,
+        registrationEvidenceDigest: evidence.evidence.digest,
       };
     }
     return {
