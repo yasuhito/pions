@@ -36,6 +36,27 @@ import type {
 const digest = (bytes: Uint8Array) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
 
+function reviewCollectionDigest(
+  root: Uint8Array,
+  files: ReadonlyArray<
+    Readonly<{ readonly path: string; readonly bytes: Uint8Array }>
+  >
+): `sha256:${string}` {
+  return digest(
+    Buffer.from(
+      JSON.stringify({
+        root: digest(root),
+        files: [...files]
+          .sort((left, right) =>
+            left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+          )
+          .map(({ path, bytes }) => ({ path, digest: digest(bytes) })),
+      }),
+      "utf8"
+    )
+  );
+}
+
 class ReviewResourceAdapter implements ResourceAdapter {
   private proofDigest = `sha256:${"00".repeat(32)}` as const;
 
@@ -129,6 +150,8 @@ class ReviewResourceAdapter implements ResourceAdapter {
       workerProcessInstanceId: request.workerProcessInstanceId,
       requestDigest: request.requestDigest,
       proofDigest: this.proofDigest,
+      conflictControlId: "review-workspace-lock",
+      noConflict: true as const,
       checkedAt: "2026-09-12T10:00:00.000Z",
       generation: "lease-1",
       handoffConfirmed: true,
@@ -160,10 +183,19 @@ class RecordingReviewInputConnection implements ReviewInputPreparationConnection
     ReadonlyArray<{ readonly path: string; readonly bytes: Uint8Array }>
   > = [];
   private readonly workspaceOperations = new Map<string, string>();
+  private readonly prepared = new Map<
+    string,
+    Awaited<ReturnType<ReviewInputPreparationConnection["prepare"]>>
+  >();
+  private inspectionMutation: "none" | "tamper" | "omit" | "add" | "unknown" =
+    "none";
 
   constructor(
     private readonly addUnexpectedFile = false,
-    private readonly tamperWrittenFile = false
+    private readonly tamperWrittenFile = false,
+    private readonly omitWrittenFile = false,
+    private readonly changeCollectionDigest = false,
+    private readonly bindAnotherOperation = false
   ) {}
 
   async prepare(
@@ -187,11 +219,17 @@ class RecordingReviewInputConnection implements ReviewInputPreparationConnection
       bytes: file.bytes.slice(),
     }));
     this.received.push(files);
-    return {
+    const outcome = {
       kind: "prepared" as const,
       operationId: request.operationId,
       acquisitionId: request.acquisitionId,
       workspaceId: request.workspace.workspaceId,
+      workspaceDedicatedToOperationId: this.bindAnotherOperation
+        ? "another-operation"
+        : request.operationId,
+      collectionDigest: this.changeCollectionDigest
+        ? (`sha256:${"ff".repeat(32)}` as const)
+        : reviewCollectionDigest(request.root.bytes, request.files),
       writingClosed: true as const,
       files: this.addUnexpectedFile
         ? [...files, { path: "unregistered.txt", bytes: Buffer.from("extra") }]
@@ -199,7 +237,59 @@ class RecordingReviewInputConnection implements ReviewInputPreparationConnection
           ? files.map((file, index) =>
               index === 0 ? { ...file, bytes: Buffer.from("tampered") } : file
             )
-          : files,
+          : this.omitWrittenFile
+            ? files.slice(1)
+            : files,
+    };
+    this.prepared.set(request.workspace.workspaceId, outcome);
+    return outcome;
+  }
+
+  tamperAfterPreparation(): void {
+    this.inspectionMutation = "tamper";
+  }
+
+  omitAfterPreparation(): void {
+    this.inspectionMutation = "omit";
+  }
+
+  addAfterPreparation(): void {
+    this.inspectionMutation = "add";
+  }
+
+  makeInspectionUnknown(): void {
+    this.inspectionMutation = "unknown";
+  }
+
+  async inspect(
+    request: Parameters<ReviewInputPreparationConnection["inspect"]>[0]
+  ) {
+    const outcome = this.prepared.get(request.workspace.workspaceId);
+    if (outcome?.kind !== "prepared") {
+      return outcome ?? { kind: "unknown" as const };
+    }
+    if (this.inspectionMutation === "unknown") {
+      return { kind: "unknown" as const };
+    }
+    const files =
+      this.inspectionMutation === "tamper"
+        ? outcome.files.map((file, index) =>
+            index === 0
+              ? { ...file, bytes: Buffer.from("changed later") }
+              : file
+          )
+        : this.inspectionMutation === "omit"
+          ? outcome.files.slice(1)
+          : this.inspectionMutation === "add"
+            ? [
+                ...outcome.files,
+                { path: "added-later.txt", bytes: Buffer.from("added") },
+              ]
+            : outcome.files;
+    return {
+      ...outcome,
+      collectionDigest: reviewCollectionDigest(request.root.bytes, files),
+      files,
     };
   }
 }
@@ -265,7 +355,9 @@ async function registerReviewSubject(
         normalizationId: dependency.artifact.normalizationId,
       },
     ],
-    collectionDigest: `sha256:${"12".repeat(32)}`,
+    collectionDigest: reviewCollectionDigest(rootBytes, [
+      { path: "docs/spec.md", bytes: dependencyBytes },
+    ]),
   };
   const evidence = {
     ...withoutDigest,
@@ -285,6 +377,9 @@ async function fixture(
   options: Readonly<{
     addUnexpectedFile?: boolean;
     tamperWrittenFile?: boolean;
+    omitWrittenFile?: boolean;
+    changeCollectionDigest?: boolean;
+    bindAnotherOperation?: boolean;
     authorityTrust?: "trusted" | "revoked" | "unknown";
     authorityTrustFromCheck?: number;
     operationIds?: ReadonlyArray<string>;
@@ -329,9 +424,13 @@ async function fixture(
   };
   const connection = new RecordingReviewInputConnection(
     options.addUnexpectedFile,
-    options.tamperWrittenFile
+    options.tamperWrittenFile,
+    options.omitWrittenFile,
+    options.changeCollectionDigest,
+    options.bindAnotherOperation
   );
   let authorityTrustChecks = 0;
+  let forcedAuthorityTrust: "trusted" | "revoked" | "unknown" | undefined;
   const resourceProofController = makeResourceProofController({
     registrations: [
       {
@@ -343,6 +442,7 @@ async function fixture(
           verify: async () => true,
           isCurrentlyTrusted: async () => {
             authorityTrustChecks += 1;
+            if (forcedAuthorityTrust !== undefined) return forcedAuthorityTrust;
             return options.authorityTrust !== undefined &&
               authorityTrustChecks >= (options.authorityTrustFromCheck ?? 1)
               ? options.authorityTrust
@@ -406,13 +506,57 @@ async function fixture(
     artifactCredential: artifactServices.credential,
     synchronizeArtifactClock: artifactServices.synchronizeClock,
     resourceProofController,
+    startAuthorizationAuthenticator: {
+      authenticate: async () => ({
+        subjectId: "coordinator-1",
+        currentAuthorization: async () => "authorized" as const,
+      }),
+    },
     configuration: { cwd: workspacePath, profiles: { review: profile } },
   });
   context.after(async () => {
     await runtime.close();
     await rm(root, { recursive: true, force: true });
   });
-  return { runtime, artifact, connection };
+  return {
+    runtime,
+    artifact,
+    connection,
+    workspace,
+    revokeAuthority: () => {
+      forcedAuthorityTrust = "revoked";
+    },
+  };
+}
+
+async function preparedReadiness(context: TestContext, key: string) {
+  const { runtime, artifact, workspace } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: `Review ${key}`,
+      profile: "review",
+      idempotencyKey: key,
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  return {
+    readiness: (await operation.waitForStartupReceipt())?.reviewInputReadiness,
+    workspace,
+  };
+}
+
+async function authorizeReview(
+  runtime: Awaited<ReturnType<typeof fixture>>["runtime"]
+): Promise<void> {
+  const inbox = await runtime.startAuthorizationInbox("credential");
+  const waiting = (await inbox.listWaiting())[0];
+  if (waiting === undefined) throw new Error("No waiting formal review");
+  await inbox.decide({
+    operationId: waiting.operationId,
+    decisionId: "review-decision",
+    kind: "authorize",
+    receiptDigest: waiting.receipt.digest,
+  });
 }
 
 test("an untrusted review input authority receives no files", async (context) => {
@@ -476,6 +620,26 @@ test("a review execution workspace cannot be reused by another Operation", async
   assert.equal((await second.read()).failureReason, "resource_proof_rejected");
 });
 
+test("a Review input destination dedicated to another Operation rejects preparation", async (context) => {
+  const { runtime, artifact } = await fixture(context, {
+    bindAnotherOperation: true,
+  });
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review input bound elsewhere",
+      profile: "review",
+      idempotencyKey: "review-dedicated-elsewhere",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.result().catch(() => undefined);
+
+  assert.equal(
+    (await operation.read()).failureReason,
+    "resource_proof_rejected"
+  );
+});
+
 test("a changed post-write byte sequence rejects review input preparation", async (context) => {
   const { runtime, artifact } = await fixture(context, {
     tamperWrittenFile: true,
@@ -485,6 +649,46 @@ test("a changed post-write byte sequence rejects review input preparation", asyn
       promptRef: "Review tampered input",
       profile: "review",
       idempotencyKey: "review-tampered",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.result().catch(() => undefined);
+
+  assert.equal(
+    (await operation.read()).failureReason,
+    "resource_proof_rejected"
+  );
+});
+
+test("a missing post-write dependency rejects review input preparation", async (context) => {
+  const { runtime, artifact } = await fixture(context, {
+    omitWrittenFile: true,
+  });
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review input with a missing dependency",
+      profile: "review",
+      idempotencyKey: "review-missing-file",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.result().catch(() => undefined);
+
+  assert.equal(
+    (await operation.read()).failureReason,
+    "resource_proof_rejected"
+  );
+});
+
+test("a changed collection digest rejects review input preparation", async (context) => {
+  const { runtime, artifact } = await fixture(context, {
+    changeCollectionDigest: true,
+  });
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review input with another collection digest",
+      profile: "review",
+      idempotencyKey: "review-collection-digest",
     },
     { reviewSubjectArtifactId: artifact.artifactId }
   );
@@ -514,6 +718,271 @@ test("an unexpected post-write file rejects review input preparation", async (co
     (await operation.read()).failureReason,
     "resource_proof_rejected"
   );
+});
+
+test("failed Review input preparation publishes no Startup receipt", async (context) => {
+  const { runtime, artifact } = await fixture(context, {
+    tamperWrittenFile: true,
+  });
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review unready input",
+      profile: "review",
+      idempotencyKey: "review-no-receipt",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.result().catch(() => undefined);
+
+  assert.equal((await operation.read()).startAuthorization.receipt, undefined);
+});
+
+test("failed Review input preparation is classified separately from Worker start failure", async (context) => {
+  const { runtime, artifact } = await fixture(context, {
+    tamperWrittenFile: true,
+  });
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review unready input classification",
+      profile: "review",
+      idempotencyKey: "review-preparation-classification",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.result().catch(() => undefined);
+
+  assert.equal(
+    (await operation.read()).failureReason,
+    "resource_proof_rejected"
+  );
+});
+
+test("a formal review publishes immutable Review input readiness in its Startup receipt", async (context) => {
+  const { runtime, artifact } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review the fixed subject",
+      profile: "review",
+      idempotencyKey: "review-readiness",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  const receipt = await operation.waitForStartupReceipt();
+
+  assert.match(
+    receipt?.reviewInputReadiness?.readinessId ?? "",
+    /^pions\.review-input-readiness\.v1:[0-9a-f]{64}$/
+  );
+});
+
+test("Review input readiness binds the inspected Resource authority", async (context) => {
+  const { readiness } = await preparedReadiness(context, "review-authority");
+
+  assert.equal(readiness?.authorityId, "review-launcher");
+});
+
+test("Review input readiness binds the inspected authority registration", async (context) => {
+  const { readiness } = await preparedReadiness(
+    context,
+    "review-authority-registration"
+  );
+
+  assert.equal(
+    readiness?.authorityRegistrationId,
+    "review-launcher-registration-1"
+  );
+});
+
+test("Review input readiness binds the inspected authority generation", async (context) => {
+  const { readiness } = await preparedReadiness(
+    context,
+    "review-authority-generation"
+  );
+
+  assert.equal(readiness?.authorityGeneration, "generation-1");
+});
+
+test("Review input readiness binds the inspected write permission", async (context) => {
+  const { runtime, artifact } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review write-bound input",
+      profile: "review",
+      idempotencyKey: "review-write-binding",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  const readiness = (await operation.waitForStartupReceipt())
+    ?.reviewInputReadiness;
+
+  assert.deepEqual(readiness?.writePermission, { kind: "workspace" });
+});
+
+test("Review input readiness binds the inspected Permission manifest", async (context) => {
+  const { runtime, artifact } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review manifest-bound input",
+      profile: "review",
+      idempotencyKey: "review-manifest-binding",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  const readiness = (await operation.waitForStartupReceipt())
+    ?.reviewInputReadiness;
+
+  assert.equal(
+    readiness?.permissionManifestDigest,
+    permissionManifestDocument({
+      tools: ["read"],
+      read: { kind: "workspace" },
+      write: { kind: "workspace" },
+      commands: "none",
+      network: "none",
+      externalResources: [],
+    }).digest
+  );
+});
+
+test("Review input readiness binds its Workspace identifier", async (context) => {
+  const { readiness, workspace } = await preparedReadiness(
+    context,
+    "review-workspace-binding"
+  );
+
+  assert.equal(readiness?.workspaceId, workspace.workspaceId);
+});
+
+test("Review input readiness binds its Worker input path", async (context) => {
+  const { readiness, workspace } = await preparedReadiness(
+    context,
+    "review-input-path-binding"
+  );
+
+  assert.equal(readiness?.inputPath, workspace.normalizedPath);
+});
+
+test("Review input readiness binds its Resource acquisition", async (context) => {
+  const { runtime, artifact } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review acquisition-bound input",
+      profile: "review",
+      idempotencyKey: "review-acquisition-binding",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  const readiness = (await operation.waitForStartupReceipt())
+    ?.reviewInputReadiness;
+
+  assert.match(readiness?.acquisitionId ?? "", /^[0-9a-f]{64}$/);
+});
+
+test("a current Review input reaches Start instruction delivery", async (context) => {
+  const { runtime, artifact } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review current input",
+      profile: "review",
+      idempotencyKey: "review-current-input",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.waitForStartupReceipt();
+  await authorizeReview(runtime);
+  await operation.result().catch(() => undefined);
+
+  assert.notEqual((await operation.read()).startInstructionDelivery, undefined);
+});
+
+test("an uninspectable Review input after readiness prevents Start instruction delivery", async (context) => {
+  const { runtime, artifact, connection } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review uninspectable input",
+      profile: "review",
+      idempotencyKey: "review-uninspectable-input",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.waitForStartupReceipt();
+  connection.makeInspectionUnknown();
+  await authorizeReview(runtime);
+  await operation.result().catch(() => undefined);
+
+  assert.equal((await operation.read()).startInstructionDelivery, undefined);
+});
+
+test("Resource protection revoked after readiness prevents Start instruction delivery", async (context) => {
+  const { runtime, artifact, revokeAuthority } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review input after protection revocation",
+      profile: "review",
+      idempotencyKey: "review-revoked-protection",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.waitForStartupReceipt();
+  revokeAuthority();
+  await authorizeReview(runtime);
+  await operation.result().catch(() => undefined);
+
+  assert.equal((await operation.read()).startInstructionDelivery, undefined);
+});
+
+test("a changed byte sequence after readiness prevents Start instruction delivery", async (context) => {
+  const { runtime, artifact, connection } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review input changed after readiness",
+      profile: "review",
+      idempotencyKey: "review-late-change",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.waitForStartupReceipt();
+  connection.tamperAfterPreparation();
+  await authorizeReview(runtime);
+  await operation.result().catch(() => undefined);
+
+  assert.equal((await operation.read()).startInstructionDelivery, undefined);
+});
+
+test("a missing dependency after readiness prevents Start instruction delivery", async (context) => {
+  const { runtime, artifact, connection } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review input missing after readiness",
+      profile: "review",
+      idempotencyKey: "review-late-missing",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.waitForStartupReceipt();
+  connection.omitAfterPreparation();
+  await authorizeReview(runtime);
+  await operation.result().catch(() => undefined);
+
+  assert.equal((await operation.read()).startInstructionDelivery, undefined);
+});
+
+test("an extra file after readiness prevents Start instruction delivery", async (context) => {
+  const { runtime, artifact, connection } = await fixture(context);
+  const operation = await runtime.spawn(
+    {
+      promptRef: "Review input added after readiness",
+      profile: "review",
+      idempotencyKey: "review-late-extra",
+    },
+    { reviewSubjectArtifactId: artifact.artifactId }
+  );
+  await operation.waitForStartupReceipt();
+  connection.addAfterPreparation();
+  await authorizeReview(runtime);
+  await operation.result().catch(() => undefined);
+
+  assert.equal((await operation.read()).startInstructionDelivery, undefined);
 });
 
 test("a formal review writes only its verified dependency closure before publishing the Startup receipt", async (context) => {

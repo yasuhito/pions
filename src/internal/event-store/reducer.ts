@@ -11,6 +11,7 @@ import type {
 } from "../../public.js";
 import type { Operation, OperationEvent } from "./model.js";
 import { revisionSeriesId, revisionSeriesOrigin } from "../revision-series.js";
+import { validReviewInputReadiness } from "../review-input-readiness.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
 import {
   automaticStartScopeDigest,
@@ -204,6 +205,11 @@ function sanitizedStartupReceipt(
     ...(receipt.resourceEvidence === undefined
       ? {}
       : { resourceEvidence: { ...receipt.resourceEvidence } }),
+    ...(receipt.reviewInputReadiness === undefined
+      ? {}
+      : {
+          reviewInputReadiness: structuredClone(receipt.reviewInputReadiness),
+        }),
     ...(receipt.reviewSubject === undefined
       ? {}
       : {
@@ -322,6 +328,8 @@ export function reduceOperation(
         (event.startupReceiptPolicy !== undefined) ||
       (event.startupReceiptPolicy?.reviewSubjectVerification === "required" &&
         event.startupReceiptPolicy.reviewSubject === undefined) ||
+      (event.startupReceiptPolicy?.reviewInputPreparation === "required" &&
+        event.startupReceiptPolicy.reviewSubjectVerification !== "required") ||
       event.resultRetentionPolicy.operationId !== event.operationId ||
       (event.revisionMembership !== undefined &&
         (revisionSeriesOrigin(event.revisionMembership.seriesId) ===
@@ -523,6 +531,22 @@ export function reduceOperation(
         event.receipt.permissionManifest.manifestId.length === 0 ||
         (event.receipt.reviewSubjectVerification === "required" &&
           event.receipt.reviewSubject === undefined) ||
+        (current.startupReceiptPolicy?.reviewInputPreparation === "required" &&
+          event.receipt.reviewInputReadiness === undefined) ||
+        (event.receipt.reviewInputReadiness !== undefined &&
+          (!validReviewInputReadiness(event.receipt.reviewInputReadiness) ||
+            event.receipt.reviewInputReadiness.operationId !==
+              current.operationId ||
+            event.receipt.reviewInputReadiness.workspaceId !==
+              event.receipt.workspace.workspaceId ||
+            event.receipt.reviewInputReadiness.inputPath !==
+              event.receipt.workspace.normalizedPath ||
+            event.receipt.reviewInputReadiness.permissionManifestDigest !==
+              event.receipt.permissionManifest.digest ||
+            event.receipt.reviewInputReadiness.registrationEvidenceId !==
+              event.receipt.reviewSubject?.registrationEvidenceId ||
+            event.receipt.reviewInputReadiness.registrationEvidenceDigest !==
+              event.receipt.reviewSubject?.registrationEvidenceDigest)) ||
         (event.receipt.reviewSubject !== undefined &&
           (event.receipt.reviewSubject.artifactId.length === 0 ||
             event.receipt.reviewSubject.registrationEvidenceId.length === 0)) ||

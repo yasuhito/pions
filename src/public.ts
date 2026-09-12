@@ -119,6 +119,7 @@ export interface ConfiguredStartupReceiptPolicy {
 }
 
 export interface StartupReceiptPolicy extends ConfiguredStartupReceiptPolicy {
+  readonly reviewInputPreparation: "disabled" | "required";
   readonly reviewSubject?: Readonly<{
     readonly artifactId: string;
     readonly byteCount: number;
@@ -342,6 +343,31 @@ export type StartGateState =
   | "expired"
   | "invalidated";
 
+export interface ReviewInputReadiness {
+  readonly readinessId: `pions.review-input-readiness.v1:${string}`;
+  readonly digest: ArtifactDigest;
+  readonly operationId: string;
+  readonly registrationEvidenceId: string;
+  readonly registrationEvidenceDigest: ArtifactDigest;
+  readonly collectionDigest: ArtifactDigest;
+  readonly authorityId: string;
+  readonly authorityRegistrationId: string;
+  readonly authorityGeneration: string;
+  readonly acquisitionId: string;
+  readonly workspaceId: string;
+  readonly inputPath: string;
+  readonly permissionManifestDigest: ArtifactDigest;
+  readonly writePermission: Readonly<PermissionManifest["write"]>;
+  readonly files: ReadonlyArray<
+    Readonly<{
+      readonly path: string;
+      readonly byteCount: number;
+      readonly digest: ArtifactDigest;
+    }>
+  >;
+  readonly writingClosed: true;
+}
+
 export interface StartupReceipt {
   readonly operationId: string;
   readonly digest: `sha256:${string}`;
@@ -378,6 +404,7 @@ export interface StartupReceipt {
     readonly acquisitionState: "held";
     readonly generation?: string;
   }>;
+  readonly reviewInputReadiness?: Readonly<ReviewInputReadiness>;
   readonly reviewSubject?: Readonly<{
     readonly artifactId: string;
     readonly byteCount: number;
@@ -534,6 +561,8 @@ export interface ResourceValidationEvidence {
   readonly workerProcessInstanceId: string;
   readonly requestDigest: `sha256:${string}`;
   readonly proofDigest: `sha256:${string}`;
+  readonly conflictControlId: string;
+  readonly noConflict: true;
   readonly checkedAt: string;
   readonly validUntil?: string;
   readonly generation?: string;
@@ -662,6 +691,11 @@ export interface ReviewInputPreparationRequest {
   readonly workspace: Readonly<ResourceWorkspace>;
   readonly registrationEvidenceId: string;
   readonly registrationEvidenceDigest: ArtifactDigest;
+  readonly collectionDigest: ArtifactDigest;
+  readonly root: Readonly<{
+    readonly artifact: Readonly<ArtifactMetadata>;
+    readonly bytes: Uint8Array;
+  }>;
   readonly files: ReadonlyArray<Readonly<ReviewInputFile>>;
 }
 
@@ -671,6 +705,8 @@ export type ReviewInputPreparationOutcome =
       readonly operationId: string;
       readonly acquisitionId: string;
       readonly workspaceId: string;
+      readonly workspaceDedicatedToOperationId: string;
+      readonly collectionDigest: ArtifactDigest;
       readonly writingClosed: true;
       readonly files: ReadonlyArray<
         Readonly<{ readonly path: string; readonly bytes: Uint8Array }>
@@ -681,10 +717,20 @@ export type ReviewInputPreparationOutcome =
 export interface ReviewInputPreparationConnection {
   /**
    * Writes only `request.files` to the Operation-dedicated workspace, closes
-   * input writing, and returns bytes read back from that workspace. A target
-   * already assigned to another Operation must return `denied`.
+   * input writing, and returns the complete bytes read back from that
+   * workspace together with the collection digest independently obtained by
+   * the registered validator. A target already assigned to another Operation
+   * must return `denied`.
    */
   prepare(
+    request: Readonly<ReviewInputPreparationRequest>
+  ): Promise<ReviewInputPreparationOutcome>;
+  /**
+   * Reads the closed Worker input without writing it and returns its current
+   * bindings, complete file set, and independently validated collection
+   * digest.
+   */
+  inspect(
     request: Readonly<ReviewInputPreparationRequest>
   ): Promise<ReviewInputPreparationOutcome>;
 }
@@ -1399,8 +1445,10 @@ export type ReviewInputClosureOutcome =
       readonly operationId: string;
       readonly bindingId: string;
       readonly root: Readonly<ArtifactMetadata>;
+      readonly rootBytes: Uint8Array;
       readonly registrationEvidenceId: string;
       readonly registrationEvidenceDigest: ArtifactDigest;
+      readonly collectionDigest: ArtifactDigest;
       readonly files: ReadonlyArray<Readonly<ReviewInputFile>>;
       readonly integrity: "verified";
     }

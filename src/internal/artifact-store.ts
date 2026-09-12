@@ -2309,8 +2309,10 @@ class FileArtifactStore implements ArtifactStore {
         operationId: binding.operationId,
         bindingId: binding.bindingId,
         root,
+        rootBytes,
         registrationEvidenceId: evidence.evidenceId,
         registrationEvidenceDigest: evidence.digest,
+        collectionDigest: evidence.collectionDigest,
         files,
         integrity: "verified",
       };

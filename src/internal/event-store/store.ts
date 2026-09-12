@@ -293,6 +293,13 @@ export abstract class ValidatedEventStore implements EventStore {
               manifestId: receipt.permissionManifest.manifestId,
               digest: receipt.permissionManifest.digest,
             },
+            ...(receipt.reviewInputReadiness === undefined
+              ? {}
+              : {
+                  reviewInputReadiness: structuredClone(
+                    receipt.reviewInputReadiness
+                  ),
+                }),
             ...(receipt.reviewSubject === undefined
               ? {}
               : {

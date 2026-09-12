@@ -2,19 +2,37 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   ResourceProofRejectedError,
+  type PermissionManifest,
   type ReviewInputClosureOutcome,
   type ReviewInputPreparationConnection,
+  type ReviewInputPreparationOutcome,
+  type ReviewInputReadiness,
   type ResourceWorkspace,
 } from "../public.js";
+import { makeReviewInputReadiness } from "./review-input-readiness.js";
 import { sha256Digest } from "./result-digest.js";
 
 export interface OperationReviewInputTarget {
   readonly operationId: string;
   readonly acquisitionId: string;
   readonly workspace: Readonly<ResourceWorkspace>;
+  readonly authorityId: string;
+  readonly authorityRegistrationId: string;
+  readonly authorityGeneration: string;
+  readonly permissionManifestDigest: `sha256:${string}`;
+  readonly writePermission: Readonly<PermissionManifest["write"]>;
   readonly connection: ReviewInputPreparationConnection;
   confirmCurrentAuthority(): Promise<void>;
 }
+
+type RetrievedReviewInput = Extract<
+  ReviewInputClosureOutcome,
+  { readonly kind: "retrieved" }
+>;
+type PreparedReviewInput = Extract<
+  ReviewInputPreparationOutcome,
+  { readonly kind: "prepared" }
+>;
 
 function validPath(path: string): boolean {
   return (
@@ -37,18 +55,28 @@ function reject(
   throw new ResourceProofRejectedError(reason, message);
 }
 
-export async function prepareReviewInput(
-  closure: Extract<ReviewInputClosureOutcome, { readonly kind: "retrieved" }>,
+function requestFor(
+  closure: Readonly<RetrievedReviewInput>,
   target: Readonly<OperationReviewInputTarget>
-): Promise<void> {
+) {
+  return {
+    operationId: target.operationId,
+    acquisitionId: target.acquisitionId,
+    workspace: target.workspace,
+    registrationEvidenceId: closure.registrationEvidenceId,
+    registrationEvidenceDigest: closure.registrationEvidenceDigest,
+    collectionDigest: closure.collectionDigest,
+    root: { artifact: closure.root, bytes: closure.rootBytes },
+    files: closure.files,
+  } as const;
+}
+
+function verifyClosure(closure: Readonly<RetrievedReviewInput>): void {
   if (
-    closure.operationId !== target.operationId ||
-    target.workspace.pionsMayDelete !== false
+    closure.rootBytes.byteLength !== closure.root.byteCount ||
+    sha256Digest(closure.rootBytes) !== closure.root.digest
   ) {
-    reject(
-      "binding_mismatch",
-      "Review input is bound to a different Operation"
-    );
+    reject("binding_mismatch", "Review input root bytes are not verified");
   }
   const paths = new Set<string>();
   for (const file of closure.files) {
@@ -65,34 +93,19 @@ export async function prepareReviewInput(
     }
     paths.add(file.path);
   }
+}
 
-  await target.confirmCurrentAuthority();
-  let outcome;
-  try {
-    outcome = await target.connection.prepare({
-      operationId: target.operationId,
-      acquisitionId: target.acquisitionId,
-      workspace: target.workspace,
-      registrationEvidenceId: closure.registrationEvidenceId,
-      registrationEvidenceDigest: closure.registrationEvidenceDigest,
-      files: closure.files,
-    });
-  } catch {
-    reject(
-      "validation_unknown",
-      "Review input preparation could not be inspected"
-    );
-  }
-  if (outcome.kind !== "prepared") {
-    reject(
-      outcome.kind === "denied" ? "authority_revoked" : "validation_unknown",
-      "Review input preparation was not authorized"
-    );
-  }
+function verifyPrepared(
+  closure: Readonly<RetrievedReviewInput>,
+  target: Readonly<OperationReviewInputTarget>,
+  outcome: Readonly<PreparedReviewInput>
+): void {
   if (
     outcome.operationId !== target.operationId ||
     outcome.acquisitionId !== target.acquisitionId ||
     outcome.workspaceId !== target.workspace.workspaceId ||
+    outcome.workspaceDedicatedToOperationId !== target.operationId ||
+    outcome.collectionDigest !== closure.collectionDigest ||
     outcome.writingClosed !== true ||
     outcome.files.length !== closure.files.length
   ) {
@@ -115,6 +128,92 @@ export async function prepareReviewInput(
       );
     }
     observedPaths.add(file.path);
+  }
+}
+
+function readinessFor(
+  closure: Readonly<RetrievedReviewInput>,
+  target: Readonly<OperationReviewInputTarget>
+): Readonly<ReviewInputReadiness> {
+  return makeReviewInputReadiness({
+    operationId: target.operationId,
+    registrationEvidenceId: closure.registrationEvidenceId,
+    registrationEvidenceDigest: closure.registrationEvidenceDigest,
+    collectionDigest: closure.collectionDigest,
+    authorityId: target.authorityId,
+    authorityRegistrationId: target.authorityRegistrationId,
+    authorityGeneration: target.authorityGeneration,
+    acquisitionId: target.acquisitionId,
+    workspaceId: target.workspace.workspaceId,
+    inputPath: target.workspace.normalizedPath,
+    permissionManifestDigest: target.permissionManifestDigest,
+    writePermission: target.writePermission,
+    files: closure.files.map(({ path, byteCount, digest }) => ({
+      path,
+      byteCount,
+      digest,
+    })),
+    writingClosed: true,
+  });
+}
+
+async function requirePreparedOutcome(
+  action: () => Promise<ReviewInputPreparationOutcome>
+): Promise<Readonly<PreparedReviewInput>> {
+  let outcome;
+  try {
+    outcome = await action();
+  } catch {
+    reject(
+      "validation_unknown",
+      "Review input preparation could not be inspected"
+    );
+  }
+  if (outcome.kind !== "prepared") {
+    reject(
+      outcome.kind === "denied" ? "authority_revoked" : "validation_unknown",
+      "Review input preparation was not authorized"
+    );
+  }
+  return outcome;
+}
+
+export async function prepareReviewInput(
+  closure: Readonly<RetrievedReviewInput>,
+  target: Readonly<OperationReviewInputTarget>
+): Promise<Readonly<ReviewInputReadiness>> {
+  if (
+    closure.operationId !== target.operationId ||
+    target.workspace.pionsMayDelete !== false
+  ) {
+    reject(
+      "binding_mismatch",
+      "Review input is bound to a different Operation"
+    );
+  }
+  verifyClosure(closure);
+  await target.confirmCurrentAuthority();
+  const outcome = await requirePreparedOutcome(() =>
+    target.connection.prepare(requestFor(closure, target))
+  );
+  verifyPrepared(closure, target, outcome);
+  await target.confirmCurrentAuthority();
+  return readinessFor(closure, target);
+}
+
+export async function revalidateReviewInput(
+  closure: Readonly<RetrievedReviewInput>,
+  target: Readonly<OperationReviewInputTarget>,
+  expected: Readonly<ReviewInputReadiness>
+): Promise<void> {
+  verifyClosure(closure);
+  await target.confirmCurrentAuthority();
+  const outcome = await requirePreparedOutcome(() =>
+    target.connection.inspect(requestFor(closure, target))
+  );
+  verifyPrepared(closure, target, outcome);
+  if (!isDeepStrictEqual(readinessFor(closure, target), expected)) {
+    reject("binding_mismatch", "Review input readiness is no longer current");
   }
   await target.confirmCurrentAuthority();
 }

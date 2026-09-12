@@ -132,6 +132,7 @@ async function recordWaitingOperation(
             registrationEvidenceDigest: `sha256:${"12".repeat(32)}`,
           },
           reviewSubjectVerification: "disabled",
+          reviewInputPreparation: "disabled",
         },
       },
     })

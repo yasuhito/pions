@@ -22,7 +22,10 @@ import {
   permissionManifestDocument,
   validateWorkspaceScope,
 } from "./resource-proof.js";
-import { prepareReviewInput } from "./review-input-preparation.js";
+import {
+  prepareReviewInput,
+  revalidateReviewInput,
+} from "./review-input-preparation.js";
 import { reviewSubjectUseBindingRequest } from "./review-subject.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
@@ -957,6 +960,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           configured.receipt.permissionManifest
         ),
         reviewSubjectVerification: configured.receipt.reviewSubjectVerification,
+        reviewInputPreparation:
+          profile.intendedUse === "formal_reviewer" &&
+          profile.resources?.resourceProofPolicy === "required"
+            ? ("required" as const)
+            : ("disabled" as const),
         ...(reviewSubject === undefined ? {} : { reviewSubject }),
       },
     };
@@ -1220,14 +1228,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       receiptPolicy,
       true
     );
-    const runtimeConfiguration = services.configuration ?? {
-      cwd: "/test/workspace",
-      profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
-    };
     const resourcePolicy =
-      runtimeConfiguration.profiles[identified.task.profile]?.resources;
+      services.configuration?.profiles[identified.task.profile]?.resources;
+    let reviewInputReadiness;
     if (
       reviewInput !== undefined &&
+      receiptPolicy.reviewInputPreparation === "required" &&
       resourcePolicy?.resourceProofPolicy === "required"
     ) {
       const controller = services.resourceProofController;
@@ -1241,7 +1247,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         record.operationId,
         reviewInput.files.map((file) => file.path)
       );
-      await prepareReviewInput(reviewInput, target);
+      reviewInputReadiness = await prepareReviewInput(reviewInput, target);
     }
     const waiting = await runEffect(
       advanceOperation(record.operationId, {
@@ -1256,6 +1262,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           workspace: receiptPolicy.workspace,
           permissionManifest: receiptPolicy.permissionManifest,
           ...(resourceEvidence === undefined ? {} : { resourceEvidence }),
+          ...(reviewInputReadiness === undefined
+            ? {}
+            : { reviewInputReadiness }),
           ...(receiptPolicy.reviewSubject === undefined
             ? {}
             : { reviewSubject: receiptPolicy.reviewSubject }),
@@ -1321,6 +1330,80 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               error instanceof Error ? error.message : String(error)
             ),
     }).pipe(Effect.asVoid);
+  };
+
+  const revalidateStartDelivery = async (
+    operationId: string
+  ): Promise<void> => {
+    let current = await runEffect(getOperation(operationId));
+    const readiness = current.startupReceipt?.reviewInputReadiness;
+    if (readiness === undefined) return;
+    if (
+      current.state !== "starting" ||
+      (current.startGate !== "not_required" &&
+        current.startGate !== "authorized")
+    ) {
+      throw new ResourceProofRejectedError(
+        "handoff_unconfirmed",
+        "Operation is no longer eligible for Start delivery"
+      );
+    }
+    if (
+      current.startAuthorizationTiming.policy === "required" &&
+      Date.parse(await runEffect(services.clock.now())) >=
+        Date.parse(current.startAuthorizationTiming.deadline)
+    ) {
+      throw new ResourceProofRejectedError(
+        "authority_revoked",
+        "Start authorization expired before delivery"
+      );
+    }
+    const policy = current.startupReceiptPolicy;
+    if (policy === undefined) {
+      throw new ResourceProofRejectedError(
+        "binding_mismatch",
+        "Fixed Startup receipt policy is unavailable"
+      );
+    }
+    const closure = await verifyReviewSubject(operationId, policy, false);
+    const resourcePolicy =
+      services.configuration?.profiles[current.task.profile]?.resources;
+    if (
+      closure === undefined ||
+      resourcePolicy?.resourceProofPolicy !== "required"
+    ) {
+      throw new ResourceProofRejectedError(
+        "invalid_profile",
+        "Review input readiness requires the fixed formal review profile"
+      );
+    }
+    const controller = services.resourceProofController;
+    if (controller === undefined) {
+      throw new ResourceProofRejectedError(
+        "authority_unavailable",
+        "Review input authority is unavailable"
+      );
+    }
+    const target = await controller.reviewInputTarget(
+      operationId,
+      closure.files.map((file) => file.path)
+    );
+    await revalidateReviewInput(closure, target, readiness);
+    current = await runEffect(getOperation(operationId));
+    const validationFinishedAt = await runEffect(services.clock.now());
+    if (
+      current.state !== "starting" ||
+      (current.startGate !== "not_required" &&
+        current.startGate !== "authorized") ||
+      (current.startAuthorizationTiming.policy === "required" &&
+        Date.parse(validationFinishedAt) >=
+          Date.parse(current.startAuthorizationTiming.deadline))
+    ) {
+      throw new ResourceProofRejectedError(
+        "handoff_unconfirmed",
+        "Operation changed during Start delivery validation"
+      );
+    }
   };
 
   const execute = async (
@@ -1652,10 +1735,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               });
             }),
           startDeliveryEntered: (instruction) =>
-            advanceAndProject(record.operationId, {
-              type: "start_delivery_entered",
-              instruction: startInstructionReference(instruction),
-            }),
+            Effect.tryPromise({
+              try: () => revalidateStartDelivery(record.operationId),
+              catch: (error) =>
+                error instanceof ResourceProofRejectedError
+                  ? error
+                  : new ResourceProofRejectedError(
+                      "validation_unknown",
+                      error instanceof Error ? error.message : String(error)
+                    ),
+            }).pipe(
+              Effect.flatMap(() =>
+                advanceAndProject(record.operationId, {
+                  type: "start_delivery_entered",
+                  instruction: startInstructionReference(instruction),
+                })
+              )
+            ),
           startInstructionDispatched: (instruction) =>
             advanceAndProject(record.operationId, {
               type: "start_instruction_dispatched",

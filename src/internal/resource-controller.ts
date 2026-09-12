@@ -258,6 +258,8 @@ function validateValidationBinding(
   record: Readonly<InternalRecord>
 ): void {
   const current = record.snapshot;
+  const proof = current.proof?.value as
+    Readonly<Record<string, unknown>> | undefined;
   if (
     evidence.acquisitionId !== current.acquisitionId ||
     evidence.startAttemptId !== record.request.startAttemptId ||
@@ -269,7 +271,10 @@ function validateValidationBinding(
     evidence.authorityRegistrationId !==
       record.request.requirements.authorityRegistrationId ||
     evidence.authorityGeneration !== record.registrationGeneration ||
-    evidence.proofDigest !== current.proof?.digest
+    evidence.proofDigest !== current.proof?.digest ||
+    evidence.conflictControlId !== proof?.conflictControlId ||
+    evidence.noConflict !== true ||
+    proof?.noConflict !== true
   )
     rejected(
       "binding_mismatch",
@@ -656,6 +661,13 @@ export function makeResourceProofController(
         operationId,
         acquisitionId,
         workspace: structuredClone(record.request.workspace),
+        authorityId: registration.authorityId,
+        authorityRegistrationId: registration.registrationId,
+        authorityGeneration: registration.generation,
+        permissionManifestDigest: permissionManifestDocument(
+          record.request.effectiveManifest
+        ).digest,
+        writePermission: structuredClone(write),
         connection,
         confirmCurrentAuthority: async () => {
           const current = await resourceController.revalidate(operationId);
@@ -728,6 +740,8 @@ export function makeResourceProofController(
           workerProcessInstanceId: validation.workerProcessInstanceId,
           requestDigest: validation.requestDigest,
           proofDigest: validation.proofDigest,
+          conflictControlId: validation.conflictControlId,
+          noConflict: validation.noConflict,
           checkedAt: validation.checkedAt,
           ...(validation.validUntil === undefined
             ? {}

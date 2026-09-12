@@ -89,7 +89,10 @@ export interface WorkerRunHooks {
   >;
   startDeliveryEntered(
     instruction: Readonly<StartInstruction>
-  ): Effect.Effect<void, OperationPersistenceError>;
+  ): Effect.Effect<
+    void,
+    OperationPersistenceError | ResourceProofRejectedError
+  >;
   startInstructionDispatched(
     instruction: Readonly<StartInstruction>
   ): Effect.Effect<void, OperationPersistenceError>;

@@ -221,6 +221,37 @@ const ResourceEvidenceReceipt = Schema.Struct({
   acquisitionState: Schema.Literal("held"),
   generation: Schema.optional(Schema.String),
 });
+const ReviewInputReadiness = Schema.Struct({
+  readinessId: Schema.String,
+  digest: Digest,
+  operationId: Schema.String,
+  registrationEvidenceId: Schema.String,
+  registrationEvidenceDigest: Digest,
+  collectionDigest: Digest,
+  authorityId: Schema.String,
+  authorityRegistrationId: Schema.String,
+  authorityGeneration: Schema.String,
+  acquisitionId: Schema.String,
+  workspaceId: Schema.String,
+  inputPath: Schema.String,
+  permissionManifestDigest: Digest,
+  writePermission: Schema.Union(
+    Schema.Struct({ kind: Schema.Literal("none") }),
+    Schema.Struct({ kind: Schema.Literal("workspace") }),
+    Schema.Struct({
+      kind: Schema.Literal("literals"),
+      paths: Schema.Array(Schema.String),
+    })
+  ),
+  files: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      byteCount: NonNegativeSafeInteger,
+      digest: Digest,
+    })
+  ),
+  writingClosed: Schema.Literal(true),
+});
 const ReviewSubjectReceipt = Schema.Struct({
   artifactId: Schema.String,
   byteCount: NonNegativeSafeInteger,
@@ -235,6 +266,7 @@ const StartupReceiptPolicy = Schema.Struct({
   permissionManifest: PermissionManifestReceipt,
   reviewSubject: Schema.optional(ReviewSubjectReceipt),
   reviewSubjectVerification: Schema.Literal("disabled", "required"),
+  reviewInputPreparation: Schema.Literal("disabled", "required"),
 });
 const StartupReceipt = Schema.Struct({
   operationId: Schema.String,
@@ -247,6 +279,7 @@ const StartupReceipt = Schema.Struct({
   workspace: WorkspaceReceipt,
   permissionManifest: PermissionManifestReceipt,
   resourceEvidence: Schema.optional(ResourceEvidenceReceipt),
+  reviewInputReadiness: Schema.optional(ReviewInputReadiness),
   reviewSubject: Schema.optional(ReviewSubjectReceipt),
   reviewSubjectVerification: Schema.Literal("disabled", "required"),
   configuredAuthorizationPolicy: Schema.Literal(
@@ -387,6 +420,8 @@ const PersistedResourceValidation = Schema.Struct({
   workerProcessInstanceId: Schema.String,
   requestDigest: Digest,
   proofDigest: Digest,
+  conflictControlId: Schema.String,
+  noConflict: Schema.Literal(true),
   checkedAt: Schema.String,
   validUntil: Schema.optional(Schema.String),
   generation: Schema.optional(Schema.String),

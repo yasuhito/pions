@@ -29,6 +29,7 @@ import {
   normalizePermissionManifest,
   parseProofDocument,
   permissionManifestsMatch,
+  ResourceProofRejectedError,
   validateWorkspaceScope,
 } from "../src/index.js";
 import type {
@@ -369,6 +370,7 @@ class FakeResourceAdapter implements ResourceAdapter {
   inspectCount = 0;
   lastRequest?: Readonly<ResourceAdapterRequest>;
   lastProofDigest?: `sha256:${string}`;
+  validationConflictControlId = "lock-manager-1";
   observedConstraints: ReadonlyArray<PermissionConstraint> = [
     "tools",
     "read",
@@ -473,6 +475,8 @@ class FakeResourceAdapter implements ResourceAdapter {
       requestDigest: request.requestDigest,
       proofDigest:
         this.lastProofDigest ?? (`sha256:${"00".repeat(32)}` as const),
+      conflictControlId: this.validationConflictControlId,
+      noConflict: true as const,
       checkedAt: "2099-01-01T00:00:00.000Z",
       generation: "lease-1",
       handoffConfirmed: true,
@@ -602,6 +606,18 @@ test("missing observation evidence rejects resource acquisition", async () => {
     name: "ResourceProofRejectedError",
     reason: "observation_missing",
   });
+});
+
+test("a validation for another conflict control rejects resource revalidation", async () => {
+  const { adapter, controller, request } = await controllerFixture();
+  adapter.validationConflictControlId = "another-lock";
+
+  await assert.rejects(
+    controller.revalidate(request.operationId),
+    (error: unknown) =>
+      error instanceof ResourceProofRejectedError &&
+      error.reason === "binding_mismatch"
+  );
 });
 
 test("a fresh validation is persisted before it is returned", async () => {
