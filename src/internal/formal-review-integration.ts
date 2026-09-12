@@ -13,6 +13,7 @@ import {
 import { resolveRepositoryState } from "./repository-state.js";
 import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import type { RuntimeClock } from "./services.js";
+import { sha256Digest } from "./result-digest.js";
 import type { VisibleRuntimeOptions } from "./visible-runtime.js";
 import type {
   FormalReviewIntegration,
@@ -32,7 +33,6 @@ import type {
 const REGISTRATION_WINDOW_MS = 60_000;
 const REGISTRATION_RECOVERY_BUDGET = 3;
 const REGISTRATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
-const ARTIFACT_DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const MAX_REVIEW_SUBJECT_PATH_LENGTH = 1_024;
 
 interface ArtifactRegistrationInput {
@@ -76,10 +76,6 @@ function makeRegistrationClock(now: () => Date): RuntimeClock {
     monotonicMilliseconds: () => performance.now(),
     recoveredElapsedTimeIsReliable: () => false,
   };
-}
-
-function artifactDigest(bytes: Uint8Array): ArtifactDigest {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 function registrationError(
@@ -149,14 +145,13 @@ function validateArtifactInput(
   if (
     !REGISTRATION_ID.test(input.registrationId) ||
     !Number.isSafeInteger(input.expectedByteCount) ||
-    input.expectedByteCount < 0 ||
-    !ARTIFACT_DIGEST.test(input.expectedDigest)
+    input.expectedByteCount < 0
   ) {
     invalidRegistrationRequest("Review subject Artifact metadata is invalid");
   }
   if (
     input.bytes.byteLength !== input.expectedByteCount ||
-    artifactDigest(input.bytes) !== input.expectedDigest
+    sha256Digest(input.bytes) !== input.expectedDigest
   ) {
     invalidRegistrationRequest(
       "Review subject Artifact bytes do not match the manifest"
@@ -269,12 +264,12 @@ export function makeFormalReviewIntegration(
       };
       validateArtifactInput(rootInputWithoutDependencies);
 
-      const manifestByPath = new Map(
+      const requirementsByPath = new Map(
         request.dependencies.map((dependency) => [dependency.path, dependency])
       );
-      if (manifestByPath.size !== request.dependencies.length) {
+      if (requirementsByPath.size !== request.dependencies.length) {
         invalidRegistrationRequest(
-          "Review subject dependency manifest contains a duplicate path"
+          "Review subject dependency requirements contain a duplicate path"
         );
       }
       const filesByPath = new Map(
@@ -285,7 +280,10 @@ export function makeFormalReviewIntegration(
           "Review subject dependency files contain a duplicate path"
         );
       }
-      for (const path of [...manifestByPath.keys(), ...filesByPath.keys()]) {
+      for (const path of [
+        ...requirementsByPath.keys(),
+        ...filesByPath.keys(),
+      ]) {
         if (!validReviewSubjectPath(path)) {
           invalidRegistrationRequest(
             "Review subject dependency path is invalid"
@@ -293,11 +291,11 @@ export function makeFormalReviewIntegration(
         }
       }
       if (
-        manifestByPath.size !== filesByPath.size ||
-        [...manifestByPath.keys()].some((path) => !filesByPath.has(path))
+        requirementsByPath.size !== filesByPath.size ||
+        [...requirementsByPath.keys()].some((path) => !filesByPath.has(path))
       ) {
         invalidRegistrationRequest(
-          "Review subject dependency files do not match the manifest"
+          "Review subject dependency files do not match the requirements"
         );
       }
 
@@ -355,7 +353,7 @@ export function makeFormalReviewIntegration(
       }
 
       const dependencyArtifactIds: Array<string> = [];
-      for (const [path, dependency] of [...manifestByPath].sort(
+      for (const [path, dependency] of [...requirementsByPath].sort(
         ([left], [right]) => left.localeCompare(right)
       )) {
         const bytes = filesByPath.get(path);

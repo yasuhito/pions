@@ -24,7 +24,7 @@ export interface FormalReviewIntegrationConfiguration {
   readonly formalReview?: Readonly<FormalReviewConfiguration>;
 }
 
-export interface ReviewSubjectDependencyManifestEntry {
+export interface ReviewSubjectDependencyRequirement {
   readonly path: string;
   readonly expectedByteCount: number;
   readonly expectedDigest: ArtifactMetadata["digest"];
@@ -45,7 +45,7 @@ export interface ReviewSubjectRegistrationRequest {
   readonly formatId: string;
   readonly normalizationId: string;
   readonly dependencies: ReadonlyArray<
-    Readonly<ReviewSubjectDependencyManifestEntry>
+    Readonly<ReviewSubjectDependencyRequirement>
   >;
   readonly dependencyFiles: ReadonlyArray<
     Readonly<ReviewSubjectDependencyFile>

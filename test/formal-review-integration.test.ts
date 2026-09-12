@@ -136,7 +136,7 @@ test("a fixed root review subject is registered in the integration Artifact Stor
   });
 });
 
-test("dependencies are registered before the root review subject", async (context) => {
+test("a root review subject references its registered dependency", async (context) => {
   const integration = await fixture(context);
   const rootBytes = Buffer.from("fixed manifest", "utf8");
   const dependencyBytes = Buffer.from("fixed specification", "utf8");
@@ -324,7 +324,7 @@ test("a root manifest rejects a digest mismatch", async (context) => {
   );
 });
 
-test("an unregistrable dependency prevents root registration", async (context) => {
+test("an unsupported dependency format prevents root registration", async (context) => {
   const integration = await fixture(context);
   const rootBytes = Buffer.from("fixed manifest", "utf8");
   const dependency = dependencyRegistration(

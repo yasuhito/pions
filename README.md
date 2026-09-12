@@ -146,7 +146,7 @@ const subject = await integration.registerReviewSubject({
 integration.installPiExtension(pi);
 ```
 
-The integration exposes only review-subject registration and configured Pi extension installation. It owns Runtime construction, Artifact Store access, repository state paths, credentials, and recovery wiring. Registration verifies that dependency manifest entries and supplied files form the same closed set, registers dependencies first, and then registers the unchanged root bytes with those dependencies. Paths must be normalized relative paths, and every supplied byte count and digest must match. A configured candidate profile does not enable production formal review by itself.
+The integration exposes only review-subject registration and configured Pi extension installation. It owns Runtime construction, Artifact Store access, repository state paths, credentials, and recovery wiring. Registration verifies that dependency requirements and supplied files form the same closed set, registers dependencies first, and then registers the unchanged root bytes with those dependencies. Paths must be normalized relative paths, and every supplied byte count and digest must match. A configured candidate profile does not enable production formal review by itself.
 
 ## Pions and pi-subagents
 
