@@ -648,6 +648,47 @@ export interface ResourceAdapter {
   ): Promise<"released" | "unknown">;
 }
 
+export interface ReviewInputFile {
+  readonly path: string;
+  readonly artifactId: string;
+  readonly byteCount: number;
+  readonly digest: ArtifactDigest;
+  readonly bytes: Uint8Array;
+}
+
+export interface ReviewInputPreparationRequest {
+  readonly operationId: string;
+  readonly acquisitionId: string;
+  readonly workspace: Readonly<ResourceWorkspace>;
+  readonly registrationEvidenceId: string;
+  readonly registrationEvidenceDigest: ArtifactDigest;
+  readonly files: ReadonlyArray<Readonly<ReviewInputFile>>;
+}
+
+export type ReviewInputPreparationOutcome =
+  | {
+      readonly kind: "prepared";
+      readonly operationId: string;
+      readonly acquisitionId: string;
+      readonly workspaceId: string;
+      readonly writingClosed: true;
+      readonly files: ReadonlyArray<
+        Readonly<{ readonly path: string; readonly bytes: Uint8Array }>
+      >;
+    }
+  | { readonly kind: "denied" | "unknown" };
+
+export interface ReviewInputPreparationConnection {
+  /**
+   * Writes only `request.files` to the Operation-dedicated workspace, closes
+   * input writing, and returns bytes read back from that workspace. A target
+   * already assigned to another Operation must return `denied`.
+   */
+  prepare(
+    request: Readonly<ReviewInputPreparationRequest>
+  ): Promise<ReviewInputPreparationOutcome>;
+}
+
 export interface ResourceAuthorityRegistration {
   readonly authorityId: string;
   readonly registrationId: string;
@@ -655,6 +696,7 @@ export interface ResourceAuthorityRegistration {
   readonly normalizationVersion: string;
   readonly issuer: ResourceProofIssuer;
   readonly adapter: ResourceAdapter;
+  readonly reviewInputPreparation?: ReviewInputPreparationConnection;
 }
 
 export interface PersistedResourceValidation extends Omit<
@@ -1351,6 +1393,23 @@ export type ArtifactRetrievalOutcome =
       readonly reason: ArtifactFailureReason;
     };
 
+export type ReviewInputClosureOutcome =
+  | {
+      readonly kind: "retrieved";
+      readonly operationId: string;
+      readonly bindingId: string;
+      readonly root: Readonly<ArtifactMetadata>;
+      readonly registrationEvidenceId: string;
+      readonly registrationEvidenceDigest: ArtifactDigest;
+      readonly files: ReadonlyArray<Readonly<ReviewInputFile>>;
+      readonly integrity: "verified";
+    }
+  | {
+      readonly kind: "failed";
+      readonly terminal: boolean;
+      readonly reason: ArtifactFailureReason;
+    };
+
 export type ArtifactAuthorityDecision =
   "allowed" | "denied" | "revoked" | "unknown";
 
@@ -1742,6 +1801,11 @@ export interface ArtifactStore {
     credential: string,
     bindingId: string
   ): Promise<ArtifactRetrievalOutcome>;
+  retrieveReviewInputForUseBinding(
+    credential: string,
+    bindingId: string,
+    registrationEvidenceId: string
+  ): Promise<ReviewInputClosureOutcome>;
   releaseUseBinding(
     credential: string,
     bindingId: string

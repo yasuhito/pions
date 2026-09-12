@@ -22,6 +22,7 @@ import {
   permissionManifestDocument,
   validateWorkspaceScope,
 } from "./resource-proof.js";
+import { prepareReviewInput } from "./review-input-preparation.js";
 import { reviewSubjectUseBindingRequest } from "./review-subject.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
@@ -1098,8 +1099,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     operationId: string,
     policy: Readonly<StartupReceiptPolicy>,
     prepare: boolean
-  ): Promise<void> => {
-    if (policy.reviewSubjectVerification === "disabled") return;
+  ) => {
+    if (policy.reviewSubjectVerification === "disabled") return undefined;
     const subject = policy.reviewSubject;
     if (subject === undefined) {
       throw new ResourceProofRejectedError(
@@ -1123,24 +1124,30 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         );
       }
     }
-    const retrieval = await services.artifacts.retrieveForUseBinding(
+    const retrieval = await services.artifacts.retrieveReviewInputForUseBinding(
       services.artifactCredential,
-      bindingRequest.bindingId
+      bindingRequest.bindingId,
+      subject.registrationEvidenceId
     );
     if (
       retrieval.kind !== "retrieved" ||
       retrieval.integrity !== "verified" ||
-      retrieval.artifact.artifactId !== subject.artifactId ||
-      retrieval.artifact.byteCount !== subject.byteCount ||
-      retrieval.artifact.digest !== subject.digest ||
-      retrieval.artifact.formatId !== subject.format ||
-      retrieval.artifact.normalizationId !== subject.normalization
+      retrieval.operationId !== operationId ||
+      retrieval.root.artifactId !== subject.artifactId ||
+      retrieval.root.byteCount !== subject.byteCount ||
+      retrieval.root.digest !== subject.digest ||
+      retrieval.root.formatId !== subject.format ||
+      retrieval.root.normalizationId !== subject.normalization ||
+      retrieval.registrationEvidenceId !== subject.registrationEvidenceId ||
+      retrieval.registrationEvidenceDigest !==
+        subject.registrationEvidenceDigest
     ) {
       throw new ResourceProofRejectedError(
         "binding_mismatch",
         "Review subject integrity could not be verified"
       );
     }
+    return retrieval;
   };
 
   const waitAtStartGate = async (
@@ -1208,7 +1215,34 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         );
       }
     }
-    await verifyReviewSubject(record.operationId, receiptPolicy, true);
+    const reviewInput = await verifyReviewSubject(
+      record.operationId,
+      receiptPolicy,
+      true
+    );
+    const runtimeConfiguration = services.configuration ?? {
+      cwd: "/test/workspace",
+      profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
+    };
+    const resourcePolicy =
+      runtimeConfiguration.profiles[identified.task.profile]?.resources;
+    if (
+      reviewInput !== undefined &&
+      resourcePolicy?.resourceProofPolicy === "required"
+    ) {
+      const controller = services.resourceProofController;
+      if (controller === undefined) {
+        throw new ResourceProofRejectedError(
+          "authority_unavailable",
+          "Required review input preparation is unavailable"
+        );
+      }
+      const target = await controller.reviewInputTarget(
+        record.operationId,
+        reviewInput.files.map((file) => file.path)
+      );
+      await prepareReviewInput(reviewInput, target);
+    }
     const waiting = await runEffect(
       advanceOperation(record.operationId, {
         type: "startup_receipt_recorded",

@@ -174,6 +174,8 @@ export function runtimeArtifactStore(
         open().then((value) => value.useBindingStatus(...args)),
       retrieveForUseBinding: (...args) =>
         open().then((value) => value.retrieveForUseBinding(...args)),
+      retrieveReviewInputForUseBinding: (...args) =>
+        open().then((value) => value.retrieveReviewInputForUseBinding(...args)),
       releaseUseBinding: (...args) =>
         open().then((value) => value.releaseUseBinding(...args)),
       createRetentionPin: (...args) =>

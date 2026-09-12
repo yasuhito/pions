@@ -344,12 +344,12 @@ async function formalReviewAdmissionFixture(
           return target.prepareUseBinding(...args);
         };
       }
-      if (property === "retrieveForUseBinding") {
+      if (property === "retrieveReviewInputForUseBinding") {
         return async (
-          ...args: Parameters<ArtifactStore["retrieveForUseBinding"]>
+          ...args: Parameters<ArtifactStore["retrieveReviewInputForUseBinding"]>
         ) => {
           options.trace?.push("verify");
-          return target.retrieveForUseBinding(...args);
+          return target.retrieveReviewInputForUseBinding(...args);
         };
       }
       const value = target[property as keyof ArtifactStore];

@@ -43,6 +43,7 @@ import {
   type ResultAcceptancePreparationSnapshot,
   type ResultAcceptanceRetentionPolicyEvidence,
   type ResolvedWorkProductRequirements,
+  type ReviewInputClosureOutcome,
   type ReviewSubjectRegistrationEvidence,
   type ReviewSubjectRegistrationEvidenceOutcome,
 } from "../public.js";
@@ -416,6 +417,13 @@ function retrievalFailed(
   reason: ArtifactFailureReason,
   terminal = true
 ): ArtifactRetrievalOutcome {
+  return { kind: "failed", terminal, reason };
+}
+
+function reviewInputClosureFailed(
+  reason: ArtifactFailureReason,
+  terminal = true
+): ReviewInputClosureOutcome {
   return { kind: "failed", terminal, reason };
 }
 
@@ -2210,6 +2218,105 @@ class FileArtifactStore implements ArtifactStore {
       );
     }
     return this.retrieve(credential, status.binding.artifactId);
+  }
+
+  async retrieveReviewInputForUseBinding(
+    credential: string,
+    bindingId: string,
+    registrationEvidenceId: string
+  ): Promise<ReviewInputClosureOutcome> {
+    try {
+      const principal = await this.authenticate(credential);
+      if (principal === undefined)
+        return reviewInputClosureFailed("unauthorized");
+      const binding = await this.readUseBinding(bindingId);
+      if (
+        binding === undefined ||
+        binding.subjectId !== principal.subjectId ||
+        binding.state !== "available"
+      ) {
+        return reviewInputClosureFailed("unauthorized");
+      }
+      const evidenceRecord = await this.readReviewSubjectRegistrationEvidence(
+        binding.artifactId
+      );
+      const evidence = evidenceRecord?.evidence;
+      if (
+        evidence === undefined ||
+        evidence.evidenceId !== registrationEvidenceId ||
+        evidence.root.artifactId !== binding.artifactId ||
+        evidence.root.dependencies.length !==
+          binding.dependencyClosure.length ||
+        evidence.root.dependencies.some(
+          (artifactId, index) => artifactId !== binding.dependencyClosure[index]
+        ) ||
+        evidence.files.length !== binding.dependencyClosure.length ||
+        evidence.files.some(
+          (file, index) => file.artifactId !== binding.dependencyClosure[index]
+        )
+      ) {
+        return reviewInputClosureFailed("registration_evidence_not_found");
+      }
+      const request: ArtifactUseBindingRequest = {
+        bindingId: binding.bindingId,
+        operationId: binding.operationId,
+        artifactId: binding.artifactId,
+        purpose: binding.purpose,
+        decisionId: binding.decisionId,
+        authorityBasis: binding.authorityBasis,
+      };
+      const authority = await this.useBindingAuthority(principal, request, [
+        binding.artifactId,
+        ...binding.dependencyClosure,
+      ]);
+      if (authority !== undefined) {
+        return reviewInputClosureFailed(
+          authority === "authority_unavailable" ? authority : "unauthorized",
+          authority !== "authority_unavailable"
+        );
+      }
+      const root = await this.readArtifactRecord(binding.artifactId);
+      if (root === undefined || !artifactMetadataMatches(root, evidence.root))
+        return reviewInputClosureFailed("stored_artifact_corrupt");
+      const rootBytes = await this.verifiedBytes(root);
+      if (typeof rootBytes === "string")
+        return reviewInputClosureFailed(rootBytes);
+      const files = [];
+      for (const expected of evidence.files) {
+        const artifact = await this.readArtifactRecord(expected.artifactId);
+        if (
+          artifact === undefined ||
+          artifact.byteCount !== expected.byteCount ||
+          artifact.digest !== expected.digest ||
+          artifact.formatId !== expected.formatId ||
+          artifact.normalizationId !== expected.normalizationId ||
+          artifact.dependencies.length !== 0
+        ) {
+          return reviewInputClosureFailed("stored_artifact_corrupt");
+        }
+        const bytes = await this.verifiedBytes(artifact);
+        if (typeof bytes === "string") return reviewInputClosureFailed(bytes);
+        files.push({
+          path: expected.path,
+          artifactId: expected.artifactId,
+          byteCount: expected.byteCount,
+          digest: expected.digest,
+          bytes,
+        });
+      }
+      return {
+        kind: "retrieved",
+        operationId: binding.operationId,
+        bindingId: binding.bindingId,
+        root,
+        registrationEvidenceId: evidence.evidenceId,
+        registrationEvidenceDigest: evidence.digest,
+        files,
+        integrity: "verified",
+      };
+    } catch {
+      return reviewInputClosureFailed("storage_inspection_unavailable", false);
+    }
   }
 
   async releaseUseBinding(

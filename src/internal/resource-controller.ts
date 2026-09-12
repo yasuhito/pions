@@ -16,6 +16,7 @@ import type {
   VersionedResourceEvidenceSnapshot,
 } from "../public.js";
 import { ResourceProofRejectedError } from "../public.js";
+import type { OperationReviewInputTarget } from "./review-input-preparation.js";
 import {
   parseProofDocument,
   permissionManifestDocument,
@@ -89,6 +90,10 @@ export interface InternalResourceProofController extends ResourceProofController
   markCleanupUnresolved(
     operationId: string
   ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  reviewInputTarget(
+    operationId: string,
+    paths: ReadonlyArray<string>
+  ): Promise<Readonly<OperationReviewInputTarget>>;
 }
 
 export interface ResourceProofControllerOptions {
@@ -623,6 +628,49 @@ export function makeResourceProofController(
   const resourceController: InternalResourceProofController = {
     prepare,
     read: async (operationId) => snapshot(await readRecord(operationId)),
+    reviewInputTarget: async (operationId, paths) => {
+      await resourceController.revalidate(operationId);
+      const record = await readRecord(operationId);
+      if (record.snapshot.state !== "held")
+        rejected("handoff_unconfirmed", "Resource acquisition is not held");
+      const write = record.request.effectiveManifest.write;
+      if (
+        write.kind === "none" ||
+        (write.kind === "literals" &&
+          paths.some((path) => !write.paths.includes(path)))
+      ) {
+        rejected(
+          "permission_mismatch",
+          "Current resource evidence does not authorize the review input files"
+        );
+      }
+      const registration = registrationFor(record.request);
+      const connection = registration.reviewInputPreparation;
+      if (connection === undefined)
+        rejected(
+          "authority_unavailable",
+          "Trusted resource authority has no review input preparation connection"
+        );
+      const acquisitionId = record.snapshot.acquisitionId;
+      return Object.freeze({
+        operationId,
+        acquisitionId,
+        workspace: structuredClone(record.request.workspace),
+        connection,
+        confirmCurrentAuthority: async () => {
+          const current = await resourceController.revalidate(operationId);
+          if (
+            current.evidence.state !== "held" ||
+            current.evidence.acquisitionId !== acquisitionId
+          ) {
+            rejected(
+              "handoff_unconfirmed",
+              "Review input resource authority did not remain held"
+            );
+          }
+        },
+      });
+    },
     revalidate: async (operationId) => {
       let record = await readRecord(operationId);
       if (
