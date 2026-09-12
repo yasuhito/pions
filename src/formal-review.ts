@@ -15,14 +15,11 @@ export interface FormalReviewCoordinatorConfiguration {
   currentAuthorization(operationId: string): Promise<CurrentStartAuthorization>;
 }
 
-export type FormalReviewResultFormatRejectionReason =
-  ResultFormatValidationFailureReason;
-
 export type FormalReviewResultFormatValidation =
   | { readonly kind: "valid" }
   | {
       readonly kind: "invalid";
-      readonly reason: FormalReviewResultFormatRejectionReason;
+      readonly reason: ResultFormatValidationFailureReason;
     };
 
 export interface FormalReviewResultFormatValidator {

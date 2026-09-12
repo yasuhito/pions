@@ -210,6 +210,51 @@ async function fixture(
   });
 }
 
+function persistedResultFormatIntegration(
+  root: string,
+  stateBaseDirectory: string,
+  options: Readonly<{
+    readonly registrationArtifact: Uint8Array;
+    readonly normalizationId: string;
+  }>
+) {
+  const configuration = {
+    repositoryRoot: root,
+    reviewSubjectRegistration,
+    formalReview: {
+      profile: formalReviewProfile(root),
+      reviewSubjectAuthority: {
+        currentUse: async () => "allowed" as const,
+      },
+      resultFormat: {
+        formatId: "test.review-result",
+        version: "1",
+        expectations: { axis: "standards" },
+        registrations: [
+          {
+            formatId: "test.review-result",
+            version: "1",
+            normalizationId: options.normalizationId,
+            validator: {
+              validatorId: "test-result-validator",
+              validatorVersion: "1",
+              registrationArtifact: options.registrationArtifact,
+              validate: async () => ({ kind: "valid" as const }),
+            },
+          },
+        ],
+      },
+    },
+  };
+  configureFormalReviewIntegrationForTest(configuration, {
+    stateBaseDirectory,
+  });
+  return createFormalReviewIntegration(configuration);
+}
+
+const fixedReviewSubjectRegistration = () =>
+  rootRegistration(Buffer.from("fixed review subject", "utf8"));
+
 test("the package publishes the stable formal review integration entry", async () => {
   const manifest = JSON.parse(
     await readFile(join(process.cwd(), "package.json"), "utf8")
@@ -993,56 +1038,34 @@ test("a persisted validator version cannot be replaced after integration restart
   const root = await mkdtemp(join(tmpdir(), "pions-result-format-restart-"));
   const stateBaseDirectory = join(root, "state");
   context.after(() => rm(root, { recursive: true, force: true }));
-  const configuration = (registrationArtifact: Uint8Array) => ({
-    repositoryRoot: root,
-    reviewSubjectRegistration,
-    formalReview: {
-      profile: formalReviewProfile(root),
-      reviewSubjectAuthority: {
-        currentUse: async () => "allowed" as const,
-      },
-      resultFormat: {
-        formatId: "test.review-result",
-        version: "1",
-        expectations: { axis: "standards" },
-        registrations: [
-          {
-            formatId: "test.review-result",
-            version: "1",
-            normalizationId: "identity.v1",
-            validator: {
-              validatorId: "test-result-validator",
-              validatorVersion: "1",
-              registrationArtifact,
-              validate: async () => ({ kind: "valid" as const }),
-            },
-          },
-        ],
-      },
-    },
-  });
-  const firstConfiguration = configuration(
-    Buffer.from("validator one", "utf8")
-  );
-  configureFormalReviewIntegrationForTest(firstConfiguration, {
-    stateBaseDirectory,
-  });
-  await createFormalReviewIntegration(firstConfiguration).registerReviewSubject(
-    rootRegistration(Buffer.from("fixed review subject", "utf8"))
-  );
-  const replacementConfiguration = configuration(
-    Buffer.from("validator replacement", "utf8")
-  );
-  configureFormalReviewIntegrationForTest(replacementConfiguration, {
-    stateBaseDirectory,
-  });
+  await persistedResultFormatIntegration(root, stateBaseDirectory, {
+    registrationArtifact: Buffer.from("validator one", "utf8"),
+    normalizationId: "identity.v1",
+  }).registerReviewSubject(fixedReviewSubjectRegistration());
 
   await assert.rejects(
-    createFormalReviewIntegration(
-      replacementConfiguration
-    ).registerReviewSubject(
-      rootRegistration(Buffer.from("fixed review subject", "utf8"))
-    ),
+    persistedResultFormatIntegration(root, stateBaseDirectory, {
+      registrationArtifact: Buffer.from("validator replacement", "utf8"),
+      normalizationId: "identity.v1",
+    }).registerReviewSubject(fixedReviewSubjectRegistration()),
+    { name: "ResultFormatRegistrationError" }
+  );
+});
+
+test("a persisted Result format version cannot change normalization after restart", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-result-format-version-"));
+  const stateBaseDirectory = join(root, "state");
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await persistedResultFormatIntegration(root, stateBaseDirectory, {
+    registrationArtifact: Buffer.from("validator one", "utf8"),
+    normalizationId: "identity.v1",
+  }).registerReviewSubject(fixedReviewSubjectRegistration());
+
+  await assert.rejects(
+    persistedResultFormatIntegration(root, stateBaseDirectory, {
+      registrationArtifact: Buffer.from("validator one", "utf8"),
+      normalizationId: "replacement.v1",
+    }).registerReviewSubject(fixedReviewSubjectRegistration()),
     { name: "ResultFormatRegistrationError" }
   );
 });

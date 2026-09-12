@@ -7,7 +7,6 @@ import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
-import type { FormalReviewResultFormatRejectionReason } from "../src/formal-review.js";
 import type { ArtifactStoreFaultPoint } from "../src/internal/artifact-store.js";
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
 import {
@@ -28,6 +27,7 @@ import type {
   PinnedResultFormat,
   ResultAcceptancePreparationEvidence,
   ResultAcceptanceTransactionOutcome,
+  ResultFormatValidationFailureReason,
   WorkerProducedResult,
 } from "../src/public.js";
 import {
@@ -158,7 +158,7 @@ function configuredResultFormat(
     | { readonly kind: "valid" }
     | {
         readonly kind: "invalid";
-        readonly reason: FormalReviewResultFormatRejectionReason;
+        readonly reason: ResultFormatValidationFailureReason;
       }
   >
 ) {

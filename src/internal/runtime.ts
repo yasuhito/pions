@@ -2066,14 +2066,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
     const workProductRequirements =
       resolveWorkProductRequirements(configuredProfile);
-    const resultFormat =
-      configuredProfile.intendedUse === "formal_reviewer"
-        ? services.formalReviewResultFormats?.resultFormat
-        : undefined;
-    if (
-      configuredProfile.intendedUse === "formal_reviewer" &&
-      resultFormat === undefined
-    ) {
+    const isFormalReview = configuredProfile.intendedUse === "formal_reviewer";
+    const resultFormat = isFormalReview
+      ? services.formalReviewResultFormats?.resultFormat
+      : undefined;
+    if (isFormalReview && resultFormat === undefined) {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
       throw new WorkerConfigurationError(
         "unsupported_capability",

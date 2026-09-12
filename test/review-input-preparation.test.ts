@@ -21,7 +21,6 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import type { FormalReviewResultFormatRejectionReason } from "../src/formal-review.js";
 import type {
   ArtifactMetadata,
   ArtifactStore,
@@ -32,6 +31,7 @@ import type {
   ResourceProofEvidence,
   ReviewInputPreparationConnection,
   ReviewSubjectRegistrationEvidence,
+  ResultFormatValidationFailureReason,
   WorkerProfilePolicy,
 } from "../src/public.js";
 
@@ -386,7 +386,7 @@ async function fixture(
     authorityTrustFromCheck?: number;
     operationIds?: ReadonlyArray<string>;
     writeAccess?: boolean;
-    resultFormatRejection?: FormalReviewResultFormatRejectionReason;
+    resultFormatRejection?: ResultFormatValidationFailureReason;
   }> = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-review-input-"));
@@ -594,7 +594,7 @@ async function authorizeReview(
 
 async function rejectedFormalReview(
   context: TestContext,
-  reason: FormalReviewResultFormatRejectionReason
+  reason: ResultFormatValidationFailureReason
 ) {
   const { runtime, artifact } = await fixture(context, {
     resultFormatRejection: reason,

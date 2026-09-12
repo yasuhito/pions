@@ -224,10 +224,15 @@ export function makeFormalReviewIntegration(
   const now = dependencies.now ?? (() => new Date());
   const artifactCredential = randomBytes(32).toString("hex");
   const coordinator = coordinatorConfiguration(configuration);
-  const resultFormats =
+  const formalReviewSetup =
     configuration.formalReview === undefined
       ? undefined
-      : configuredResultFormat(configuration.formalReview.resultFormat);
+      : {
+          configuration: configuration.formalReview,
+          resultFormats: configuredResultFormat(
+            configuration.formalReview.resultFormat
+          ),
+        };
 
   async function repositoryContext() {
     return resolveRepositoryState({
@@ -246,7 +251,7 @@ export function makeFormalReviewIntegration(
   ): Promise<Readonly<ReviewSubjectRegistrationResult>> {
     const { normalizedRoot, repositoryState } = await repositoryContext();
     const stateDirectory = join(repositoryState, "runtime");
-    await resultFormats?.registry.register(stateDirectory);
+    await formalReviewSetup?.resultFormats.registry.register(stateDirectory);
     const eventStore = new PrivateFileEventStore(
       stateDirectory,
       makeRegistrationClock(now)
@@ -527,15 +532,14 @@ export function makeFormalReviewIntegration(
       ...(dependencies.resultRuntimeFactory === undefined
         ? {}
         : { resultRuntimeFactory: dependencies.resultRuntimeFactory }),
-      ...(configuration.formalReview === undefined ||
-      resultFormats === undefined
+      ...(formalReviewSetup === undefined
         ? {}
         : {
             formalReview: {
-              profile: configuration.formalReview.profile,
+              profile: formalReviewSetup.configuration.profile,
               reviewSubjectAuthority:
-                configuration.formalReview.reviewSubjectAuthority,
-              resultFormats,
+                formalReviewSetup.configuration.reviewSubjectAuthority,
+              resultFormats: formalReviewSetup.resultFormats,
               ...(coordinator === undefined
                 ? {}
                 : {

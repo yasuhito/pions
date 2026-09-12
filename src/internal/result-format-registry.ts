@@ -26,9 +26,12 @@ interface RegisteredResultFormat {
   readonly validate: FormalReviewResultFormatRegistration["validator"]["validate"];
 }
 
+type PersistedResultFormat = Omit<PinnedResultFormat, "expectations">;
+
 interface PersistedRegistry {
   readonly formatId: typeof REGISTRY_FORMAT;
   readonly validators: ReadonlyArray<Readonly<ResultFormatValidatorIdentity>>;
+  readonly formats: ReadonlyArray<Readonly<PersistedResultFormat>>;
 }
 
 export class ResultFormatRegistrationError extends Error {
@@ -95,6 +98,24 @@ function validPersistedIdentity(
   );
 }
 
+function validPersistedResultFormat(
+  value: unknown
+): value is PersistedResultFormat {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    Object.keys(candidate).length === 4 &&
+    typeof candidate.formatId === "string" &&
+    IDENTIFIER.test(candidate.formatId) &&
+    typeof candidate.version === "string" &&
+    IDENTIFIER.test(candidate.version) &&
+    typeof candidate.normalizationId === "string" &&
+    IDENTIFIER.test(candidate.normalizationId) &&
+    validPersistedIdentity(candidate.validator)
+  );
+}
+
 function decodePersistedRegistry(source: string): PersistedRegistry {
   let value: unknown;
   try {
@@ -108,12 +129,16 @@ function decodePersistedRegistry(source: string): PersistedRegistry {
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
-    Object.keys(value).length !== 2 ||
+    Object.keys(value).length !== 3 ||
     (value as { readonly formatId?: unknown }).formatId !== REGISTRY_FORMAT ||
     !Array.isArray((value as { readonly validators?: unknown }).validators) ||
     !(
       value as { readonly validators: ReadonlyArray<unknown> }
-    ).validators.every(validPersistedIdentity)
+    ).validators.every(validPersistedIdentity) ||
+    !Array.isArray((value as { readonly formats?: unknown }).formats) ||
+    !(value as { readonly formats: ReadonlyArray<unknown> }).formats.every(
+      validPersistedResultFormat
+    )
   ) {
     throw new ResultFormatRegistrationError(
       "The persisted Result format validator registry is corrupt"
@@ -132,7 +157,7 @@ async function readPersistedRegistry(path: string): Promise<PersistedRegistry> {
       "code" in error &&
       error.code === "ENOENT"
     ) {
-      return { formatId: REGISTRY_FORMAT, validators: [] };
+      return { formatId: REGISTRY_FORMAT, validators: [], formats: [] };
     }
     throw error;
   }
@@ -161,7 +186,8 @@ async function acquireRegistryLock(path: string) {
 
 function mergedRegistry(
   persisted: Readonly<PersistedRegistry>,
-  registrations: ReadonlyMap<string, Readonly<ResultFormatValidatorIdentity>>
+  registrations: ReadonlyMap<string, Readonly<ResultFormatValidatorIdentity>>,
+  configuredFormats: ReadonlyMap<string, Readonly<PersistedResultFormat>>
 ): PersistedRegistry {
   const validators = new Map(
     persisted.validators.map((identity) => [
@@ -183,11 +209,50 @@ function mergedRegistry(
     }
     validators.set(key, identity);
   }
+
+  const persistedFormats = new Map(
+    persisted.formats.map((format) => [
+      formatKey(format.formatId, format.version),
+      format,
+    ])
+  );
+  if (persistedFormats.size !== persisted.formats.length) {
+    throw new ResultFormatRegistrationError(
+      "The persisted Result format validator registry is corrupt"
+    );
+  }
+  for (const [key, format] of configuredFormats) {
+    const existing = persistedFormats.get(key);
+    if (existing !== undefined && !isDeepStrictEqual(existing, format)) {
+      throw new ResultFormatRegistrationError(
+        "A Result format version cannot be replaced"
+      );
+    }
+    persistedFormats.set(key, format);
+  }
+  for (const format of persistedFormats.values()) {
+    const validator = validators.get(
+      validatorKey(format.validator.validatorId, format.validator.version)
+    );
+    if (
+      validator === undefined ||
+      !isDeepStrictEqual(validator, format.validator)
+    ) {
+      throw new ResultFormatRegistrationError(
+        "The persisted Result format validator registry is corrupt"
+      );
+    }
+  }
   return {
     formatId: REGISTRY_FORMAT,
     validators: [...validators.values()].sort((left, right) =>
       validatorKey(left.validatorId, left.version).localeCompare(
         validatorKey(right.validatorId, right.version)
+      )
+    ),
+    formats: [...persistedFormats.values()].sort((left, right) =>
+      formatKey(left.formatId, left.version).localeCompare(
+        formatKey(right.formatId, right.version)
       )
     ),
   };
@@ -290,7 +355,16 @@ export function makeResultFormatRegistry(
       const temporaryPath = `${registryPath}.${randomUUID()}.tmp`;
       try {
         const persisted = await readPersistedRegistry(registryPath);
-        const merged = mergedRegistry(persisted, validators);
+        const merged = mergedRegistry(
+          persisted,
+          validators,
+          new Map(
+            [...formats].map(([key, registration]) => [
+              key,
+              registration.pinned,
+            ])
+          )
+        );
         if (!isDeepStrictEqual(merged, persisted)) {
           await writeFile(temporaryPath, `${JSON.stringify(merged)}\n`, {
             encoding: "utf8",
