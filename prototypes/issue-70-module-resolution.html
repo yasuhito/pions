@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PROTOTYPE — 信頼済みブートストラップのPions解決</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background:#10131a; color:#edf1f7; }
+    body { max-width:1080px; margin:0 auto; padding:32px 20px 64px; }
+    h1 { margin-bottom:8px; } h2 { margin-top:0; font-size:1.05rem; }
+    .warning { color:#ffcc66; } .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); gap:16px; }
+    .card { background:#181e29; border:1px solid #30394a; border-radius:12px; padding:18px; }
+    label { display:block; margin:12px 0 5px; color:#aeb9cb; } select,button { font:inherit; }
+    select { width:100%; padding:8px; background:#10131a; color:#edf1f7; border:1px solid #49546a; border-radius:6px; }
+    button { padding:9px 13px; color:#edf1f7; background:#28334a; border:1px solid #52617d; border-radius:8px; cursor:pointer; }
+    button.active { background:#315a94; } .tabs { display:flex; gap:8px; flex-wrap:wrap; margin:20px 0 12px; }
+    .verdict { font-weight:700; font-size:1.2rem; padding:12px; border-radius:8px; }
+    .pass { background:#163d30; color:#8ff0c0; } .fail { background:#48232a; color:#ffabb5; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#0c0f15; padding:14px; border-radius:8px; line-height:1.45; }
+    code { color:#b7d6ff; } ul { padding-left:20px; } li { margin:7px 0; }
+    .muted { color:#9aa7ba; } .step { border-left:3px solid #52617d; padding-left:12px; margin:12px 0; }
+  </style>
+</head>
+<body>
+  <p class="warning"><strong>捨てる前提のプロトタイプです。</strong> 実装ではなく、Issue「グローバル導入されたブートストラップからPionsを確実に解決する」の判断材料です。</p>
+  <h1>Pionsは「どこから」見つかるべきか</h1>
+  <p>仮説: 信頼済みブートストラップ自身を依存関係の起点にし、Node標準解決で<code>@yasuhito/pions/formal-review</code>を読む。パスは診断情報にすぎず、信頼根拠にしない。</p>
+
+  <div class="tabs">
+    <button data-case="deadloop" class="active">deadloop</button>
+    <button data-case="qoral">Qoral</button>
+    <button data-case="negative">禁止経路</button>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>配置を動かす</h2>
+      <label for="owner">入口の所有者</label>
+      <select id="owner">
+        <option value="self">利用者所有パッケージ内</option>
+        <option value="repo">レビュー対象リポジトリ内</option>
+        <option value="launcher">任意の外部ランチャー</option>
+      </select>
+      <label for="dependency">Pionsの配置根拠</label>
+      <select id="dependency">
+        <option value="declared">入口パッケージが正確な版で依存宣言</option>
+        <option value="sibling">たまたまグローバル階層の兄弟</option>
+        <option value="search">NODE_PATH / global root走査 / 絶対パス設定</option>
+      </select>
+      <label for="cwd">子プロセスのカレントディレクトリ</label>
+      <select id="cwd">
+        <option value="other">無関係なディレクトリ</option>
+        <option value="consumer">レビュー対象リポジトリ</option>
+        <option value="bootstrap">入口のディレクトリ</option>
+      </select>
+      <label for="identity">起動時の識別検査</label>
+      <select id="identity">
+        <option value="contract">固定moduleId + 契約版1</option>
+        <option value="path">解決先パスの一致</option>
+        <option value="none">検査なし</option>
+      </select>
+    </section>
+
+    <section class="card">
+      <h2>観測された全状態</h2>
+      <div id="verdict" class="verdict"></div>
+      <pre id="state"></pre>
+      <ul id="reasons"></ul>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:16px">
+    <h2 id="walkthrough-title">deadloopの推奨経路</h2>
+    <div id="walkthrough"></div>
+  </section>
+
+  <section class="card" style="margin-top:16px">
+    <h2>このチケットで決めたい案</h2>
+    <ol>
+      <li>deadloopとQoralは、それぞれが所有する信頼済みブートストラップのパッケージマニフェストで<code>"@yasuhito/pions": "0.1.0"</code>を直接依存として宣言する。</li>
+      <li>入口はESMとして<code>@yasuhito/pions/formal-review</code>だけを読み込む。cwdに関係なく、入口ファイルを起点とするNode標準解決へ任せる。探索用の<code>createRequire</code>、<code>NODE_PATH</code>、グローバルnpmルート走査、利用先設定の絶対パスは使わない。</li>
+      <li>実行時は公開された<code>moduleId</code>と契約版<code>1</code>を照合し、不一致・検査不能を拒否する。解決先パスは診断にだけ使う。</li>
+      <li>正規配布物かどうかは実行時の自己申告ではなく、導入時の正確な版、lockfileまたはshrinkwrapの完全性、署名・来歴で検査する。</li>
+      <li>deadloopは専用ESM入口をグローバルdeadloopパッケージ内に置く。Qoralは専用NodeパッケージをQoral配布物に置き、Rustが実行ファイル相対でその入口を短命起動する。</li>
+    </ol>
+    <p class="warning"><strong>人間に決めてほしい点:</strong> deadloopの現行<code>pi install git:</code>は凍結インストールではない。正式レビュー入口を有効にする導入経路を、(A) npm公開したdeadloop + npm shrinkwrap、または (B) 別の管理者所有インストーラーによる<code>npm ci</code>に限定する案でよいか。通常のgit導入は読み取り用途だけに残す。</p>
+  </section>
+
+<script>
+const cases = {
+  deadloop: {
+    title: 'deadloopの推奨経路',
+    steps: [
+      ['配置', 'グローバルdeadloopパッケージ内の専用ESM入口。レビュー対象リポジトリには置かない。'],
+      ['解決', 'deadloop自身のdependenciesから @yasuhito/pions 0.1.0 をNode標準解決する。'],
+      ['検査', '導入時に配布物の完全性・来歴、起動時にmoduleIdと契約版1を別々に検査する。'],
+      ['残る選択', 'pi install git: を正式レビュー用導入経路にせず、凍結可能な管理経路を選ぶ。']
+    ]
+  },
+  qoral: {
+    title: 'Qoralの推奨経路',
+    steps: [
+      ['配置', 'Qoral配布物内の専用Nodeパッケージ。package.jsonとlockfileをQoralが所有する。'],
+      ['起動', 'Rust本体がcurrent_exe()相対で入口を見つけ、短命なNode子プロセスとして起動する。'],
+      ['解決', '入口自身のdependenciesから標準解決するため、子プロセスのcwdは影響しない。'],
+      ['検査', '導入時の完全性・来歴と、起動時のmoduleId・契約版を分離して安全側で拒否する。']
+    ]
+  },
+  negative: {
+    title: '禁止する経路',
+    steps: [
+      ['兄弟配置', 'グローバルnode_modulesの偶然の巻き上げ位置を所有関係として扱わない。'],
+      ['探索', 'NODE_PATH、npm root -g、ファイルシステム走査でPionsを発見しない。'],
+      ['利用先設定', 'レビュー対象リポジトリから入口、資格情報、アダプター、絶対パスを受け取らない。'],
+      ['偽の検査', 'パス一致やmoduleIdの自己申告だけで正規配布物だと推論しない。']
+    ]
+  }
+};
+let activeCase = 'deadloop';
+const controls = ['owner','dependency','cwd','identity'].map(id => document.getElementById(id));
+function render() {
+  const [owner, dependency, cwd, identity] = controls.map(x => x.value);
+  const reasons = [];
+  if (owner !== 'self') reasons.push('入口が利用者所有の信頼済み境界に固定されていない。');
+  if (dependency !== 'declared') reasons.push('解決先が入口自身の依存グラフに固定されていない。');
+  if (identity !== 'contract') reasons.push('起動時に正式レビュー統合のモジュール識別情報を検査できない。');
+  if (cwd !== 'other') reasons.push('この配置でも動くが、cwd非依存の証明ケースになっていない。');
+  const safe = owner === 'self' && dependency === 'declared' && identity === 'contract';
+  const verdict = document.getElementById('verdict');
+  verdict.className = 'verdict ' + (safe ? 'pass' : 'fail');
+  verdict.textContent = safe ? '標準解決の境界は成立' : '安全側で拒否';
+  document.getElementById('state').textContent = JSON.stringify({
+    activeWalkthrough: activeCase,
+    bootstrapOwnership: owner,
+    pionsResolutionBasis: dependency,
+    processCwd: cwd,
+    runtimeIdentityCheck: identity,
+    importSpecifier: '@yasuhito/pions/formal-review',
+    expectedPackageVersion: '0.1.0',
+    expectedModuleIdentity: { moduleId:'pions.formal-review-integration', version:'1' },
+    resolutionAccepted: safe
+  }, null, 2);
+  document.getElementById('reasons').innerHTML = (reasons.length ? reasons : ['cwdを入口以外にしても成立する。配布物の真正性は導入時に別途検査する。'])
+    .map(x => `<li>${x}</li>`).join('');
+  const c = cases[activeCase];
+  document.getElementById('walkthrough-title').textContent = c.title;
+  document.getElementById('walkthrough').innerHTML = c.steps.map(([a,b]) => `<div class="step"><strong>${a}</strong><br><span class="muted">${b}</span></div>`).join('');
+}
+controls.forEach(x => x.addEventListener('change', render));
+document.querySelectorAll('[data-case]').forEach(button => button.addEventListener('click', () => {
+  activeCase = button.dataset.case;
+  document.querySelectorAll('[data-case]').forEach(x => x.classList.toggle('active', x === button));
+  render();
+}));
+render();
+</script>
+</body>
+</html>
