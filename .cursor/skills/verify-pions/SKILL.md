@@ -141,13 +141,26 @@ npm run check
 - Must run `npm run build` first to generate test artifacts in `.test-dist/`.
 - If tests fail, read error output carefully — Pions uses Effect for control flow, so stack traces may show Effect internals.
 
+### Feature 1: Live delegation (PRIMARY USER PATH — Herdr required)
+
+**CRITICAL**: Must run **inside a Herdr pane**. Bare `pi --mode json` from a normal shell fails with "Herdr environment is unavailable" even if `herdr status` shows server running.
+
+**Harness options**:
+
+1. **Interactive Pi in Herdr** (manual): Launch Pi in a Herdr pane, send delegation message
+2. **`herdr agent prompt <pane>`** (programmatic): Send delegation command to existing Pi pane
+
+Example (programmatic):
+
+```bash
+herdr agent prompt wS9:p3 'Use pions_delegate exactly once to read package.json and return only the name field value. Do nothing else.' --wait
+```
+
 **See `features/live-delegation.md` for detailed steps, exact commands, success observables, and evidence capture.**
 
 **If Herdr is unavailable**, you CANNOT prove this feature. Document the block and proceed to Feature 2 (automated checks) as a partial gate only.
 
 ### Feature 2: Automated test suite (regression gate, not user-path proof)
-
-**Harness**: `npm run build` + verify outputs
 
 **How to drive**:
 

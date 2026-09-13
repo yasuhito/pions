@@ -67,52 +67,127 @@ The model sees `pions_delegate` as a registered tool and calls it with the task 
 
 ## Driving it with harness
 
+### CRITICAL: Must run inside a Herdr pane
+
+**The harness must execute inside a Herdr pane**, not from a bare shell. Pions workers require Herdr environment variables (`HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`) to create sibling panes.
+
+**This will NOT work** (even if `herdr status` shows server running):
+
+```bash
+# From a normal shell outside Herdr:
+pi --mode json -p 'Use pions_delegate to read package.json'
+# Fails with: "Herdr environment is unavailable: HERDR_ENV, HERDR_WORKSPACE_ID..."
+```
+
+**These WILL work**:
+
+1. **Interactive Pi session already running in a Herdr pane** (manual, for human verification)
+2. **`herdr agent prompt <pane-id>`** (programmatic, for automated proof):
+
+   ```bash
+   herdr agent prompt wS9:p3 'Use pions_delegate to read package.json and return only the name field. Do nothing else.' --wait
+   ```
+
 ### Prerequisites
 
-1. **Herdr is running**:
+1. **Herdr server is running**:
+
+   ```bash
+   herdr status
+   ```
+
+   Expected: "Herdr server running..."
+
+2. **Herdr and Pi are on PATH**:
 
    ```bash
    herdr --version
-   ```
-
-   If this fails, Herdr is unavailable. Live delegation will fail with `HerdrPreconditionError`.
-
-2. **Pi is installed and configured**:
-
-   ```bash
    pi --version
    ```
 
-3. **Pions is built**:
+3. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
 
    ```bash
+   cd ~/Work/pions  # or your Pions repo path
    npm run build
    ```
 
-4. **Pi session is running inside Herdr**:
-   - Start Herdr
-   - Launch a Pi session in a Herdr pane
-   - Confirm Pions project is trusted (has `AGENTS.md`)
+4. **A Pi session exists in a Herdr pane** (for `herdr agent prompt`), OR you will launch one interactively:
+   ```bash
+   herdr pane list
+   # Look for a pane with Pi running, e.g., wS9:p3
+   ```
 
-### Exact steps
+### Exact steps (programmatic via `herdr agent prompt`)
 
-1. Open a Pi session in Herdr (or use an existing one).
+1. **Identify the target pane**:
 
-2. Send a message that will trigger `pions_delegate`:
+   ```bash
+   herdr pane list
+   ```
+
+   Find a pane running Pi in the Pions workspace (e.g., `wS9:p3`).
+
+2. **Send delegation command**:
+
+   ```bash
+   herdr agent prompt wS9:p3 'Use pions_delegate exactly once to read package.json and return only the name field value. Do nothing else.' --wait
+   ```
+
+   Replace `wS9:p3` with your actual pane ID.
+
+3. **Observe the result**:
+
+   The command waits for Pi to respond. You should see:
+
+   - The package name (`pions`) in the output
+   - Operation ID in the response
+
+4. **Capture evidence**:
+
+   ```bash
+   mkdir -p /tmp/verify-pions-pane-$(date +%Y%m%d-%H%M%S)
+   herdr pane read wS9:p3 > /tmp/verify-pions-pane-$(date +%Y%m%d-%H%M%S)/pane-after-delegation.txt
+   herdr pane list > /tmp/verify-pions-pane-$(date +%Y%m%d-%H%M%S)/pane-list.txt
+   ```
+
+### Exact steps (interactive via Pi TUI in Herdr)
+
+1. **Launch or attach to a Pi session in Herdr**:
+
+   ```bash
+   # If no Pi session exists:
+   herdr run pi
+   # Or attach to existing pane:
+   herdr pane focus wS9:p3
+   ```
+
+2. **Verify you're in the Pions workspace**:
+
+   ```bash
+   # Inside Pi, check working directory
+   pwd
+   # Should be ~/Work/pions or similar
+   ```
+
+3. **Send a delegation message**:
+
+   In the Pi session:
 
    ```
    Use pions_delegate to read CONTEXT.md and list three domain terms.
    ```
 
-3. Observe:
+4. **Observe**:
+
    - Pi calls `pions_delegate` tool
-   - A sibling Herdr pane opens (right or bottom, depending on available space)
+   - A sibling Herdr pane opens (right or bottom)
    - The new pane shows Pi TUI with "regular" view
-   - Worker receives the task and executes it
+   - Worker executes the task
    - Result streams back to the parent Pi session
    - On success, the worker pane auto-closes
 
-4. Check the parent Pi response:
+5. **Check the parent Pi response**:
    - Contains the result text (possibly truncated if > 2000 lines or 50 KB)
    - Includes operation ID (UUID)
    - Includes SHA-256 digest of accepted bytes
@@ -121,37 +196,32 @@ The model sees `pions_delegate` as a registered tool and calls it with the task 
 
 - Operation succeeds
 - Result returned to parent
-- Worker pane closes automatically
+- Worker pane closes automatically (success only)
 - Operation ID and digest logged
 
-Example:
+Example output:
 
 ```
-Operation: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Operation: 1ccfa7a5-f41b-42d1-a9fc-f84e31da02bc
 Digest: sha256:abc123...
-Result:
-1. Operation — A persistent request...
-2. Worker — An execution entity...
-3. Result — Accepted immutable output...
+Result: pions
 ```
 
 ### Evidence capture
 
-From the parent Pi session:
-
-- Note the operation ID
-- Check `~/.local/state/pions/` for operation records
-
-From Herdr:
-
 ```bash
-herdr pane list > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/herdr-panes.txt
-```
+# Create evidence directory
+EVIDENCE_DIR="/tmp/verify-pions-pane-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$EVIDENCE_DIR"
 
-If the worker pane is still open (it closes quickly on success), you can inspect it:
+# Capture pane state
+herdr pane read <pane-id> > "$EVIDENCE_DIR/pane-after-delegation.txt"
 
-```bash
-herdr pane read <pane-id> > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/worker-tui.txt
+# Capture pane list
+herdr pane list > "$EVIDENCE_DIR/pane-list.txt"
+
+# Check operation state (if accessible)
+ls -la ~/.local/state/pions/ > "$EVIDENCE_DIR/operation-state.txt"
 ```
 
 ## Gotchas
