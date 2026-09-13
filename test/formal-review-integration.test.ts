@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { Effect } from "effect";
+
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -19,6 +21,7 @@ import {
 } from "../src/formal-review.js";
 import {
   PrivateFileEventStore,
+  type Operation,
   type OperationEvent,
 } from "../src/internal/event-store/index.js";
 import {
@@ -34,6 +37,10 @@ import {
   FakeWorkerAdapter,
   makeTestRuntime,
 } from "../src/internal/testing.js";
+import type {
+  WorkerAdapter,
+  WorkerRunHooks,
+} from "../src/internal/services.js";
 import type {
   ExternalReviewAllocationRequest,
   Runtime,
@@ -137,8 +144,8 @@ function formalReviewProfile(root: string): WorkerProfilePolicy {
     },
     workProductRequirements: {
       body: {
-        formatId: "pions.result-body.utf8.v1",
-        normalizationId: "identity",
+        formatId: "pions.result-body.v1",
+        normalizationId: "identity.v1",
         maxByteCount: 50_000,
       },
       workProducts: [],
@@ -1261,11 +1268,126 @@ interface ExternalAllocationFixtureOptions {
   readonly now?: Date;
   readonly operationIds?: ReadonlyArray<string>;
   readonly failOperationCreationOnce?: boolean;
+  readonly worker?: WorkerAdapter;
   authenticate?(authentication: string): "authenticated" | "denied" | "unknown";
   allocationFor?(
     bindingRequestId: string,
     registration: Readonly<ReviewSubjectRegistrationResult>
   ): Readonly<ExternalReviewAllocationRequest>;
+  validateResult?(
+    bytes: Uint8Array
+  ):
+    | { readonly kind: "valid" }
+    | { readonly kind: "invalid"; readonly reason: "invalid_json" };
+}
+
+interface IndependentReviewWorkerBehavior {
+  readonly body?: string;
+  readonly failure?: "worker_protocol_failed";
+  readonly processId: number;
+}
+
+class IndependentReviewWorkerAdapter extends FakeWorkerAdapter {
+  readonly prompts = new Map<string, string>();
+
+  constructor(
+    private readonly behaviors: Readonly<
+      Record<string, Readonly<IndependentReviewWorkerBehavior>>
+    >
+  ) {
+    super();
+  }
+
+  protected override run(
+    operation: Operation,
+    hooks: Readonly<WorkerRunHooks>
+  ) {
+    const behavior = this.behaviors[operation.operationId];
+    if (behavior === undefined) {
+      return Effect.succeed({ state: "worker_protocol_failed" } as const);
+    }
+    return Effect.gen(this, function* () {
+      this.startCount += 1;
+      this.prompts.set(
+        operation.operationId,
+        yield* Effect.promise(() => readFile(operation.task.promptRef, "utf8"))
+      );
+      yield* hooks.workerLaunched();
+      const startInstruction = yield* hooks.workerIdentified({
+        processId: behavior.processId,
+        processInstanceId: `process-${operation.operationId}`,
+        processStartToken: `start-${operation.operationId}`,
+        piSessionId: `pi-${operation.operationId}`,
+        observedConfig: {
+          model: {
+            state: "observed",
+            value: { ...operation.effectiveConfig.model },
+          },
+          thinkingLevel: {
+            state: "observed",
+            value: operation.effectiveConfig.thinkingLevel,
+          },
+          tools: {
+            state: "observed",
+            value: [...operation.effectiveConfig.tools],
+          },
+          cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+        },
+      });
+      yield* hooks.startDeliveryEntered(startInstruction);
+      yield* hooks.startInstructionDispatched(startInstruction);
+      yield* hooks.startInstructionAccepted(startInstruction);
+      yield* hooks.startInstructionAcknowledged(startInstruction);
+      if (behavior.failure === "worker_protocol_failed") {
+        return { state: "worker_protocol_failed" } as const;
+      }
+      const bytes = Buffer.from(behavior.body ?? "", "utf8");
+      const acceptance = yield* hooks.acceptResult({
+        acceptanceRequestId: `result-${operation.operationId}`,
+        body: {
+          formatId: "pions.result-body.v1",
+          normalizationId: "identity.v1",
+          expectedByteCount: bytes.byteLength,
+          expectedDigest: digest(bytes),
+          bytes,
+        },
+        workProducts: [],
+      });
+      if (
+        acceptance.state === "failed" &&
+        acceptance.reason === "result_format_rejected" &&
+        acceptance.resultFormatRejection !== undefined
+      ) {
+        return {
+          state: "result_format_rejected",
+          rejection: acceptance.resultFormatRejection,
+        } as const;
+      }
+      if (acceptance.state !== "accepted") {
+        return { state: "worker_protocol_failed" } as const;
+      }
+      return {
+        state: "result_acknowledged",
+        evidence: {
+          usage: {
+            input: behavior.processId,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: behavior.processId + 1,
+            cost: behavior.processId / 100,
+          },
+          toolUses: [
+            {
+              toolCallId: `read-${operation.operationId}`,
+              toolName: "read",
+              isError: false,
+            },
+          ],
+        },
+      } as const;
+    });
+  }
 }
 
 function externalAllocationRequest(
@@ -1321,7 +1443,7 @@ async function externalAllocationFixture(
       resultFormat: {
         formatId: "test.formal-review-result",
         version: "1",
-        expectations: { axis: "standards" },
+        expectations: { resultKind: "formal-review" },
         registrations: [
           {
             formatId: "test.formal-review-result",
@@ -1331,7 +1453,8 @@ async function externalAllocationFixture(
               validatorId: "test.formal-review-result-validator",
               validatorVersion: "1",
               registrationArtifact: Buffer.from("test validator v1", "utf8"),
-              validate: async () => ({ kind: "valid" as const }),
+              validate: async ({ bytes }: { readonly bytes: Uint8Array }) =>
+                options.validateResult?.(bytes) ?? { kind: "valid" as const },
             },
           },
         ],
@@ -1349,15 +1472,19 @@ async function externalAllocationFixture(
           );
         },
       },
+      coordinator: {
+        subjectId: "coordinator-1",
+        currentAuthorization: async () => "authorized" as const,
+      },
     },
   } as const;
   configureFormalReviewIntegrationForTest(configuration, {
     stateBaseDirectory,
     runtimeFactory: (runtimeOptions) => {
+      // Concurrent Operations share one fake clock, so one stable instant avoids
+      // inventing ordering between independently scheduled event appends.
       const clock = new FakeClock(
-        Array.from({ length: 100 }, (_, index) =>
-          new Date(Date.UTC(2026, 8, 12, 10, 0, index)).toISOString()
-        )
+        Array.from({ length: 500 }, () => "2026-09-12T10:00:00.000Z")
       );
       class AllocationEventStore extends PrivateFileEventStore {
         private rejectCreation = options.failOperationCreationOnce === true;
@@ -1381,7 +1508,7 @@ async function externalAllocationFixture(
         runtimeOptions.reviewSubjectAuthority
       );
       runtime = makeTestRuntime({
-        worker: new FakeWorkerAdapter(),
+        worker: options.worker ?? new FakeWorkerAdapter(),
         clock,
         ids: new FakeIdGenerator(
           options.operationIds ?? ["operation-allocation-1"]
@@ -1402,6 +1529,18 @@ async function externalAllocationFixture(
               formalReviewResultFormats:
                 runtimeOptions.formalReviewResultFormats,
             }),
+        ...(runtimeOptions.startAuthorizationAuthenticator === undefined
+          ? {}
+          : {
+              startAuthorizationAuthenticator:
+                runtimeOptions.startAuthorizationAuthenticator,
+            }),
+        ...(runtimeOptions.startAuthorizationAuthority === undefined
+          ? {}
+          : {
+              startAuthorizationAuthority:
+                runtimeOptions.startAuthorizationAuthority,
+            }),
         configuration: {
           cwd: runtimeOptions.cwd,
           profiles: runtimeOptions.profiles,
@@ -1419,16 +1558,30 @@ async function externalAllocationFixture(
     rootRegistration(Buffer.from("fixed allocation subject", "utf8"))
   );
   const tools = new Map<string, RegisteredTool>();
+  const handlers = new Map<string, () => Promise<unknown> | unknown>();
   integration.installPiExtension({
     registerTool(tool: ToolDefinition) {
       tools.set(tool.name, tool as unknown as RegisteredTool);
     },
-    on() {},
+    on(event: string, handler: () => Promise<unknown> | unknown) {
+      handlers.set(event, handler);
+    },
   } as unknown as ExtensionAPI);
   const review = tools.get("pions_review");
   if (review === undefined) throw new Error("pions_review was not registered");
+  const decision = tools.get("pions_review_decision");
+  if (decision === undefined)
+    throw new Error("pions_review_decision was not registered");
+  const operationTool = tools.get("pions_operation");
+  if (operationTool === undefined)
+    throw new Error("pions_operation was not registered");
+  const resultTool = tools.get("pions_result");
+  if (resultTool === undefined)
+    throw new Error("pions_result was not registered");
   const registered = registration;
   const reviewTool = review;
+  const decisionTool = decision;
+  let sessionId = "session-1";
   const extensionContext = {
     cwd: root,
     model: { provider: "test", id: "review-model" },
@@ -1437,15 +1590,18 @@ async function externalAllocationFixture(
       find: () => ({ provider: "test", id: "review-model" }),
       hasConfiguredAuth: () => true,
     },
-    sessionManager: { getSessionId: () => "session-1" },
+    sessionManager: { getSessionId: () => sessionId },
     isProjectTrusted: () => true,
   } as unknown as ExtensionContext;
-  async function reviewOutcome(toolCallId: string) {
+  async function reviewOutcome(
+    toolCallId: string,
+    task = "Review this Artifact"
+  ) {
     const result = await reviewTool.execute(
       toolCallId,
       {
         artifactId: registered.artifact.artifactId,
-        task: "Review this Artifact",
+        task,
       },
       undefined,
       undefined,
@@ -1456,15 +1612,66 @@ async function externalAllocationFixture(
       readonly rejoined: boolean;
     };
   }
+  async function operation(operationId: string) {
+    return runtime!.operation(operationId);
+  }
   return {
     registration: registered,
     reviewOutcome,
-    async review(toolCallId: string) {
-      return (await reviewOutcome(toolCallId)).operationId;
+    async review(toolCallId: string, task?: string) {
+      return (await reviewOutcome(toolCallId, task)).operationId;
+    },
+    async authorize(operationId: string, toolCallId: string) {
+      const receipt = await (
+        await operation(operationId)
+      ).waitForStartupReceipt();
+      if (receipt === undefined) throw new Error("Startup receipt is missing");
+      return decisionTool.execute(
+        toolCallId,
+        {
+          operationId,
+          receiptDigest: receipt.digest,
+          decision: "authorize",
+        },
+        undefined,
+        undefined,
+        extensionContext
+      );
     },
     async snapshot(operationId: string) {
-      return (await runtime!.operation(operationId)).read();
+      return (await operation(operationId)).read();
     },
+    async result(operationId: string) {
+      return (await operation(operationId)).readResult();
+    },
+    async inspectFromCurrentSession(operationId: string) {
+      return operationTool.execute(
+        "later-session-operation-call",
+        { operationId },
+        undefined,
+        undefined,
+        extensionContext
+      );
+    },
+    async retrieveFromCurrentSession(operationId: string) {
+      return resultTool.execute(
+        "later-session-result-call",
+        { operationId },
+        undefined,
+        undefined,
+        extensionContext
+      );
+    },
+    setSessionId(value: string) {
+      sessionId = value;
+    },
+    async shutdown() {
+      const handler = handlers.get("session_shutdown");
+      if (handler === undefined)
+        throw new Error("session_shutdown was not registered");
+      await handler();
+    },
+    operation,
   };
 }
 
@@ -1656,4 +1863,411 @@ test("external review allocation integrity is independent of object key order", 
   );
 
   assert.equal(validExternalReviewAllocationBinding(reordered), true);
+});
+
+const STANDARDS_REVIEW_RESULT = '{"axis":"standards","verdict":"PASS"}';
+const SPECIFICATION_REVIEW_RESULT = '{"axis":"specification","verdict":"PASS"}';
+
+interface IndependentReviewsFixtureOptions {
+  readonly standardsFailure?: "worker_protocol_failed";
+  readonly rejectedStandardsBody?: string;
+}
+
+function selectIndependentReviewAllocation() {
+  const axes = ["standards", "specification"] as const;
+  let allocationIndex = 0;
+  return (
+    requestId: string,
+    registration: Readonly<ReviewSubjectRegistrationResult>
+  ) => {
+    const axis = axes[allocationIndex];
+    allocationIndex += 1;
+    if (axis === undefined) throw new Error("No external allocation selected");
+    return externalAllocationRequest(requestId, registration, {
+      allocationId: `allocation-${axis}`,
+      axis,
+      externalExecutionId: `external-${axis}`,
+    });
+  };
+}
+
+function expectedFormalReviewPrompt(task: string): string {
+  return [
+    "You are a formal-review Worker with an independent context.",
+    "Follow the trusted project's AGENTS.md instructions.",
+    "Do not load skills, extensions, or prompt templates.",
+    "Use only the configured tools: read.",
+    "Return a self-contained textual Result.",
+    "",
+    "Review task:",
+    task,
+  ].join("\n");
+}
+
+async function independentReviewsFixture(
+  context: test.TestContext,
+  options: Readonly<IndependentReviewsFixtureOptions> = {}
+) {
+  const standardsOperationId = "operation-standards";
+  const specificationOperationId = "operation-specification";
+  const worker = new IndependentReviewWorkerAdapter({
+    [standardsOperationId]: {
+      body: options.rejectedStandardsBody ?? STANDARDS_REVIEW_RESULT,
+      ...(options.standardsFailure === undefined
+        ? {}
+        : { failure: options.standardsFailure }),
+      processId: 101,
+    },
+    [specificationOperationId]: {
+      body: SPECIFICATION_REVIEW_RESULT,
+      processId: 202,
+    },
+  });
+  const fixture = await externalAllocationFixture(context, {
+    operationIds: [standardsOperationId, specificationOperationId],
+    worker,
+    allocationFor: selectIndependentReviewAllocation(),
+    validateResult: (bytes) =>
+      options.rejectedStandardsBody !== undefined &&
+      Buffer.from(bytes).toString("utf8") === options.rejectedStandardsBody
+        ? { kind: "invalid", reason: "invalid_json" }
+        : { kind: "valid" },
+  });
+  const operationIds = [
+    await fixture.review(
+      "standards-review-call",
+      "Review coding standards only. Return a complete standards decision."
+    ),
+    await fixture.review(
+      "specification-review-call",
+      "Review the issue specification only. Return a complete specification decision."
+    ),
+  ] as const;
+  await Promise.all([
+    fixture.authorize(operationIds[0], "standards-decision-call"),
+    fixture.authorize(operationIds[1], "specification-decision-call"),
+  ]);
+  async function waitForSettlement(operationId: string) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const snapshot = await fixture.snapshot(operationId);
+      if (
+        snapshot.workerExecutionEvidence !== undefined ||
+        snapshot.failureReason !== undefined
+      ) {
+        return snapshot;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    throw new Error(`Operation ${operationId} did not settle`);
+  }
+  const snapshots = await Promise.all(operationIds.map(waitForSettlement));
+  return {
+    fixture,
+    operationIds,
+    snapshots,
+    worker,
+    async reviewIsComplete() {
+      const results = await Promise.all(operationIds.map(fixture.result));
+      return results.every((result) => result.kind === "retrieved");
+    },
+  };
+}
+
+test("an external harness binds its two review allocations to distinct Operations", async (context) => {
+  const value = await independentReviewsFixture(context);
+
+  assert.deepEqual(
+    value.snapshots.map((snapshot) => ({
+      operationId: snapshot.operationId,
+      allocationId: snapshot.externalReviewAllocation?.allocationId,
+      axis: snapshot.externalReviewAllocation?.axis,
+    })),
+    [
+      {
+        operationId: "operation-standards",
+        allocationId: "allocation-standards",
+        axis: "standards",
+      },
+      {
+        operationId: "operation-specification",
+        allocationId: "allocation-specification",
+        axis: "specification",
+      },
+    ]
+  );
+});
+
+test("independent formal reviews use distinct Worker and Pi session identities", async (context) => {
+  const value = await independentReviewsFixture(context);
+
+  assert.deepEqual(
+    value.snapshots.map((snapshot) => snapshot.workerIdentity),
+    [
+      {
+        processId: 101,
+        processInstanceId: "process-operation-standards",
+        processStartToken: "start-operation-standards",
+        piSessionId: "pi-operation-standards",
+        paneId: "fake-pane:operation-standards",
+      },
+      {
+        processId: 202,
+        processInstanceId: "process-operation-specification",
+        processStartToken: "start-operation-specification",
+        piSessionId: "pi-operation-specification",
+        paneId: "fake-pane:operation-specification",
+      },
+    ]
+  );
+});
+
+test("independent formal reviews receive separate self-contained tasks", async (context) => {
+  const value = await independentReviewsFixture(context);
+
+  assert.deepEqual(
+    value.operationIds.map((operationId) =>
+      value.worker.prompts.get(operationId)
+    ),
+    [
+      expectedFormalReviewPrompt(
+        "Review coding standards only. Return a complete standards decision."
+      ),
+      expectedFormalReviewPrompt(
+        "Review the issue specification only. Return a complete specification decision."
+      ),
+    ]
+  );
+});
+
+test("independent formal reviews preserve separate Worker execution evidence", async (context) => {
+  const value = await independentReviewsFixture(context);
+
+  assert.notDeepEqual(
+    value.snapshots[0]?.workerExecutionEvidence,
+    value.snapshots[1]?.workerExecutionEvidence
+  );
+});
+
+test("independent formal reviews accept Results under separate acceptance identifiers", async (context) => {
+  const value = await independentReviewsFixture(context);
+
+  assert.notEqual(
+    value.snapshots[0]?.resultAcceptance?.acceptanceId,
+    value.snapshots[1]?.resultAcceptance?.acceptanceId
+  );
+});
+
+test("each accepted formal review Result is governed by its pinned format", async (context) => {
+  const reviews = await independentReviewsFixture(context);
+  const pinnedFormat = {
+    formatId: "test.formal-review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    expectations: { resultKind: "formal-review" },
+    validator: {
+      validatorId: "test.formal-review-result-validator",
+      version: "1",
+      digest: digest(Buffer.from("test validator v1", "utf8")),
+    },
+  };
+
+  assert.deepEqual(
+    reviews.snapshots.map((snapshot) => snapshot.resultFormat),
+    [pinnedFormat, pinnedFormat]
+  );
+});
+
+test("each independent formal review retrieves only its own Result", async (context) => {
+  const value = await independentReviewsFixture(context);
+  const results = await Promise.all(
+    value.operationIds.map(value.fixture.result)
+  );
+
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === "retrieved" ? result.result.body : result.kind
+    ),
+    [
+      '{"axis":"standards","verdict":"PASS"}',
+      '{"axis":"specification","verdict":"PASS"}',
+    ]
+  );
+});
+
+test("each independent formal review receives its own Start authorization", async (context) => {
+  const value = await independentReviewsFixture(context);
+
+  assert.notEqual(
+    value.snapshots[0]?.startAuthorization.decision?.decisionId,
+    value.snapshots[1]?.startAuthorization.decision?.decisionId
+  );
+});
+
+test("one formal review protocol failure does not prevent the other Result acceptance", async (context) => {
+  const value = await independentReviewsFixture(context, {
+    standardsFailure: "worker_protocol_failed",
+  });
+
+  assert.notEqual(value.snapshots[1]?.resultAcceptance, undefined);
+});
+
+test("a formal review protocol failure remains a typed fact of that Operation", async (context) => {
+  const value = await independentReviewsFixture(context, {
+    standardsFailure: "worker_protocol_failed",
+  });
+
+  assert.equal(value.snapshots[0]?.failureReason, "worker_protocol_failed");
+});
+
+test("an invalid formal review Result remains a typed format rejection of that Operation", async (context) => {
+  const value = await independentReviewsFixture(context, {
+    rejectedStandardsBody: "not valid review JSON",
+  });
+
+  assert.deepEqual(value.snapshots[0]?.resultFormatRejection, {
+    formatId: "test.formal-review-result",
+    version: "1",
+    validator: {
+      validatorId: "test.formal-review-result-validator",
+      version: "1",
+      digest: digest(Buffer.from("test validator v1", "utf8")),
+    },
+    reason: "invalid_json",
+  });
+});
+
+test("an invalid formal review Result does not change the other Operation", async (context) => {
+  const value = await independentReviewsFixture(context, {
+    rejectedStandardsBody: "not valid review JSON",
+  });
+
+  assert.notEqual(value.snapshots[1]?.resultAcceptance, undefined);
+});
+
+test("an invalid formal review Result is not available for retrieval", async (context) => {
+  const reviews = await independentReviewsFixture(context, {
+    rejectedStandardsBody: "not valid review JSON",
+  });
+
+  assert.equal(
+    (await reviews.fixture.result(reviews.operationIds[0])).kind,
+    "not_accepted"
+  );
+});
+
+test("each independent formal review Result can be retrieved repeatedly", async (context) => {
+  const reviews = await independentReviewsFixture(context);
+  const first = await Promise.all(
+    reviews.operationIds.map(reviews.fixture.result)
+  );
+  const second = await Promise.all(
+    reviews.operationIds.map(reviews.fixture.result)
+  );
+
+  assert.deepEqual(second, first);
+});
+
+test("a binding mismatch in one allocation is a typed error independent of the other allocation", async (context) => {
+  const reviews = await externalAllocationFixture(context, {
+    operationIds: ["operation-standards", "operation-specification"],
+    allocationFor: (requestId, registration) =>
+      requestId === "allocation-request-1"
+        ? externalAllocationRequest(requestId, registration, {
+            allocationId: "allocation-standards",
+            axis: "standards",
+          })
+        : externalAllocationRequest(requestId, registration, {
+            allocationId: "allocation-specification",
+            axis: "specification",
+            registrationEvidenceId: "different-evidence",
+          }),
+  });
+  await reviews.review("standards-review-call", "Review standards only");
+
+  await assert.rejects(
+    reviews.review("specification-review-call", "Review specification only"),
+    { name: "ExternalReviewAllocationError", reason: "allocation_mismatch" }
+  );
+});
+
+test("session shutdown cancels both active independent formal reviews", async (context) => {
+  const reviews = await externalAllocationFixture(context, {
+    operationIds: ["operation-standards", "operation-specification"],
+    allocationFor: selectIndependentReviewAllocation(),
+  });
+  const operationIds = [
+    await reviews.review("standards-review-call", "Review standards only"),
+    await reviews.review(
+      "specification-review-call",
+      "Review specification only"
+    ),
+  ];
+  const readers = await Promise.all(operationIds.map(reviews.operation));
+  await reviews.shutdown();
+
+  assert.deepEqual(
+    await Promise.all(
+      readers.map(async (reader) => (await reader.read()).state)
+    ),
+    ["cancelled", "cancelled"]
+  );
+});
+
+test("a later Pi session can inspect both independent formal reviews", async (context) => {
+  const reviews = await independentReviewsFixture(context);
+  reviews.fixture.setSessionId("session-2");
+  const inspections = await Promise.all(
+    reviews.operationIds.map(reviews.fixture.inspectFromCurrentSession)
+  );
+
+  assert.deepEqual(
+    inspections.map(
+      (inspection) =>
+        (inspection.details as { readonly operationId: string }).operationId
+    ),
+    [...reviews.operationIds]
+  );
+});
+
+test("a later Pi session can retrieve both independent formal review Results", async (context) => {
+  const reviews = await independentReviewsFixture(context);
+  reviews.fixture.setSessionId("session-2");
+  const results = await Promise.all(
+    reviews.operationIds.map(reviews.fixture.retrieveFromCurrentSession)
+  );
+
+  assert.deepEqual(
+    results.map((result) => (result.details as { readonly body: string }).body),
+    [
+      '{"axis":"standards","verdict":"PASS"}',
+      '{"axis":"specification","verdict":"PASS"}',
+    ]
+  );
+});
+
+test("a later Pi session cannot authorize an earlier formal review", async (context) => {
+  const reviews = await independentReviewsFixture(context);
+  reviews.fixture.setSessionId("session-2");
+
+  await assert.rejects(
+    reviews.fixture.authorize(
+      reviews.operationIds[0],
+      "later-session-decision-call"
+    ),
+    /Operation is not owned by the current Pi session/u
+  );
+});
+
+test("an external harness alone decides when both independent reviews are complete", async (context) => {
+  const reviews = await independentReviewsFixture(context);
+
+  assert.equal(await reviews.reviewIsComplete(), true);
+});
+
+test("an external harness does not complete when one independent review fails", async (context) => {
+  const reviews = await independentReviewsFixture(context, {
+    standardsFailure: "worker_protocol_failed",
+  });
+
+  assert.equal(await reviews.reviewIsComplete(), false);
 });
