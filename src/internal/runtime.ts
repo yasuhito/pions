@@ -1329,6 +1329,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         services.clock.monotonicMilliseconds();
       const remaining = Math.min(wallRemaining, monotonicRemaining);
       if (remaining > 0) await runEffect(services.clock.sleep(remaining));
+      // close() rejects waiters before interrupting sleeps; do not expire after that.
+      if (!startGateWaiters.has(record.operationId)) return;
       await serializeAuthorizationMutation(record.operationId, () =>
         expireStartAuthorization(record.operationId)
       );
@@ -2701,6 +2703,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   return {
     async close(): Promise<void> {
       await recovery.catch(() => undefined);
+      for (const [operationId, waiter] of startGateWaiters.entries()) {
+        startGateWaiters.delete(operationId);
+        waiter.reject(new Error("Runtime closing"));
+      }
+      // Let rejected execute paths release file handles before artifact teardown.
+      await new Promise<void>((resolve) => setImmediate(resolve));
       await artifactServices.artifacts.close();
     },
 

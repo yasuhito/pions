@@ -280,7 +280,12 @@ async function fixture(
   context.after(async () => {
     if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = previousStateHome;
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
   });
   return createFormalReviewIntegration({
     repositoryRoot: root,
@@ -1557,7 +1562,12 @@ test("a registered dependent root is available to the configured extension Runti
   const integration = createFormalReviewIntegration(configuration);
   context.after(async () => {
     await runtime?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
   });
   const bytes = Buffer.from("fixed manifest", "utf8");
   const dependency = dependencyRegistration(
@@ -1911,7 +1921,12 @@ async function externalAllocationFixture(
   const integration = createFormalReviewIntegration(configuration);
   context.after(async () => {
     await runtime?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
   });
   registration = await integration.registerReviewSubject(
     rootRegistration(Buffer.from("fixed allocation subject", "utf8"))
