@@ -15,7 +15,7 @@ This skill helps a cold agent verify Pions, a durable Pi worker runtime and exte
 
 Get Pions ready to verify:
 
-1. **Check working directory**: Ensure you're in `/workspace` (the Pions repository root).
+1. **Check working directory**: Ensure you're in the Pions repository root (e.g., `/workspace` on a cloud agent, or `~/Work/pions` on a local machine).
 
 2. **Install dependencies**:
 
