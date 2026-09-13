@@ -66,28 +66,63 @@ Check that Pions prerequisites and runtime dependencies are healthy:
    npx tsc --version
    ```
 
-### Herdr and Pi (optional, required for live delegation)
+### Herdr and Pi (REQUIRED for user-path verification)
 
-Pions workers require Herdr to create visible Pi TUI panes. If Herdr is unavailable, `pions_delegate` fails with `HerdrPreconditionError`.
+**CRITICAL**: Pions workers require Herdr to create visible Pi TUI panes. The primary user path — live delegation via `pions_delegate` — cannot be verified without Herdr and Pi.
 
-1. **Check if Herdr is running**:
+1. **Check if Herdr is available**:
 
    ```bash
    command -v herdr && herdr --version
    ```
 
+   Expected: `herdr` binary on PATH, version 0.8.2+
+
 2. **Check if Pi is available**:
+
    ```bash
    command -v pi && pi --version
    ```
 
-**Limitation in Cloud Agents**: Most cloud VMs do not have Herdr or user Pi sessions configured. Skip live delegation tests if Herdr is unavailable. Focus on automated test harnesses instead.
+   Expected: `pi` binary on PATH, version 0.85.1+
+
+**If Herdr or Pi is missing:**
+
+- **USER-PATH VERIFICATION IS BLOCKED**. You cannot prove visible delegation works.
+- Automated tests (`npm run check`, build verification) may still run as partial regression gates, but they do NOT substitute for proving the real user experience.
+- Document clearly in your proof output: "Live delegation proof BLOCKED: Herdr unavailable. Automated checks only."
+- Do NOT claim end-to-end verification succeeded.
+
+**If Herdr and Pi are present:**
+
+- Proving ONE live-delegation feature (see `features/live-delegation.md`) is **REQUIRED** before claiming end-to-end success.
+- Check for active user sessions to avoid conflicts (see Isolation below).
+
+### Isolation: avoid double-driving shared sessions
+
+If Herdr is present, check whether a user is actively working in a Pi session:
+
+```bash
+herdr pane list
+```
+
+If you see active Pi panes that the user owns, DO NOT drive delegation in the same workspace. Either:
+
+1. Use a separate test workspace (if available), OR
+2. Wait for user permission, OR
+3. Document: "Live delegation proof deferred: user has active Pi session in this workspace."
+
+Pions delegates to **sibling panes**. Launching delegation in a shared Herdr session while a user is working can corrupt their session state.
 
 ## Drive
 
-Execute Pions features to prove they work. Start with automated harnesses (safe everywhere), then try live delegation only if Herdr is available.
+Execute Pions features to prove they work.
 
-### Feature 1: Automated test suite
+**Primary user path**: Live delegation via `pions_delegate` in Herdr (see Feature 1 below). This is the real user experience.
+
+**Regression gates**: Automated test suite, build verification, type checking. These prove code quality but do NOT prove visible delegation works.
+
+### Feature 1: Live delegation (PRIMARY USER PATH — Herdr required)
 
 **Harness**: `npm run check` (typecheck, lint, prettier, test-assertion validation, node:test suite)
 
@@ -97,7 +132,7 @@ Execute Pions features to prove they work. Start with automated harnesses (safe 
 npm run check
 ```
 
-**What it proves**: All TypeScript types are valid, code passes linting and formatting checks, test assertions follow the one-behavior-one-assertion rule, and all automated tests pass.
+**What it proves**: Code quality, type safety, test coverage. Does NOT prove visible delegation works.
 
 **Expected outcome**: Exit code 0, no failures.
 
@@ -106,7 +141,11 @@ npm run check
 - Must run `npm run build` first to generate test artifacts in `.test-dist/`.
 - If tests fail, read error output carefully — Pions uses Effect for control flow, so stack traces may show Effect internals.
 
-### Feature 2: Build and extension readiness
+**See `features/live-delegation.md` for detailed steps, exact commands, success observables, and evidence capture.**
+
+**If Herdr is unavailable**, you CANNOT prove this feature. Document the block and proceed to Feature 2 (automated checks) as a partial gate only.
+
+### Feature 2: Automated test suite (regression gate, not user-path proof)
 
 **Harness**: `npm run build` + verify outputs
 
@@ -129,7 +168,25 @@ ls -la dist/src/worker-extension.js
 - The `dist/` directory is gitignored. Always rebuild after pulling changes.
 - Worker protocol version mismatches happen if you forget to rebuild after protocol changes.
 
-### Feature 3: Type checking
+### Feature 3: Build and extension readiness (regression gate)
+
+**Harness**: `npm run build` + verify outputs
+
+**How to drive**:
+
+```bash
+npm run build
+ls -la dist/src/worker-extension.js
+```
+
+**What it proves**: The project compiles successfully, and the internal worker extension (loaded by visible workers) exists.
+
+**Expected outcome**:
+
+- `dist/src/worker-extension.js` exists
+- `dist/src/index.js` and `dist/src/formal-review.js` exist
+
+### Feature 4: Type checking (regression gate)
 
 **Harness**: `npm run typecheck`
 
@@ -143,47 +200,7 @@ npm run typecheck
 
 **Expected outcome**: Exit code 0, no TypeScript errors.
 
-### Feature 4: Live delegation (Herdr required)
-
-**Harness**: Manual `pions_delegate` call via Pi TUI
-
-**Prerequisites**:
-
-- Herdr running
-- Pi installed and configured
-- `npm run build` completed
-
-**How to drive**:
-
-```bash
-# Inside a Pi session in Herdr:
-# Use pions_delegate tool with a simple task
-```
-
-Example task: "Read CONTEXT.md and list three domain terms."
-
-**What it proves**:
-
-- Extension loads without errors
-- Worker launches in a sibling Herdr pane
-- Operation completes and returns a Result
-- Pane closes automatically on success
-
-**Expected outcome**:
-
-- Operation succeeds
-- Result includes operation ID and digest
-- Success pane auto-closes
-
-**Gotchas**:
-
-- Requires Herdr — will fail with `HerdrPreconditionError` otherwise
-- Fails if `npm run build` wasn't run first
-- Task content stays out of process args (verify with `herdr pane process-info`)
-
-**Cloud Agent limitation**: Most cloud VMs lack Herdr. If Herdr is unavailable, document that live delegation cannot be verified in this environment and rely on automated test coverage instead.
-
-### Feature 5: Formal review fail-closed
+### Feature 5: Formal review fail-closed (behavior proof)
 
 **Harness**: Check that formal-review tools reject calls when unconfigured
 

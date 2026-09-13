@@ -1,23 +1,66 @@
-# Feature: Live Delegation
+# Feature: Live Delegation (PRIMARY USER PATH)
 
-Live delegation uses `pions_delegate` to spawn a real Pi worker in a Herdr pane, execute a task, and return a verified Result.
+**This is the primary user path for Pions.** Live delegation uses `pions_delegate` to spawn a real Pi worker in a Herdr pane, execute a task, and return a verified Result. Without proving this feature works, you have not verified Pions end-to-end.
 
 ## Sub-features
 
-1. **Worker launch in Herdr pane**
-2. **Task execution with Pi TUI**
-3. **Result acceptance and verification**
-4. **Pane auto-close on success**
-5. **Operation persistence and retrieval**
+1. **Worker launch in Herdr pane** (sibling pane created without stealing focus)
+2. **Task execution with Pi TUI** (visible, observable Pi "regular" TUI)
+3. **Result acceptance and verification** (immutable UTF-8 artifact with SHA-256 digest)
+4. **Pane auto-close on success** (Pions-owned success panes only, per AGENTS.md)
+5. **Operation persistence and retrieval** (persisted Operation records in `~/.local/state/pions/`)
+
+## Prerequisites (HARD REQUIREMENTS)
+
+1. **Herdr is running and accessible**:
+
+   ```bash
+   herdr --version
+   ```
+
+   If this fails, **live delegation cannot be verified**. Stop here and document the block.
+
+2. **Pi is installed and configured**:
+
+   ```bash
+   pi --version
+   ```
+
+   Expected: Pi 0.85.1+
+
+3. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
+
+   ```bash
+   npm run build
+   ```
+
+   Verify:
+
+   ```bash
+   ls -la dist/src/worker-extension.js
+   ```
+
+4. **Pi session is running inside Herdr** in the Pions project:
+
+   - Start Herdr
+   - Launch a Pi session in a Herdr pane (or use an existing one)
+   - Confirm the working directory is the Pions repository root
+   - Confirm Pions project is trusted (has `AGENTS.md`)
+
+5. **No active conflicting sessions**: Check for other Pi panes in the same workspace:
+   ```bash
+   herdr pane list
+   ```
+   If a user is actively working in a Pi session in this workspace, **defer or use a separate test workspace** to avoid corrupting their session.
 
 ## How to get to it (user perspective)
 
 A user working in a Pi session (inside Herdr) uses the `pions_delegate` tool to delegate a self-contained task.
 
-Example:
+Example user message:
 
 ```
-Use pions_delegate to read CONTEXT.md and summarize the top three domain terms.
+Use pions_delegate to read CONTEXT.md and list three domain terms.
 ```
 
 The model sees `pions_delegate` as a registered tool and calls it with the task text.
@@ -113,11 +156,9 @@ herdr pane read <pane-id> > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H
 
 ## Gotchas
 
-### Herdr required
+### Herdr is REQUIRED
 
-Without Herdr, `pions_delegate` fails immediately with `HerdrPreconditionError`.
-
-**Cloud VM limitation**: Most cloud VMs do not have Herdr installed or running. This is expected. Document the limitation and rely on automated tests instead.
+Without Herdr, `pions_delegate` fails immediately with `HerdrPreconditionError`. This is not a workaround-able limitation. **No Herdr = no live delegation proof.**
 
 ### Must build first
 
@@ -127,7 +168,7 @@ If you skip `npm run build` or build with an old protocol version, workers fail 
 Worker configuration version does not match
 ```
 
-**Fix**: Run `npm run build` before delegating.
+**Fix**: Run `npm run build` before delegating. This is especially critical after protocol version changes.
 
 ### Task content stays private
 
@@ -158,11 +199,11 @@ ls ~/.pi/agent/sessions/
 
 You won't see a session file matching the worker's Pi session ID.
 
-### Pane auto-close
+### Pane auto-close applies to success only
 
-Success workers auto-close their panes. Failed, cancelled, or unknown workers leave panes open for debugging.
+**Success workers auto-close their panes.** Failed, cancelled, or unknown workers **leave panes open for debugging** (per AGENTS.md).
 
-**To test pane retention**: Force a failure (e.g., delete the prompt file after worker launch but before `begin`).
+To test pane retention: Force a failure (e.g., delete the prompt file after worker launch but before `begin`).
 
 ### Result truncation
 
@@ -170,31 +211,19 @@ If the result exceeds 2000 lines or 50 KB, the parent sees a truncated version w
 
 The full result is still persisted and retrievable via `pions_result`.
 
-### Multiple delegations compose
+### Double-driving shared sessions
 
-You can delegate multiple independent tasks in parallel. Pi calls `pions_delegate` multiple times, and Pions launches multiple workers.
+Pions delegates to **sibling panes**. If a user is actively working in a Pi session in the same workspace, launching delegation can corrupt their session state.
 
-Example:
+**Before delegating**:
 
-```
-Use pions_delegate to review docs/adr/0001. Also use pions_delegate to review docs/adr/0002.
-```
-
-Two workers launch in parallel.
-
-### Model selection
-
-Workers inherit the parent's model and thinking level unless overridden in `.pions.json`.
-
-Check observed model in operation events:
-
-```bash
-# (Requires operation inspection tooling or log review)
-```
+1. Check `herdr pane list` for active Pi panes
+2. If a user owns active Pi panes, **defer** or use a **separate test workspace**
+3. Document the deferral if you cannot isolate
 
 ### No background execution
 
-Workers are foreground operations. They block until complete or cancelled. Pions does not support background execution.
+Workers are foreground operations. They block until complete or cancelled. Pions does not support background execution, chains, steering, or workflows.
 
 ### Cancellation
 
@@ -216,8 +245,24 @@ Pions uses Unix domain sockets for worker protocol communication. These live in 
 
 No TCP ports are opened.
 
-### No steering, chains, or workflows
+### Cloud Agent limitation
 
-Pions supports one-shot delegations only. No mid-run steering, chains, or workflows.
+**Most cloud VMs lack Herdr.** If you are running in a cloud environment and Herdr is unavailable:
 
-For those features, see `pi-subagents`.
+- **You cannot prove live delegation.**
+- Document: "Live delegation proof BLOCKED: Herdr unavailable."
+- Automated test coverage (`npm run check`) does NOT substitute for this proof.
+- The skill is only partially verified.
+
+## For machines with Herdr (gmktec: Node v26.8.1, /home/yasuhito/.local/bin/herdr)
+
+If you are executing this skill on a machine with Herdr and Pi (e.g., user's gmktec with Node v26.8.1, Herdr at `/home/yasuhito/.local/bin/herdr`, Pi 0.85.1):
+
+1. Follow the exact steps above.
+2. Capture all success observables (Operation ID, digest, pane evidence).
+3. Save evidence to the skill's evidence directory:
+   ```bash
+   mkdir -p /opt/cursor/artifacts/verify-pions-live-delegation-$(date +%Y%m%d-%H%M%S)
+   ```
+4. Include evidence paths in your proof summary.
+5. Update PR or proof document with: "Live delegation proof COMPLETED on gmktec with Herdr."
