@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>正式レビュー公開契約 — 状態モデル試作</title>
+  <style>
+    :root { color-scheme: light; --ink:#17202a; --muted:#667085; --line:#d9dee7; --paper:#fff; --wash:#f5f7fa; --accent:#3157d5; --bad:#a4262c; --good:#16794c; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--wash); color:var(--ink); font:15px/1.55 system-ui,sans-serif; }
+    main { max-width:1050px; margin:auto; padding:36px 20px 70px; }
+    h1 { font-size:28px; margin:0 0 8px; }
+    h2 { font-size:19px; margin:30px 0 12px; }
+    p { margin:8px 0; }
+    .intro,.panel,.scenario { background:var(--paper); border:1px solid var(--line); border-radius:12px; padding:20px; }
+    .question { border-left:4px solid var(--accent); padding-left:14px; }
+    .state { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
+    .fact { background:var(--wash); border-radius:8px; padding:10px 12px; min-height:68px; }
+    .fact small { display:block; color:var(--muted); }
+    .fact strong { overflow-wrap:anywhere; }
+    .notice { margin-top:12px; padding:10px 12px; border-radius:8px; background:#edf2ff; }
+    .notice.bad { background:#fff0f0; color:var(--bad); }
+    .notice.good { background:#eaf8f0; color:var(--good); }
+    .buttons { display:flex; flex-wrap:wrap; gap:8px; }
+    button { border:1px solid var(--line); border-radius:8px; background:white; color:var(--ink); padding:9px 12px; cursor:pointer; font-weight:650; }
+    button:hover { border-color:var(--accent); color:var(--accent); }
+    button.primary { background:var(--accent); color:white; border-color:var(--accent); }
+    .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+    .tabs button.active { background:var(--ink); color:white; }
+    .steps { display:grid; gap:8px; margin-top:14px; }
+    .step { display:flex; gap:10px; align-items:center; }
+    .step span { width:24px; height:24px; border-radius:50%; background:var(--wash); display:grid; place-items:center; flex:none; }
+    .step.done { opacity:.48; }
+    code { background:var(--wash); border-radius:4px; padding:1px 5px; }
+    footer { color:var(--muted); margin-top:24px; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="intro">
+    <h1>正式レビュー公開契約 — 状態モデル試作</h1>
+    <p class="question"><strong>確かめたいこと:</strong> 呼び出し元が停止・再送・再接続しても同じレビューへ戻れ、着手、結果受理、採用、取消、再試行を混同しない契約になっているか。</p>
+    <p>これは設計判断のための破棄予定プロトタイプです。ボタンを押して、deadloopとQoralが共用する公開契約の振る舞いを確認してください。</p>
+  </section>
+
+  <h2>現在の状態</h2>
+  <section class="panel">
+    <div id="state" class="state"></div>
+    <div id="notice" class="notice">まだレビュー要求はありません。</div>
+  </section>
+
+  <h2>自由に試す</h2>
+  <section class="panel buttons" id="free"></section>
+
+  <h2>案内付きシナリオ</h2>
+  <section class="scenario">
+    <div class="tabs" id="tabs"></div>
+    <div id="scenario-copy"></div>
+    <div class="steps" id="steps"></div>
+  </section>
+
+  <footer>ファイルをブラウザーで直接開くだけで動作します。データは保存しません。</footer>
+</main>
+<script>
+const initial = () => ({
+  requestId: "未割当", operationId: "未作成", connection: "接続中",
+  execution: "未作成", authorization: "未作成", result: "未受理",
+  cancellation: "未要求", cleanup: "対象なし", adoption: "未判断",
+  clearance: false, notice: "まだレビュー要求はありません。", tone: ""
+});
+
+const transitions = {
+  allocate(s) {
+    if (s.requestId !== "未割当") return reject(s, "requestIdはすでに保存済みです。再送では同じ値を使います。");
+    return {...s, requestId:"自動保存済み: req-A", notice:"信頼済みコードが送信前にrequestIdを保存しました。"};
+  },
+  start(s) {
+    if (s.requestId === "未割当") return reject(s, "作成前にrequestIdの自動保存が必要です。");
+    if (s.operationId !== "未作成") return reject(s, "同じ要求から別のオペレーションは作りません。再送を使います。");
+    return {...s, operationId:"op-123", execution:"準備中", authorization:"起動証跡を準備中", cleanup:"未完了", notice:"Pionsがop-123を永続化しました。", tone:"good"};
+  },
+  loseResponse(s) {
+    if (s.operationId === "未作成") return reject(s, "Pions側で作成されていないため、失う応答がありません。");
+    return {...s, connection:"切断", notice:"応答が失われ、呼び出し元はoperationIdを受け取れませんでした。Pionsの記録は残っています。", tone:"bad"};
+  },
+  resend(s) {
+    if (s.requestId === "未割当") return reject(s, "同じ要求を識別できないため、安全に再送できません。");
+    if (s.operationId === "未作成") return reject(s, "先に作成を行ってください。");
+    return {...s, connection:"接続中", notice:"同じrequestIdが保存済みのop-123へ合流しました。重複作成はありません。", tone:"good"};
+  },
+  receipt(s) {
+    if (s.operationId === "未作成") return reject(s, "オペレーションがありません。");
+    return {...s, execution:"着手待ち", authorization:"判断待ち: receipt-X", notice:"対象オペレーションの起動証跡だけを取得しました。"};
+  },
+  authorize(s) {
+    if (!s.authorization.startsWith("判断待ち")) return reject(s, "一致する起動証跡が判断待ちではありません。");
+    return {...s, execution:"実行中", authorization:"許可済み", notice:"初期設定で固定した信頼済み判断方法が着手を許可しました。", tone:"good"};
+  },
+  interrupt(s) {
+    return {...s, connection:"待機中断", notice:"runReviewの待機だけを終了しました。レビュー自体は取り消していません。", tone:"bad"};
+  },
+  reconnect(s) {
+    if (s.operationId === "未作成") return reject(s, "復帰先のレビューがありません。");
+    return {...s, connection:"接続中", notice:"保存済みrequestIdから同じレビューへ復帰しました。", tone:"good"};
+  },
+  complete(s) {
+    if (s.execution !== "実行中") return reject(s, "実行中のレビューだけが結果を生成できます。");
+    return {...s, execution:"完了", result:"受理済み: approved", cleanup:"完了", notice:"結果形式と保存を検証しました。採用はまだ決めていません。", tone:"good"};
+  },
+  adopt(s) {
+    if (!s.result.startsWith("受理済み")) return reject(s, "受理済み結果がありません。");
+    return {...s, adoption:"利用者が採用", notice:"deadloopまたはQoralが対象不変性などを再検査して採用しました。", tone:"good"};
+  },
+  cancel(s) {
+    if (s.operationId === "未作成") return reject(s, "取消対象がありません。");
+    return {...s, execution:"取消中", cancellation:"明示的に要求済み", notice:"待機中断とは別に、レビューと子孫の取消を要求しました。"};
+  },
+  cancelUnknown(s) {
+    if (s.cancellation !== "明示的に要求済み") return reject(s, "先に明示的な取消を要求してください。");
+    return {...s, execution:"不明", cancellation:"停止確認不能", cleanup:"要確認", notice:"停止を確認できないためcancelledとは表示しません。", tone:"bad"};
+  },
+  fail(s) {
+    if (s.operationId === "未作成") return reject(s, "失敗対象がありません。");
+    return {...s, execution:"失敗", result:"未受理", cleanup:"要確認", notice:"ワーカーが失敗しました。再送は同じ失敗へ戻り、自動再試行はしません。", tone:"bad"};
+  },
+  clearance(s) {
+    if (s.execution !== "失敗" && s.execution !== "不明") return reject(s, "安全証明が必要な失敗または不明状態ではありません。");
+    return {...s, clearance:true, notice:"旧ワーカーの停止またはアクセス遮断を示す再試行安全証明を確認しました。", tone:"good"};
+  },
+  retry(s) {
+    if (!s.clearance) return reject(s, "再試行安全証明なしでは新しいワーカーを動かしません。");
+    return {...initial(), requestId:"自動保存済み: req-B", operationId:"op-456", execution:"準備中", authorization:"起動証跡を準備中", cleanup:"未完了", notice:"元の記録を変更せず、新しい再試行オペレーションop-456を接続しました。", tone:"good"};
+  },
+  close(s) {
+    return {...s, connection:"統合を閉鎖", notice:"ローカル資源を閉じました。保存済みレビューを取り消したことにはなりません。"};
+  },
+  reset() { return initial(); }
+};
+function reject(s, message) { return {...s, notice:"拒否: "+message, tone:"bad"}; }
+
+const actions = [
+  ["allocate","requestIdを自動保存"],["start","レビューを作成"],["loseResponse","作成応答を失う"],
+  ["resend","同じ要求を再送"],["receipt","起動証跡を取得"],["authorize","着手を許可"],
+  ["interrupt","待機だけ中断"],["reconnect","既存レビューへ復帰"],["complete","approved結果を受理"],
+  ["adopt","利用者が結果を採用"],["cancel","明示的に取消"],["cancelUnknown","停止確認を失敗"],
+  ["fail","ワーカー失敗"],["clearance","再試行安全証明を確認"],["retry","新しい再試行を作成"],["close","統合を閉じる"],
+  ["reset","最初からやり直す"]
+];
+const scenarios = [
+  {name:"通常完了", copy:"自動生成された識別子、外部着手判断、結果受理、利用者による採用が分かれていることを確認します。", steps:["allocate","start","receipt","authorize","complete","adopt"]},
+  {name:"作成応答の喪失", copy:"Pionsでは作成済みだが呼び出し元が識別子を受け取れなかった場面です。同じrequestIdで重複なく戻れるかを確認します。", steps:["allocate","start","loseResponse","resend"]},
+  {name:"待機中断と復帰", copy:"runReviewを待つ処理が止まってもレビューを自動取消せず、後から同じ処理へ復帰します。", steps:["allocate","start","receipt","authorize","interrupt","reconnect","complete"]},
+  {name:"取消状態が不明", copy:"取消要求後に停止を確認できない場合、成功した取消として扱わないことを確認します。", steps:["allocate","start","receipt","authorize","cancel","cancelUnknown"]},
+  {name:"安全な再試行", copy:"失敗を再送することと、新しいワーカーで再試行することを分けます。安全証明後だけ新しいオペレーションを作ります。", steps:["allocate","start","receipt","authorize","fail","clearance","retry"]}
+];
+
+let state = initial(); let activeScenario = 0; let stepIndex = 0;
+function dispatch(name) { state = transitions[name](state); render(); }
+function fact(label,value) { return `<div class="fact"><small>${label}</small><strong>${value}</strong></div>`; }
+function render() {
+  document.querySelector("#state").innerHTML = [
+    fact("作成要求",state.requestId), fact("オペレーション",state.operationId), fact("呼び出し接続",state.connection),
+    fact("実行",state.execution), fact("着手判断",state.authorization), fact("結果受理",state.result),
+    fact("取消",state.cancellation), fact("終了処理",state.cleanup), fact("利用者の採用",state.adoption)
+  ].join("");
+  const notice=document.querySelector("#notice"); notice.textContent=state.notice; notice.className="notice "+state.tone;
+  document.querySelector("#free").innerHTML=actions.map(([id,label])=>`<button data-action="${id}" class="${id==='reset'?'':'primary'}">${label}</button>`).join("");
+  document.querySelectorAll("#free button").forEach(b=>b.onclick=()=>dispatch(b.dataset.action));
+  renderScenario();
+}
+function renderScenario() {
+  document.querySelector("#tabs").innerHTML=scenarios.map((s,i)=>`<button data-tab="${i}" class="${i===activeScenario?'active':''}">${s.name}</button>`).join("");
+  document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{ activeScenario=Number(b.dataset.tab); stepIndex=0; state=initial(); render(); });
+  const sc=scenarios[activeScenario]; document.querySelector("#scenario-copy").innerHTML=`<strong>${sc.name}</strong><p>${sc.copy}</p>`;
+  document.querySelector("#steps").innerHTML=sc.steps.map((id,i)=>{const label=actions.find(a=>a[0]===id)[1]; return `<div class="step ${i<stepIndex?'done':''}"><span>${i+1}</span><button data-step="${i}" ${i!==stepIndex?'disabled':''}>${label}</button></div>`}).join("");
+  const next=document.querySelector(`#steps button[data-step="${stepIndex}"]`); if(next) next.onclick=()=>{dispatch(sc.steps[stepIndex]); stepIndex++; renderScenario();};
+}
+render();
+</script>
+</body>
+</html>
