@@ -83,7 +83,7 @@
       <li>正規配布物かどうかは実行時の自己申告ではなく、導入時の正確な版、lockfileまたはshrinkwrapの完全性、署名・来歴で検査する。</li>
       <li>deadloopは専用ESM入口をグローバルdeadloopパッケージ内に置く。Qoralは専用NodeパッケージをQoral配布物に置き、Rustが実行ファイル相対でその入口を短命起動する。</li>
     </ol>
-    <p class="warning"><strong>人間に決めてほしい点:</strong> deadloopの現行<code>pi install git:</code>は凍結インストールではない。正式レビュー入口を有効にする導入経路を、(A) npm公開したdeadloop + npm shrinkwrap、または (B) 別の管理者所有インストーラーによる<code>npm ci</code>に限定する案でよいか。通常のgit導入は読み取り用途だけに残す。</p>
+    <p><strong>確認済みの判断:</strong> 本番ではnpm公開したdeadloopとPionsを正確な版、完全性、来歴へ固定する。開発では、開発中のPionsを<code>npm pack</code>したローカルtarballとしてdeadloopへ明示的に導入し、非本番の正式レビュー設定だけを許可する。どちらも実行時のパス探索はしない。通常の<code>pi install git:</code>は読み取り用途だけに残す。</p>
   </section>
 
 <script>
@@ -94,7 +94,7 @@ const cases = {
       ['配置', 'グローバルdeadloopパッケージ内の専用ESM入口。レビュー対象リポジトリには置かない。'],
       ['解決', 'deadloop自身のdependenciesから @yasuhito/pions 0.1.0 をNode標準解決する。'],
       ['検査', '導入時に配布物の完全性・来歴、起動時にmoduleIdと契約版1を別々に検査する。'],
-      ['残る選択', 'pi install git: を正式レビュー用導入経路にせず、凍結可能な管理経路を選ぶ。']
+      ['導入区分', '本番はnpm公開版へ固定する。開発はnpm packしたPionsを明示的に導入し、非本番設定だけを許可する。']
     ]
   },
   qoral: {
