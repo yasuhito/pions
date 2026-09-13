@@ -2307,17 +2307,27 @@ async function independentReviewsFixture(
     fixture.authorize(operationIds[1], "specification-decision-call"),
   ]);
   async function waitForSettlement(operationId: string) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    // Wait for a real terminal state. A fixed attempt budget fails under CI
+    // load when other test files share the event loop; wall-clock bound stays
+    // honest about "done or not" without inventing event order.
+    const deadline = Date.now() + 30_000;
+    for (;;) {
       const snapshot = await fixture.snapshot(operationId);
       if (
-        snapshot.workerExecutionEvidence !== undefined ||
-        snapshot.failureReason !== undefined
+        snapshot.state === "completed" ||
+        snapshot.state === "failed" ||
+        snapshot.state === "cancelled" ||
+        snapshot.state === "unknown"
       ) {
         return snapshot;
       }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `Operation ${operationId} did not settle (state=${snapshot.state})`
+        );
+      }
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    throw new Error(`Operation ${operationId} did not settle`);
   }
   const snapshots = await Promise.all(operationIds.map(waitForSettlement));
   return {
