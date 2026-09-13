@@ -842,11 +842,23 @@ export interface ReviewInputPreparationConnection {
   ): Promise<ReviewInputPreparationOutcome>;
 }
 
+export type DeploymentMode = "non-production" | "production";
+
+export interface ResourceAdapterIdentity {
+  readonly adapterId: string;
+  readonly version: string;
+  readonly digest: ArtifactDigest;
+  readonly intendedUse: DeploymentMode;
+}
+
 export interface ResourceAuthorityRegistration {
   readonly authorityId: string;
   readonly registrationId: string;
   readonly generation: string;
   readonly normalizationVersion: string;
+  readonly identity: Readonly<ResourceAdapterIdentity>;
+  /** Exact bytes of the adapter implementation represented by identity.digest. */
+  readonly registrationArtifact: Uint8Array;
   readonly issuer: ResourceProofIssuer;
   readonly adapter: ResourceAdapter;
   readonly reviewInputPreparation?: ReviewInputPreparationConnection;

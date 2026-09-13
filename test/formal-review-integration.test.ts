@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { Effect } from "effect";
 
@@ -15,6 +17,7 @@ import type {
 
 import {
   createFormalReviewIntegration,
+  formalReviewIntegrationModule,
   type ReviewSubjectRegistrationEvidenceConfiguration,
   type ReviewSubjectRegistrationRequest,
   type ReviewSubjectRegistrationResult,
@@ -47,8 +50,33 @@ import type {
   WorkerProfilePolicy,
 } from "../src/public.js";
 
+const execFileAsync = promisify(execFile);
+
 function digest(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function trustedBootstrap(
+  root: string,
+  approvedAdapters: ReadonlyArray<
+    Readonly<{
+      readonly adapterId: string;
+      readonly version: string;
+      readonly digest: `sha256:${string}`;
+      readonly intendedUse: "non-production" | "production";
+    }>
+  > = []
+) {
+  return {
+    expectedModuleVersion: formalReviewIntegrationModule.version,
+    repository: {
+      repositoryId: "trusted-test-repository",
+      canonicalRoot: root,
+      verifyIdentity: (normalizedRoot: string) => normalizedRoot === root,
+    },
+    deployment: "non-production" as const,
+    approvedAdapters,
+  };
 }
 
 function collectionDigest(
@@ -114,6 +142,37 @@ function rootRegistration(
     },
     ...overrides,
   };
+}
+
+function testResourceAuthority(
+  registrationArtifact: Uint8Array,
+  intendedUse: "non-production" | "production" = "non-production"
+) {
+  const unavailable = async () => {
+    throw new Error("test Resource Adapter is not active");
+  };
+  return {
+    authorityId: "trusted-test-authority",
+    registrationId: "trusted-test-registration",
+    generation: "1",
+    normalizationVersion: "1",
+    identity: {
+      adapterId: "trusted-test-adapter",
+      version: "1",
+      digest: digest(registrationArtifact),
+      intendedUse,
+    },
+    registrationArtifact,
+    issuer: { verify: unavailable, isCurrentlyTrusted: unavailable },
+    adapter: {
+      normalizeSelector: unavailable,
+      acquire: unavailable,
+      recover: unavailable,
+      inspect: unavailable,
+      revokeAccess: unavailable,
+      release: unavailable,
+    },
+  } as const;
 }
 
 function formalReviewProfile(root: string): WorkerProfilePolicy {
@@ -225,6 +284,7 @@ async function fixture(
   });
   return createFormalReviewIntegration({
     repositoryRoot: root,
+    trustedBootstrap: trustedBootstrap(root),
     reviewSubjectRegistration: registrationConfiguration,
   });
 }
@@ -237,11 +297,16 @@ function persistedResultFormatIntegration(
     readonly normalizationId: string;
   }>
 ) {
+  const resourceAuthority = testResourceAuthority(
+    Buffer.from("persisted-format adapter v1", "utf8")
+  );
   const configuration = {
     repositoryRoot: root,
+    trustedBootstrap: trustedBootstrap(root, [resourceAuthority.identity]),
     reviewSubjectRegistration,
     formalReview: {
       profile: formalReviewProfile(root),
+      resourceAuthority,
       reviewSubjectAuthority: {
         currentUse: async () => "allowed" as const,
       },
@@ -290,6 +355,284 @@ test("the package publishes the stable formal review integration entry", async (
     {
       files: ["dist"],
       entry: "./dist/src/formal-review.js",
+    }
+  );
+});
+
+test("a trusted bootstrap in another repository loads the globally installed public entry", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-global-bootstrap-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await execFileAsync("npm", ["run", "build", "--silent"], {
+    cwd: process.cwd(),
+  });
+  const packed = await execFileAsync(
+    "npm",
+    ["pack", "--silent", "--pack-destination", root],
+    { cwd: process.cwd() }
+  );
+  const archive = join(root, packed.stdout.trim().split("\n").at(-1)!);
+  const prefix = join(root, "global");
+  await execFileAsync("npm", [
+    "install",
+    "--silent",
+    "--ignore-scripts",
+    "--global",
+    "--prefix",
+    prefix,
+    archive,
+  ]);
+  const bootstrapDirectory = join(
+    prefix,
+    "lib",
+    "node_modules",
+    "trusted-bootstrap"
+  );
+  await mkdir(bootstrapDirectory, { recursive: true });
+  await writeFile(
+    join(bootstrapDirectory, "index.mjs"),
+    [
+      'import { createRequire } from "node:module";',
+      'import { pathToFileURL } from "node:url";',
+      "const require = createRequire(import.meta.url);",
+      'const entry = require.resolve("pions/formal-review");',
+      "await import(pathToFileURL(entry).href);",
+      "process.stdout.write(entry);",
+    ].join("\n"),
+    "utf8"
+  );
+  const consumerRepository = join(root, "consumer-repository");
+  await mkdir(consumerRepository);
+
+  const loaded = await execFileAsync(
+    process.execPath,
+    [join(bootstrapDirectory, "index.mjs")],
+    { cwd: consumerRepository }
+  );
+
+  assert.equal(
+    loaded.stdout,
+    join(
+      prefix,
+      "lib",
+      "node_modules",
+      "pions",
+      "dist",
+      "src",
+      "formal-review.js"
+    )
+  );
+});
+
+test("the public formal review module exposes its versioned identity", () => {
+  assert.deepEqual(formalReviewIntegrationModule, {
+    moduleId: "pions.formal-review-integration",
+    version: "1",
+  });
+});
+
+test("the trusted bootstrap rejects a different Pions module version", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-module-version-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+
+  assert.throws(
+    () =>
+      createFormalReviewIntegration({
+        repositoryRoot: root,
+        trustedBootstrap: {
+          ...trustedBootstrap(root),
+          expectedModuleVersion: "different-version",
+        },
+        reviewSubjectRegistration,
+      }),
+    { name: "FormalReviewBootstrapError", reason: "module_version_mismatch" }
+  );
+});
+
+test("the trusted bootstrap rejects a non-canonical repository root", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-repository-root-"));
+  const differentRoot = await mkdtemp(join(tmpdir(), "pions-canonical-root-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  context.after(() => rm(differentRoot, { recursive: true, force: true }));
+  assert.throws(
+    () =>
+      createFormalReviewIntegration({
+        repositoryRoot: root,
+        trustedBootstrap: trustedBootstrap(differentRoot),
+        reviewSubjectRegistration,
+      }),
+    {
+      name: "FormalReviewBootstrapError",
+      reason: "repository_identity_mismatch",
+    }
+  );
+});
+
+test("the trusted bootstrap rejects a canonical repository identity mismatch", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-repository-identity-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+
+  assert.throws(
+    () =>
+      createFormalReviewIntegration({
+        repositoryRoot: root,
+        trustedBootstrap: {
+          ...trustedBootstrap(root),
+          repository: {
+            repositoryId: "different-repository",
+            canonicalRoot: root,
+            verifyIdentity: () => false,
+          },
+        },
+        reviewSubjectRegistration,
+      }),
+    {
+      name: "FormalReviewBootstrapError",
+      reason: "repository_identity_mismatch",
+    }
+  );
+});
+
+test("the trusted bootstrap rejects an Adapter registration Artifact digest mismatch", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-adapter-digest-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const authority = testResourceAuthority(Buffer.from("adapter v1", "utf8"));
+
+  assert.throws(
+    () =>
+      createFormalReviewIntegration({
+        repositoryRoot: root,
+        trustedBootstrap: trustedBootstrap(root, [authority.identity]),
+        reviewSubjectRegistration,
+        formalReview: {
+          profile: formalReviewProfile(root),
+          reviewSubjectAuthority: { currentUse: async () => "allowed" },
+          resultFormat: {
+            formatId: "test.review-result",
+            version: "1",
+            expectations: {},
+            registrations: [],
+          },
+          resourceAuthority: {
+            ...authority,
+            registrationArtifact: Buffer.from("substituted adapter", "utf8"),
+          },
+        },
+      }),
+    { name: "FormalReviewBootstrapError", reason: "adapter_identity_mismatch" }
+  );
+});
+
+test("the trusted bootstrap rejects an Adapter identity outside its approval list", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-unapproved-adapter-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const authority = testResourceAuthority(Buffer.from("adapter v1", "utf8"));
+
+  assert.throws(
+    () =>
+      createFormalReviewIntegration({
+        repositoryRoot: root,
+        trustedBootstrap: trustedBootstrap(root),
+        reviewSubjectRegistration,
+        formalReview: {
+          profile: formalReviewProfile(root),
+          reviewSubjectAuthority: { currentUse: async () => "allowed" },
+          resultFormat: {
+            formatId: "test.review-result",
+            version: "1",
+            expectations: {},
+            registrations: [],
+          },
+          resourceAuthority: authority,
+        },
+      }),
+    { name: "FormalReviewBootstrapError", reason: "adapter_identity_mismatch" }
+  );
+});
+
+test("production rejects a non-production Adapter identity", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-production-adapter-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const authority = testResourceAuthority(Buffer.from("adapter v1", "utf8"));
+
+  assert.throws(
+    () =>
+      createFormalReviewIntegration({
+        repositoryRoot: root,
+        trustedBootstrap: {
+          ...trustedBootstrap(root, [authority.identity]),
+          deployment: "production",
+        },
+        reviewSubjectRegistration,
+        formalReview: {
+          profile: formalReviewProfile(root),
+          reviewSubjectAuthority: { currentUse: async () => "allowed" },
+          resultFormat: {
+            formatId: "test.review-result",
+            version: "1",
+            expectations: {},
+            registrations: [],
+          },
+          resourceAuthority: authority,
+        },
+      }),
+    {
+      name: "FormalReviewBootstrapError",
+      reason: "non_production_adapter_rejected",
+    }
+  );
+});
+
+test("production rejects a test-only integration override", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-production-override-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const configuration = {
+    repositoryRoot: root,
+    trustedBootstrap: {
+      ...trustedBootstrap(root),
+      deployment: "production" as const,
+    },
+    reviewSubjectRegistration,
+  };
+  configureFormalReviewIntegrationForTest(configuration, {});
+
+  assert.throws(() => createFormalReviewIntegration(configuration), {
+    name: "FormalReviewBootstrapError",
+    reason: "test_adapter_rejected",
+  });
+});
+
+test("production keeps formal review disabled pending rollout approval", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-production-disabled-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const resourceAuthority = testResourceAuthority(
+    Buffer.from("production adapter v1", "utf8"),
+    "production"
+  );
+
+  assert.throws(
+    () =>
+      createFormalReviewIntegration({
+        repositoryRoot: root,
+        trustedBootstrap: {
+          ...trustedBootstrap(root, [resourceAuthority.identity]),
+          deployment: "production",
+        },
+        reviewSubjectRegistration,
+        formalReview: {
+          profile: formalReviewProfile(root),
+          resourceAuthority,
+          reviewSubjectAuthority: { currentUse: async () => "allowed" },
+          resultFormat: {
+            formatId: "test.review-result",
+            version: "1",
+            expectations: {},
+            registrations: [],
+          },
+        },
+      }),
+    {
+      name: "FormalReviewBootstrapError",
+      reason: "production_formal_review_disabled",
     }
   );
 });
@@ -916,6 +1259,7 @@ test("registration evidence digest is stable after reopening the integration", a
   context.after(() => rm(root, { recursive: true, force: true }));
   const configuration = {
     repositoryRoot: root,
+    trustedBootstrap: trustedBootstrap(root),
     reviewSubjectRegistration,
   } as const;
   const request = rootRegistration(Buffer.from("fixed manifest", "utf8"));
@@ -1011,14 +1355,19 @@ test("the integration rejects a validator version backed by different registrati
     registrationArtifact: Buffer.from("validator one", "utf8"),
     validate: async () => ({ kind: "valid" as const }),
   };
+  const resourceAuthority = testResourceAuthority(
+    Buffer.from("format-conflict adapter v1", "utf8")
+  );
 
   assert.throws(
     () =>
       createFormalReviewIntegration({
         repositoryRoot: root,
+        trustedBootstrap: trustedBootstrap(root, [resourceAuthority.identity]),
         reviewSubjectRegistration,
         formalReview: {
           profile: formalReviewProfile(root),
+          resourceAuthority,
           reviewSubjectAuthority: {
             currentUse: async () => "allowed" as const,
           },
@@ -1123,12 +1472,17 @@ test("a registered dependent root is available to the configured extension Runti
   const root = await mkdtemp(join(tmpdir(), "pions-formal-review-runtime-"));
   const stateBaseDirectory = join(root, "state");
   const profile = formalReviewProfile(root);
+  const resourceAuthority = testResourceAuthority(
+    Buffer.from("configured-runtime adapter v1", "utf8")
+  );
   let runtime: Runtime | undefined;
   const configuration = {
     repositoryRoot: root,
+    trustedBootstrap: trustedBootstrap(root, [resourceAuthority.identity]),
     reviewSubjectRegistration,
     formalReview: {
       profile,
+      resourceAuthority,
       reviewSubjectAuthority: { currentUse: async () => "allowed" as const },
       resultFormat: {
         formatId: "test.formal-review-result",
@@ -1434,8 +1788,12 @@ async function externalAllocationFixture(
         ? ("authenticated" as const)
         : ("denied" as const)),
   };
+  const resourceAuthority = testResourceAuthority(
+    Buffer.from("non-production adapter v1", "utf8")
+  );
   const configuration = {
     repositoryRoot: root,
+    trustedBootstrap: trustedBootstrap(root, [resourceAuthority.identity]),
     reviewSubjectRegistration,
     formalReview: {
       profile: formalReviewProfile(root),
@@ -1459,6 +1817,7 @@ async function externalAllocationFixture(
           },
         ],
       },
+      resourceAuthority,
       externalAllocation: {
         authenticator: allocationAuthenticator,
         allocationFor: async () => {
@@ -2094,6 +2453,30 @@ test("each independent formal review retrieves only its own Result", async (cont
   );
 });
 
+test("each independent formal review exposes its own Startup receipt", async (context) => {
+  const value = await independentReviewsFixture(context);
+
+  assert.deepEqual(
+    value.snapshots.map(
+      (snapshot) => snapshot.startAuthorization.receipt?.operationId
+    ),
+    ["operation-standards", "operation-specification"]
+  );
+});
+
+test("each independent formal review Startup receipt has an integrity digest", async (context) => {
+  const value = await independentReviewsFixture(context);
+
+  assert.equal(
+    value.snapshots.every((snapshot) =>
+      /^sha256:[0-9a-f]{64}$/u.test(
+        snapshot.startAuthorization.receipt?.digest ?? ""
+      )
+    ),
+    true
+  );
+});
+
 test("each independent formal review receives its own Start authorization", async (context) => {
   const value = await independentReviewsFixture(context);
 
@@ -2255,6 +2638,23 @@ test("a later Pi session cannot authorize an earlier formal review", async (cont
       "later-session-decision-call"
     ),
     /Operation is not owned by the current Pi session/u
+  );
+});
+
+test("short-lived allocation credentials are absent from formal review tasks, state, and Results", async (context) => {
+  const reviews = await independentReviewsFixture(context);
+  const results = await Promise.all(
+    reviews.operationIds.map(reviews.fixture.result)
+  );
+  const modelVisibleAndPersistedOutput = JSON.stringify({
+    tasks: [...reviews.worker.prompts.values()],
+    snapshots: reviews.snapshots,
+    results,
+  });
+
+  assert.equal(
+    modelVisibleAndPersistedOutput.includes("trusted-allocation-proof"),
+    false
   );
 });
 

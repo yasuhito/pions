@@ -4,9 +4,12 @@ import { makeFormalReviewIntegration } from "./internal/formal-review-integratio
 import type {
   ArtifactMetadata,
   CurrentStartAuthorization,
+  DeploymentMode,
   ExternalReviewAllocationAuthenticator,
   ExternalReviewAllocationRequest,
   ReviewSubjectRegistrationEvidence,
+  ResourceAdapterIdentity,
+  ResourceAuthorityRegistration,
   ResultFormatValidationFailureReason,
   RuntimeReviewSubjectAuthority,
   WorkerProfilePolicy,
@@ -61,18 +64,60 @@ export interface FormalReviewExternalAllocationConfiguration {
   }): Promise<Readonly<ExternalReviewAllocationRequest>>;
 }
 
+export type FormalReviewAdapterIdentity = ResourceAdapterIdentity;
+
 export interface FormalReviewConfiguration {
   readonly profile: Readonly<WorkerProfilePolicy>;
   readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
   readonly resultFormat: Readonly<FormalReviewResultFormatConfiguration>;
+  readonly resourceAuthority: Readonly<ResourceAuthorityRegistration>;
   readonly externalAllocation?: Readonly<FormalReviewExternalAllocationConfiguration>;
   readonly coordinator?: Readonly<FormalReviewCoordinatorConfiguration>;
 }
 
+export const formalReviewIntegrationModule = Object.freeze({
+  moduleId: "pions.formal-review-integration",
+  version: "1",
+} as const);
+
+export interface FormalReviewTrustedBootstrap {
+  readonly expectedModuleVersion: string;
+  readonly repository: Readonly<{
+    readonly repositoryId: string;
+    readonly canonicalRoot: string;
+    verifyIdentity(normalizedRoot: string): boolean;
+  }>;
+  readonly deployment: DeploymentMode;
+  readonly approvedAdapters: ReadonlyArray<
+    Readonly<FormalReviewAdapterIdentity>
+  >;
+}
+
 export interface FormalReviewIntegrationConfiguration {
   readonly repositoryRoot: string;
+  readonly trustedBootstrap: Readonly<FormalReviewTrustedBootstrap>;
   readonly reviewSubjectRegistration: Readonly<ReviewSubjectRegistrationEvidenceConfiguration>;
   readonly formalReview?: Readonly<FormalReviewConfiguration>;
+}
+
+export type FormalReviewBootstrapFailureReason =
+  | "invalid_bootstrap_configuration"
+  | "module_version_mismatch"
+  | "repository_identity_mismatch"
+  | "adapter_identity_mismatch"
+  | "non_production_adapter_rejected"
+  | "test_adapter_rejected"
+  | "production_formal_review_disabled";
+
+export class FormalReviewBootstrapError extends Error {
+  override readonly name = "FormalReviewBootstrapError";
+
+  constructor(
+    readonly reason: FormalReviewBootstrapFailureReason,
+    message: string
+  ) {
+    super(message);
+  }
 }
 
 export interface ReviewSubjectDependencyRequirement {

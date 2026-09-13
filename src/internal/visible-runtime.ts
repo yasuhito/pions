@@ -11,6 +11,7 @@ import {
 import { PrivateFileEventStore } from "./event-store/index.js";
 import { EventStoreResourceEvidenceRepository } from "./event-store-resource-evidence.js";
 import { makeExternalReviewAllocationRegistry } from "./external-review-allocation.js";
+import type { ResourceAdapterApprovalPolicy } from "./resource-adapter-identity.js";
 import { makeResourceProofController } from "./resource-controller.js";
 import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import { makeRuntime } from "./runtime.js";
@@ -48,6 +49,7 @@ export interface VisibleRuntimeOptions {
   readonly resourceAuthorities?: ReadonlyArray<
     Readonly<ResourceAuthorityRegistration>
   >;
+  readonly resourceAdapterApprovalPolicy?: Readonly<ResourceAdapterApprovalPolicy>;
   readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
   readonly reviewSubjectAuthority?: RuntimeReviewSubjectAuthority;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
@@ -158,6 +160,9 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
       : {
           resourceProofController: makeResourceProofController({
             registrations: options.resourceAuthorities,
+            ...(options.resourceAdapterApprovalPolicy === undefined
+              ? {}
+              : { approvalPolicy: options.resourceAdapterApprovalPolicy }),
             repository: new EventStoreResourceEvidenceRepository(store),
             ...(options.resourceCleanupAuthenticator === undefined
               ? {}

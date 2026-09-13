@@ -16,6 +16,11 @@ import type {
   VersionedResourceEvidenceSnapshot,
 } from "../public.js";
 import { ResourceProofRejectedError } from "../public.js";
+import type { ResourceAdapterApprovalPolicy } from "./resource-adapter-identity.js";
+import {
+  resourceAuthorityIsApproved,
+  validResourceAuthorityIdentity,
+} from "./resource-adapter-identity.js";
 import type { OperationReviewInputTarget } from "./review-input-preparation.js";
 import {
   parseProofDocument,
@@ -100,6 +105,7 @@ export interface ResourceProofControllerOptions {
   readonly registrations: ReadonlyArray<
     Readonly<ResourceAuthorityRegistration>
   >;
+  readonly approvalPolicy?: Readonly<ResourceAdapterApprovalPolicy>;
   readonly cleanupAuthenticator?: ResourceCleanupAuthenticator;
   readonly repository?: ResourceEvidenceRepository;
 }
@@ -309,6 +315,29 @@ export function makeResourceProofController(
 ): InternalResourceProofController {
   const repository =
     options.repository ?? new InMemoryResourceEvidenceRepository();
+  if (
+    options.registrations.some(
+      (registration) => !validResourceAuthorityIdentity(registration)
+    )
+  ) {
+    throw new ResourceProofRejectedError(
+      "invalid_profile",
+      "Resource authority Adapter identity is invalid"
+    );
+  }
+  const approvalPolicy = options.approvalPolicy;
+  if (
+    approvalPolicy !== undefined &&
+    options.registrations.some(
+      (registration) =>
+        !resourceAuthorityIsApproved(registration, approvalPolicy)
+    )
+  ) {
+    throw new ResourceProofRejectedError(
+      "invalid_profile",
+      "Resource authority Adapter identity is not approved"
+    );
+  }
   const registrations = new Map(
     options.registrations.map((registration) => [
       registration.authorityId,

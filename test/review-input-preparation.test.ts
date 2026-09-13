@@ -434,6 +434,10 @@ async function fixture(
   );
   let authorityTrustChecks = 0;
   let forcedAuthorityTrust: "trusted" | "revoked" | "unknown" | undefined;
+  const registrationArtifact = Buffer.from(
+    "test review launcher adapter v1",
+    "utf8"
+  );
   const resourceProofController = makeResourceProofController({
     registrations: [
       {
@@ -441,6 +445,13 @@ async function fixture(
         registrationId: "review-launcher-registration-1",
         generation: "generation-1",
         normalizationVersion: "selector-v1",
+        identity: {
+          adapterId: "test-review-launcher-adapter",
+          version: "1",
+          digest: digest(registrationArtifact),
+          intendedUse: "non-production",
+        },
+        registrationArtifact,
         issuer: {
           verify: async () => true,
           isCurrentlyTrusted: async () => {

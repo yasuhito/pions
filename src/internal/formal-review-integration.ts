@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +12,10 @@ import {
   type PionsExtensionOptions,
 } from "./pi-extension.js";
 import { resolveRepositoryState } from "./repository-state.js";
+import {
+  resourceAdapterIdentitiesMatch,
+  validResourceAuthorityIdentity,
+} from "./resource-adapter-identity.js";
 import { configuredResultFormat } from "./result-format-registry.js";
 import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import type { RuntimeClock } from "./services.js";
@@ -25,7 +30,11 @@ import type {
   FormalReviewIntegrationConfiguration,
   ReviewSubjectRegistrationRequest,
 } from "../formal-review.js";
-import { ReviewSubjectRegistrationError } from "../formal-review.js";
+import {
+  formalReviewIntegrationModule,
+  FormalReviewBootstrapError,
+  ReviewSubjectRegistrationError,
+} from "../formal-review.js";
 import type {
   ArtifactDigest,
   ArtifactMetadata,
@@ -71,6 +80,97 @@ export function configureFormalReviewIntegrationForTest(
   dependencies: Readonly<FormalReviewIntegrationDependencies>
 ): void {
   dependenciesByConfiguration.set(configuration, dependencies);
+}
+
+function validateTrustedBootstrap(
+  configuration: Readonly<FormalReviewIntegrationConfiguration>,
+  hasTestOverride: boolean
+): void {
+  const bootstrap = configuration.trustedBootstrap;
+  if (
+    bootstrap.deployment !== "non-production" &&
+    bootstrap.deployment !== "production"
+  ) {
+    throw new FormalReviewBootstrapError(
+      "invalid_bootstrap_configuration",
+      "The trusted bootstrap deployment mode is invalid"
+    );
+  }
+  let configuredRoot: string | undefined;
+  let canonicalRoot: string | undefined;
+  try {
+    configuredRoot = realpathSync(configuration.repositoryRoot);
+    canonicalRoot = realpathSync(bootstrap.repository.canonicalRoot);
+  } catch {
+    // A missing or unreadable root cannot establish the trusted identity.
+  }
+  let repositoryIdentityVerified = false;
+  if (configuredRoot !== undefined) {
+    try {
+      repositoryIdentityVerified =
+        bootstrap.repository.verifyIdentity(configuredRoot);
+    } catch {
+      // An unavailable identity verifier cannot authorize the repository.
+    }
+  }
+  if (
+    bootstrap.repository.repositoryId.length === 0 ||
+    configuredRoot === undefined ||
+    configuredRoot !== canonicalRoot ||
+    !repositoryIdentityVerified
+  ) {
+    throw new FormalReviewBootstrapError(
+      "repository_identity_mismatch",
+      `Repository ${bootstrap.repository.repositoryId} does not match its canonical root`
+    );
+  }
+  if (
+    bootstrap.expectedModuleVersion !== formalReviewIntegrationModule.version
+  ) {
+    throw new FormalReviewBootstrapError(
+      "module_version_mismatch",
+      "The trusted bootstrap expected a different Pions formal review module version"
+    );
+  }
+  const authority = configuration.formalReview?.resourceAuthority;
+  if (authority !== undefined) {
+    if (!validResourceAuthorityIdentity(authority)) {
+      throw new FormalReviewBootstrapError(
+        "adapter_identity_mismatch",
+        "The Resource Adapter registration Artifact does not match its identity"
+      );
+    }
+    if (
+      !bootstrap.approvedAdapters.some((approved) =>
+        resourceAdapterIdentitiesMatch(approved, authority.identity)
+      )
+    ) {
+      throw new FormalReviewBootstrapError(
+        "adapter_identity_mismatch",
+        "The Resource Adapter identity is not approved by the trusted bootstrap"
+      );
+    }
+  }
+  if (bootstrap.deployment === "production") {
+    if (hasTestOverride) {
+      throw new FormalReviewBootstrapError(
+        "test_adapter_rejected",
+        "Test-only integration overrides are forbidden in production"
+      );
+    }
+    if (authority?.identity.intendedUse === "non-production") {
+      throw new FormalReviewBootstrapError(
+        "non_production_adapter_rejected",
+        "A non-production Resource Adapter is forbidden in production"
+      );
+    }
+    if (configuration.formalReview !== undefined) {
+      throw new FormalReviewBootstrapError(
+        "production_formal_review_disabled",
+        "Formal review has not been approved for production"
+      );
+    }
+  }
 }
 
 function makeRegistrationClock(now: () => Date): RuntimeClock {
@@ -218,7 +318,9 @@ function coordinatorConfiguration(
 export function makeFormalReviewIntegration(
   configuration: Readonly<FormalReviewIntegrationConfiguration>
 ): FormalReviewIntegration {
-  const dependencies = dependenciesByConfiguration.get(configuration) ?? {};
+  const configuredDependencies = dependenciesByConfiguration.get(configuration);
+  validateTrustedBootstrap(configuration, configuredDependencies !== undefined);
+  const dependencies = configuredDependencies ?? {};
   const environment = dependencies.environment ?? process.env;
   const homeDirectory = dependencies.homeDirectory ?? homedir();
   const now = dependencies.now ?? (() => new Date());
@@ -540,6 +642,19 @@ export function makeFormalReviewIntegration(
               reviewSubjectAuthority:
                 formalReviewSetup.configuration.reviewSubjectAuthority,
               resultFormats: formalReviewSetup.resultFormats,
+              resourceAdapterApprovalPolicy: {
+                deployment: configuration.trustedBootstrap.deployment,
+                approvedAdapters:
+                  configuration.trustedBootstrap.approvedAdapters,
+              },
+              ...(formalReviewSetup.configuration.resourceAuthority ===
+              undefined
+                ? {}
+                : {
+                    resourceAuthorities: [
+                      formalReviewSetup.configuration.resourceAuthority,
+                    ],
+                  }),
               ...(formalReviewSetup.configuration.externalAllocation ===
               undefined
                 ? {}

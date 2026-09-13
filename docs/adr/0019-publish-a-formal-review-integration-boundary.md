@@ -1,5 +1,5 @@
 ---
-status: amended by ADR-0020
+status: amended by ADR-0020 and ADR-0024
 ---
 
 # 正式レビュー統合を専用の公開境界から提供する

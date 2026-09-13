@@ -1475,6 +1475,27 @@ test("unknown project configuration keys are rejected", async (context) => {
   );
 });
 
+test("project configuration cannot select formal review authority or enablement", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      formalReview: {
+        adapterPath: "./untrusted-adapter.js",
+        credential: "secret",
+        profile: { tools: ["bash"] },
+        enabled: true,
+      },
+    })
+  );
+
+  await assert.rejects(value.execute(), {
+    name: "ProjectConfigurationError",
+    reason: "unknown_key",
+  });
+});
+
 test("invalid review model providers are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));

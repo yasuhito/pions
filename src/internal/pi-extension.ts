@@ -14,6 +14,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import type { ResourceAdapterApprovalPolicy } from "./resource-adapter-identity.js";
 import { makeResultRetrievalRuntime } from "./result-runtime.js";
 import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import {
@@ -21,7 +22,10 @@ import {
   resolveRepositoryState,
   writePrivatePrompt,
 } from "./repository-state.js";
-import { makeVisibleRuntime } from "./visible-runtime.js";
+import {
+  makeVisibleRuntime,
+  type VisibleRuntimeOptions,
+} from "./visible-runtime.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "./worker-configuration.js";
 import {
   resolveClaudeBridgeExtension,
@@ -134,6 +138,8 @@ export interface PionsExtensionOptions {
     readonly profile: Readonly<WorkerProfilePolicy>;
     readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
     readonly resultFormats: Readonly<ConfiguredResultFormats>;
+    readonly resourceAuthorities?: VisibleRuntimeOptions["resourceAuthorities"];
+    readonly resourceAdapterApprovalPolicy?: Readonly<ResourceAdapterApprovalPolicy>;
     readonly externalAllocation?: Readonly<FormalReviewExternalAllocationConfiguration>;
     readonly coordinator?: Readonly<{
       readonly credential: string;
@@ -615,6 +621,14 @@ export function installPionsExtension(
                 reviewSubjectAuthority:
                   options.formalReview.reviewSubjectAuthority,
                 formalReviewResultFormats: options.formalReview.resultFormats,
+                ...(options.formalReview.resourceAuthorities === undefined
+                  ? {}
+                  : {
+                      resourceAuthorities:
+                        options.formalReview.resourceAuthorities,
+                      resourceAdapterApprovalPolicy:
+                        options.formalReview.resourceAdapterApprovalPolicy,
+                    }),
                 ...(options.formalReview.externalAllocation === undefined
                   ? {}
                   : {

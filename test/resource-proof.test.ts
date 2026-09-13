@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -502,19 +503,35 @@ class FakeResourceAdapter implements ResourceAdapter {
   }
 }
 
-const controllerFixture = async () => {
-  const adapter = new FakeResourceAdapter();
-  const registration: ResourceAuthorityRegistration = {
+function resourceAuthorityRegistration(
+  adapter: ResourceAdapter
+): ResourceAuthorityRegistration {
+  const registrationArtifact = Buffer.from("test launcher adapter v1", "utf8");
+  return {
     authorityId: "launcher",
     registrationId: "launcher-registration-1",
     generation: "generation-1",
     normalizationVersion: "selector-v1",
+    identity: {
+      adapterId: "test-launcher-adapter",
+      version: "1",
+      digest: `sha256:${createHash("sha256")
+        .update(registrationArtifact)
+        .digest("hex")}`,
+      intendedUse: "non-production",
+    },
+    registrationArtifact,
     issuer: {
       verify: async () => true,
       isCurrentlyTrusted: async () => "trusted",
     },
     adapter,
   };
+}
+
+const controllerFixture = async () => {
+  const adapter = new FakeResourceAdapter();
+  const registration = resourceAuthorityRegistration(adapter);
   const controller = makeResourceProofController({
     registrations: [registration],
     cleanupAuthenticator: {
@@ -583,6 +600,39 @@ function requiredRuntimeConfiguration(
     },
   };
 }
+
+test("Resource authority registration rejects an Adapter identity digest mismatch", () => {
+  const registration = resourceAuthorityRegistration(new FakeResourceAdapter());
+
+  assert.throws(
+    () =>
+      makeResourceProofController({
+        registrations: [
+          {
+            ...registration,
+            registrationArtifact: Buffer.from("substituted adapter", "utf8"),
+          },
+        ],
+      }),
+    { name: "ResourceProofRejectedError", reason: "invalid_profile" }
+  );
+});
+
+test("Resource authority registration rejects an Adapter outside the approval policy", () => {
+  const registration = resourceAuthorityRegistration(new FakeResourceAdapter());
+
+  assert.throws(
+    () =>
+      makeResourceProofController({
+        registrations: [registration],
+        approvalPolicy: {
+          deployment: "production",
+          approvedAdapters: [],
+        },
+      }),
+    { name: "ResourceProofRejectedError", reason: "invalid_profile" }
+  );
+});
 
 test("a complete resource proof is persisted as held", async () => {
   const { controller, request } = await controllerFixture();
