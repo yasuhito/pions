@@ -25,6 +25,7 @@ import type {
   ArtifactFailureReason,
   ArtifactStore,
   OperationReader,
+  ResultAcceptanceId,
 } from "../src/index.js";
 import {
   retentionPolicy,
@@ -631,6 +632,22 @@ test("OperationReader returns the accepted Result byte count", async () => {
   );
 });
 
+test("complete Result retrieval identifies its Result acceptance", async () => {
+  const { runtime } = fixture();
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  const outcome = await handle.readResult();
+  if (outcome.kind !== "retrieved") throw new Error("Result was not accepted");
+  const acceptance = (await handle.read()).resultAcceptance;
+  if (acceptance === undefined) throw new Error("Result acceptance is missing");
+
+  assert.equal(outcome.acceptanceId, acceptance.acceptanceId);
+});
+
 test("result retrieval before acceptance returns the current snapshot version", async () => {
   const { runtime, store } = fixture();
   await recordWaitingOperation(store, "operation-1");
@@ -963,6 +980,7 @@ test("Result reads do not append Operation events", async () => {
 async function reopenedResultFixture(): Promise<{
   readonly root: string;
   readonly reader: OperationReader;
+  readonly acceptanceId: ResultAcceptanceId;
   readonly cursor: string;
   readonly close: () => Promise<void>;
 }> {
@@ -990,6 +1008,9 @@ async function reopenedResultFixture(): Promise<{
     idempotencyKey: "task-1",
   });
   await handle.result();
+  const firstSnapshot = await handle.read();
+  if (firstSnapshot.resultAcceptance === undefined)
+    throw new Error("Result acceptance is missing");
   const firstChunk = await handle.readResultChunk({ maxBytes: 4 });
   if (
     firstChunk.kind !== "retrieved" ||
@@ -1014,6 +1035,7 @@ async function reopenedResultFixture(): Promise<{
   return {
     root,
     reader: await reopened.operation("operation-1"),
+    acceptanceId: firstSnapshot.resultAcceptance.acceptanceId,
     cursor: firstChunk.chunk.nextCursor,
     close: async () => {
       await reopened.close();
@@ -1033,6 +1055,15 @@ test("a reopened Runtime retrieves the same complete Result", async (context) =>
   );
 });
 
+test("a reopened Runtime preserves the Result acceptance reference", async (context) => {
+  const value = await reopenedResultFixture();
+  context.after(value.close);
+  const outcome = await value.reader.readResult();
+  if (outcome.kind !== "retrieved") throw new Error("Result was not accepted");
+
+  assert.equal(outcome.acceptanceId, value.acceptanceId);
+});
+
 test("a result cursor returns the same chunk after Runtime restart", async (context) => {
   const value = await reopenedResultFixture();
   context.after(value.close);
@@ -1048,6 +1079,33 @@ test("a result cursor returns the same chunk after Runtime restart", async (cont
         ).chunk.body
       : undefined,
     "efgh"
+  );
+});
+
+test("Result retrieval digests the exact accepted bytes without JSON normalization", async () => {
+  const body = ' {"b":2,"a":1}\n';
+  const clock = new FakeClock(timestamps);
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter({
+      messages: { body },
+      successfulExitConfirmed: true,
+    }),
+    clock,
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new InMemoryEventStore([], clock),
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  const outcome = await handle.readResult();
+
+  assert.equal(
+    outcome.kind === "retrieved" ? outcome.result.digest : undefined,
+    "sha256:7730f9a41b560fda6de1ece731453107d27da17a57012702f78976cb20f84ac8"
   );
 });
 
@@ -1080,6 +1138,22 @@ test("each Result chunk respects the requested byte maximum", async () => {
   assert.ok(
     outcome.kind === "retrieved" && Buffer.byteLength(outcome.chunk.body) <= 4
   );
+});
+
+test("each Result chunk identifies its Result acceptance", async () => {
+  const { runtime } = fixture();
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  const outcome = await handle.readResultChunk({ maxBytes: 4 });
+  if (outcome.kind !== "retrieved") throw new Error("Result was not accepted");
+  const acceptance = (await handle.read()).resultAcceptance;
+  if (acceptance === undefined) throw new Error("Result acceptance is missing");
+
+  assert.equal(outcome.chunk.acceptanceId, acceptance.acceptanceId);
 });
 
 test("an invalid cursor is rejected even when the target Result is not accepted", async () => {

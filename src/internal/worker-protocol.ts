@@ -6,6 +6,7 @@ import { Schema } from "effect";
 import type {
   EffectiveWorkerConfig,
   ObservedWorkerConfig,
+  ResultAcceptanceId,
   StartInstructionReference,
   WorkerConfigurationFailureReason,
   WorkerProducedResult,
@@ -257,7 +258,7 @@ declare const resultAcceptanceProof: unique symbol;
 
 export interface ResultAcceptanceProof {
   readonly operationId: string;
-  readonly acceptanceId: `pions.result-acceptance.v1:${string}`;
+  readonly acceptanceId: ResultAcceptanceId;
   readonly manifestDigest: `sha256:${string}`;
   readonly eventSequenceNumber: number;
   readonly [resultAcceptanceProof]: true;

@@ -70,6 +70,7 @@ import type {
   OperationReader,
   OperationSnapshot as PublicOperationSnapshot,
   Result,
+  ResultAcceptanceId,
   ResultChunkReadOutcome,
   ResultReadOutcome,
   RevisionCoordinator,
@@ -440,7 +441,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     {
       readonly result: Readonly<Result>;
       readonly bytes: Buffer;
-      readonly acceptanceId: string;
+      readonly acceptanceId: ResultAcceptanceId;
     },
     ResultRetrievalError
   > =>
@@ -504,13 +505,17 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         operationId,
         snapshot.operation.result
       );
-      return { kind: "retrieved", result: retrieved.result } as const;
+      return {
+        kind: "retrieved",
+        acceptanceId: retrieved.acceptanceId,
+        result: retrieved.result,
+      } as const;
     });
 
   interface ResultCursorPayload {
     readonly version: 1;
     readonly operationId: string;
-    readonly acceptanceId: string;
+    readonly acceptanceId: ResultAcceptanceId;
     readonly digest: string;
     readonly maxBytes: number;
     readonly startByte: number;
@@ -630,6 +635,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     return {
       kind: "retrieved",
       chunk: {
+        acceptanceId: retrieved.acceptanceId,
         body: bytes.subarray(startByte, endByte).toString("utf8"),
         startByte,
         totalByteCount: bytes.byteLength,

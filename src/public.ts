@@ -595,9 +595,11 @@ export interface StartDeliveryHandoffEvidence {
   readonly acceptanceState?: "not_accepted" | "accepted" | "unknown";
 }
 
+export type ResultAcceptanceId = `pions.result-acceptance.v1:${string}`;
+
 export interface ResultAcceptanceEvidence {
   readonly acceptedAt: string;
-  readonly acceptanceId: `pions.result-acceptance.v1:${string}`;
+  readonly acceptanceId: ResultAcceptanceId;
   readonly manifestDigest: ArtifactDigest;
   readonly eventSequenceNumber: number;
 }
@@ -1152,7 +1154,11 @@ export interface OperationSnapshot {
 }
 
 export type ResultReadOutcome =
-  | { readonly kind: "retrieved"; readonly result: Readonly<Result> }
+  | {
+      readonly kind: "retrieved";
+      readonly acceptanceId: ResultAcceptanceId;
+      readonly result: Readonly<Result>;
+    }
   | {
       readonly kind: "not_accepted";
       readonly version: Readonly<OperationVersion>;
@@ -1161,6 +1167,7 @@ export type ResultReadOutcome =
     };
 
 export interface ResultChunk {
+  readonly acceptanceId: ResultAcceptanceId;
   readonly body: string;
   readonly startByte: number;
   readonly totalByteCount: number;
@@ -1593,7 +1600,7 @@ export interface ResultAcceptanceReservation {
 }
 
 export interface AcceptedResult {
-  readonly acceptanceId: `pions.result-acceptance.v1:${string}`;
+  readonly acceptanceId: ResultAcceptanceId;
   readonly preparationId: string;
   readonly operationId: string;
   readonly acceptanceRequestId: string;

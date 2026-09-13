@@ -162,6 +162,7 @@ export type {
   StartupReceipt,
   StopConfirmationEvidence,
   ResultAcceptanceEvidence,
+  ResultAcceptanceId,
   CleanupDiagnostic,
   CleanupDiagnosticCode,
   PresentationCleanupEvidence,

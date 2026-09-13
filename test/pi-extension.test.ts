@@ -54,6 +54,7 @@ import type {
   OperationReader,
   OperationSnapshot,
   Result,
+  ResultChunk,
   Runtime,
   RuntimeReviewSubjectAuthority,
   SpawnOptions,
@@ -170,6 +171,8 @@ const SNAPSHOT: OperationSnapshot = {
   cleanupDiagnostics: [{ code: "pane_close_failed" }],
 };
 
+const ACCEPTANCE_ID = `pions.result-acceptance.v1:${"ef".repeat(32)}` as const;
+
 class FakeRuntime implements Runtime {
   readonly tasks: Array<TaskSpec> = [];
   readonly spawnOptions: Array<Readonly<SpawnOptions> | undefined> = [];
@@ -231,7 +234,11 @@ class FakeRuntime implements Runtime {
       read: () => Promise.resolve(this.snapshot),
       readResult: () => {
         this.resultReadCount += 1;
-        return Promise.resolve({ kind: "retrieved" as const, result });
+        return Promise.resolve({
+          kind: "retrieved" as const,
+          acceptanceId: ACCEPTANCE_ID,
+          result,
+        });
       },
       readResultChunk: ({ maxBytes, cursor }) => {
         this.resultReadCount += 1;
@@ -241,6 +248,7 @@ class FakeRuntime implements Runtime {
         return Promise.resolve({
           kind: "retrieved" as const,
           chunk: {
+            acceptanceId: ACCEPTANCE_ID,
             body: bytes.subarray(startByte, endByte).toString("utf8"),
             startByte,
             totalByteCount: bytes.byteLength,
@@ -2277,6 +2285,16 @@ test("pions_result retrieves the first persisted Result chunk", async (context) 
   assert.match(
     (await value.result()).content[0]?.text ?? "",
     /^review complete/
+  );
+});
+
+test("pions_result identifies the Result acceptance for its chunk", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(
+    ((await value.result()).details as ResultChunk).acceptanceId,
+    ACCEPTANCE_ID
   );
 });
 

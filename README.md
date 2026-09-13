@@ -110,7 +110,7 @@ Retrieves an accepted result by `Operation` identifier.
 operationId: <operation-id>
 ```
 
-If another chunk is available, pass the returned cursor to the next call. The tool does not expose storage paths or allow callers to select chunk sizes. It only reads operations belonging to the current trusted repository.
+If another chunk is available, pass the returned cursor to the next call. Each chunk reports the immutable result-acceptance identifier and the SHA-256 digest of the exact accepted bytes, so callers can bind retrieved content to the acceptance reported by operation inspection. The tool does not expose storage paths or allow callers to select chunk sizes. It only reads operations belonging to the current trusted repository.
 
 ## Trusted formal-review integration
 
