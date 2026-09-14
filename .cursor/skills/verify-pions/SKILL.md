@@ -155,6 +155,7 @@ npm run check
 **What it proves**: Code quality, type safety, lint rules, formatting compliance, test assertion rules, and full test coverage. Does NOT prove visible delegation works.
 
 The `check` script runs:
+
 - `typecheck` — TypeScript type validation
 - `lint` — ESLint validation
 - `format:check` — Prettier formatting check
