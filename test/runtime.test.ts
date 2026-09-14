@@ -495,7 +495,8 @@ test("runtime startup adopts a recoverable Start delivery", async () => {
   while ((await handle.read()).state !== "running") {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredWorker = new ControlledWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
@@ -542,7 +543,8 @@ test("runtime recovery delivers a Start instruction acquired before delivery ent
   while ((await handle.read()).startDeliveryAuthority === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
@@ -588,7 +590,8 @@ test("runtime recovery redispatches only after a durable not-accepted result", a
   while ((await handle.read()).startDeliveryEntry === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
@@ -634,9 +637,10 @@ test("runtime recovery resumes a Start delivery handoff interrupted after revoca
   while ((await handle.read()).startDeliveryEntry === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const pausedWorker = new PausedHandoffWorkerAdapter();
-  const interruptedRuntime = makeTestRuntime({
+  makeTestRuntime({
     worker: pausedWorker,
     clock: new FakeClock(
       Array.from(
@@ -651,7 +655,7 @@ test("runtime recovery resumes a Start delivery handoff interrupted after revoca
   while (!pausedWorker.revocationRecorded) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await interruptedRuntime.close();
+  // The interrupted Runtime dies mid-handoff the same way; it is never closed.
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
@@ -819,7 +823,8 @@ test("runtime startup resumes an interrupted Worker cancellation", async () => {
   while ((await handle.read()).state !== "cancelling") {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredRuntime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock: new FakeClock(

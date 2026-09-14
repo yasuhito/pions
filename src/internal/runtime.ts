@@ -189,6 +189,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   >();
   const authorizationMutationTails = new Map<string, Promise<void>>();
+  const inFlightExecutions = new Set<Promise<void>>();
+  let closing = false;
+  const rejectStartGateWaiters = (): void => {
+    for (const [operationId, waiter] of startGateWaiters.entries()) {
+      startGateWaiters.delete(operationId);
+      waiter.reject(new Error("Runtime closing"));
+    }
+  };
+  const trackExecution = (execution: Promise<void>): void => {
+    const tracked: Promise<void> = execution
+      .catch(() => undefined)
+      .finally(() => inFlightExecutions.delete(tracked));
+    inFlightExecutions.add(tracked);
+  };
   const authorizationMonotonicDeadlines = new Map<string, number>();
   let treeMutationTail = Promise.resolve();
 
@@ -1319,6 +1333,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     const gate = new Promise<Readonly<StartInstruction>>((resolve, reject) => {
       startGateWaiters.set(record.operationId, { resolve, reject });
     });
+    // close() may have rejected earlier waiters before this one registered.
+    if (closing) rejectStartGateWaiters();
     void (async () => {
       const observedAt = await runEffect(services.clock.now());
       const wallRemaining =
@@ -2569,7 +2585,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     options: SpawnOptions | undefined
   ): Promise<OperationHandle> => {
     const record = await createOperation(task, options);
-    if (record.executionRejected !== true) void execute(record);
+    if (record.executionRejected !== true) trackExecution(execute(record));
     return {
       ...createReader(record.operationId),
       result: () => record.terminalPromise,
@@ -2650,11 +2666,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       };
       records.set(operation.operationId, record);
       if (operation.state === "cancelling") {
-        void recoverCancellation(record, operation).catch(
-          record.rejectTerminal
+        trackExecution(
+          recoverCancellation(record, operation).catch(record.rejectTerminal)
         );
       } else {
-        void execute(record, true);
+        trackExecution(execute(record, true));
       }
     }
   };
@@ -2673,7 +2689,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const record = await serializeTreeMutation(() =>
         createOperationUnlocked(reservation.task, undefined, reservation)
       );
-      if (record.executionRejected !== true) void execute(record);
+      if (record.executionRejected !== true) trackExecution(execute(record));
     }
   };
   const recoverCleanups = async (): Promise<void> => {
@@ -2702,13 +2718,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   return {
     async close(): Promise<void> {
+      closing = true;
       await recovery.catch(() => undefined);
-      for (const [operationId, waiter] of startGateWaiters.entries()) {
-        startGateWaiters.delete(operationId);
-        waiter.reject(new Error("Runtime closing"));
+      rejectStartGateWaiters();
+      // An execution may spawn further executions while settling, so drain
+      // until nothing is in flight before the Artifact Store goes away.
+      while (inFlightExecutions.size > 0) {
+        await Promise.allSettled([...inFlightExecutions]);
       }
-      // Let rejected execute paths release file handles before artifact teardown.
-      await new Promise<void>((resolve) => setImmediate(resolve));
       await artifactServices.artifacts.close();
     },
 
@@ -2843,7 +2860,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 outcome.reservation
               )
             );
-            if (record.executionRejected !== true) void execute(record);
+            if (record.executionRejected !== true)
+              trackExecution(execute(record));
           }
         }
         return outcome;

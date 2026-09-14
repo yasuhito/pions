@@ -450,6 +450,7 @@ async function fixture(
     readonly beforeReceipt?: () => void;
     readonly store?: InMemoryEventStore;
     readonly clock?: FakeClock;
+    readonly artifactStore?: ReturnType<typeof runtimeArtifactStore>;
   } = {}
 ): Promise<{
   readonly runtime: Runtime;
@@ -469,6 +470,13 @@ async function fixture(
     ids: new FakeIdGenerator(["operation-1"]),
     presentation,
     store: options.store ?? new InMemoryEventStore(trace, clock),
+    ...(options.artifactStore === undefined
+      ? {}
+      : {
+          artifacts: options.artifactStore.artifacts,
+          artifactCredential: options.artifactStore.credential,
+          synchronizeArtifactClock: options.artifactStore.synchronizeClock,
+        }),
     startAuthorizationAuthenticator: {
       authenticate: async () => {
         if (options.authenticationFails === true)
@@ -1219,7 +1227,8 @@ async function requiredAuthorizationRecovery(
   while ((await first.handle.read()).startDeliveryEntry === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await first.runtime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredWorker = new NotAcceptedRecoveryWorker();
   const recovered = makeTestRuntime({
     worker: recoveredWorker,
@@ -1635,5 +1644,127 @@ test("an elapsed authorization deadline fails with the fixed reason", async () =
   assert.equal(
     (await handle.read()).failureReason,
     "start_authorization_timed_out"
+  );
+});
+
+function observedArtifactStore(
+  store: ArtifactStore,
+  events: Array<string>
+): ArtifactStore {
+  return new Proxy(store, {
+    get(target, property, receiver) {
+      const value: unknown = Reflect.get(target, property, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: ReadonlyArray<unknown>) => {
+        events.push(`artifacts:${String(property)}`);
+        return Reflect.apply(value, target, args);
+      };
+    },
+  });
+}
+
+async function closeOrderingFixture(
+  context: TestContext,
+  worker: FakeWorkerAdapter = new FakeWorkerAdapter()
+) {
+  const events: Array<string> = [];
+  const clock = new FakeClock(timestamps);
+  const store = new InMemoryEventStore([], clock);
+  const root = await mkdtemp(join(tmpdir(), "pions-runtime-close-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const artifactServices = runtimeArtifactStore(root, store);
+  const { runtime, handle, inbox } = await fixture({
+    worker,
+    store,
+    clock,
+    artifactStore: {
+      ...artifactServices,
+      artifacts: observedArtifactStore(artifactServices.artifacts, events),
+    },
+  });
+  void handle.result().then(
+    () => events.push("execution:settled"),
+    () => events.push("execution:settled")
+  );
+  const orderOf = (...names: ReadonlyArray<string>) =>
+    events.filter((event) => names.includes(event));
+  return { runtime, handle, inbox, events, orderOf };
+}
+
+async function stalledAfterStartGate(context: TestContext) {
+  const worker = new PausedStartAcceptanceWorker();
+  const ordering = await closeOrderingFixture(context, worker);
+  await authorize(ordering.inbox);
+  while ((await ordering.handle.read()).startDeliveryEntry === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const closing = ordering.runtime.close();
+  void closing.then(() => ordering.events.push("runtime:closed"));
+  for (let tick = 0; tick < 20; tick += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  return {
+    ...ordering,
+    closing,
+    release() {
+      ordering.events.push("worker:released");
+      worker.acknowledgeStart();
+    },
+  };
+}
+
+test("Runtime close settles an execution waiting at the Start gate before closing the Artifact Store", async (context) => {
+  const { runtime, orderOf } = await closeOrderingFixture(context);
+  await runtime.close();
+
+  assert.deepEqual(orderOf("execution:settled", "artifacts:close"), [
+    "execution:settled",
+    "artifacts:close",
+  ]);
+});
+
+test("Runtime close remains pending while an authorized execution is still running", async (context) => {
+  const stalled = await stalledAfterStartGate(context);
+  const closedBeforeRelease = stalled.events.includes("runtime:closed");
+  stalled.release();
+  await stalled.closing;
+
+  assert.equal(closedBeforeRelease, false);
+});
+
+test("Runtime close closes the Artifact Store only after a running execution settles", async (context) => {
+  const stalled = await stalledAfterStartGate(context);
+  stalled.release();
+  await stalled.closing;
+
+  assert.deepEqual(
+    stalled.orderOf(
+      "worker:released",
+      "execution:settled",
+      "artifacts:close",
+      "runtime:closed"
+    ),
+    [
+      "worker:released",
+      "execution:settled",
+      "artifacts:close",
+      "runtime:closed",
+    ]
+  );
+});
+
+test("no Artifact Store access follows Runtime close", async (context) => {
+  const stalled = await stalledAfterStartGate(context);
+  stalled.release();
+  await stalled.closing;
+  for (let tick = 0; tick < 20; tick += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(
+    stalled.events
+      .slice(stalled.events.indexOf("artifacts:close") + 1)
+      .filter((event) => event.startsWith("artifacts:")),
+    []
   );
 });
