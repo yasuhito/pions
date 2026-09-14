@@ -47,8 +47,10 @@ This runs:
 ### Evidence capture
 
 ```bash
-npm run check > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/npm-check.txt 2>&1
-echo $? >> /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/npm-check.txt
+EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$EVIDENCE_DIR"
+npm run check > "$EVIDENCE_DIR/npm-check.txt" 2>&1
+echo $? >> "$EVIDENCE_DIR/npm-check.txt"
 ```
 
 The exit code should be 0.

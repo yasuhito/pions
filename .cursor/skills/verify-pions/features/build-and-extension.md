@@ -61,8 +61,10 @@ All three should exist.
 ### Evidence capture
 
 ```bash
-npm run build > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/build.txt 2>&1
-ls -laR dist/ > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/dist-listing.txt
+EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$EVIDENCE_DIR"
+npm run build > "$EVIDENCE_DIR/build.txt" 2>&1
+ls -laR dist/ > "$EVIDENCE_DIR/dist-listing.txt"
 ```
 
 ## Gotchas

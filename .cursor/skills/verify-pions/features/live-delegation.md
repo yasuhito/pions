@@ -332,7 +332,8 @@ If you are executing this skill on a machine with Herdr and Pi (e.g., user's gmk
 2. Capture all success observables (Operation ID, digest, pane evidence).
 3. Save evidence to the skill's evidence directory:
    ```bash
-   mkdir -p /opt/cursor/artifacts/verify-pions-live-delegation-$(date +%Y%m%d-%H%M%S)
+   EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-live-delegation-$(date +%Y%m%d-%H%M%S)}"
+   mkdir -p "$EVIDENCE_DIR"
    ```
 4. Include evidence paths in your proof summary.
 5. Update PR or proof document with: "Live delegation proof COMPLETED on gmktec with Herdr."

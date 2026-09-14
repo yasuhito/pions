@@ -49,8 +49,10 @@ Example successful output:
 ### Evidence capture
 
 ```bash
-npm run typecheck > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/typecheck.txt 2>&1
-echo $? >> /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/typecheck.txt
+EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$EVIDENCE_DIR"
+npm run typecheck > "$EVIDENCE_DIR/typecheck.txt" 2>&1
+echo $? >> "$EVIDENCE_DIR/typecheck.txt"
 ```
 
 Exit code should be 0.
