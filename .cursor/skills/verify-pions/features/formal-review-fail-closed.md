@@ -49,7 +49,7 @@ Expected: Tests pass, including cases that verify rejection without configuratio
 
 ### Manual inspection (if Herdr available)
 
-Use the dedicated `verify-pions` Herdr session only — never captain default or firstmate workspaces:
+Use the dedicated `verify-pions` Herdr session on the Grok Bot box only — never gmktec, Yasuhito default, or firstmate workspaces:
 
 1. Create a workspace in `verify-pions` with `cwd` = Pions checkout; start Pi: `herdr --session verify-pions agent start … --kind pi --pane <pane-id>`
 2. Confirm no trusted formal-review configuration enables production review

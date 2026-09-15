@@ -15,7 +15,7 @@ This skill helps a cold agent verify Pions, a durable Pi worker runtime and exte
 
 Get Pions ready to verify:
 
-1. **Check working directory**: Ensure you're in the Pions repository root (`yasuhito/pions`). On gmktec use `~/Work/pions`; on Cloud Agent or other hosts use the repo checkout root (e.g. `/workspace`).
+1. **Check working directory**: Ensure you're in the Pions repository root (`yasuhito/pions`). **Daily live smoke runs on the Grok Bot box** (pions eng's machine): `/home/box/Work/pions` or `$HOME/Work/pions` there. Cloud Agent may use `/workspace` for automated checks only — not for daily Herdr smoke.
 
 2. **Install dependencies**:
 
@@ -89,7 +89,7 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 **If Herdr or Pi is missing** (typical on Cloud Agent VMs):
 
 - **USER-PATH VERIFICATION IS BLOCKED**. You cannot prove visible delegation works.
-- **Do NOT fall back** to captain's default Herdr session, firstmate workspaces, or any personal pane on another host.
+- **Do NOT fall back** to Yasuhito's default Herdr session, gmktec, firstmate workspaces, or any personal pane on another host.
 - Automated tests (`npm run check`, build verification) may still run as partial regression gates, but they do NOT substitute for proving the real user experience.
 - Document clearly in your proof output: "Live delegation proof BLOCKED: Herdr unavailable. Automated checks only."
 - Do NOT claim end-to-end verification succeeded.
@@ -97,18 +97,24 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 **If Herdr and Pi are present:**
 
 - Proving ONE live-delegation feature (see `features/live-delegation.md`) is **REQUIRED** before claiming end-to-end success.
-- Use the **dedicated named Herdr session** `verify-pions` only (see Isolation below). Never smoke or maintain in captain's default session.
+- Use the **dedicated named Herdr session** `verify-pions` on the **Grok Bot box** only (see Isolation below). Never smoke or maintain on gmktec, Yasuhito's default session, or captain personal panes.
 
-### Isolation: dedicated `verify-pions` Herdr session (NEVER captain default)
+### Isolation: dedicated `verify-pions` Herdr session on the Grok Bot box
 
-Live smoke and maintain **must not** touch Yasuhito's default Herdr session, firstmate workspaces, or captain personal panes.
+Daily live smoke and maintain run on **the Grok Bot box** (pions eng's machine), **not** on gmktec or Yasuhito's personal/default Herdr.
+
+**Forbidden as daily smoke hosts:**
+
+- gmktec (do not use for daily smoke)
+- Yasuhito's default Herdr session, firstmate workspaces, captain personal panes
 
 **Stack:**
 
 | Item | Value |
 | --- | --- |
+| Primary host | Grok Bot box (pions eng's machine) |
 | Repo | `yasuhito/pions` |
-| Checkout | `~/Work/pions` on gmktec, or repo root elsewhere |
+| Checkout | `/home/box/Work/pions` or `$HOME/Work/pions` on the box |
 | Herdr session | Named session `verify-pions` only |
 | CLI prefix | Every Herdr command: `herdr --session verify-pions …` |
 
@@ -118,7 +124,7 @@ Live smoke and maintain **must not** touch Yasuhito's default Herdr session, fir
 herdr server --session verify-pions
 ```
 
-Run in background or a supervisor if needed. **Do NOT** stop or restart the default Herdr server.
+Run in background or a supervisor if needed on the box. **Do NOT** stop or restart Yasuhito's default Herdr server (on gmktec or elsewhere).
 
 **Workflow summary** (details in `features/live-delegation.md`):
 
@@ -126,9 +132,13 @@ Run in background or a supervisor if needed. **Do NOT** stop or restart the defa
 2. Create a workspace + pane with `cwd` = Pions checkout (`herdr --session verify-pions workspace create --cwd "$PIONS_ROOT" …`).
 3. Start Pi in that pane: `herdr --session verify-pions agent start <name> --kind pi --pane <pane-id>`.
 4. Drive proof: `herdr --session verify-pions agent prompt <pane-id> '…' --wait`.
-5. **Cleanup**: close workspaces/panes **you created** in `verify-pions`. Leave captain's default session untouched.
+5. **Cleanup**: close workspaces/panes **you created** in `verify-pions`. Leave Yasuhito's default session untouched.
 
-Set `PIONS_ROOT` to your checkout before running (e.g. `export PIONS_ROOT=~/Work/pions`).
+On the Grok Bot box:
+
+```bash
+export PIONS_ROOT="${PIONS_ROOT:-$HOME/Work/pions}"   # typically /home/box/Work/pions
+```
 
 ## Drive
 
@@ -142,7 +152,7 @@ Execute Pions features to prove they work.
 
 **CRITICAL**: Must run **inside a Herdr pane** in the dedicated `verify-pions` session. Bare `pi --mode json` from a normal shell fails with "Herdr environment is unavailable" even if a default Herdr server is running elsewhere.
 
-**NEVER** use captain's default Herdr session, firstmate workspaces, or pre-existing personal panes for smoke or maintain proof.
+**NEVER** run daily smoke on gmktec, Yasuhito's default Herdr session, firstmate workspaces, or pre-existing personal panes.
 
 **Harness** (programmatic, in `verify-pions` session only):
 
@@ -150,11 +160,11 @@ Execute Pions features to prove they work.
 2. `herdr --session verify-pions agent start <name> --kind pi --pane <pane-id>`
 3. `herdr --session verify-pions agent prompt <pane-id> 'Use pions_delegate exactly once to read package.json and return only the name field value. Do nothing else.' --wait`
 
-Replace `<pane-id>` with the pane ID from your `verify-pions` workspace (from `workspace create` or `pane list`). Do not reuse captain pane IDs.
+Replace `<pane-id>` with the pane ID from your `verify-pions` workspace on the box (from `workspace create` or `pane list`). Do not reuse pane IDs from gmktec or Yasuhito's sessions.
 
 **See `features/live-delegation.md` for detailed steps, exact commands, success observables, and evidence capture.**
 
-**If Herdr is unavailable** (e.g. Cloud VM), you CANNOT prove this feature. Mark live **BLOCKED**; do not fall back to captain Herdr. Proceed to Feature 2 (automated checks) as a partial gate only.
+**If Herdr is unavailable** (e.g. Cloud VM), you CANNOT prove this feature. Mark live **BLOCKED**; do not fall back to gmktec or Yasuhito Herdr. Proceed to Feature 2 (automated checks) as a partial gate only.
 
 ### Feature 2: Automated test suite (regression gate, not user-path proof)
 
@@ -289,7 +299,7 @@ Remove transient artifacts and processes created during verification. Do NOT del
 
 3. **Tear down verify-pions session resources** (only if live delegation ran):
    - Close workspaces/panes **you created** in `verify-pions`: `herdr --session verify-pions workspace close <id>` (or `pane close` as appropriate)
-   - **Do NOT** run `herdr server stop` on the default session or stop captain's Herdr server
+   - **Do NOT** run `herdr server stop` on Yasuhito's default session (e.g. on gmktec)
    - Pions state lives in `~/.local/state/pions/` (or `$XDG_STATE_HOME/pions/`); leave it alone unless operations are corrupted
 
 4. **Verify evidence remains**:
