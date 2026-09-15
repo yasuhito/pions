@@ -57,6 +57,7 @@ import {
   ResultRetrievalError,
   ReviewSubjectError,
   RevisionAuthenticationError,
+  RuntimeClosedError,
   SpawnRejectedError,
   WorkerConfigurationError,
 } from "../public.js";
@@ -189,6 +190,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   >();
   const authorizationMutationTails = new Map<string, Promise<void>>();
+  const inFlightExecutions = new Set<Promise<void>>();
+  let closing = false;
+  const rejectStartGateWaiters = (): void => {
+    for (const [operationId, waiter] of startGateWaiters.entries()) {
+      startGateWaiters.delete(operationId);
+      waiter.reject(new Error("Runtime closing"));
+    }
+  };
+  const trackExecution = (execution: Promise<void>): void => {
+    const tracked: Promise<void> = execution
+      .catch(() => undefined)
+      .finally(() => inFlightExecutions.delete(tracked));
+    inFlightExecutions.add(tracked);
+  };
   const authorizationMonotonicDeadlines = new Map<string, number>();
   let treeMutationTail = Promise.resolve();
 
@@ -1319,6 +1334,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     const gate = new Promise<Readonly<StartInstruction>>((resolve, reject) => {
       startGateWaiters.set(record.operationId, { resolve, reject });
     });
+    // close() may have rejected earlier waiters before this one registered.
+    if (closing) rejectStartGateWaiters();
     void (async () => {
       const observedAt = await runEffect(services.clock.now());
       const wallRemaining =
@@ -1329,6 +1346,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         services.clock.monotonicMilliseconds();
       const remaining = Math.min(wallRemaining, monotonicRemaining);
       if (remaining > 0) await runEffect(services.clock.sleep(remaining));
+      if (closing) return;
       await serializeAuthorizationMutation(record.operationId, () =>
         expireStartAuthorization(record.operationId)
       );
@@ -2562,19 +2580,27 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     },
   });
 
-  const createHandle = async (
+  const admit = <Value>(admission: () => Promise<Value>): Promise<Value> => {
+    if (closing) return Promise.reject(new RuntimeClosedError());
+    const admitted = admission();
+    trackExecution(admitted.then(() => undefined));
+    return admitted;
+  };
+
+  const createHandle = (
     task: TaskSpec,
     options: SpawnOptions | undefined
-  ): Promise<OperationHandle> => {
-    const record = await createOperation(task, options);
-    if (record.executionRejected !== true) void execute(record);
-    return {
-      ...createReader(record.operationId),
-      result: () => record.terminalPromise,
-      cancel: (cancelOptions) =>
-        cancelSubtree(record.operationId, cancelOptions),
-    };
-  };
+  ): Promise<OperationHandle> =>
+    admit(async () => {
+      const record = await createOperation(task, options);
+      if (record.executionRejected !== true) trackExecution(execute(record));
+      return {
+        ...createReader(record.operationId),
+        result: () => record.terminalPromise,
+        cancel: (cancelOptions) =>
+          cancelSubtree(record.operationId, cancelOptions),
+      };
+    });
 
   const recoverCancellation = async (
     record: OperationRecord,
@@ -2648,11 +2674,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       };
       records.set(operation.operationId, record);
       if (operation.state === "cancelling") {
-        void recoverCancellation(record, operation).catch(
-          record.rejectTerminal
+        trackExecution(
+          recoverCancellation(record, operation).catch(record.rejectTerminal)
         );
       } else {
-        void execute(record, true);
+        trackExecution(execute(record, true));
       }
     }
   };
@@ -2671,7 +2697,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const record = await serializeTreeMutation(() =>
         createOperationUnlocked(reservation.task, undefined, reservation)
       );
-      if (record.executionRejected !== true) void execute(record);
+      if (record.executionRejected !== true) trackExecution(execute(record));
     }
   };
   const recoverCleanups = async (): Promise<void> => {
@@ -2691,16 +2717,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const workerRecovery = recoverWorkers();
   const revisionRecovery = recoverRevisions();
   const cleanupRecovery = recoverCleanups();
-  const recovery = Promise.all([
+  const recovery = Promise.allSettled([
     workerRecovery,
     revisionRecovery,
     cleanupRecovery,
   ]);
-  void recovery.catch(() => undefined);
 
   return {
     async close(): Promise<void> {
-      await recovery.catch(() => undefined);
+      closing = true;
+      await recovery;
+      rejectStartGateWaiters();
+      // An execution may spawn further executions while settling, so drain
+      // until nothing is in flight before the Artifact Store goes away.
+      while (inFlightExecutions.size > 0) {
+        await Promise.allSettled([...inFlightExecutions]);
+      }
       await artifactServices.artifacts.close();
     },
 
@@ -2739,7 +2771,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             ? error
             : new RevisionAuthenticationError("Revision authentication failed");
         });
-      const reserveOperation = async (
+      const reserveAdmittedOperation = async (
         request:
           | Parameters<RevisionCoordinator["reserveRevision"]>[0]
           | Parameters<RevisionCoordinator["reserveRetry"]>[0],
@@ -2835,11 +2867,17 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                 outcome.reservation
               )
             );
-            if (record.executionRejected !== true) void execute(record);
+            if (record.executionRejected !== true)
+              trackExecution(execute(record));
           }
         }
         return outcome;
       };
+      const reserveOperation = (
+        request: Parameters<typeof reserveAdmittedOperation>[0],
+        kind: "revision" | "retry"
+      ): Promise<Readonly<RevisionReservationOutcome>> =>
+        admit(() => reserveAdmittedOperation(request, kind));
       return {
         reserveRevision: (request) => reserveOperation(request, "revision"),
         reserveRetry: (request) => reserveOperation(request, "retry"),

@@ -19,6 +19,7 @@ import type {
   Operation,
   OperationIntent,
 } from "../src/internal/event-store/index.js";
+import type { StoredOperationRecord } from "../src/internal/event-store/store.js";
 import type { WorkerProducedResult } from "../src/public.js";
 import {
   acknowledgeResultAcceptance,
@@ -472,6 +473,69 @@ async function completeOperation(
   };
 }
 
+class PausedWriteStore extends InMemoryEventStore {
+  private gate: Promise<void> | undefined;
+  private release: (() => void) | undefined;
+
+  pauseWrites(): void {
+    this.gate = new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  resumeWrites(): void {
+    this.gate = undefined;
+    this.release?.();
+  }
+
+  protected override async writeRecord(
+    operationId: string,
+    record: StoredOperationRecord
+  ): Promise<void> {
+    if (this.gate !== undefined) await this.gate;
+    return super.writeRecord(operationId, record);
+  }
+}
+
+test("Runtime close waits for a spawn admitted before close began", async () => {
+  const store = new PausedWriteStore();
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new FakeClock(
+      Array.from(
+        { length: 60 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  store.pauseWrites();
+  const admitted = runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  let closed = false;
+  const closing = runtime.close().then(() => {
+    closed = true;
+  });
+  for (let tick = 0; tick < 20; tick += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const closedBeforeAdmissionSettled = closed;
+  store.resumeWrites();
+  const handle = await admitted;
+  await handle.result();
+  await closing;
+
+  assert.deepEqual(
+    { closedBeforeAdmissionSettled, state: (await handle.read()).state },
+    { closedBeforeAdmissionSettled: false, state: "completed" }
+  );
+});
+
 test("runtime startup adopts a recoverable Start delivery", async () => {
   const store = new InMemoryEventStore();
   const firstWorker = new ControlledWorkerAdapter();
@@ -495,7 +559,8 @@ test("runtime startup adopts a recoverable Start delivery", async () => {
   while ((await handle.read()).state !== "running") {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredWorker = new ControlledWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
@@ -542,7 +607,8 @@ test("runtime recovery delivers a Start instruction acquired before delivery ent
   while ((await handle.read()).startDeliveryAuthority === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
@@ -588,7 +654,8 @@ test("runtime recovery redispatches only after a durable not-accepted result", a
   while ((await handle.read()).startDeliveryEntry === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
@@ -634,9 +701,10 @@ test("runtime recovery resumes a Start delivery handoff interrupted after revoca
   while ((await handle.read()).startDeliveryEntry === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const pausedWorker = new PausedHandoffWorkerAdapter();
-  const interruptedRuntime = makeTestRuntime({
+  makeTestRuntime({
     worker: pausedWorker,
     clock: new FakeClock(
       Array.from(
@@ -651,7 +719,7 @@ test("runtime recovery resumes a Start delivery handoff interrupted after revoca
   while (!pausedWorker.revocationRecorded) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await interruptedRuntime.close();
+  // The interrupted Runtime dies mid-handoff the same way; it is never closed.
   const recoveredWorker = new InterruptedStartWorkerAdapter();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
@@ -819,7 +887,8 @@ test("runtime startup resumes an interrupted Worker cancellation", async () => {
   while ((await handle.read()).state !== "cancelling") {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredRuntime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock: new FakeClock(

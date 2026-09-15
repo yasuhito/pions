@@ -7,6 +7,7 @@ import type {
   Operation,
   OperationEvent,
 } from "../src/internal/event-store/index.js";
+import type { StoredOperationRecord } from "../src/internal/event-store/store.js";
 import type { Worker, WorkerAdapter } from "../src/internal/services.js";
 import {
   FakeClock,
@@ -16,6 +17,7 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
+import { RuntimeClosedError } from "../src/index.js";
 import type { RevisionAuthenticator, Runtime } from "../src/index.js";
 
 class InterruptiblePresentation extends FakePresentation {
@@ -123,6 +125,34 @@ function authenticator(
   };
 }
 
+class PersistedOperationStore extends InMemoryEventStore {
+  private gate: Promise<void> | undefined;
+  private release: (() => void) | undefined;
+
+  operationIds(): Promise<ReadonlyArray<string>> {
+    return this.listOperationIds();
+  }
+
+  pauseWrites(): void {
+    this.gate = new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  resumeWrites(): void {
+    this.gate = undefined;
+    this.release?.();
+  }
+
+  protected override async writeRecord(
+    operationId: string,
+    record: StoredOperationRecord
+  ): Promise<void> {
+    if (this.gate !== undefined) await this.gate;
+    return super.writeRecord(operationId, record);
+  }
+}
+
 async function fixture(
   failures: ReadonlyArray<
     "success" | "process-exited-without-result" | "liveness-unproven"
@@ -135,7 +165,7 @@ async function fixture(
       ).toISOString()
     )
   );
-  const store = new InMemoryEventStore([], clock);
+  const store = new PersistedOperationStore([], clock);
   const runtime = makeTestRuntime({
     worker: new SequencedWorkerAdapter(failures),
     clock,
@@ -196,6 +226,80 @@ async function waitForState(
     `Operation ${operationId} reached ${actual}, not ${expected}`
   );
 }
+
+test("Runtime close 後の Revision 予約は拒否され、予約も Operation も永続化しない", async () => {
+  const { runtime, original, snapshot, store } = await fixture();
+  await runtime.close();
+
+  const rejection = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  ).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+
+  assert.deepEqual(
+    {
+      rejectedAsClosed: rejection instanceof RuntimeClosedError,
+      pendingReservations: await Effect.runPromise(
+        store.listPendingRevisionReservations()
+      ),
+      operationIds: await store.operationIds(),
+    },
+    {
+      rejectedAsClosed: true,
+      pendingReservations: [],
+      operationIds: ["original"],
+    }
+  );
+});
+
+test("Runtime close は close 前に受理した Revision 予約の実行完了を待つ", async () => {
+  const { runtime, original, snapshot, store } = await fixture();
+  const revisions = await runtime.revisions("credential");
+  store.pauseWrites();
+  const admitted = revisions.reserveRevision({
+    requestId: "revision-request-1",
+    targetOperationId: original.operationId,
+    targetResultId: snapshot.resultAcceptance!.acceptanceId,
+    targetResultDigest: snapshot.resultAcceptance!.manifestDigest,
+    reason: "close と重なった予約を完走させる",
+    maxAttempts: 3,
+    task: {
+      promptRef: "private://revision",
+      profile: "coding",
+      idempotencyKey: "revision-1",
+    },
+  });
+  let closed = false;
+  const closing = runtime.close().then(() => {
+    closed = true;
+  });
+  for (let tick = 0; tick < 20; tick += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const closedBeforeAdmissionSettled = closed;
+  store.resumeWrites();
+  const outcome = await admitted;
+  await closing;
+
+  assert.deepEqual(
+    {
+      closedBeforeAdmissionSettled,
+      outcome: outcome.status,
+      revisionState: (await Effect.runPromise(store.read("revision-1")))
+        .operation.state,
+    },
+    {
+      closedBeforeAdmissionSettled: false,
+      outcome: "reserved",
+      revisionState: "completed",
+    }
+  );
+});
 
 test("Revision予約は元Resultと系列上限を結び付けて永続化する", async () => {
   const { runtime, original, snapshot } = await fixture();
@@ -655,6 +759,54 @@ test("予約後にOperation作成が中断しても再起動時に作成を再�
 
   assert.equal(
     (await (await recovered.operation("revision-1")).read()).state,
+    "completed"
+  );
+});
+
+test("起動直後の Runtime close は保留中の Revision 予約の復旧を完了させてから閉じる", async () => {
+  const clock = new FakeClock(
+    Array.from({ length: 160 }, (_, index) =>
+      new Date(
+        Date.parse("2026-09-06T14:00:00.000Z") + index * 1_000
+      ).toISOString()
+    )
+  );
+  const store = new InMemoryEventStore([], clock);
+  const presentation = new InterruptiblePresentation();
+  const firstRuntime = makeTestRuntime({
+    worker: new SequencedWorkerAdapter(["success"]),
+    clock,
+    ids: new FakeIdGenerator(["original", "revision-1"]),
+    presentation,
+    store,
+    revisionAuthenticator: authenticator(),
+  });
+  const original = await firstRuntime.spawn({
+    promptRef: "private://original",
+    profile: "coding",
+    idempotencyKey: "original",
+  });
+  await original.result();
+  const accepted = (await original.read()).resultAcceptance!;
+  presentation.failPreflight = true;
+  await reserveFirst(
+    firstRuntime,
+    original.operationId,
+    accepted.acceptanceId,
+    accepted.manifestDigest
+  ).catch(() => undefined);
+  const recovered = makeTestRuntime({
+    worker: new SequencedWorkerAdapter(["success"]),
+    clock,
+    ids: new FakeIdGenerator([]),
+    presentation: new FakePresentation(),
+    store,
+    revisionAuthenticator: authenticator(),
+  });
+  await recovered.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("revision-1"))).operation.state,
     "completed"
   );
 });

@@ -280,7 +280,12 @@ async function fixture(
   context.after(async () => {
     if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = previousStateHome;
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
   });
   return createFormalReviewIntegration({
     repositoryRoot: root,
@@ -1557,7 +1562,12 @@ test("a registered dependent root is available to the configured extension Runti
   const integration = createFormalReviewIntegration(configuration);
   context.after(async () => {
     await runtime?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
   });
   const bytes = Buffer.from("fixed manifest", "utf8");
   const dependency = dependencyRegistration(
@@ -1911,7 +1921,12 @@ async function externalAllocationFixture(
   const integration = createFormalReviewIntegration(configuration);
   context.after(async () => {
     await runtime?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
   });
   registration = await integration.registerReviewSubject(
     rootRegistration(Buffer.from("fixed allocation subject", "utf8"))
@@ -2307,17 +2322,27 @@ async function independentReviewsFixture(
     fixture.authorize(operationIds[1], "specification-decision-call"),
   ]);
   async function waitForSettlement(operationId: string) {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    // Wait for a real terminal state. A fixed attempt budget fails under CI
+    // load when other test files share the event loop; wall-clock bound stays
+    // honest about "done or not" without inventing event order.
+    const deadline = Date.now() + 30_000;
+    for (;;) {
       const snapshot = await fixture.snapshot(operationId);
       if (
-        snapshot.workerExecutionEvidence !== undefined ||
-        snapshot.failureReason !== undefined
+        snapshot.state === "completed" ||
+        snapshot.state === "failed" ||
+        snapshot.state === "cancelled" ||
+        snapshot.state === "unknown"
       ) {
         return snapshot;
       }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `Operation ${operationId} did not settle (state=${snapshot.state})`
+        );
+      }
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    throw new Error(`Operation ${operationId} did not settle`);
   }
   const snapshots = await Promise.all(operationIds.map(waitForSettlement));
   return {

@@ -832,7 +832,8 @@ async function recoveryWithoutRequiredResourceAdapter() {
   while ((await handle.read()).startDeliveryEntry === undefined) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await firstRuntime.close();
+  // The first Runtime models a Pi process that died mid-flight. A crash never
+  // closes, and close() would wait for the stalled Worker to settle.
   const recoveredWorker = new InterruptedRequiredResourceWorker();
   const recoveredRuntime = makeTestRuntime({
     worker: recoveredWorker,
