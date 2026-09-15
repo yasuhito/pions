@@ -11,7 +11,7 @@ import type { Operation } from "../src/internal/event-store/index.js";
 import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import { makeSingleRunWorker } from "../src/internal/services.js";
-import { RuntimeClosedError } from "../src/index.js";
+import { OperationFailedError, RuntimeClosedError } from "../src/index.js";
 import type {
   Worker,
   WorkerCancellationEvidence,
@@ -1805,6 +1805,22 @@ test("Runtime close rejects a spawn issued while an in-flight execution is still
 
   await late;
   assert.deepEqual(await stalled.store.operationIds(), ["operation-1"]);
+});
+
+test("Runtime close closes the Artifact Store only after a failing execution settles", async (context) => {
+  const ordering = await closeOrderingFixture(
+    context,
+    new FakeWorkerAdapter({ failure: "agent_failed" })
+  );
+  await authorize(ordering.inbox);
+  const closing = ordering.runtime.close();
+  await assert.rejects(ordering.handle.result(), OperationFailedError);
+  await closing;
+
+  assert.deepEqual(ordering.orderOf("execution:settled", "artifacts:close"), [
+    "execution:settled",
+    "artifacts:close",
+  ]);
 });
 
 test("no Artifact Store access follows Runtime close", async (context) => {
