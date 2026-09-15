@@ -16,6 +16,7 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
+import { RuntimeClosedError } from "../src/index.js";
 import type { RevisionAuthenticator, Runtime } from "../src/index.js";
 
 class InterruptiblePresentation extends FakePresentation {
@@ -123,6 +124,12 @@ function authenticator(
   };
 }
 
+class PersistedOperationStore extends InMemoryEventStore {
+  operationIds(): Promise<ReadonlyArray<string>> {
+    return this.listOperationIds();
+  }
+}
+
 async function fixture(
   failures: ReadonlyArray<
     "success" | "process-exited-without-result" | "liveness-unproven"
@@ -135,7 +142,7 @@ async function fixture(
       ).toISOString()
     )
   );
-  const store = new InMemoryEventStore([], clock);
+  const store = new PersistedOperationStore([], clock);
   const runtime = makeTestRuntime({
     worker: new SequencedWorkerAdapter(failures),
     clock,
@@ -196,6 +203,26 @@ async function waitForState(
     `Operation ${operationId} reached ${actual}, not ${expected}`
   );
 }
+
+test("Runtime close 後の Revision 予約は拒否され、予約も Operation も永続化しない", async () => {
+  const { runtime, original, snapshot, store } = await fixture();
+  await runtime.close();
+
+  await assert.rejects(
+    reserveFirst(
+      runtime,
+      original.operationId,
+      snapshot.resultAcceptance!.acceptanceId,
+      snapshot.resultAcceptance!.manifestDigest
+    ),
+    RuntimeClosedError
+  );
+  assert.deepEqual(
+    await Effect.runPromise(store.listPendingRevisionReservations()),
+    []
+  );
+  assert.deepEqual(await store.operationIds(), ["original"]);
+});
 
 test("Revision予約は元Resultと系列上限を結び付けて永続化する", async () => {
   const { runtime, original, snapshot } = await fixture();

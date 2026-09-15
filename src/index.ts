@@ -31,6 +31,7 @@ export {
   ResultRetrievalError,
   ReviewSubjectError,
   RevisionAuthenticationError,
+  RuntimeClosedError,
   SpawnRejectedError,
   StartAuthorizationAuthenticationError,
   WorkerConfigurationError,

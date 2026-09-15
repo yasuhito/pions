@@ -57,6 +57,7 @@ import {
   ResultRetrievalError,
   ReviewSubjectError,
   RevisionAuthenticationError,
+  RuntimeClosedError,
   SpawnRejectedError,
   WorkerConfigurationError,
 } from "../public.js";
@@ -2004,6 +2005,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     options: SpawnOptions | undefined,
     revisionReservation?: Readonly<RevisionReservation>
   ): Promise<OperationRecord> => {
+    if (closing) throw new RuntimeClosedError();
     await runEffect(services.presentation.preflight());
     const decodedTask = await Effect.runPromise(
       Schema.decodeUnknown(TaskSpecSchema)(taskInput)
@@ -2770,6 +2772,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           | Parameters<RevisionCoordinator["reserveRetry"]>[0],
         kind: "revision" | "retry"
       ): Promise<Readonly<RevisionReservationOutcome>> => {
+        if (closing) throw new RuntimeClosedError();
         const operationId = await Effect.runPromise(
           services.ids.nextOperationId()
         );

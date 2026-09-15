@@ -1359,6 +1359,14 @@ export class SpawnRejectedError extends Error {
   }
 }
 
+export class RuntimeClosedError extends Error {
+  override readonly name = "RuntimeClosedError";
+
+  constructor() {
+    super("Runtime is closing; new Operations are rejected");
+  }
+}
+
 export class OperationFailedError extends Error {
   override readonly name = "OperationFailedError";
 

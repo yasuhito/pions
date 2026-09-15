@@ -11,6 +11,7 @@ import type { Operation } from "../src/internal/event-store/index.js";
 import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import { makeSingleRunWorker } from "../src/internal/services.js";
+import { RuntimeClosedError } from "../src/index.js";
 import type {
   Worker,
   WorkerCancellationEvidence,
@@ -1663,13 +1664,25 @@ function observedArtifactStore(
   });
 }
 
+class PersistedOperationStore extends InMemoryEventStore {
+  operationIds(): Promise<ReadonlyArray<string>> {
+    return this.listOperationIds();
+  }
+}
+
+const lateTask = {
+  promptRef: "private://late",
+  profile: "coding",
+  idempotencyKey: "late",
+} as const;
+
 async function closeOrderingFixture(
   context: TestContext,
   worker: FakeWorkerAdapter = new FakeWorkerAdapter()
 ) {
   const events: Array<string> = [];
   const clock = new FakeClock(timestamps);
-  const store = new InMemoryEventStore([], clock);
+  const store = new PersistedOperationStore([], clock);
   const root = await mkdtemp(join(tmpdir(), "pions-runtime-close-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const artifactServices = runtimeArtifactStore(root, store);
@@ -1688,7 +1701,7 @@ async function closeOrderingFixture(
   );
   const orderOf = (...names: ReadonlyArray<string>) =>
     events.filter((event) => names.includes(event));
-  return { runtime, handle, inbox, events, orderOf };
+  return { runtime, handle, inbox, store, events, orderOf };
 }
 
 async function stalledAfterStartGate(context: TestContext) {
@@ -1751,6 +1764,27 @@ test("Runtime close closes the Artifact Store only after a running execution set
       "runtime:closed",
     ]
   );
+});
+
+test("Runtime close rejects a later spawn without persisting an Operation", async (context) => {
+  const { runtime, store } = await closeOrderingFixture(context);
+  await runtime.close();
+
+  await assert.rejects(runtime.spawn(lateTask), RuntimeClosedError);
+  assert.deepEqual(await store.operationIds(), ["operation-1"]);
+});
+
+test("Runtime close rejects a spawn issued while an in-flight execution is still draining", async (context) => {
+  const stalled = await stalledAfterStartGate(context);
+  const late = assert.rejects(
+    stalled.runtime.spawn(lateTask),
+    RuntimeClosedError
+  );
+  stalled.release();
+  await stalled.closing;
+
+  await late;
+  assert.deepEqual(await stalled.store.operationIds(), ["operation-1"]);
 });
 
 test("no Artifact Store access follows Runtime close", async (context) => {
