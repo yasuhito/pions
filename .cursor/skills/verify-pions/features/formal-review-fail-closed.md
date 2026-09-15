@@ -49,13 +49,16 @@ Expected: Tests pass, including cases that verify rejection without configuratio
 
 ### Manual inspection (if Herdr available)
 
-1. Start Pi in Herdr (in the Pions project)
-2. Confirm no `.pions.json` formal-review configuration exists (or that it's incomplete)
-3. Attempt to call `pions_review`:
+Use the dedicated `verify-pions` Herdr session only — never captain default or firstmate workspaces:
+
+1. Create a workspace in `verify-pions` with `cwd` = Pions checkout; start Pi: `herdr --session verify-pions agent start … --kind pi --pane <pane-id>`
+2. Confirm no trusted formal-review configuration enables production review
+3. Attempt to call `pions_review` in that Pi session:
    ```
    Use pions_review to review artifact abc123.
    ```
 4. Observe: The tool rejects the call with `unsupported_capability` and message `Formal review is not enabled by trusted configuration`
+5. Close the verify workspace when done
 
 Expected: Call fails, does not create an operation.
 

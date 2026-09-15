@@ -10,17 +10,56 @@
 4. **Pane auto-close on success** (Pions-owned success panes only, per AGENTS.md)
 5. **Operation persistence and retrieval** (persisted Operation records in `~/.local/state/pions/`)
 
+## Dedicated Herdr session (REQUIRED — never captain default)
+
+**Standing instruction:** daily smoke and maintain must **never** drive Yasuhito's personal/default Herdr session, firstmate workspaces, or captain personal panes.
+
+| Item | Value |
+| --- | --- |
+| Repo | `yasuhito/pions` |
+| Checkout | `~/Work/pions` on gmktec; repo root elsewhere (e.g. `/workspace` on Cloud Agent) |
+| Herdr session | Named session `verify-pions` only |
+| CLI | **Every** Herdr command uses `herdr --session verify-pions …` |
+
+Set once per shell:
+
+```bash
+export PIONS_ROOT="${PIONS_ROOT:-$HOME/Work/pions}"   # adjust for host
+export HERDR="herdr --session verify-pions"
+```
+
+### Start dedicated server (if not running)
+
+```bash
+# Headless server for verify-pions only — do NOT touch default session
+if ! $HERDR status server &>/dev/null; then
+  herdr server --session verify-pions &
+  sleep 2   # allow socket to come up
+fi
+```
+
+**Do NOT** stop, restart, or attach to captain's default Herdr server.
+
+### Cloud Agent / Herdr absent
+
+If `command -v herdr` fails (typical Cloud VM):
+
+- Mark live delegation **BLOCKED**
+- Document: "Live delegation proof BLOCKED: Herdr unavailable. Automated checks only."
+- **Do NOT** fall back to captain Herdr on another machine or session
+- Automated `npm run check` does NOT substitute for this proof
+
 ## Prerequisites (HARD REQUIREMENTS)
 
-1. **Herdr is running and accessible**:
+1. **Herdr is on PATH** (local machine with Herdr installed):
 
    ```bash
-   herdr --version
+   command -v herdr && herdr --version
    ```
 
-   If this fails, **live delegation cannot be verified**. Stop here and document the block.
+   If missing, **live delegation cannot be verified**. Stop here and document the block.
 
-2. **Pi is installed and configured**:
+2. **Pi is installed**:
 
    ```bash
    pi --version
@@ -31,27 +70,14 @@
 3. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
 
    ```bash
+   cd "$PIONS_ROOT"
    npm run build
-   ```
-
-   Verify:
-
-   ```bash
    ls -la dist/src/worker-extension.js
    ```
 
-4. **Pi session is running inside Herdr** in the Pions project:
+4. **Dedicated `verify-pions` session server is running** (see above).
 
-   - Start Herdr
-   - Launch a Pi session in a Herdr pane (or use an existing one)
-   - Confirm the working directory is the Pions repository root
-   - Confirm Pions project is trusted (has `AGENTS.md`)
-
-5. **No active conflicting sessions**: Check for other Pi panes in the same workspace:
-   ```bash
-   herdr pane list
-   ```
-   If a user is actively working in a Pi session in this workspace, **defer or use a separate test workspace** to avoid corrupting their session.
+5. **Isolated workspace + Pi pane** in `verify-pions` with `cwd` = Pions checkout — created by you for this proof, not borrowed from captain/firstmate.
 
 ## How to get to it (user perspective)
 
@@ -67,11 +93,11 @@ The model sees `pions_delegate` as a registered tool and calls it with the task 
 
 ## Driving it with harness
 
-### CRITICAL: Must run inside a Herdr pane
+### CRITICAL: Must run inside a Herdr pane (verify-pions session)
 
-**The harness must execute inside a Herdr pane**, not from a bare shell. Pions workers require Herdr environment variables (`HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`) to create sibling panes.
+**The harness must execute inside a Herdr pane** in the `verify-pions` session, not from a bare shell. Pions workers require Herdr environment variables (`HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`) to create sibling panes.
 
-**This will NOT work** (even if `herdr status` shows server running):
+**This will NOT work** (even if a default Herdr server is running):
 
 ```bash
 # From a normal shell outside Herdr:
@@ -79,100 +105,88 @@ pi --mode json -p 'Use pions_delegate to read package.json'
 # Fails with: "Herdr environment is unavailable: HERDR_ENV, HERDR_WORKSPACE_ID..."
 ```
 
-**These WILL work**:
+**This WILL work** (programmatic proof in `verify-pions`):
 
-1. **Interactive Pi session already running in a Herdr pane** (manual, for human verification)
-2. **`herdr agent prompt <pane-id>`** (programmatic, for automated proof):
+1. Create workspace + root pane with Pions `cwd`
+2. `herdr --session verify-pions agent start … --kind pi --pane <pane-id>`
+3. `herdr --session verify-pions agent prompt <pane-id> '…' --wait`
 
-   ```bash
-   herdr agent prompt wS9:p3 'Use pions_delegate to read package.json and return only the name field. Do nothing else.' --wait
-   ```
+### Exact steps (programmatic — verify-pions session)
 
-### Prerequisites
-
-1. **Herdr server is running**:
+1. **Ensure dedicated server is up**:
 
    ```bash
-   herdr status
+   $HERDR status server
    ```
 
-   Expected: "Herdr server running..."
+   Expected: server running for session `verify-pions`.
 
-2. **Herdr and Pi are on PATH**:
+2. **Create an isolated workspace** (cwd = Pions checkout):
 
    ```bash
-   herdr --version
-   pi --version
+   created=$($HERDR workspace create --cwd "$PIONS_ROOT" --label verify-pions-smoke --no-focus)
+   pane_id=$(printf '%s\n' "$created" | jq -r '.result.root_pane.pane_id')
+   workspace_id=$(printf '%s\n' "$created" | jq -r '.result.workspace.workspace_id')
    ```
 
-3. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
+   Record `pane_id` and `workspace_id` for cleanup. Do not reuse captain or firstmate workspace IDs.
+
+3. **Start Pi in the pane**:
 
    ```bash
-   cd ~/Work/pions  # or your Pions repo path
-   npm run build
+   $HERDR agent start verify-smoke --kind pi --pane "$pane_id"
    ```
 
-4. **A Pi session exists in a Herdr pane** (for `herdr agent prompt`), OR you will launch one interactively:
-   ```bash
-   herdr pane list
-   # Look for a pane with Pi running, e.g., wS9:p3
-   ```
+   The pane must be at an interactive shell prompt before `agent start`. Agent names must match `[a-z][a-z0-9_-]{0,31}`.
 
-### Exact steps (programmatic via `herdr agent prompt`)
-
-1. **Identify the target pane**:
+4. **Send delegation command**:
 
    ```bash
-   herdr pane list
+   $HERDR agent prompt "$pane_id" \
+     'Use pions_delegate exactly once to read package.json and return only the name field value. Do nothing else.' \
+     --wait
    ```
 
-   Find a pane running Pi in the Pions workspace (e.g., `wS9:p3`).
+5. **Observe the result**:
 
-2. **Send delegation command**:
+   - Package name (`pions`) in the output
+   - Operation ID (UUID) in the response
+
+6. **Capture evidence** (portable paths):
 
    ```bash
-   herdr agent prompt wS9:p3 'Use pions_delegate exactly once to read package.json and return only the name field value. Do nothing else.' --wait
+   EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-live-delegation-$(date +%Y%m%d-%H%M%S)}"
+   mkdir -p "$EVIDENCE_DIR"
+   $HERDR pane read "$pane_id" > "$EVIDENCE_DIR/pane-after-delegation.txt"
+   $HERDR pane list > "$EVIDENCE_DIR/pane-list.txt"
    ```
 
-   Replace `wS9:p3` with your actual pane ID.
-
-3. **Observe the result**:
-
-   The command waits for Pi to respond. You should see:
-
-   - The package name (`pions`) in the output
-   - Operation ID in the response
-
-4. **Capture evidence**:
+7. **Cleanup** (resources you created in `verify-pions` only):
 
    ```bash
-   mkdir -p /tmp/verify-pions-pane-$(date +%Y%m%d-%H%M%S)
-   herdr pane read wS9:p3 > /tmp/verify-pions-pane-$(date +%Y%m%d-%H%M%S)/pane-after-delegation.txt
-   herdr pane list > /tmp/verify-pions-pane-$(date +%Y%m%d-%H%M%S)/pane-list.txt
+   $HERDR workspace close "$workspace_id"
+   # Or close individual panes if you split layout
    ```
 
-### Exact steps (interactive via Pi TUI in Herdr)
+   **Do NOT** run `herdr server stop` (default) or stop captain's Herdr server.
 
-1. **Launch or attach to a Pi session in Herdr**:
+### Exact steps (interactive via Pi TUI — verify-pions session)
+
+Use only when debugging; prefer programmatic steps above for smoke/maintain.
+
+1. **Attach to verify-pions session** (interactive terminal on gmktec):
 
    ```bash
-   # If no Pi session exists:
-   herdr run pi
-   # Or attach to existing pane:
-   herdr pane focus wS9:p3
+   herdr --session verify-pions
    ```
 
-2. **Verify you're in the Pions workspace**:
+2. **Create workspace at Pions root** (or use one you created for verify):
 
    ```bash
-   # Inside Pi, check working directory
-   pwd
-   # Should be ~/Work/pions or similar
+   herdr --session verify-pions workspace create --cwd "$PIONS_ROOT" --label verify-pions-smoke
    ```
 
-3. **Send a delegation message**:
-
-   In the Pi session:
+3. **Start Pi in the root pane**, then send a delegation message in the Pi TUI:
 
    ```
    Use pions_delegate to read CONTEXT.md and list three domain terms.
@@ -182,15 +196,10 @@ pi --mode json -p 'Use pions_delegate to read package.json'
 
    - Pi calls `pions_delegate` tool
    - A sibling Herdr pane opens (right or bottom)
-   - The new pane shows Pi TUI with "regular" view
-   - Worker executes the task
-   - Result streams back to the parent Pi session
+   - Worker executes; result streams back
    - On success, the worker pane auto-closes
 
-5. **Check the parent Pi response**:
-   - Contains the result text (possibly truncated if > 2000 lines or 50 KB)
-   - Includes operation ID (UUID)
-   - Includes SHA-256 digest of accepted bytes
+5. **Close the verify workspace when done** — do not leave smoke panes in captain's default session.
 
 ### Expected outcome
 
@@ -210,25 +219,25 @@ Result: pions
 ### Evidence capture
 
 ```bash
-# Create evidence directory
-EVIDENCE_DIR="/tmp/verify-pions-pane-$(date +%Y%m%d-%H%M%S)"
+EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-live-delegation-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$EVIDENCE_DIR"
 
-# Capture pane state
-herdr pane read <pane-id> > "$EVIDENCE_DIR/pane-after-delegation.txt"
-
-# Capture pane list
-herdr pane list > "$EVIDENCE_DIR/pane-list.txt"
-
-# Check operation state (if accessible)
-ls -la ~/.local/state/pions/ > "$EVIDENCE_DIR/operation-state.txt"
+$HERDR pane read <pane-id> > "$EVIDENCE_DIR/pane-after-delegation.txt"
+$HERDR pane list > "$EVIDENCE_DIR/pane-list.txt"
+ls -la ~/.local/state/pions/ > "$EVIDENCE_DIR/operation-state.txt" 2>/dev/null || true
 ```
 
 ## Gotchas
 
 ### Herdr is REQUIRED
 
-Without Herdr, `pions_delegate` fails immediately with `HerdrPreconditionError`. This is not a workaround-able limitation. **No Herdr = no live delegation proof.**
+Without Herdr, `pions_delegate` fails immediately with `HerdrPreconditionError`. **No Herdr = no live delegation proof.** Do not substitute captain's session from another context.
+
+### Never use default / captain / firstmate session
+
+- **NEVER** `herdr pane list` (no `--session`) and pick an existing captain pane
+- **NEVER** smoke in firstmate workspaces or personal panes (`wS9:p*` or any pre-existing ID)
+- **ALWAYS** `--session verify-pions` and create your own workspace
 
 ### Must build first
 
@@ -238,7 +247,7 @@ If you skip `npm run build` or build with an old protocol version, workers fail 
 Worker configuration version does not match
 ```
 
-**Fix**: Run `npm run build` before delegating. This is especially critical after protocol version changes.
+**Fix**: Run `npm run build` in `$PIONS_ROOT` before delegating.
 
 ### Task content stays private
 
@@ -249,10 +258,10 @@ The task text is NOT in:
 
 It's passed via an owner-only private file referenced by the worker config.
 
-**Verify**:
+**Verify** (in `verify-pions` session):
 
 ```bash
-herdr pane process-info <worker-pane-id>
+$HERDR pane process-info <worker-pane-id>
 ```
 
 The `argv` is the Herdr/Pi worker launch line, not the task string. A real launch looks like:
@@ -271,79 +280,42 @@ herdr agent start pions-<id> --kind pi --pane <pane> --timeout <ms> -- \
 
 Workers use `--no-session`, so they don't save standard Pi sessions. This is intentional.
 
-**Verify**:
-
-```bash
-ls ~/.pi/agent/sessions/
-```
-
-You won't see a session file matching the worker's Pi session ID.
-
 ### Pane auto-close applies to success only
 
 **Success workers auto-close their panes.** Failed, cancelled, or unknown workers **leave panes open for debugging** (per AGENTS.md).
 
-To test pane retention: Force a failure (e.g., delete the prompt file after worker launch but before `begin`).
-
 ### Result truncation
 
-If the result exceeds 2000 lines or 50 KB, the parent sees a truncated version with a notice.
-
-The full result is still persisted and retrievable via `pions_result`.
-
-### Double-driving shared sessions
-
-Pions delegates to **sibling panes**. If a user is actively working in a Pi session in the same workspace, launching delegation can corrupt their session state.
-
-**Before delegating**:
-
-1. Check `herdr pane list` for active Pi panes
-2. If a user owns active Pi panes, **defer** or use a **separate test workspace**
-3. Document the deferral if you cannot isolate
+If the result exceeds 2000 lines or 50 KB, the parent sees a truncated version with a notice. Full result is still persisted and retrievable via `pions_result`.
 
 ### No background execution
 
-Workers are foreground operations. They block until complete or cancelled. Pions does not support background execution, chains, steering, or workflows.
+Workers are foreground operations. They block until complete or cancelled.
 
 ### Cancellation
 
-If you interrupt the parent Pi (e.g., press Escape during delegation), Pions cancels the worker.
-
-Cancelled operations leave their panes open for debugging.
+If you interrupt the parent Pi, Pions cancels the worker. Cancelled operations leave their panes open for debugging.
 
 ### State storage
 
-Operation state lives in:
-
-- `~/.local/state/pions/` (or `$XDG_STATE_HOME/pions/`)
-
-Each repository is isolated by a digest of its canonical root.
-
-### Unix domain sockets
-
-Pions uses Unix domain sockets for worker protocol communication. These live in a short runtime directory (to avoid path length limits).
-
-No TCP ports are opened.
+Operation state lives in `~/.local/state/pions/` (or `$XDG_STATE_HOME/pions/`). Each repository is isolated by a digest of its canonical root.
 
 ### Cloud Agent limitation
 
-**Most cloud VMs lack Herdr.** If you are running in a cloud environment and Herdr is unavailable:
+**Most cloud VMs lack Herdr.** If Herdr is unavailable:
 
 - **You cannot prove live delegation.**
 - Document: "Live delegation proof BLOCKED: Herdr unavailable."
+- **Do NOT** fall back to captain Herdr.
 - Automated test coverage (`npm run check`) does NOT substitute for this proof.
-- The skill is only partially verified.
 
-## For machines with Herdr (gmktec: Node v26.8.1, /home/yasuhito/.local/bin/herdr)
+## For machines with Herdr (gmktec)
 
-If you are executing this skill on a machine with Herdr and Pi (e.g., user's gmktec with Node v26.8.1, Herdr at `/home/yasuhito/.local/bin/herdr`, Pi 0.85.1):
+When executing on gmktec (Node v26+, Herdr 0.8.2+, Pi 0.85.1+):
 
-1. Follow the exact steps above.
-2. Capture all success observables (Operation ID, digest, pane evidence).
-3. Save evidence to a portable writable directory:
-   ```bash
-   EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-live-delegation-$(date +%Y%m%d-%H%M%S)}"
-   mkdir -p "$EVIDENCE_DIR"
-   ```
-4. Include evidence paths in your proof summary.
-5. Update PR or proof document with: "Live delegation proof COMPLETED on gmktec with Herdr."
+1. Use **only** the `verify-pions` session workflow above.
+2. Set `PIONS_ROOT=~/Work/pions`.
+3. Capture all success observables (Operation ID, digest, pane evidence).
+4. Save evidence to a portable writable directory (`$VERIFY_PIONS_EVIDENCE_DIR` or `/tmp/verify-pions-…`).
+5. Close verify workspaces/panes you created; leave captain's default server running.
+6. Report: "Live delegation proof COMPLETED in verify-pions session on gmktec."
