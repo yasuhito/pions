@@ -279,10 +279,20 @@ Remove transient artifacts and processes created during verification. Do NOT del
 4. **Verify evidence remains**:
 
    ```bash
-   ls "${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-*}"
+   if [ -n "${VERIFY_PIONS_EVIDENCE_DIR:-}" ]; then
+     ls -la -- "$VERIFY_PIONS_EVIDENCE_DIR"
+   else
+     shopt -s nullglob
+     evidence_dirs=(/tmp/verify-pions-*)
+     printf '%s\n' "${evidence_dirs[@]}"
+   fi
    ```
 
-   Evidence should still exist after cleanup.
+   Evidence should still exist after cleanup. The fallback branch lists every
+   `/tmp/verify-pions-*` entry (including names with spaces) and, thanks to
+   `nullglob`, prints only an empty line without erroring when none exist. A
+   quoted `"${VAR:-/tmp/verify-pions-*}"` fallback would not glob-expand, so do
+   not use it.
 
 5. **Verify no ports are stuck open**:
    ```bash
