@@ -15,7 +15,7 @@ This skill helps a cold agent verify Pions, a durable Pi worker runtime and exte
 
 Get Pions ready to verify:
 
-1. **Check working directory**: Ensure you're in the Pions repository root (e.g., `/workspace` on a cloud agent, or `~/Work/pions` on a local machine).
+1. **Check working directory**: Ensure you're in the Pions repository root (`yasuhito/pions`). **Daily live smoke runs on the Grok Bot box** (pions eng's machine): `/home/box/Work/pions` or `$HOME/Work/pions` there. Cloud Agent may use `/workspace` for automated checks only — not for daily Herdr smoke.
 
 2. **Install dependencies**:
 
@@ -86,9 +86,10 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 
    Expected: `pi` binary on PATH, version 0.85.1+
 
-**If Herdr or Pi is missing:**
+**If Herdr or Pi is missing** (typical on Cloud Agent VMs):
 
 - **USER-PATH VERIFICATION IS BLOCKED**. You cannot prove visible delegation works.
+- **Do NOT fall back** to Yasuhito's default Herdr session, gmktec, firstmate workspaces, or any personal pane on another host.
 - Automated tests (`npm run check`, build verification) may still run as partial regression gates, but they do NOT substitute for proving the real user experience.
 - Document clearly in your proof output: "Live delegation proof BLOCKED: Herdr unavailable. Automated checks only."
 - Do NOT claim end-to-end verification succeeded.
@@ -96,23 +97,48 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 **If Herdr and Pi are present:**
 
 - Proving ONE live-delegation feature (see `features/live-delegation.md`) is **REQUIRED** before claiming end-to-end success.
-- Check for active user sessions to avoid conflicts (see Isolation below).
+- Use the **dedicated named Herdr session** `verify-pions` on the **Grok Bot box** only (see Isolation below). Never smoke or maintain on gmktec, Yasuhito's default session, or captain personal panes.
 
-### Isolation: avoid double-driving shared sessions
+### Isolation: dedicated `verify-pions` Herdr session on the Grok Bot box
 
-If Herdr is present, check whether a user is actively working in a Pi session:
+Daily live smoke and maintain run on **the Grok Bot box** (pions eng's machine), **not** on gmktec or Yasuhito's personal/default Herdr.
+
+**Forbidden as daily smoke hosts:**
+
+- gmktec (do not use for daily smoke)
+- Yasuhito's default Herdr session, firstmate workspaces, captain personal panes
+
+**Stack:**
+
+| Item          | Value                                                   |
+| ------------- | ------------------------------------------------------- |
+| Primary host  | Grok Bot box (pions eng's machine)                      |
+| Repo          | `yasuhito/pions`                                        |
+| Checkout      | `/home/box/Work/pions` or `$HOME/Work/pions` on the box |
+| Herdr session | Named session `verify-pions` only                       |
+| CLI prefix    | Every Herdr command: `herdr --session verify-pions …`   |
+
+**Start the dedicated server** (headless) if the `verify-pions` session is not running:
 
 ```bash
-herdr pane list
+herdr server --session verify-pions
 ```
 
-If you see active Pi panes that the user owns, DO NOT drive delegation in the same workspace. Either:
+Run in background or a supervisor if needed on the box. **Do NOT** stop or restart Yasuhito's default Herdr server (on gmktec or elsewhere).
 
-1. Use a separate test workspace (if available), OR
-2. Wait for user permission, OR
-3. Document: "Live delegation proof deferred: user has active Pi session in this workspace."
+**Workflow summary** (details in `features/live-delegation.md`):
 
-Pions delegates to **sibling panes**. Launching delegation in a shared Herdr session while a user is working can corrupt their session state.
+1. Ensure `verify-pions` session server is up (`herdr --session verify-pions status server`).
+2. Create a workspace + pane with `cwd` = Pions checkout (`herdr --session verify-pions workspace create --cwd "$PIONS_ROOT" …`).
+3. Start Pi in that pane: `herdr --session verify-pions agent start <name> --kind pi --pane <pane-id>`.
+4. Drive proof: `herdr --session verify-pions agent prompt <pane-id> '…' --wait`.
+5. **Cleanup**: close workspaces/panes **you created** in `verify-pions`. Leave Yasuhito's default session untouched.
+
+On the Grok Bot box:
+
+```bash
+export PIONS_ROOT="${PIONS_ROOT:-$HOME/Work/pions}"   # typically /home/box/Work/pions
+```
 
 ## Drive
 
@@ -124,22 +150,21 @@ Execute Pions features to prove they work.
 
 ### Feature 1: Live delegation (PRIMARY USER PATH — Herdr required)
 
-**CRITICAL**: Must run **inside a Herdr pane**. Bare `pi --mode json` from a normal shell fails with "Herdr environment is unavailable" even if `herdr status` shows server running.
+**CRITICAL**: Must run **inside a Herdr pane** in the dedicated `verify-pions` session. Bare `pi --mode json` from a normal shell fails with "Herdr environment is unavailable" even if a default Herdr server is running elsewhere.
 
-**Harness options**:
+**NEVER** run daily smoke on gmktec, Yasuhito's default Herdr session, firstmate workspaces, or pre-existing personal panes.
 
-1. **Interactive Pi in Herdr** (manual): Launch Pi in a Herdr pane, send delegation message
-2. **`herdr agent prompt <pane>`** (programmatic): Send delegation command to existing Pi pane
+**Harness** (programmatic, in `verify-pions` session only):
 
-Example (programmatic):
+1. Create workspace + pane with `cwd` = Pions checkout
+2. `herdr --session verify-pions agent start <name> --kind pi --pane <pane-id>`
+3. `herdr --session verify-pions agent prompt <pane-id> 'Use pions_delegate exactly once to read package.json and return only the name field value. Do nothing else.' --wait`
 
-```bash
-herdr agent prompt wS9:p3 'Use pions_delegate exactly once to read package.json and return only the name field value. Do nothing else.' --wait
-```
+Replace `<pane-id>` with the pane ID from your `verify-pions` workspace on the box (from `workspace create` or `pane list`). Do not reuse pane IDs from gmktec or Yasuhito's sessions.
 
 **See `features/live-delegation.md` for detailed steps, exact commands, success observables, and evidence capture.**
 
-**If Herdr is unavailable**, you CANNOT prove this feature. Document the block and proceed to Feature 2 (automated checks) as a partial gate only.
+**If Herdr is unavailable** (e.g. Cloud VM), you CANNOT prove this feature. Mark live **BLOCKED**; do not fall back to gmktec or Yasuhito Herdr. Proceed to Feature 2 (automated checks) as a partial gate only.
 
 ### Feature 2: Automated test suite (regression gate, not user-path proof)
 
@@ -244,9 +269,9 @@ Capture proof that verification succeeded. Evidence persists after cleanup so yo
    ls -laR dist/ > "$EVIDENCE_DIR/dist-listing.txt"
    ```
 
-4. **If you ran live delegation** (Herdr available):
+4. **If you ran live delegation** (Herdr available, `verify-pions` session):
    - Note operation IDs returned by `pions_delegate`
-   - Capture Herdr pane list: `herdr pane list > "$EVIDENCE_DIR/herdr-panes.txt"`
+   - Capture Herdr pane list: `herdr --session verify-pions pane list > "$EVIDENCE_DIR/herdr-panes.txt"`
 
 5. **Save environment info**:
    ```bash
@@ -272,9 +297,10 @@ Remove transient artifacts and processes created during verification. Do NOT del
    rm -rf .test-dist/
    ```
 
-3. **Check for leftover state** (only relevant if live delegation ran):
-   - Pions state lives in `~/.local/state/pions/` (or `$XDG_STATE_HOME/pions/`)
-   - Leave it alone unless you know operations are corrupted
+3. **Tear down verify-pions session resources** (only if live delegation ran):
+   - Close workspaces/panes **you created** in `verify-pions`: `herdr --session verify-pions workspace close <id>` (or `pane close` as appropriate)
+   - **Do NOT** run `herdr server stop` on Yasuhito's default session (e.g. on gmktec)
+   - Pions state lives in `~/.local/state/pions/` (or `$XDG_STATE_HOME/pions/`); leave it alone unless operations are corrupted
 
 4. **Verify evidence remains**:
 
