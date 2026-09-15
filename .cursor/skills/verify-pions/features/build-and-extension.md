@@ -61,8 +61,10 @@ All three should exist.
 ### Evidence capture
 
 ```bash
-npm run build > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/build.txt 2>&1
-ls -laR dist/ > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/dist-listing.txt
+EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$EVIDENCE_DIR"
+npm run build > "$EVIDENCE_DIR/build.txt" 2>&1
+ls -laR dist/ > "$EVIDENCE_DIR/dist-listing.txt"
 ```
 
 ## Gotchas
@@ -73,7 +75,7 @@ The `dist/` directory is in `.gitignore`. After cloning or pulling, you must reb
 
 ### Worker protocol version mismatch
 
-If you change `WORKER_CONFIGURATION_VERSION` in the source but forget to rebuild, workers fail with "Worker configuration version does not match".
+If you change `WORKER_PROTOCOL_VERSION` in `src/internal/worker-protocol.ts` (currently `14`) but forget to rebuild, workers fail with "Worker configuration version does not match".
 
 **Fix**: Always run `npm run build` after protocol changes.
 
@@ -105,8 +107,9 @@ The `npm run build` command uses `tsconfig.build.json`.
 
 There's no `npm run build:watch`. Rebuild manually after changes.
 
-### Build artifacts in tests
+### Build vs test build (`dist/` vs `.test-dist/`)
 
-Some automated tests import from `dist/`. If you run `npm test` before `npm run build`, those tests fail.
+- **Live/user path** (Herdr workers, packing): requires `npm run build` → `dist/src/worker-extension.js`.
+- **Automated test gate** (`npm run check`, `npm test`): uses `npm run build:test` → `.test-dist/`. Tests import from `../src/...`, not from `dist/`.
 
-**Fix**: Always build before testing.
+Running `npm run build` does **not** populate `.test-dist/`. The test harness invokes `build:test` itself.
