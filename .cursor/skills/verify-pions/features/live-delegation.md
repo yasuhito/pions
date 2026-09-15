@@ -255,7 +255,17 @@ It's passed via an owner-only private file referenced by the worker config.
 herdr pane process-info <worker-pane-id>
 ```
 
-The `argv` should be `["pi"]`, not `["pi", "Read CONTEXT.md..."]`.
+The `argv` is the Herdr/Pi worker launch line, not the task string. A real launch looks like:
+
+```
+herdr agent start pions-<id> --kind pi --pane <pane> --timeout <ms> -- \
+  --provider <provider> --model <model> --thinking <level> --tools <tools> \
+  --no-session --tui-mode regular --no-extensions --extension <path> \
+  --no-skills --no-prompt-templates --no-themes --approve \
+  --pions-worker-config <config-path>
+```
+
+(See `src/internal/visible-worker.ts`.) Do **not** expect `["pi"]` alone, and do **not** expect the task text on argv.
 
 ### Worker session is temporary
 
@@ -330,9 +340,10 @@ If you are executing this skill on a machine with Herdr and Pi (e.g., user's gmk
 
 1. Follow the exact steps above.
 2. Capture all success observables (Operation ID, digest, pane evidence).
-3. Save evidence to the skill's evidence directory:
+3. Save evidence to a portable writable directory:
    ```bash
-   mkdir -p /opt/cursor/artifacts/verify-pions-live-delegation-$(date +%Y%m%d-%H%M%S)
+   EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-live-delegation-$(date +%Y%m%d-%H%M%S)}"
+   mkdir -p "$EVIDENCE_DIR"
    ```
 4. Include evidence paths in your proof summary.
 5. Update PR or proof document with: "Live delegation proof COMPLETED on gmktec with Herdr."

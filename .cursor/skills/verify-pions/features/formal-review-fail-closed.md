@@ -18,17 +18,17 @@ A user or model attempts to call `pions_review` or `pions_review_decision` in a 
 
 This feature is verified through:
 
-1. **Code review**: Confirm tools are registered in `extension/index.ts`
+1. **Code review**: Confirm tools are registered in `.pi/extensions/pions.ts` → `src/internal/pi-extension.ts`
 2. **Automated tests**: Confirm fail-closed behavior when configuration is absent
 3. **Manual inspection**: Attempt to call tools without configuration
 
 ### Code review
 
-Read `extension/index.ts` (or the compiled extension):
+Read `.pi/extensions/pions.ts` (entry) and `src/internal/pi-extension.ts` (implementation):
 
 - Tools `pions_review` and `pions_review_decision` are registered
-- They require `formalReviewConfiguration` from the integration
-- If configuration is absent or incomplete, calls fail
+- They require trusted formal-review configuration from the integration
+- If configuration is absent or incomplete, calls fail with `unsupported_capability`
 
 ### Automated tests
 
@@ -36,7 +36,7 @@ The test suite includes cases for:
 
 - Formal review integration with and without configuration
 - Rejection when configuration is missing
-- Rejection when profile is incomplete (missing `formal_reviewer` intended use, missing start authorization requirement, etc.)
+- Rejection when profile is incomplete (missing `formal_reviewer` intended use, missing start authorization requirement, etc.) — enforced in `src/internal/worker-configuration.ts` and covered by tests
 
 **Run the formal review tests**:
 
@@ -55,7 +55,7 @@ Expected: Tests pass, including cases that verify rejection without configuratio
    ```
    Use pions_review to review artifact abc123.
    ```
-4. Observe: The tool rejects the call with an error (e.g., "Formal review configuration required")
+4. Observe: The tool rejects the call with `unsupported_capability` and message `Formal review is not enabled by trusted configuration`
 
 Expected: Call fails, does not create an operation.
 
@@ -91,7 +91,7 @@ Trusted host code must use the `pions/formal-review` entry point and provide a t
 
 ### Default project extension
 
-The default project extension (`extension/index.ts`) registers formal-review tools but does NOT enable them. This is safe by design.
+The default project extension (`.pi/extensions/pions.ts` → `src/internal/pi-extension.ts`) registers formal-review tools but does NOT enable them. This is safe by design.
 
 ### Test doubles
 

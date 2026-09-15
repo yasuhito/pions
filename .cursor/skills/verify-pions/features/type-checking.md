@@ -31,8 +31,8 @@ This runs:
 tsc --noEmit && tsc -p tsconfig.extension.json
 ```
 
-1. `tsc --noEmit` — Type-checks `src/` and `test/` using the default `tsconfig.json`
-2. `tsc -p tsconfig.extension.json` — Type-checks the Pi extension setup in `extension/`
+1. `tsc --noEmit` — Type-checks `src/`, `test/`, and `scripts/` using the default `tsconfig.json`
+2. `tsc -p tsconfig.extension.json` — Type-checks the Pi extension setup in `.pi/extensions/`
 
 ### Expected outcome
 
@@ -49,8 +49,10 @@ Example successful output:
 ### Evidence capture
 
 ```bash
-npm run typecheck > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/typecheck.txt 2>&1
-echo $? >> /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/typecheck.txt
+EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$EVIDENCE_DIR"
+npm run typecheck > "$EVIDENCE_DIR/typecheck.txt" 2>&1
+echo $? >> "$EVIDENCE_DIR/typecheck.txt"
 ```
 
 Exit code should be 0.
@@ -61,8 +63,8 @@ Exit code should be 0.
 
 Pions uses two TypeScript configs:
 
-- `tsconfig.json` — Main library and tests
-- `tsconfig.extension.json` — Pi extension setup
+- `tsconfig.json` — Main library, tests, and scripts (`src/**/*.ts`, `test/**/*.ts`, `scripts/**/*.ts`)
+- `tsconfig.extension.json` — Pi extension setup (`.pi/extensions/**/*.ts`)
 
 Both must pass. If one fails, the entire `npm run typecheck` fails.
 
@@ -74,14 +76,7 @@ Pions uses `effect` extensively. Effect types can be verbose (e.g., `Effect<Resu
 
 ### Strict mode
 
-Pions uses `strict: true` in `tsconfig.json`. This includes:
-
-- `strictNullChecks`
-- `strictFunctionTypes`
-- `noImplicitAny`
-- `noImplicitThis`
-
-All sources must satisfy strict TypeScript.
+Pions uses `strict: true` in `tsconfig.json`, plus additional strict-adjacent flags such as `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noUnusedLocals`, and `noUnusedParameters`. All sources must satisfy these checks.
 
 ### Test types
 
@@ -94,11 +89,11 @@ If tests fail to type-check, check:
 
 ### No type-only imports required
 
-Pions uses modern TypeScript with `module: "node16"`. Type-only imports (`import type { ... }`) are recommended but not strictly required. The type checker distinguishes types from values automatically.
+Pions uses modern TypeScript with `module: "NodeNext"` and `moduleResolution: "NodeNext"`. Type-only imports (`import type { ... }`) are recommended but not strictly required. The type checker distinguishes types from values automatically.
 
 ### Extension dependencies
 
-The Pi extension setup (`extension/index.ts`) depends on:
+The Pi extension setup (`.pi/extensions/pions.ts`) depends on:
 
 - `@earendil-works/pi-coding-agent` — Provides Pi extension API types
 - `effect` — For functional programming types

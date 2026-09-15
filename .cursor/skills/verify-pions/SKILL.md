@@ -124,25 +124,6 @@ Execute Pions features to prove they work.
 
 ### Feature 1: Live delegation (PRIMARY USER PATH — Herdr required)
 
-**Harness**: `npm run check` (typecheck, lint, prettier, test-assertion validation, node:test suite)
-
-**How to drive**:
-
-```bash
-npm run check
-```
-
-**What it proves**: Code quality, type safety, test coverage. Does NOT prove visible delegation works.
-
-**Expected outcome**: Exit code 0, no failures.
-
-**Gotchas**:
-
-- Must run `npm run build` first to generate test artifacts in `.test-dist/`.
-- If tests fail, read error output carefully — Pions uses Effect for control flow, so stack traces may show Effect internals.
-
-### Feature 1: Live delegation (PRIMARY USER PATH — Herdr required)
-
 **CRITICAL**: Must run **inside a Herdr pane**. Bare `pi --mode json` from a normal shell fails with "Herdr environment is unavailable" even if `herdr status` shows server running.
 
 **Harness options**:
@@ -162,24 +143,27 @@ herdr agent prompt wS9:p3 'Use pions_delegate exactly once to read package.json 
 
 ### Feature 2: Automated test suite (regression gate, not user-path proof)
 
+**Harness**: `npm run check` only (no `npm run build` prerequisite)
+
 **How to drive**:
 
 ```bash
-npm run build
-ls -la dist/src/worker-extension.js
+npm run check
 ```
 
-**What it proves**: The project compiles successfully, and the internal worker extension (loaded by visible workers) exists.
+**What it proves**: Code quality, type safety, lint rules, formatting compliance, test assertion rules, and full test coverage. Does NOT prove visible delegation works.
 
-**Expected outcome**:
+The `check` script runs:
 
-- `dist/src/worker-extension.js` exists
-- `dist/src/index.js` and `dist/src/formal-review.js` exist
+- `typecheck` — TypeScript type validation
+- `lint` — ESLint validation
+- `format:check` — Prettier formatting check
+- `check:test-assertions` — One-behavior-one-assertion rule validation
+- `test` — Full node:test suite (via `build:test` → `.test-dist/`)
 
-**Gotchas**:
+**Expected outcome**: Exit code 0, all checks pass, all tests pass.
 
-- The `dist/` directory is gitignored. Always rebuild after pulling changes.
-- Worker protocol version mismatches happen if you forget to rebuild after protocol changes.
+**See `features/automated-test-suite.md` for detailed steps and gotchas.**
 
 ### Feature 3: Build and extension readiness (regression gate)
 
@@ -198,6 +182,13 @@ ls -la dist/src/worker-extension.js
 
 - `dist/src/worker-extension.js` exists
 - `dist/src/index.js` and `dist/src/formal-review.js` exist
+
+**Gotchas**:
+
+- The `dist/` directory is gitignored. Always rebuild after pulling changes.
+- Worker protocol version mismatches happen if you forget to rebuild after protocol changes (`WORKER_PROTOCOL_VERSION` in source vs stale `dist/`).
+
+**See `features/build-and-extension.md` for detailed steps and gotchas.**
 
 ### Feature 4: Type checking (regression gate)
 
@@ -234,32 +225,33 @@ This is verified by:
 
 Capture proof that verification succeeded. Evidence persists after cleanup so you can reference it in PRs or reports.
 
-1. **Create an artifacts directory**:
+1. **Create a portable evidence directory** (any writable path; `/tmp/verify-pions-…` is fine):
 
    ```bash
-   mkdir -p /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)
+   EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-$(date +%Y%m%d-%H%M%S)}"
+   mkdir -p "$EVIDENCE_DIR"
    ```
 
 2. **Save npm run check output**:
 
    ```bash
-   npm run check > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/npm-check-output.txt 2>&1
+   npm run check > "$EVIDENCE_DIR/npm-check-output.txt" 2>&1
    ```
 
 3. **Save build artifacts listing**:
 
    ```bash
-   ls -laR dist/ > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/dist-listing.txt
+   ls -laR dist/ > "$EVIDENCE_DIR/dist-listing.txt"
    ```
 
 4. **If you ran live delegation** (Herdr available):
    - Note operation IDs returned by `pions_delegate`
-   - Capture Herdr pane list: `herdr pane list > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/herdr-panes.txt`
+   - Capture Herdr pane list: `herdr pane list > "$EVIDENCE_DIR/herdr-panes.txt"`
 
 5. **Save environment info**:
    ```bash
-   node --version > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/env-info.txt
-   npm list --depth=0 >> /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/env-info.txt
+   node --version > "$EVIDENCE_DIR/env-info.txt"
+   npm list --depth=0 >> "$EVIDENCE_DIR/env-info.txt"
    ```
 
 ## Cleanup
@@ -287,7 +279,7 @@ Remove transient artifacts and processes created during verification. Do NOT del
 4. **Verify evidence remains**:
 
    ```bash
-   ls /opt/cursor/artifacts/verify-pions-*
+   ls "${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-*}"
    ```
 
    Evidence should still exist after cleanup.

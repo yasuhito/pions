@@ -19,7 +19,6 @@ A developer or agent runs `npm run check` before committing or opening a PR. Thi
 ### Prerequisites
 
 - `npm install` completed
-- `npm run build` completed (generates artifacts needed by some tests)
 
 ### Exact command
 
@@ -33,7 +32,7 @@ This runs:
 2. `npm run lint` — ESLint on all sources
 3. `npm run format:check` — Prettier validation
 4. `npm run check:test-assertions` — Custom script to verify test assertion rules
-5. `npm test` — Full node:test suite
+5. `npm test` — Full node:test suite (runs `build:test` → `.test-dist/` first)
 
 ### Expected outcome
 
@@ -47,19 +46,21 @@ This runs:
 ### Evidence capture
 
 ```bash
-npm run check > /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/npm-check.txt 2>&1
-echo $? >> /opt/cursor/artifacts/verify-pions-$(date +%Y%m%d-%H%M%S)/npm-check.txt
+EVIDENCE_DIR="${VERIFY_PIONS_EVIDENCE_DIR:-/tmp/verify-pions-$(date +%Y%m%d-%H%M%S)}"
+mkdir -p "$EVIDENCE_DIR"
+npm run check > "$EVIDENCE_DIR/npm-check.txt" 2>&1
+echo $? >> "$EVIDENCE_DIR/npm-check.txt"
 ```
 
 The exit code should be 0.
 
 ## Gotchas
 
-### Must build first
+### No `npm run build` prerequisite
 
-Some tests import from `dist/`. If you skip `npm run build`, tests may fail with module-not-found errors.
+`npm run check` does **not** require `npm run build` first. The test and assertion-check steps invoke `npm run build:test`, which compiles to `.test-dist/` via the default `tsconfig.json`. Tests import from `../src/...`, not from `dist/`.
 
-**Fix**: Run `npm run build` before `npm run check`.
+`npm run build` remains relevant for live Herdr workers and packing (`dist/src/worker-extension.js`), not as a gate for the automated suite.
 
 ### Effect error traces
 
