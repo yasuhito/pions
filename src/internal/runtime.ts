@@ -2005,7 +2005,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     options: SpawnOptions | undefined,
     revisionReservation?: Readonly<RevisionReservation>
   ): Promise<OperationRecord> => {
-    if (closing) throw new RuntimeClosedError();
     await runEffect(services.presentation.preflight());
     const decodedTask = await Effect.runPromise(
       Schema.decodeUnknown(TaskSpecSchema)(taskInput)
@@ -2582,19 +2581,27 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     },
   });
 
-  const createHandle = async (
+  const admit = <Value>(admission: () => Promise<Value>): Promise<Value> => {
+    if (closing) return Promise.reject(new RuntimeClosedError());
+    const admitted = admission();
+    trackExecution(admitted.then(() => undefined));
+    return admitted;
+  };
+
+  const createHandle = (
     task: TaskSpec,
     options: SpawnOptions | undefined
-  ): Promise<OperationHandle> => {
-    const record = await createOperation(task, options);
-    if (record.executionRejected !== true) trackExecution(execute(record));
-    return {
-      ...createReader(record.operationId),
-      result: () => record.terminalPromise,
-      cancel: (cancelOptions) =>
-        cancelSubtree(record.operationId, cancelOptions),
-    };
-  };
+  ): Promise<OperationHandle> =>
+    admit(async () => {
+      const record = await createOperation(task, options);
+      if (record.executionRejected !== true) trackExecution(execute(record));
+      return {
+        ...createReader(record.operationId),
+        result: () => record.terminalPromise,
+        cancel: (cancelOptions) =>
+          cancelSubtree(record.operationId, cancelOptions),
+      };
+    });
 
   const recoverCancellation = async (
     record: OperationRecord,
@@ -2711,17 +2718,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const workerRecovery = recoverWorkers();
   const revisionRecovery = recoverRevisions();
   const cleanupRecovery = recoverCleanups();
-  const recovery = Promise.all([
+  const recovery = Promise.allSettled([
     workerRecovery,
     revisionRecovery,
     cleanupRecovery,
   ]);
-  void recovery.catch(() => undefined);
 
   return {
     async close(): Promise<void> {
       closing = true;
-      await recovery.catch(() => undefined);
+      await recovery;
       rejectStartGateWaiters();
       // An execution may spawn further executions while settling, so drain
       // until nothing is in flight before the Artifact Store goes away.
@@ -2766,13 +2772,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             ? error
             : new RevisionAuthenticationError("Revision authentication failed");
         });
-      const reserveOperation = async (
+      const reserveAdmittedOperation = async (
         request:
           | Parameters<RevisionCoordinator["reserveRevision"]>[0]
           | Parameters<RevisionCoordinator["reserveRetry"]>[0],
         kind: "revision" | "retry"
       ): Promise<Readonly<RevisionReservationOutcome>> => {
-        if (closing) throw new RuntimeClosedError();
         const operationId = await Effect.runPromise(
           services.ids.nextOperationId()
         );
@@ -2869,6 +2874,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         }
         return outcome;
       };
+      const reserveOperation = (
+        request: Parameters<typeof reserveAdmittedOperation>[0],
+        kind: "revision" | "retry"
+      ): Promise<Readonly<RevisionReservationOutcome>> =>
+        admit(() => reserveAdmittedOperation(request, kind));
       return {
         reserveRevision: (request) => reserveOperation(request, "revision"),
         reserveRetry: (request) => reserveOperation(request, "retry"),

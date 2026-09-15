@@ -19,6 +19,7 @@ import type {
   Operation,
   OperationIntent,
 } from "../src/internal/event-store/index.js";
+import type { StoredOperationRecord } from "../src/internal/event-store/store.js";
 import type { WorkerProducedResult } from "../src/public.js";
 import {
   acknowledgeResultAcceptance,
@@ -471,6 +472,67 @@ async function completeOperation(
     trace,
   };
 }
+
+class PausedWriteStore extends InMemoryEventStore {
+  private gate: Promise<void> | undefined;
+  private release: (() => void) | undefined;
+
+  pauseWrites(): void {
+    this.gate = new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  resumeWrites(): void {
+    this.gate = undefined;
+    this.release?.();
+  }
+
+  protected override async writeRecord(
+    operationId: string,
+    record: StoredOperationRecord
+  ): Promise<void> {
+    if (this.gate !== undefined) await this.gate;
+    return super.writeRecord(operationId, record);
+  }
+}
+
+test("Runtime close waits for a spawn admitted before close began", async () => {
+  const store = new PausedWriteStore();
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter(),
+    clock: new FakeClock(
+      Array.from(
+        { length: 60 },
+        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+      )
+    ),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+  });
+  store.pauseWrites();
+  const admitted = runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  let closed = false;
+  const closing = runtime.close().then(() => {
+    closed = true;
+  });
+  for (let tick = 0; tick < 20; tick += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const closedBeforeAdmissionSettled = closed;
+  store.resumeWrites();
+  const handle = await admitted;
+  await handle.result();
+  await closing;
+
+  assert.equal(closedBeforeAdmissionSettled, false);
+  assert.equal((await handle.read()).state, "completed");
+});
 
 test("runtime startup adopts a recoverable Start delivery", async () => {
   const store = new InMemoryEventStore();
