@@ -19,13 +19,13 @@
 - **gmktec** — do not use for daily smoke
 - Yasuhito's personal/default Herdr session, firstmate workspaces, captain personal panes
 
-| Item | Value |
-| --- | --- |
-| Primary host | Grok Bot box (pions eng's machine) |
-| Repo | `yasuhito/pions` |
-| Checkout | `/home/box/Work/pions` or `$HOME/Work/pions` on the box |
-| Herdr session | Named session `verify-pions` only |
-| CLI | **Every** Herdr command uses `herdr --session verify-pions …` |
+| Item          | Value                                                         |
+| ------------- | ------------------------------------------------------------- |
+| Primary host  | Grok Bot box (pions eng's machine)                            |
+| Repo          | `yasuhito/pions`                                              |
+| Checkout      | `/home/box/Work/pions` or `$HOME/Work/pions` on the box       |
+| Herdr session | Named session `verify-pions` only                             |
+| CLI           | **Every** Herdr command uses `herdr --session verify-pions …` |
 
 Set once per shell on the box:
 

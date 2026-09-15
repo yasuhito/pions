@@ -110,13 +110,13 @@ Daily live smoke and maintain run on **the Grok Bot box** (pions eng's machine),
 
 **Stack:**
 
-| Item | Value |
-| --- | --- |
-| Primary host | Grok Bot box (pions eng's machine) |
-| Repo | `yasuhito/pions` |
-| Checkout | `/home/box/Work/pions` or `$HOME/Work/pions` on the box |
-| Herdr session | Named session `verify-pions` only |
-| CLI prefix | Every Herdr command: `herdr --session verify-pions …` |
+| Item          | Value                                                   |
+| ------------- | ------------------------------------------------------- |
+| Primary host  | Grok Bot box (pions eng's machine)                      |
+| Repo          | `yasuhito/pions`                                        |
+| Checkout      | `/home/box/Work/pions` or `$HOME/Work/pions` on the box |
+| Herdr session | Named session `verify-pions` only                       |
+| CLI prefix    | Every Herdr command: `herdr --session verify-pions …`   |
 
 **Start the dedicated server** (headless) if the `verify-pions` session is not running:
 
