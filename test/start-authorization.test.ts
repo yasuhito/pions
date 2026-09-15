@@ -1726,6 +1726,26 @@ async function stalledAfterStartGate(context: TestContext) {
   };
 }
 
+test("an authorized execution whose Worker never acknowledges Start expires at the deadline", async () => {
+  const { clock, inbox, handle } = await fixture({
+    worker: new PausedStartAcceptanceWorker(),
+  });
+  await authorize(inbox);
+  while ((await handle.read()).startDeliveryEntry === undefined) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  clock.advanceBy(60_000);
+  for (let tick = 0; tick < 50; tick += 1) {
+    if ((await handle.read()).state === "failed") break;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(
+    (await handle.read()).failureReason,
+    "start_authorization_timed_out"
+  );
+});
+
 test("Runtime close settles an execution waiting at the Start gate before closing the Artifact Store", async (context) => {
   const { runtime, orderOf } = await closeOrderingFixture(context);
   await runtime.close();

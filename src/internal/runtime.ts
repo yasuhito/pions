@@ -1346,8 +1346,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         services.clock.monotonicMilliseconds();
       const remaining = Math.min(wallRemaining, monotonicRemaining);
       if (remaining > 0) await runEffect(services.clock.sleep(remaining));
-      // close() rejects waiters before interrupting sleeps; do not expire after that.
-      if (!startGateWaiters.has(record.operationId)) return;
+      if (closing) return;
       await serializeAuthorizationMutation(record.operationId, () =>
         expireStartAuthorization(record.operationId)
       );
