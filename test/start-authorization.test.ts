@@ -1790,21 +1790,35 @@ test("Runtime close rejects a later spawn without persisting an Operation", asyn
   const { runtime, store } = await closeOrderingFixture(context);
   await runtime.close();
 
-  await assert.rejects(runtime.spawn(lateTask), RuntimeClosedError);
-  assert.deepEqual(await store.operationIds(), ["operation-1"]);
+  const rejection = await runtime.spawn(lateTask).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  assert.deepEqual(
+    {
+      rejectedAsClosed: rejection instanceof RuntimeClosedError,
+      operationIds: await store.operationIds(),
+    },
+    { rejectedAsClosed: true, operationIds: ["operation-1"] }
+  );
 });
 
 test("Runtime close rejects a spawn issued while an in-flight execution is still draining", async (context) => {
   const stalled = await stalledAfterStartGate(context);
-  const late = assert.rejects(
-    stalled.runtime.spawn(lateTask),
-    RuntimeClosedError
+  const late = stalled.runtime.spawn(lateTask).then(
+    () => undefined,
+    (error: unknown) => error
   );
   stalled.release();
   await stalled.closing;
 
-  await late;
-  assert.deepEqual(await stalled.store.operationIds(), ["operation-1"]);
+  assert.deepEqual(
+    {
+      rejectedAsClosed: (await late) instanceof RuntimeClosedError,
+      operationIds: await stalled.store.operationIds(),
+    },
+    { rejectedAsClosed: true, operationIds: ["operation-1"] }
+  );
 });
 
 test("Runtime close closes the Artifact Store only after a failing execution settles", async (context) => {
@@ -1814,13 +1828,19 @@ test("Runtime close closes the Artifact Store only after a failing execution set
   );
   await authorize(ordering.inbox);
   const closing = ordering.runtime.close();
-  await assert.rejects(ordering.handle.result(), OperationFailedError);
+  const rejection = await ordering.handle.result().then(
+    () => undefined,
+    (error: unknown) => error
+  );
   await closing;
 
-  assert.deepEqual(ordering.orderOf("execution:settled", "artifacts:close"), [
-    "execution:settled",
-    "artifacts:close",
-  ]);
+  assert.deepEqual(
+    {
+      failed: rejection instanceof OperationFailedError,
+      order: ordering.orderOf("execution:settled", "artifacts:close"),
+    },
+    { failed: true, order: ["execution:settled", "artifacts:close"] }
+  );
 });
 
 test("no Artifact Store access follows Runtime close", async (context) => {

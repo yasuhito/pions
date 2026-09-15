@@ -231,20 +231,30 @@ test("Runtime close 後の Revision 予約は拒否され、予約も Operation 
   const { runtime, original, snapshot, store } = await fixture();
   await runtime.close();
 
-  await assert.rejects(
-    reserveFirst(
-      runtime,
-      original.operationId,
-      snapshot.resultAcceptance!.acceptanceId,
-      snapshot.resultAcceptance!.manifestDigest
-    ),
-    RuntimeClosedError
+  const rejection = await reserveFirst(
+    runtime,
+    original.operationId,
+    snapshot.resultAcceptance!.acceptanceId,
+    snapshot.resultAcceptance!.manifestDigest
+  ).then(
+    () => undefined,
+    (error: unknown) => error
   );
+
   assert.deepEqual(
-    await Effect.runPromise(store.listPendingRevisionReservations()),
-    []
+    {
+      rejectedAsClosed: rejection instanceof RuntimeClosedError,
+      pendingReservations: await Effect.runPromise(
+        store.listPendingRevisionReservations()
+      ),
+      operationIds: await store.operationIds(),
+    },
+    {
+      rejectedAsClosed: true,
+      pendingReservations: [],
+      operationIds: ["original"],
+    }
   );
-  assert.deepEqual(await store.operationIds(), ["original"]);
 });
 
 test("Runtime close は close 前に受理した Revision 予約の実行完了を待つ", async () => {
@@ -276,11 +286,18 @@ test("Runtime close は close 前に受理した Revision 予約の実行完了�
   const outcome = await admitted;
   await closing;
 
-  assert.equal(closedBeforeAdmissionSettled, false);
-  assert.equal(outcome.status, "reserved");
-  assert.equal(
-    (await Effect.runPromise(store.read("revision-1"))).operation.state,
-    "completed"
+  assert.deepEqual(
+    {
+      closedBeforeAdmissionSettled,
+      outcome: outcome.status,
+      revisionState: (await Effect.runPromise(store.read("revision-1")))
+        .operation.state,
+    },
+    {
+      closedBeforeAdmissionSettled: false,
+      outcome: "reserved",
+      revisionState: "completed",
+    }
   );
 });
 

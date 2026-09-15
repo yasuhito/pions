@@ -530,8 +530,10 @@ test("Runtime close waits for a spawn admitted before close began", async () => 
   await handle.result();
   await closing;
 
-  assert.equal(closedBeforeAdmissionSettled, false);
-  assert.equal((await handle.read()).state, "completed");
+  assert.deepEqual(
+    { closedBeforeAdmissionSettled, state: (await handle.read()).state },
+    { closedBeforeAdmissionSettled: false, state: "completed" }
+  );
 });
 
 test("runtime startup adopts a recoverable Start delivery", async () => {
