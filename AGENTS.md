@@ -1,22 +1,8 @@
 # エージェント向け指示
 
-## エージェント用スキル
-
-### Issue管理
-
-Issueと仕様は、`yasuhito/pions`のGitHub Issuesで管理する。Issueの作成、変更、実装に着手する前に、`docs/agents/issue-tracker.md`を読む。
-
-### トリアージラベル
-
-新しいIssueをトリアージするときは、`docs/agents/triage-labels.md`に定義された標準の役割とラベルの対応を使用する。
-
-### ドメイン文書
+## ドメイン文書
 
 Pionsの調査、設計、仕様策定、実装に着手する前に、`CONTEXT.md`と`docs/adr/`にある関連文書を読む。詳細は`docs/agents/domain.md`に従う。
-
-## ドッグフーディング
-
-今後のPionsの実装、調査、レビューでは、サブエージェントへ委譲できる作業にPionsの`pions_delegate`を使用する。未実装の自動化を理由に別経路へ切り替えず、不足する運用はその都度手動で補う。成功ペインの自動閉鎖が実装されるまでは、委譲完了後にPions所有の成功ペインを確認して手動で閉じる。失敗、キャンセル、状態不明のペインは調査用に保持する。
 
 ## 互換性
 
@@ -31,3 +17,10 @@ Pionsの調査、設計、仕様策定、実装に着手する前に、`CONTEXT.
 `README.md`は英語で作成・更新する。それ以外の人向け文書は日本語で作成・更新する。ADR、調査記録、GitHub Issue、Markdown文書、HTMLレポートもこれに含む。
 
 日本語文では、一般語を自然な日本語または定着したカタカナ語で書く。正確さに必要なコード識別子、パッケージ名、コマンド、プロトコルリテラルだけをバッククォートで残す。
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
