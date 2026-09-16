@@ -28,7 +28,7 @@ Read `.pi/extensions/pions.ts` (entry) and `src/internal/pi-extension.ts` (imple
 
 - Tools `pions_review` and `pions_review_decision` are registered
 - They require trusted formal-review configuration from the integration
-- If configuration is absent or incomplete, calls fail with `unsupported_capability`
+- If configuration is absent or incomplete, calls throw `WorkerConfigurationError` with code `unsupported_capability` (not a bare `Error`)
 
 ### Automated tests
 
@@ -57,7 +57,7 @@ Use the dedicated `verify-pions` Herdr session on the Grok Bot box only — neve
    ```
    Use pions_review to review artifact abc123.
    ```
-4. Observe: The tool rejects the call with `unsupported_capability` and message `Formal review is not enabled by trusted configuration`
+4. Observe: The tool rejects the call with `WorkerConfigurationError` code `unsupported_capability` and message `Formal review is not enabled by trusted configuration` (for `pions_review_decision`: `Formal review decisions are not enabled by trusted Coordinator configuration`)
 5. Close the verify workspace when done
 
 Expected: Call fails, does not create an operation.

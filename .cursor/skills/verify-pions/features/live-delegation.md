@@ -73,7 +73,21 @@ If `command -v herdr` fails (typical Cloud VM):
 
    Expected: Pi 0.85.1+
 
-3. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
+3. **Pi LLM auth on the `verify-pions` session host** (CRITICAL — without this, the parent Pi cannot call tools):
+
+   Live delegation requires a working Pi LLM login or provider credentials on the **same machine** that runs the `verify-pions` Herdr session (the Grok Bot box).
+
+   ```bash
+   test -s ~/.pi/agent/auth.json && echo "auth.json present" || echo "auth.json empty or missing"
+   ```
+
+   If auth is missing:
+   - Run `pi` and use `/login`, or configure provider API keys for the models Pi will use.
+   - In the Pi TUI you may see: `Not logged in · Please run /login`.
+   - Mark live delegation **BLOCKED / verified-unreachable** with this prerequisite documented.
+   - **Do NOT** fall back to gmktec or another host to work around missing auth.
+
+4. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
 
    ```bash
    cd "$PIONS_ROOT"
@@ -81,9 +95,9 @@ If `command -v herdr` fails (typical Cloud VM):
    ls -la dist/src/worker-extension.js
    ```
 
-4. **Dedicated `verify-pions` session server is running** (see above).
+5. **Dedicated `verify-pions` session server is running** (see above).
 
-5. **Isolated workspace + Pi pane** in `verify-pions` on the box with `cwd` = Pions checkout — created by you for this proof, not borrowed from gmktec or Yasuhito/firstmate sessions.
+6. **Isolated workspace + Pi pane** in `verify-pions` on the box with `cwd` = Pions checkout — created by you for this proof, not borrowed from gmktec or Yasuhito/firstmate sessions.
 
 ## How to get to it (user perspective)
 
@@ -238,6 +252,14 @@ ls -la ~/.local/state/pions/ > "$EVIDENCE_DIR/operation-state.txt" 2>/dev/null |
 ### Herdr is REQUIRED
 
 Without Herdr, `pions_delegate` fails immediately with `HerdrPreconditionError`. **No Herdr = no live delegation proof.** Do not substitute gmktec or Yasuhito's session from another context.
+
+### Pi LLM auth is REQUIRED
+
+Even when Herdr and Pi are present, live delegation fails if the parent Pi session is not logged in. An empty `~/.pi/agent/auth.json` and no provider API keys mean the parent cannot call tools (`pions_delegate` included). The Pi TUI may show `Not logged in · Please run /login`.
+
+**Fix**: On the Grok Bot box, run `pi` and `/login`, or configure provider keys before driving live proof.
+
+**If auth cannot be configured**: Mark live **BLOCKED / verified-unreachable**. Do NOT fall back to gmktec or Yasuhito's session.
 
 ### Never use gmktec, Yasuhito default, or firstmate session for daily smoke
 

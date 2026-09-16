@@ -19,6 +19,7 @@ A developer or agent runs `npm run check` before committing or opening a PR. Thi
 ### Prerequisites
 
 - `npm install` completed
+- **Node.js 26+** (matches CI `.github/workflows/check.yml` `node-version: 26`). Node 22 is insufficient for the full test suite — many tests fail with `Promise resolution is still pending but the event loop has already resolved` (especially visible-worker). The same suites pass on Node 26.
 
 ### Exact command
 
@@ -91,6 +92,10 @@ Some tests use `TestClock` from Effect to advance virtual time. These are fast. 
 
 The test suite is deterministic. If a test fails non-deterministically, it's likely a bug in the test setup (e.g., leaked state between tests) or in the implementation.
 
+### Node 26+ required
+
+The full `npm run check` gate (especially `npm test`) expects Node **26+**. On Node 22, expect widespread false failures with `Promise resolution is still pending but the event loop has already resolved`. Verify with `node --version` before running the suite.
+
 ### No Herdr/Pi required
 
-The automated test suite uses test doubles (`FakeWorkerAdapter`, `FakePresentation`, etc.) and never requires Herdr or Pi. It works in any Node.js environment.
+The automated test suite uses test doubles (`FakeWorkerAdapter`, `FakePresentation`, etc.) and never requires Herdr or Pi. It works in any Node.js 26+ environment.
