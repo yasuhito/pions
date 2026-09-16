@@ -28,7 +28,7 @@ Read `.pi/extensions/pions.ts` (entry) and `src/internal/pi-extension.ts` (imple
 
 - Tools `pions_review` and `pions_review_decision` are registered
 - They require trusted formal-review configuration from the integration
-- If configuration is absent or incomplete, calls throw `WorkerConfigurationError` with code `unsupported_capability` (not a bare `Error`)
+- When `options.formalReview` is undefined, unconfigured tool execution throws `WorkerConfigurationError` with code `unsupported_capability` (not a bare `Error`). Incomplete profiles or invalid bootstrap can yield other typed failures (`invalid_profile`, `FormalReviewBootstrapError`, etc.) — do not assume every rejection uses `unsupported_capability`.
 
 ### Automated tests
 
@@ -76,13 +76,15 @@ The tools appear in Pi's tool list even when unconfigured. This is intentional. 
 
 ### Trusted bootstrap required
 
-Even if `.pions.json` includes a `formalReview` section, production enablement requires:
+Formal review enablement comes from the trusted integration (`pions/formal-review` entry point and bootstrap), **not** from a `.pions.json` `formalReview` section — that key is not part of the project config schema. The project parser (`.pions.json`) accepts only a top-level `review` object with `model` and `thinkingLevel`; unknown keys are rejected.
+
+Production enablement requires:
 
 1. A trusted bootstrap that pins module versions, repository identity, and approved resource adapters
 2. A complete worker profile with `formal_reviewer` intended use
 3. Explicit rollout approval (see `docs/staged-rollout-decision-issue-67.md`)
 
-Without these, formal review remains disabled.
+Without these, formal review remains disabled even if `.pions.json` has a valid `review` section (that section configures the reader/delegation model, not formal review).
 
 ### Candidate profiles are not production profiles
 
@@ -90,7 +92,12 @@ You can configure a candidate profile for testing, but that does not enable prod
 
 ### Integration boundary
 
-Trusted host code must use the `pions/formal-review` entry point and provide a trusted bootstrap. The extension never enables formal review directly from `.pions.json`.
+Trusted host code must use the `pions/formal-review` entry point and provide a trusted bootstrap. The default project extension never enables formal review from `.pions.json` alone.
+
+### Error codes vary by failure mode
+
+- **Unconfigured tool path** (`options.formalReview === undefined`): `WorkerConfigurationError` with code `unsupported_capability` and messages such as `Formal review is not enabled by trusted configuration` or `Formal review decisions are not enabled by trusted Coordinator configuration`.
+- **Incomplete profiles, invalid bootstrap, or rollout gates**: other typed failures — e.g. `WorkerConfigurationError` with code `invalid_profile`, or `FormalReviewBootstrapError` from the integration layer. Do not overgeneralize all rejections as `unsupported_capability`.
 
 ### Default project extension
 
