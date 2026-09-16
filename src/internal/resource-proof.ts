@@ -10,6 +10,7 @@ import type {
   WorkspaceAccessScope,
 } from "../public.js";
 import { ResourceProofRejectedError } from "../public.js";
+import { canonicalJson } from "./canonical-json.js";
 
 const MAX_RAW_BYTES = 2 * 1024 * 1024;
 const MAX_CANONICAL_BYTES = 1024 * 1024;
@@ -194,18 +195,6 @@ class JsonParser {
     if (this.elements > MAX_ELEMENTS)
       reject("proof_limit_exceeded", "Proof JSON exceeds its element limit");
   }
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const record = value as Readonly<Record<string, unknown>>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 export function parseProofDocument(
