@@ -51,7 +51,7 @@ Check that Pions prerequisites and runtime dependencies are healthy:
    node --version
    ```
 
-   Expected: v26+ (check `package.json` `devDependencies.@types/node`)
+   Expected: **v26+** (matches CI `.github/workflows/check.yml` `node-version: 26`). Node 22 is insufficient for the full `npm run check` test suite — many tests fail with `Promise resolution is still pending but the event loop has already resolved` (especially visible-worker). Use Node 26+ for automated checks.
 
 2. **npm packages installed**:
 
@@ -86,6 +86,17 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 
    Expected: `pi` binary on PATH, version 0.85.1+
 
+3. **Check Pi LLM auth on the machine running the `verify-pions` Herdr session** (CRITICAL for live delegation):
+
+   Live delegation requires a working Pi LLM login or provider credentials on the **same machine** that runs the `verify-pions` Herdr session. Without auth, the parent Pi in the pane cannot call tools (including `pions_delegate`).
+
+   ```bash
+   # Empty or missing auth means live delegation is blocked
+   test -s ~/.pi/agent/auth.json && echo "auth.json present" || echo "auth.json empty or missing"
+   ```
+
+   If not logged in, run `pi` and use `/login`, or configure provider API keys for the models Pi will use. In the Pi TUI you may see: `Not logged in · Please run /login`.
+
 **If Herdr or Pi is missing** (typical on Cloud Agent VMs):
 
 - **USER-PATH VERIFICATION IS BLOCKED**. You cannot prove visible delegation works.
@@ -94,7 +105,13 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 - Document clearly in your proof output: "Live delegation proof BLOCKED: Herdr unavailable. Automated checks only."
 - Do NOT claim end-to-end verification succeeded.
 
-**If Herdr and Pi are present:**
+**If Herdr and Pi are present but Pi LLM auth is missing** on the box running `verify-pions`:
+
+- Mark live delegation **BLOCKED / verified-unreachable** with prerequisite: Pi LLM login or provider credentials required.
+- Document: "Live delegation proof BLOCKED: Pi not logged in (run `/login` or configure provider keys). Automated checks only."
+- **Do NOT** fall back to gmktec, Yasuhito's default Herdr session, or any other host to work around missing auth.
+
+**If Herdr and Pi are present with working Pi auth:**
 
 - Proving ONE live-delegation feature (see `features/live-delegation.md`) is **REQUIRED** before claiming end-to-end success.
 - Use the **dedicated named Herdr session** `verify-pions` on the **Grok Bot box** only (see Isolation below). Never smoke or maintain on gmktec, Yasuhito's default session, or captain personal panes.
@@ -166,6 +183,8 @@ Replace `<pane-id>` with the pane ID from your `verify-pions` workspace on the b
 
 **If Herdr is unavailable** (e.g. Cloud VM), you CANNOT prove this feature. Mark live **BLOCKED**; do not fall back to gmktec or Yasuhito Herdr. Proceed to Feature 2 (automated checks) as a partial gate only.
 
+**If Pi LLM auth is missing** on the `verify-pions` session host (empty `~/.pi/agent/auth.json`, no provider keys, parent Pi shows `Not logged in · Please run /login`), mark live **BLOCKED / verified-unreachable**. Do NOT fall back to gmktec or another host.
+
 ### Feature 2: Automated test suite (regression gate, not user-path proof)
 
 **Harness**: `npm run check` only (no `npm run build` prerequisite)
@@ -187,6 +206,8 @@ The `check` script runs:
 - `test` — Full node:test suite (via `build:test` → `.test-dist/`)
 
 **Expected outcome**: Exit code 0, all checks pass, all tests pass.
+
+**Runtime requirement**: Node **26+** (matches CI). Node 22 produces widespread false failures in the full test suite.
 
 **See `features/automated-test-suite.md` for detailed steps and gotchas.**
 
@@ -351,6 +372,12 @@ if command -v pi &> /dev/null; then
   echo "Pi: $(pi --version)"
 else
   echo "Pi: NOT AVAILABLE (live delegation will fail)"
+fi
+
+if [ -s "${HOME}/.pi/agent/auth.json" ]; then
+  echo "Pi auth: auth.json present"
+else
+  echo "Pi auth: NOT CONFIGURED (run pi /login or set provider keys — live delegation will fail)"
 fi
 
 echo ""

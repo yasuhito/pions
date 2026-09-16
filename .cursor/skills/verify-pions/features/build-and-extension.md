@@ -11,7 +11,7 @@ Pions is a TypeScript ESM library. Before using the Pi extension, you must build
 
 ## How to get to it (user perspective)
 
-A developer runs `npm run build` after cloning the repo or after changing any source file. The extension then loads the built worker extension from `dist/`.
+A developer runs `npm run build` after cloning the repo or after changing any source file. The extension then loads the built worker extension. `resolveWorkerExtensionEntryPath` (`src/internal/worker-extension-entry.ts`) tries candidates in order: a sibling `../worker-extension.js` (relative to the internal module), then `../../dist/src/worker-extension.js`. After a normal `npm run build`, the dist candidate is the expected resolution; verification still expects `dist/src/worker-extension.js` to exist.
 
 If you skip this step and try to use `pions_delegate`, the worker fails with:
 

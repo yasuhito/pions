@@ -8,7 +8,7 @@
 2. **Task execution with Pi TUI** (visible, observable Pi "regular" TUI)
 3. **Result acceptance and verification** (immutable UTF-8 artifact with SHA-256 digest)
 4. **Pane auto-close on success** (Pions-owned success panes only, per AGENTS.md)
-5. **Operation persistence and retrieval** (persisted Operation records in `~/.local/state/pions/`)
+5. **Operation persistence and retrieval** (persisted Operation records under `$XDG_STATE_HOME/pions/repositories/<digest>/`, default `~/.local/state/pions/repositories/<digest>/`)
 
 ## Dedicated Herdr session on the Grok Bot box (REQUIRED)
 
@@ -73,7 +73,21 @@ If `command -v herdr` fails (typical Cloud VM):
 
    Expected: Pi 0.85.1+
 
-3. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
+3. **Pi LLM auth on the `verify-pions` session host** (CRITICAL — without this, the parent Pi cannot call tools):
+
+   Live delegation requires a working Pi LLM login or provider credentials on the **same machine** that runs the `verify-pions` Herdr session (the Grok Bot box).
+
+   ```bash
+   test -s ~/.pi/agent/auth.json && echo "auth.json present" || echo "auth.json empty or missing"
+   ```
+
+   If auth is missing:
+   - Run `pi` and use `/login`, or configure provider API keys for the models Pi will use.
+   - In the Pi TUI you may see: `Not logged in · Please run /login`.
+   - Mark live delegation **BLOCKED / verified-unreachable** with this prerequisite documented.
+   - **Do NOT** fall back to gmktec or another host to work around missing auth.
+
+4. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
 
    ```bash
    cd "$PIONS_ROOT"
@@ -81,9 +95,9 @@ If `command -v herdr` fails (typical Cloud VM):
    ls -la dist/src/worker-extension.js
    ```
 
-4. **Dedicated `verify-pions` session server is running** (see above).
+5. **Dedicated `verify-pions` session server is running** (see above).
 
-5. **Isolated workspace + Pi pane** in `verify-pions` on the box with `cwd` = Pions checkout — created by you for this proof, not borrowed from gmktec or Yasuhito/firstmate sessions.
+6. **Isolated workspace + Pi pane** in `verify-pions` on the box with `cwd` = Pions checkout — created by you for this proof, not borrowed from gmktec or Yasuhito/firstmate sessions.
 
 ## How to get to it (user perspective)
 
@@ -155,8 +169,9 @@ pi --mode json -p 'Use pions_delegate to read package.json'
 
 5. **Observe the result**:
 
-   - Package name (`pions`) in the output
-   - Operation ID (UUID) in the response
+   - Package name (`pions`) in the returned text body
+   - Operation ID (UUID) in the tool response text (e.g. `[Operation: …]`)
+   - SHA-256 digest in tool **details** (not necessarily in the visible text body)
 
 6. **Capture evidence** (portable paths):
 
@@ -202,7 +217,7 @@ Use only when debugging; prefer programmatic steps above for smoke/maintain.
 
    - Pi calls `pions_delegate` tool
    - A sibling Herdr pane opens (right or bottom)
-   - Worker executes; result streams back
+   - Worker executes in the sibling pane; the parent awaits terminal completion (worker emits at `agent_settled`; result is returned when the operation completes — not streamed incrementally)
    - On success, the worker pane auto-closes
 
 5. **Close the verify workspace when done** — do not leave smoke panes on gmktec or in Yasuhito's default session.
@@ -210,16 +225,16 @@ Use only when debugging; prefer programmatic steps above for smoke/maintain.
 ### Expected outcome
 
 - Operation succeeds
-- Result returned to parent
+- Result text returned to parent (may be truncated in the visible body)
 - Worker pane closes automatically (success only)
-- Operation ID and digest logged
+- Operation ID in tool response text; digest in tool **details**
 
-Example output:
+Example tool response shape:
 
 ```
-Operation: 1ccfa7a5-f41b-42d1-a9fc-f84e31da02bc
-Digest: sha256:abc123...
-Result: pions
+Text body: pions
+Text prefix: [Operation: 1ccfa7a5-f41b-42d1-a9fc-f84e31da02bc]
+Details: { operationId, byteCount, digest: "sha256:abc123...", truncated, … }
 ```
 
 ### Evidence capture
@@ -230,7 +245,7 @@ mkdir -p "$EVIDENCE_DIR"
 
 $HERDR pane read <pane-id> > "$EVIDENCE_DIR/pane-after-delegation.txt"
 $HERDR pane list > "$EVIDENCE_DIR/pane-list.txt"
-ls -la ~/.local/state/pions/ > "$EVIDENCE_DIR/operation-state.txt" 2>/dev/null || true
+ls -la "${XDG_STATE_HOME:-$HOME/.local/state}/pions/repositories/" > "$EVIDENCE_DIR/operation-state.txt" 2>/dev/null || true
 ```
 
 ## Gotchas
@@ -238,6 +253,14 @@ ls -la ~/.local/state/pions/ > "$EVIDENCE_DIR/operation-state.txt" 2>/dev/null |
 ### Herdr is REQUIRED
 
 Without Herdr, `pions_delegate` fails immediately with `HerdrPreconditionError`. **No Herdr = no live delegation proof.** Do not substitute gmktec or Yasuhito's session from another context.
+
+### Pi LLM auth is REQUIRED
+
+Even when Herdr and Pi are present, live delegation fails if the parent Pi session is not logged in. An empty `~/.pi/agent/auth.json` and no provider API keys mean the parent cannot call tools (`pions_delegate` included). The Pi TUI may show `Not logged in · Please run /login`.
+
+**Fix**: On the Grok Bot box, run `pi` and `/login`, or configure provider keys before driving live proof.
+
+**If auth cannot be configured**: Mark live **BLOCKED / verified-unreachable**. Do NOT fall back to gmktec or Yasuhito's session.
 
 ### Never use gmktec, Yasuhito default, or firstmate session for daily smoke
 
@@ -305,7 +328,7 @@ If you interrupt the parent Pi, Pions cancels the worker. Cancelled operations l
 
 ### State storage
 
-Operation state lives in `~/.local/state/pions/` (or `$XDG_STATE_HOME/pions/`). Each repository is isolated by a digest of its canonical root.
+Operation state lives under `$XDG_STATE_HOME/pions/repositories/<digest>/` (default `~/.local/state/pions/repositories/<digest>/`). Each repository is isolated by an opaque digest of its canonical root (`resolveRepositoryState` in `src/internal/repository-state.ts`).
 
 ### Cloud Agent limitation
 
@@ -323,7 +346,7 @@ When executing daily live smoke (Node v26+, Herdr 0.8.2+, Pi 0.85.1+):
 1. Run on **the Grok Bot box** (pions eng's machine) — **not gmktec**.
 2. Use **only** the `verify-pions` session workflow above.
 3. Set `PIONS_ROOT=/home/box/Work/pions` (or `$HOME/Work/pions` on the box).
-4. Capture all success observables (Operation ID, digest, pane evidence).
+4. Capture all success observables (Operation ID in text, digest in tool details, pane evidence).
 5. Save evidence to a portable writable directory (`$VERIFY_PIONS_EVIDENCE_DIR` or `/tmp/verify-pions-…`).
 6. Close verify workspaces/panes you created on the box.
 7. Report: "Live delegation proof COMPLETED in verify-pions session on Grok Bot box."
