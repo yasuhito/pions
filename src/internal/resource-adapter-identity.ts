@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
-
 import type {
   DeploymentMode,
   ResourceAdapterIdentity,
   ResourceAuthorityRegistration,
 } from "../public.js";
+import { sha256Digest } from "./result-digest.js";
 
 export interface ResourceAdapterApprovalPolicy {
   readonly deployment: DeploymentMode;
@@ -32,9 +31,7 @@ export function validResourceAuthorityIdentity(
     identity.version.length > 0 &&
     (identity.intendedUse === "non-production" ||
       identity.intendedUse === "production") &&
-    `sha256:${createHash("sha256")
-      .update(registration.registrationArtifact)
-      .digest("hex")}` === identity.digest
+    sha256Digest(registration.registrationArtifact) === identity.digest
   );
 }
 

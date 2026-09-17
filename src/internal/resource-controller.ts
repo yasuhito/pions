@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import type {
@@ -21,6 +21,7 @@ import {
   resourceAuthorityIsApproved,
   validResourceAuthorityIdentity,
 } from "./resource-adapter-identity.js";
+import { sha256Digest } from "./result-digest.js";
 import type { OperationReviewInputTarget } from "./review-input-preparation.js";
 import {
   parseProofDocument,
@@ -108,10 +109,6 @@ export interface ResourceProofControllerOptions {
   readonly approvalPolicy?: Readonly<ResourceAdapterApprovalPolicy>;
   readonly cleanupAuthenticator?: ResourceCleanupAuthenticator;
   readonly repository?: ResourceEvidenceRepository;
-}
-
-function digest(value: string): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
 
 function snapshot(
@@ -475,7 +472,7 @@ export function makeResourceProofController(
     canonicalResources.sort((left, right) =>
       JSON.stringify(left).localeCompare(JSON.stringify(right))
     );
-    const requestDigest = digest(
+    const requestDigest = sha256Digest(
       JSON.stringify({
         operationId: request.operationId,
         workerProcessInstanceId: request.workerProcessInstanceId,
@@ -489,7 +486,7 @@ export function makeResourceProofController(
         resources: canonicalResources,
       })
     );
-    const acquisitionId = digest(
+    const acquisitionId = sha256Digest(
       `${request.operationId}\u0000${requestDigest}`
     ).slice("sha256:".length);
     const adapterRequest = {
@@ -874,7 +871,7 @@ export function makeResourceProofController(
           permissionManifestDigest: manifest.digest,
         } as const;
         const attempt = record.snapshot.cleanupAttempts + 1;
-        const cleanupId = digest(
+        const cleanupId = sha256Digest(
           `${operationId}\u0000${actorId}\u0000${attempt}`
         ).slice("sha256:".length);
         record = await repository.write(operationId, record.version, {
