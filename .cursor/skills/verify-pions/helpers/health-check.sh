@@ -18,6 +18,12 @@ else
   echo "Pi: NOT AVAILABLE (live delegation will fail)"
 fi
 
+if [ -s "${HOME}/.pi/agent/auth.json" ]; then
+  echo "Pi auth: auth.json present"
+else
+  echo "Pi auth: NOT CONFIGURED (run pi /login or set provider keys — live delegation will fail)"
+fi
+
 echo ""
 echo "Checking build artifacts..."
 if [ -f dist/src/index.js ]; then

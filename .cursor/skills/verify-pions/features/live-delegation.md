@@ -262,6 +262,18 @@ Even when Herdr and Pi are present, live delegation fails if the parent Pi sessi
 
 **If auth cannot be configured**: Mark live **BLOCKED / verified-unreachable**. Do NOT fall back to gmktec or Yasuhito's session.
 
+### Artifact store writer lock is exclusive per repository
+
+The artifact store writer lock (`artifacts.writer-lock` under `$XDG_STATE_HOME/pions/repositories/<digest>/runtime/`, default `~/.local/state/pions/repositories/<digest>/runtime/`) is **exclusive per repository state root**. Only one live Pi process that has opened the artifact store can hold it.
+
+A second Pi in another workspace on the same checkout will fail `pions_delegate` with `ArtifactStoreOpenError` / `writer_locked` (`Artifact storage root already has a writer`). This is a harness implication for daily smoke/maintain — not a product bug to work around by ignoring the error.
+
+**For daily smoke/maintain:**
+
+- Prefer a freshly created workspace **only if** no other verify-pions Pi already holds the lock.
+- If a prior verify-pions Pi is still idle and holds the lock, either (a) drive the proof on that existing pane, or (b) close that leftover verify-pions workspace/pane (prior maintain leftovers in session `verify-pions` only — never touch gmktec / Yasuhito default), then create a new workspace.
+- Do **not** paper over as “ignore the error”; capture evidence of Operation ID on success.
+
 ### Never use gmktec, Yasuhito default, or firstmate session for daily smoke
 
 - **NEVER** run daily smoke on **gmktec**
