@@ -48,6 +48,7 @@ import {
   type ReviewSubjectRegistrationEvidenceOutcome,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
+import { syncDirectory } from "./sync-directory.js";
 import {
   artifactMetadataMatches,
   reviewSubjectRegistrationEvidenceDigest,
@@ -544,15 +545,6 @@ function storedFormats(
         `${right.formatId}\0${right.normalizationId}`
       )
     );
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, "r");
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 async function atomicWrite(path: string, bytes: Uint8Array): Promise<void> {

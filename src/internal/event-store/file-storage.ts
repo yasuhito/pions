@@ -15,6 +15,7 @@ import { ValidatedEventStore } from "./store.js";
 import type { StoredOperationRecord } from "./store.js";
 import { RecordDecodingError } from "./codec.js";
 import type { RuntimeClock } from "../services.js";
+import { syncDirectory } from "../sync-directory.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -51,15 +52,6 @@ async function validateRegularFile(path: string): Promise<boolean> {
   } catch (error) {
     if (isMissing(error)) return false;
     throw error;
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const directory = await open(path, "r");
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
   }
 }
 
