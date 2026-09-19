@@ -35,6 +35,7 @@ import {
   OperationPersistenceError,
   ResourceProofRejectedError,
 } from "../public.js";
+import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
 import type {
   WorkerConfigurationFailureReason,
   WorkerProducedResult,
@@ -133,9 +134,12 @@ class WorkerCancellation {
   private isRequested = false;
   private isResponsePending = false;
   private response?: Promise<WorkerCancellationEvidence | undefined>;
+  private readonly requestWaiters: Array<() => void> = [];
 
   request(): void {
+    if (this.isRequested) return;
     this.isRequested = true;
+    for (const waiter of this.requestWaiters.splice(0)) waiter();
   }
 
   execute(
@@ -149,6 +153,18 @@ class WorkerCancellation {
       });
     }
     return this.response;
+  }
+
+  addRequestWaiter(waiter: () => void): () => void {
+    if (this.isRequested) {
+      waiter();
+      return () => undefined;
+    }
+    this.requestWaiters.push(waiter);
+    return () => {
+      const index = this.requestWaiters.indexOf(waiter);
+      if (index >= 0) this.requestWaiters.splice(index, 1);
+    };
   }
 
   get responsePending(): boolean {
@@ -522,7 +538,29 @@ export class VisibleWorker implements WorkerAdapter {
                 : reception.state,
           } as WorkerRunOutcome;
         }
-        const acceptance = yield* hooks.acceptResult(reception.result);
+        // Race acceptResult with cancellation so a hanging acceptance (e.g. the
+        // peer Operation still holding the Result) does not leave run() open
+        // after cancel. Effect.raceFirst interrupts the loser — unlike bridging
+        // acceptResult through Effect.runPromise, which would leave an orphaned
+        // Promise when cancel wins.
+        const acceptance = yield* Effect.raceFirst(
+          hooks.acceptResult(reception.result),
+          Effect.async<ResultAcceptanceOutcome>((resume) => {
+            const removeWaiter = cancellation.addRequestWaiter(() =>
+              resume(
+                Effect.succeed({
+                  state: "failed",
+                  terminal: true,
+                  reason: "conflict",
+                })
+              )
+            );
+            return Effect.sync(removeWaiter);
+          })
+        );
+        if (cancellation.requested) {
+          return { state: "worker_protocol_failed" } as const;
+        }
         if (
           acceptance.state === "accepted" &&
           acceptance.proof.operationId !== operation.operationId
@@ -969,30 +1007,58 @@ export class VisibleWorker implements WorkerAdapter {
     const request = session.protocol.requestCancellation();
     if (request === undefined) {
       const exitObservation = session.successfulExitObservation;
-      if (exitObservation === undefined) return undefined;
-      const stopped = await this.waitForSuccessfulExit(
-        exitObservation,
-        remaining()
-      );
-      if (stopped === undefined) return undefined;
-      if (stopped) {
-        return (await this.confirmBackendStop(session, remaining()))
-          ? { proof: "worker-stop" }
+      if (exitObservation !== undefined) {
+        const stopped = await this.waitForSuccessfulExit(
+          exitObservation,
+          remaining()
+        );
+        if (stopped === undefined) return undefined;
+        if (stopped) {
+          return (await this.confirmBackendStop(session, remaining()))
+            ? { proof: "worker-stop" }
+            : undefined;
+        }
+        if (session.identity === undefined) return undefined;
+        const state = await Effect.runPromise(
+          this.processControl.observe(session.identity)
+        );
+        if (state === "unverifiable" || remaining() === 0) return undefined;
+        const workerEvidence =
+          state === "stopped"
+            ? ({ proof: "worker-stop" } as const)
+            : await this.terminateProcess(session.identity, remaining());
+        return workerEvidence !== undefined &&
+          (await this.confirmBackendStop(session, remaining()))
+          ? workerEvidence
           : undefined;
       }
-      if (session.identity === undefined) return undefined;
+      // Protocol cancel cannot be sent (e.g. Result already received while
+      // acceptResult is still running). Settle waiters and stop the Worker.
+      if (session.identity === undefined) {
+        this.reject(
+          session,
+          "Visible Worker cancelled before protocol identification"
+        );
+        return undefined;
+      }
       const state = await Effect.runPromise(
         this.processControl.observe(session.identity)
       );
-      if (state === "unverifiable" || remaining() === 0) return undefined;
+      if (state === "unverifiable") {
+        this.completeCancellation(session);
+        return undefined;
+      }
       const workerEvidence =
         state === "stopped"
           ? ({ proof: "worker-stop" } as const)
-          : await this.terminateProcess(session.identity, remaining());
-      return workerEvidence !== undefined &&
-        (await this.confirmBackendStop(session, remaining()))
-        ? workerEvidence
-        : undefined;
+          : remaining() > 0
+            ? await this.terminateProcess(session.identity, remaining())
+            : undefined;
+      const backendStopped =
+        workerEvidence !== undefined &&
+        (await this.confirmBackendStop(session, remaining()));
+      this.completeCancellation(session);
+      return backendStopped ? workerEvidence : undefined;
     }
     try {
       await writeSocket(session.socket, request);
