@@ -164,10 +164,18 @@ class DeferredExecutor {
   private settlement?: Effect.Effect<CommandOutput, Error>;
 
   execute(invocation: CommandInvocation): Effect.Effect<CommandOutput, Error> {
+    // Hold the event loop before the Effect.async body runs. Fixture servers
+    // and test clients are unref'd; without this, the loop can drain between
+    // invocation accounting and async registration (real launches hold a child
+    // process handle for the same reason).
+    const keepAlive = setInterval(() => undefined, 1 << 30);
     this.invocations.push(invocation);
     return Effect.async((resume) => {
-      this.resume = resume;
-      if (this.settlement !== undefined) resume(this.settlement);
+      this.resume = (effect) => {
+        clearInterval(keepAlive);
+        resume(effect);
+      };
+      if (this.settlement !== undefined) this.resume(this.settlement);
     });
   }
 
@@ -380,6 +388,14 @@ async function fixture(
       }),
   };
   const worker = adapter.open(current);
+  // Fixture servers/clients are unref'd; a real run is kept alive by the child
+  // process. Hold the loop until release() (from test after hooks) so mid-test
+  // awaits on unref'd sockets — including post-outcome frame reads — cannot
+  // drain the event loop.
+  const runKeepAlive = setInterval(() => undefined, 1 << 30);
+  const release = (): void => {
+    clearInterval(runKeepAlive);
+  };
   const outcome = Effect.runPromise(worker.run(hooks));
   while (executor.invocations.length === 0) {
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -408,6 +424,7 @@ async function fixture(
     piSessionIds,
     outcome,
     protocolSession,
+    release,
     root,
     worker,
   };
@@ -415,11 +432,14 @@ async function fixture(
 
 async function socket(path: string): Promise<Socket> {
   const client = connect(path);
-  client.unref();
   await new Promise<void>((resolve, reject) => {
     client.once("connect", resolve);
     client.once("error", reject);
   });
+  // Unref only after connect so the handshake itself cannot drain the loop
+  // while fixture servers are also unref'd. Callers that leave the client open
+  // still rely on unref for process exit.
+  client.unref();
   return client;
 }
 
@@ -864,7 +884,10 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
 
 test("visible Worker launch keeps the prompt out of process arguments", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.equal(
     JSON.stringify(value.executor.invocations[0]).includes("private prompt"),
@@ -874,7 +897,10 @@ test("visible Worker launch keeps the prompt out of process arguments", async (c
 
 test("visible Worker launch keeps Operation authority out of process arguments", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.equal(
     JSON.stringify(value.executor.invocations[0]).includes(value.capability),
@@ -884,7 +910,10 @@ test("visible Worker launch keeps Operation authority out of process arguments",
 
 test("visible Worker starts a Herdr Pi agent in the persisted owned pane", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.deepEqual(value.executor.invocations[0]?.args.slice(0, 8), [
     "agent",
@@ -900,7 +929,10 @@ test("visible Worker starts a Herdr Pi agent in the persisted owned pane", async
 
 test("visible Worker gives Pi the effective policy as structured arguments", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.deepEqual(value.executor.invocations[0]?.args.slice(10), [
     "--provider",
@@ -932,7 +964,10 @@ test("visible Claude Worker loads only Pions and the approved provider extension
     operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
     providerExtension,
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.deepEqual(
     value.executor.invocations[0]?.args.filter(
@@ -949,7 +984,10 @@ test("visible Claude Worker loads only Pions and the approved provider extension
 
 test("visible Worker agent name contains no task text", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.equal(
     value.executor.invocations[0]?.args[2]?.includes("private prompt"),
@@ -963,21 +1001,30 @@ async function mode(path: string): Promise<number> {
 
 test("visible Worker directory uses private permissions", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.equal(await mode(value.directory), 0o700);
 });
 
 test("visible Worker prompt uses private permissions", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.equal(await mode(join(value.directory, "prompt.utf8")), 0o600);
 });
 
 test("visible Worker configuration uses private permissions", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.equal(await mode(join(value.directory, "worker.v14.json")), 0o600);
 });
@@ -1036,7 +1083,10 @@ test("Worker launch failure releases Worker protocol listeners", async (context)
 
 test("visible Worker socket uses private permissions", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   assert.equal(await mode(value.config.socketPath), 0o600);
 });
@@ -1046,7 +1096,10 @@ test("visible Worker can place its socket outside a long persistent state path",
     join(tmpdir(), "pions-worker-sockets-")
   );
   const value = await fixture({ socketDirectory });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   context.after(() => rm(socketDirectory, { recursive: true, force: true }));
 
   assert.equal(value.config.socketPath.startsWith(`${socketDirectory}/`), true);
@@ -1091,7 +1144,10 @@ test("visible Worker keeps Node alive while awaiting the Pi extension connection
 test("visible Worker does not send begin while the launch command is incomplete", async (context) => {
   const executor = new DeferredExecutor();
   const value = await fixture({ executor });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const frames: Array<string> = [];
   client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
@@ -1121,7 +1177,10 @@ test("visible Worker does not send begin while the launch command is incomplete"
 test("visible Worker does not send begin when the launch command fails", async (context) => {
   const executor = new DeferredExecutor();
   const value = await fixture({ executor });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const frames: Array<string> = [];
   client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
@@ -1139,7 +1198,10 @@ test("visible Worker does not send begin when the launch command fails", async (
 test("visible Worker does not send begin when the launch command times out", async (context) => {
   const executor = new DeferredExecutor();
   const value = await fixture({ executor });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const frames: Array<string> = [];
   client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
@@ -1156,7 +1218,10 @@ test("visible Worker does not send begin when the launch command times out", asy
 
 test("a Worker cancelled before identification does not receive begin", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const frames: Array<string> = [];
   client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
@@ -1184,7 +1249,10 @@ test("a Worker cancelled before begin does not receive begin", async (context) =
         releaseIdentification = () => resume(Effect.void);
       }),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1218,7 +1286,10 @@ test("pre-begin cancellation survives concurrent run cleanup", async (context) =
         releaseIdentification = () => resume(Effect.void);
       }),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1238,7 +1309,10 @@ test("pre-begin cancellation survives concurrent run cleanup", async (context) =
 
 test("visible Worker sends authenticated begin through the Worker protocol", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const { begin } = await deliver(value);
 
   assert.deepEqual(JSON.parse(begin), {
@@ -1259,7 +1333,10 @@ test("visible Worker sends authenticated begin through the Worker protocol", asy
 
 test("authenticated Result is observed through the Worker interface", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   await deliver(value);
 
   assert.equal(
@@ -1270,7 +1347,10 @@ test("authenticated Result is observed through the Worker interface", async (con
 
 test("authenticated Worker identity is observed before Result delivery", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1286,7 +1366,10 @@ test("authenticated Worker identity is observed before Result delivery", async (
 
 test("authenticated Pi session identity is observed through the Worker interface", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1302,7 +1385,10 @@ test("authenticated Pi session identity is observed through the Worker interface
 
 test("visible Worker sends ACK after Result acceptance", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const { acknowledgement } = await deliver(value);
 
   assert.equal(JSON.parse(await acknowledgement).type, "ack");
@@ -1311,7 +1397,10 @@ test("visible Worker sends ACK after Result acceptance", async (context) => {
 test("visible Worker confirms the exact Pi process stopped after ACK", async (context) => {
   const processControl = new FakeProcessControl("stopped");
   const value = await fixture({ processControl });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   await deliver(value);
 
   assert.equal(
@@ -1322,7 +1411,10 @@ test("visible Worker confirms the exact Pi process stopped after ACK", async (co
 
 test("successful Worker reports confirmed exit after process stop", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const delivered = await deliver(value);
 
   assert.equal(
@@ -1336,7 +1428,10 @@ test("successful Worker reports confirmed exit after process stop", async (conte
 async function cancelDuringExitConfirmation(context: TestContext) {
   const processControl = new DeferredStopProcessControl();
   const value = await fixture({ processControl });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const delivery = await sendResultDelivery(client, {
     capability: value.capability,
@@ -1368,7 +1463,10 @@ test("confirmed stop during successful-exit cancellation is cancellation evidenc
 test("successful-exit confirmation cannot outlive the cancellation budget", async (context) => {
   const processControl = new DeferredStopProcessControl();
   const value = await fixture({ processControl });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const delivery = await sendResultDelivery(client, {
     capability: value.capability,
@@ -1384,7 +1482,10 @@ test("successful-exit confirmation cannot outlive the cancellation budget", asyn
 test("cancellation during successful-exit confirmation stops a running Pi", async (context) => {
   const processControl = new DeferredStopProcessControl();
   const value = await fixture({ processControl });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const delivery = await sendResultDelivery(client, {
     capability: value.capability,
@@ -1404,7 +1505,10 @@ test("unconfirmed Pi exit after ACK has unknown liveness", async (context) => {
   const value = await fixture({
     processControl: new FakeProcessControl("unverifiable"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const delivered = await deliver(value);
 
   assert.equal(delivered.outcome.state, "liveness-unproven");
@@ -1412,7 +1516,10 @@ test("unconfirmed Pi exit after ACK has unknown liveness", async (context) => {
 
 test("normal completion releases Worker protocol listeners", async (context) => {
   const workerFixture = await fixture();
-  context.after(() => rm(workerFixture.root, { recursive: true, force: true }));
+  context.after(() => {
+    workerFixture.release();
+    return rm(workerFixture.root, { recursive: true, force: true });
+  });
   await deliver(workerFixture);
 
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
@@ -1420,7 +1527,10 @@ test("normal completion releases Worker protocol listeners", async (context) => 
 
 test("observed model mismatch becomes a typed Worker failure", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1439,7 +1549,10 @@ test("observed model mismatch becomes a typed Worker failure", async (context) =
 
 test("visible Worker does not send begin when observed configuration mismatches", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const frames: Array<string> = [];
   client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
@@ -1461,7 +1574,10 @@ test("visible Worker does not send begin when observed configuration mismatches"
 
 test("observed thinking mismatch becomes a typed Worker failure", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1480,7 +1596,10 @@ test("observed thinking mismatch becomes a typed Worker failure", async (context
 
 test("visible Worker does not send begin when observed thinking mismatches", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const frames: Array<string> = [];
   client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
@@ -1502,7 +1621,10 @@ test("visible Worker does not send begin when observed thinking mismatches", asy
 
 test("visible Worker does not send begin when observed thinking is unavailable", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const frames: Array<string> = [];
   client.on("data", (bytes) => frames.push(bytes.toString("utf8")));
@@ -1524,7 +1646,10 @@ test("visible Worker does not send begin when observed thinking is unavailable",
 
 test("pre-start configuration failure becomes a typed Worker failure", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1539,7 +1664,10 @@ test("pre-start configuration failure becomes a typed Worker failure", async (co
 
 test("settled Pi failure becomes an agent failure with evidence", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   const begin = receiveFrame(client);
@@ -1567,7 +1695,10 @@ test("Claude Code login failure becomes an authentication failure", async (conte
     processControl: new FakeClaudeProcessControl("stopped"),
     operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   const begin = receiveFrame(client);
@@ -1601,7 +1732,10 @@ test("Claude Code unavailable model failure stays model-specific", async (contex
     processControl: new FakeClaudeProcessControl("stopped"),
     operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   const begin = receiveFrame(client);
@@ -1635,7 +1769,10 @@ test("Claude Code plan failure becomes an unsupported capability failure", async
     processControl: new FakeClaudeProcessControl("stopped"),
     operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   const begin = receiveFrame(client);
@@ -1669,7 +1806,10 @@ test("Claude failure with uninspectable child processes has unknown liveness", a
     processControl: new FakeProcessControl("stopped"),
     operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   const begin = receiveFrame(client);
@@ -1700,7 +1840,10 @@ test("Claude failure with uninspectable child processes has unknown liveness", a
 
 test("protocol rejection becomes a Worker protocol failure", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame("cd".repeat(32), 1, "hello", { processInstanceId }));
 
@@ -1709,7 +1852,10 @@ test("protocol rejection becomes a Worker protocol failure", async (context) => 
 
 test("protocol failure releases Worker protocol listeners", async (context) => {
   const workerFixture = await fixture();
-  context.after(() => rm(workerFixture.root, { recursive: true, force: true }));
+  context.after(() => {
+    workerFixture.release();
+    return rm(workerFixture.root, { recursive: true, force: true });
+  });
   const client = await socket(workerFixture.config.socketPath);
   send(client, frame("cd".repeat(32), 1, "hello", { processInstanceId }));
   await workerFixture.outcome;
@@ -1721,7 +1867,10 @@ test("a rejected begin is followed by confirmed Worker stop", async (context) =>
   const value = await fixture({
     processControl: new FakeProcessControl("stopped"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const begin = receiveFrame(client);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
@@ -1762,7 +1911,10 @@ test("connection loss after durable Start acceptance does not invent an acknowle
         acknowledgementCount += 1;
       }),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   const begin = receiveFrame(client);
@@ -1783,7 +1935,10 @@ test("connection loss after durable Start acceptance does not invent an acknowle
 
 test("disconnect before session identification has unknown liveness", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   client.end();
@@ -1793,7 +1948,10 @@ test("disconnect before session identification has unknown liveness", async (con
 
 test("disconnect releases Worker protocol listeners", async (context) => {
   const workerFixture = await fixture();
-  context.after(() => rm(workerFixture.root, { recursive: true, force: true }));
+  context.after(() => {
+    workerFixture.release();
+    return rm(workerFixture.root, { recursive: true, force: true });
+  });
   const client = await socket(workerFixture.config.socketPath);
   send(
     client,
@@ -1809,7 +1967,10 @@ test("communication loss records protocol failure when Pi is confirmed stopped",
   const value = await fixture({
     processControl: new FakeProcessControl("stopped"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1825,7 +1986,10 @@ test("unverifiable process liveness is classified as unknown evidence", async (c
   const value = await fixture({
     processControl: new FakeProcessControl("unverifiable"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1841,7 +2005,10 @@ test("communication loss while Pi remains running has unknown liveness", async (
   const value = await fixture({
     processControl: new FakeProcessControl("running"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1857,7 +2024,10 @@ test("connection error while Pi remains running has unknown liveness", async (co
   const value = await fixture({
     processControl: new FakeProcessControl("running"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1871,7 +2041,10 @@ test("connection error while Pi remains running has unknown liveness", async (co
 
 test("one Worker cannot run twice", async (context) => {
   const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
 
   await assert.rejects(
     Effect.runPromise(value.worker.run(workerHooks())),
@@ -1881,7 +2054,10 @@ test("one Worker cannot run twice", async (context) => {
 
 test("visible Worker cancellation returns no stop evidence", async (context) => {
   const workerFixture = await fixture();
-  context.after(() => rm(workerFixture.root, { recursive: true, force: true }));
+  context.after(() => {
+    workerFixture.release();
+    return rm(workerFixture.root, { recursive: true, force: true });
+  });
 
   assert.equal(
     await Effect.runPromise(workerFixture.worker.cancel(1, 1_000)),
@@ -1893,7 +2069,10 @@ test("backend cancellation acknowledgement requires confirmed process stop", asy
   const value = await fixture({
     processControl: new FakeProcessControl("stopped"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1915,7 +2094,10 @@ test("Claude cancellation requires both Worker and backend process stops", async
     processControl: new FakeClaudeProcessControl("stopped"),
     operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1946,7 +2128,10 @@ test("Claude cancellation without child-process observation remains unproven", a
     processControl: new FakeProcessControl("stopped"),
     operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -1980,7 +2165,10 @@ test("forced termination begins after cancellation acknowledgement grace", async
     processControl,
     backendCancellationGraceMs: 100,
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -2006,7 +2194,10 @@ test("missing cancellation acknowledgement triggers process termination", async 
     processControl,
     backendCancellationGraceMs: 0,
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -2029,7 +2220,10 @@ test("concurrent protocol loss and cancellation send one Worker termination", as
     processControl,
     backendCancellationGraceMs: 10,
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -2054,7 +2248,10 @@ test("cancellation after a disconnected protocol channel terminates the Worker",
     processControl,
     backendCancellationGraceMs: 0,
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -2078,7 +2275,10 @@ test("disconnected Claude cancellation without backend stop confirmation remains
     processControl: new FakeProcessControl("running", { proof: "worker-stop" }),
     operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -2112,7 +2312,10 @@ test("unverifiable process identity keeps acknowledged cancellation unproven", a
   const value = await fixture({
     processControl: new FakeProcessControl("unverifiable"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   send(client, frame(value.capability, 1, "hello", { processInstanceId }));
   send(
@@ -2133,7 +2336,10 @@ test("duplicate Worker cancellation sends one backend request", async (context) 
   const value = await fixture({
     processControl: new FakeProcessControl("stopped"),
   });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
   const client = await socket(value.config.socketPath);
   const controls: Array<string> = [];
   client.on("data", (bytes) => {
@@ -2164,7 +2370,10 @@ test("duplicate Worker cancellation sends one backend request", async (context) 
 
 test("cancellation releases Worker protocol listeners", async (context) => {
   const workerFixture = await fixture();
-  context.after(() => rm(workerFixture.root, { recursive: true, force: true }));
+  context.after(() => {
+    workerFixture.release();
+    return rm(workerFixture.root, { recursive: true, force: true });
+  });
   await Effect.runPromise(workerFixture.worker.cancel(1, 1_000));
 
   assert.equal(protocolListenerCount(workerFixture.protocolSession), 0);
