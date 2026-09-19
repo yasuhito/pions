@@ -1,10 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+npm_version() {
+  if command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1; then
+    npm --version
+    return 0
+  fi
+  if command -v mise >/dev/null 2>&1 && mise exec -- npm --version >/dev/null 2>&1; then
+    echo "$(mise exec -- npm --version) (via mise exec)"
+    return 0
+  fi
+  return 1
+}
+
 echo "=== Pions Quick Health Check ==="
 echo "Node: $(node --version)"
-echo "npm: $(npm --version)"
-echo "TypeScript: $(npx tsc --version)"
+if npm_ver=$(npm_version); then
+  echo "npm: ${npm_ver}"
+else
+  echo "npm: NOT AVAILABLE (broken PATH? put mise node bin ahead of ~/.local/bin, or use: mise exec -- npm …)"
+fi
+echo "TypeScript: $(npx tsc --version 2>/dev/null || echo 'NOT AVAILABLE')"
 
 if command -v herdr &> /dev/null; then
   echo "Herdr: $(herdr --version)"

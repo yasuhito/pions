@@ -53,6 +53,8 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 
    Expected: **v26+** (matches CI `.github/workflows/check.yml` `node-version: 26`). Node 22 is insufficient for the full `npm run check` test suite — many tests fail with `Promise resolution is still pending but the event loop has already resolved` (especially visible-worker). Use Node 26+ for automated checks.
 
+   **npm PATH on the Grok Bot box:** Prefer the real mise Node install bin ahead of `~/.local/bin` (e.g. `export PATH="$(mise where node)/bin:$PATH"`), or run package scripts via `mise exec -- npm …`. A bare `~/.local/bin/npm` symlink to the mise npm wrapper can fail with `Cannot find module '.../lib/node_modules/npm/bin/npm-cli.js'`. The skill helper `helpers/health-check.sh` falls back to `mise exec -- npm` when bare `npm --version` fails.
+
 2. **npm packages installed**:
 
    ```bash
@@ -357,10 +359,17 @@ Run this to quickly verify prerequisites before driving features:
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Canonical copy: helpers/health-check.sh (npm falls back to mise exec when bare npm is broken)
 echo "=== Pions Quick Health Check ==="
 echo "Node: $(node --version)"
-echo "npm: $(npm --version)"
-echo "TypeScript: $(npx tsc --version)"
+if command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1; then
+  echo "npm: $(npm --version)"
+elif command -v mise >/dev/null 2>&1 && mise exec -- npm --version >/dev/null 2>&1; then
+  echo "npm: $(mise exec -- npm --version) (via mise exec)"
+else
+  echo "npm: NOT AVAILABLE (broken PATH? put mise node bin ahead of ~/.local/bin, or use: mise exec -- npm …)"
+fi
+echo "TypeScript: $(npx tsc --version 2>/dev/null || echo 'NOT AVAILABLE')"
 
 if command -v herdr &> /dev/null; then
   echo "Herdr: $(herdr --version)"
