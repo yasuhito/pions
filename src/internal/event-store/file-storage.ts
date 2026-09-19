@@ -15,15 +15,12 @@ import { ValidatedEventStore } from "./store.js";
 import type { StoredOperationRecord } from "./store.js";
 import { RecordDecodingError } from "./codec.js";
 import type { RuntimeClock } from "../services.js";
+import { hasCode } from "../has-code.js";
 import { syncDirectory } from "../sync-directory.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const RECORD_FILE = "events.v19.json";
-
-function hasCode(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && error.code === code;
-}
 
 function isMissing(error: unknown): boolean {
   return hasCode(error, "ENOENT");
