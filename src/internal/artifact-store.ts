@@ -237,12 +237,8 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-function sha256(bytes: Uint8Array | string): `sha256:${string}` {
-  return sha256Digest(bytes);
-}
-
 function temporaryPrefix(registrationId: string): string {
-  return `transfer-${sha256(registrationId).slice("sha256:".length)}-`;
+  return `transfer-${sha256Digest(registrationId).slice("sha256:".length)}-`;
 }
 
 function protectionId(
@@ -250,7 +246,7 @@ function protectionId(
   ownerId: string,
   artifactId: string
 ): string {
-  return sha256(`${ownerType}\0${ownerId}\0${artifactId}`).slice(
+  return sha256Digest(`${ownerType}\0${ownerId}\0${artifactId}`).slice(
     "sha256:".length
   );
 }
@@ -258,7 +254,7 @@ function protectionId(
 function requestDigest(
   request: Readonly<ArtifactRegistrationRequest>
 ): `sha256:${string}` {
-  return sha256(
+  return sha256Digest(
     JSON.stringify({
       registrationId: request.registrationId,
       expectedByteCount: request.expectedByteCount,
@@ -296,19 +292,19 @@ function gcFailed(
 function useBindingRequestDigest(
   request: Readonly<ArtifactUseBindingRequest>
 ): `sha256:${string}` {
-  return sha256(JSON.stringify(request));
+  return sha256Digest(JSON.stringify(request));
 }
 
 function pinRequestDigest(
   request: Readonly<ArtifactRetentionPinRequest>
 ): `sha256:${string}` {
-  return sha256(JSON.stringify(request));
+  return sha256Digest(JSON.stringify(request));
 }
 
 function resultAcceptanceRequestDigest(
   request: Readonly<ResultAcceptancePreparationRequest>
 ): `sha256:${string}` {
-  return sha256(
+  return sha256Digest(
     JSON.stringify({
       preparationId: request.preparationId,
       operationId: request.operationId,
@@ -331,13 +327,13 @@ function reviewSubjectRegistrationEvidenceFailed(
 function resultAcceptanceEvidenceDigest(
   evidence: Omit<ResultAcceptancePreparationEvidence, "digest">
 ): `sha256:${string}` {
-  return sha256(JSON.stringify(evidence));
+  return sha256Digest(JSON.stringify(evidence));
 }
 
 function retentionPolicyDigest(
   policy: Omit<ResultAcceptanceRetentionPolicyEvidence, "digest">
 ): `sha256:${string}` {
-  return sha256(JSON.stringify(policy));
+  return sha256Digest(JSON.stringify(policy));
 }
 
 function resultAcceptanceOutcome(
@@ -1619,7 +1615,7 @@ class FileArtifactStore implements ArtifactStore {
     const bytes = await readFile(dataPath);
     if (
       bytes.byteLength !== record.request.expectedByteCount ||
-      sha256(bytes) !== record.request.expectedDigest
+      sha256Digest(bytes) !== record.request.expectedDigest
     ) {
       throw new Error(
         "Prepared Artifact bytes do not match their fixed integrity metadata"
@@ -1738,7 +1734,7 @@ class FileArtifactStore implements ArtifactStore {
     }
     if (
       bytes.byteLength !== record.byteCount ||
-      sha256(bytes) !== record.digest
+      sha256Digest(bytes) !== record.digest
     ) {
       await this.recordStorageStatus(record, "corrupt");
       return "stored_artifact_corrupt";
