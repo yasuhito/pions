@@ -47,6 +47,7 @@ import {
   type ReviewSubjectRegistrationEvidence,
   type ReviewSubjectRegistrationEvidenceOutcome,
 } from "../public.js";
+import { hasCode } from "./has-code.js";
 import { sha256Digest } from "./result-digest.js";
 import { syncDirectory } from "./sync-directory.js";
 import {
@@ -221,10 +222,6 @@ interface ResultAcceptanceRetentionRecord {
   readonly state: "pending" | "active" | "cancelled";
   readonly retainUntil?: string;
   readonly eventEvidence?: ResultAcceptanceEventEvidence;
-}
-
-function hasCode(error: unknown, code: string): boolean {
-  return error instanceof Error && "code" in error && error.code === code;
 }
 
 async function exists(path: string): Promise<boolean> {
