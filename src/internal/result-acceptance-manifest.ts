@@ -2,7 +2,6 @@ import {
   ResultAcceptanceManifestError,
   WorkProductRequirementsError,
   type ArtifactContentRequirement,
-  type ArtifactDigest,
   type ArtifactMetadata,
   type CanonicalResultAcceptanceManifestDocument,
   type ResolvedWorkProductRequirements,
@@ -25,10 +24,6 @@ function isNonEmptyAscii(value: string): boolean {
     value.length > 0 &&
     [...value].every((character) => character.codePointAt(0)! <= 0x7f)
   );
-}
-
-function digest(bytes: Uint8Array): ArtifactDigest {
-  return sha256Digest(bytes);
 }
 
 function compare(left: string, right: string): number {
@@ -189,7 +184,7 @@ function resolveRequirementsPolicy(
     maxTotalByteCount: policy.maxTotalByteCount,
   };
   const json = canonicalJson(value);
-  const requirementDigest = digest(Buffer.from(json, "utf8"));
+  const requirementDigest = sha256Digest(Buffer.from(json, "utf8"));
   return Object.freeze({
     ...value,
     requirementSetId: `${REQUIREMENT_SET_ID_PREFIX}${requirementDigest.slice("sha256:".length)}`,
@@ -322,7 +317,7 @@ export function resultAcceptanceManifestDocument(
   const json = canonicalJson(value);
   const canonicalBytes = Buffer.from(json, "utf8");
   const byteCount = canonicalBytes.byteLength;
-  const manifestDigest = digest(canonicalBytes);
+  const manifestDigest = sha256Digest(canonicalBytes);
   return Object.freeze({
     json,
     get bytes() {
