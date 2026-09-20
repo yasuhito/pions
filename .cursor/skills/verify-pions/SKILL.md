@@ -99,6 +99,15 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 
    If not logged in, run `pi` and use `/login`, or configure provider API keys for the models Pi will use. In the Pi TUI you may see: `Not logged in · Please run /login`.
 
+   **Also check the delegation worker model** from `.pions.json` top-level `review.model` (this configures the **worker** model, not formal-review enablement). Parent auth alone is insufficient:
+
+   ```bash
+   # Use the provider/id from .pions.json review.model — must be ready before live smoke
+   pi auth check --provider <provider> --model <id>
+   ```
+
+   If that check fails (`invalid_state`, etc.), live smoke can fail with `model_auth_unavailable`. Fix local auth or temporarily use an authenticated provider/model in a **local uncommitted** `.pions.json` for the box smoke — do **not** fall back to gmktec, and do **not** change committed `.pions.json` for docs-only verify work. Details: `features/live-delegation.md`.
+
 **If Herdr or Pi is missing** (typical on Cloud Agent VMs):
 
 - **USER-PATH VERIFICATION IS BLOCKED**. You cannot prove visible delegation works.

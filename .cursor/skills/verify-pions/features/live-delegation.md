@@ -262,9 +262,29 @@ Even when Herdr and Pi are present, live delegation fails if the parent Pi sessi
 
 **If auth cannot be configured**: Mark live **BLOCKED / verified-unreachable**. Do NOT fall back to gmktec or Yasuhito's session.
 
+### Delegation worker model from `.pions.json` must be authenticated
+
+Top-level `.pions.json` `review.model` configures the **delegation worker** model (provider + id), not formal-review enablement. Parent Pi auth alone is not enough — the worker pair must also be ready.
+
+Before live smoke, check the pair committed (or temporarily overridden locally) in `.pions.json`:
+
+```bash
+# Example for committed .pions.json review.model (claude-bridge / claude-opus-5):
+pi auth check --provider claude-bridge --model claude-opus-5
+```
+
+Expected: ready / authenticated for that provider+model. If `pi auth check` returns `invalid_state` (or similar), live smoke can fail with terminal reason `model_auth_unavailable` even when the parent Pi works on another provider (e.g. parent on `openai-codex`, worker still on `claude-bridge`).
+
+**Fix for box smoke only** (do **not** change committed `.pions.json` in a verify-pions docs PR):
+
+- Authenticate the configured provider locally, **or**
+- Temporarily point a **local uncommitted** `.pions.json` at a provider/model that `pi auth check` reports ready (e.g. `openai-codex` / `gpt-5.6-sol` when that OAuth is ready on the box)
+
+**Do NOT** fall back to gmktec to work around `model_auth_unavailable`.
+
 ### Artifact store writer lock is exclusive per repository
 
-The artifact store writer lock (`artifacts.writer-lock` under `$XDG_STATE_HOME/pions/repositories/<digest>/runtime/`, default `~/.local/state/pions/repositories/<digest>/runtime/`) is **exclusive per repository state root**. Only one live Pi process that has opened the artifact store can hold it.
+The artifact store writer lock is `$XDG_STATE_HOME/pions/repositories/<digest>/artifacts.writer-lock` (default `~/.local/state/pions/repositories/<digest>/artifacts.writer-lock`) — a **sibling** of the `artifacts/` directory under the repository state root, **not** under `runtime/`. (Store root is `join(stateDirectory, "artifacts")` in `src/internal/runtime-artifacts.ts`; lock path is `` `${rootDirectory}.writer-lock` `` in `src/internal/artifact-store.ts`.) The lock is **exclusive per repository state root**. Only one live Pi process that has opened the artifact store can hold it.
 
 A second Pi in another workspace on the same checkout will fail `pions_delegate` with `ArtifactStoreOpenError` / `writer_locked` (`Artifact storage root already has a writer`). This is a harness implication for daily smoke/maintain — not a product bug to work around by ignoring the error.
 
