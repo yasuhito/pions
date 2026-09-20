@@ -18,6 +18,10 @@ This directory contains detailed verification guides for Pions features. Each fi
 
 5. **[formal-review-fail-closed.md](formal-review-fail-closed.md)** — Formal-review tools reject calls when unconfigured
 
+### Tools without a dedicated guide yet
+
+- `pions_result` / `pions_operation` are installed with the extension (`src/internal/pi-extension.ts`) but have no dedicated feature guide here yet. Live-delegation still covers Result retrieval via `pions_result` at a high level.
+
 ## Critical understanding
 
 **Live delegation is THE primary user path.** Automated tests prove code quality but do NOT prove visible delegation works. Without Herdr, you cannot verify the user experience end-to-end.
