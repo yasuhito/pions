@@ -261,17 +261,17 @@ npm run typecheck
 
 **Expected outcome**: Exit code 0, no TypeScript errors.
 
-### Feature 5: Formal review tools are not registered (behavior proof)
+### Feature 5: Exactly three public tools (behavior proof)
 
 **Harness**: Check that the Pi extension registers only the three delegation tools
 
 **How to verify**:
-The project extension registers exactly `pions_delegate`, `pions_result`, and `pions_operation`. Formal-review tools (`pions_review`, `pions_review_decision`) are registered only when the retained `pions/formal-review` integration passes trusted formal-review configuration, which the project extension never does.
+The public Pi extension registers exactly `pions_delegate`, `pions_result`, and `pions_operation`. Formal-review tools are absent from its tool list, and `.pions.json` cannot enable them.
 
 This is verified by:
 
-1. Reviewing `.pi/extensions/pions.ts` → `src/internal/pi-extension.ts` to confirm the formal-review registrations are gated on `options.formalReview`
-2. Checking automated tests that assert the three-tool registration and the absence of formal-review tools
+1. Running the Pi extension tests that assert the exact three-tool registration
+2. Checking that the former `review` configuration and unknown keys are rejected
 
 **What it proves**: The user-facing delegation path cannot reach formal review.
 

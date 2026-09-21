@@ -1,6 +1,6 @@
 # Feature: Formal Review Tools Are Not Registered
 
-The Pi extension registers exactly three tools: `pions_delegate`, `pions_result`, and `pions_operation`. Formal-review tools (`pions_review`, `pions_review_decision`) are **not** registered by the project extension. They exist only for the retained `pions/formal-review` integration, which registers them when trusted host code passes formal-review configuration, and that integration is scheduled for removal.
+The Pi extension registers exactly three tools: `pions_delegate`, `pions_result`, and `pions_operation`. Formal-review tools are absent from the public extension interface.
 
 ## Sub-features
 
@@ -14,23 +14,14 @@ A user or model lists the tools in a Pi session with the Pions project extension
 
 ## Driving it with harness
 
-### Code review
-
-Read `.pi/extensions/pions.ts` (entry) and `src/internal/pi-extension.ts` (implementation):
-
-- The entry calls `installPionsExtension(pi)` with no options
-- `pions_review` and `pions_review_decision` are registered only inside `if (options.formalReview !== undefined)`
-- `.pions.json` accepts only top-level `model` and `thinkingLevel`; unknown keys (including the former `review` block and any `formalReview` key) are rejected with `ProjectConfigurationError` `unknown_key`
-
 ### Automated tests
 
 ```bash
 npm run build:test
 node --test .test-dist/test/pi-extension.test.js
-node --test .test-dist/test/formal-review-integration.test.js
 ```
 
-Expected: tests pass, including "the delegation-only extension registers exactly the three delegation tools", "the delegation-only extension does not register pions_review", and "an unconfigured integration does not register the formal review tool".
+Expected: tests pass, including "the delegation-only extension registers exactly the three delegation tools", "the delegation-only extension does not register pions_review", and the configuration tests that reject the former `review` block and unknown keys.
 
 ### Manual inspection (if Herdr available)
 
@@ -46,13 +37,3 @@ Use the dedicated `verify-pions` Herdr session on the Grok Bot box only — neve
 - Only `pions_delegate`, `pions_result`, and `pions_operation` are registered
 - Formal-review tools are absent
 - `.pions.json` cannot enable formal review
-
-## Gotchas
-
-### Integration boundary
-
-Trusted host code that still uses the `pions/formal-review` entry point gets the formal-review tools registered by that integration, not by the project extension. This path is outside the delegation contract and will be removed.
-
-### Old feature description
-
-Earlier versions of this feature described the tools as "registered but fail closed". That is no longer true for the project extension; the tools are not registered at all.
