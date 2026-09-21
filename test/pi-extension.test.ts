@@ -1761,22 +1761,17 @@ test("delegation resolves the default Worker extension from the Pions distributi
 });
 
 test("delegation reports the absolute path of a missing Worker extension before runtime creation", async (context) => {
-  const repository = await mkdtemp(
-    join(tmpdir(), "pions-external-repository-")
-  );
   const harness = await fixture(new FakeRuntime(), {
-    repositoryRoot: repository,
     extensionEntryPath: "missing-worker-extension.js",
     runtimeFactory: () => {
       throw new Error("runtime was created");
     },
   });
   context.after(() => rm(harness.root, { recursive: true, force: true }));
-  context.after(() => rm(repository, { recursive: true, force: true }));
 
   await assert.rejects(
     harness.execute(),
-    new RegExp(join(repository, "missing-worker-extension\\.js"))
+    new RegExp(join(harness.root, "missing-worker-extension\\.js"))
   );
 });
 
@@ -1801,22 +1796,17 @@ test("delegation preserves an explicit Worker extension entry", async (context) 
 });
 
 test("delegation validates a relative Worker extension from the Worker cwd", async (context) => {
-  const repository = await mkdtemp(
-    join(tmpdir(), "pions-external-repository-")
-  );
-  await writeFile(join(repository, "worker-extension.js"), "");
   let extensionEntryPath: string | undefined;
   const runtime = new FakeRuntime();
   const harness = await fixture(runtime, {
-    repositoryRoot: repository,
     extensionEntryPath: "worker-extension.js",
     runtimeFactory: (options) => {
       extensionEntryPath = options.extensionEntryPath;
       return runtime;
     },
   });
+  await writeFile(join(harness.root, "worker-extension.js"), "");
   context.after(() => rm(harness.root, { recursive: true, force: true }));
-  context.after(() => rm(repository, { recursive: true, force: true }));
   await harness.execute();
 
   assert.equal(extensionEntryPath, "worker-extension.js");
