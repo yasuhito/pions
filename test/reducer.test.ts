@@ -99,7 +99,8 @@ function runningEvents(): ReadonlyArray<OperationEvent> {
     event(2, {
       type: "presentation_owned",
       presentation: {
-        kind: "herdr_pane",
+        kind: "herdr_workspace",
+        workspaceId: "workspace-1",
         paneId: "pane-1",
         ownedByPions: true,
       },
@@ -526,5 +527,99 @@ test("reducer keeps a terminal Operation immutable", () => {
     (error) =>
       error instanceof TransitionError &&
       error.code === "terminal_state_immutable"
+  );
+});
+
+function cancelledOperation(withConfirmedStop: boolean): Operation {
+  const cancelling = reduceOperation(
+    runningOperation(),
+    event(5, { type: "cancellation_requested", cancellationEpoch: 1 })
+  );
+  const acknowledged = withConfirmedStop
+    ? reduceOperation(
+        cancelling,
+        event(6, {
+          type: "cancel_acknowledged",
+          cancellationEpoch: 1,
+          proof: "worker-stop",
+        })
+      )
+    : cancelling;
+  return reduceOperation(
+    acknowledged,
+    event(withConfirmedStop ? 7 : 6, {
+      type: "operation_cancelled",
+      cancellationEpoch: 1,
+    })
+  );
+}
+
+test("a stop-confirmed cancellation admits workspace cleanup", () => {
+  const cleanup = reduceOperation(
+    cancelledOperation(true),
+    event(8, {
+      type: "presentation_cleanup_started",
+      cleanupId: "cleanup-1",
+      workspaceId: "workspace-1",
+    })
+  );
+
+  assert.equal(cleanup.presentationCleanup?.state, "pending");
+});
+
+test("a cancellation without a confirmed stop refuses workspace cleanup", () => {
+  assert.throws(
+    () =>
+      reduceOperation(
+        cancelledOperation(false),
+        event(7, {
+          type: "presentation_cleanup_started",
+          cleanupId: "cleanup-1",
+          workspaceId: "workspace-1",
+        })
+      ),
+    TransitionError
+  );
+});
+
+test("a failed Operation refuses workspace cleanup", () => {
+  const failed = reduceOperation(
+    reduceOperation(
+      runningOperation(),
+      event(5, {
+        type: "self_settled",
+        outcome: "failed",
+        reason: "worker_start_failed",
+      })
+    ),
+    event(6, { type: "operation_failed", reason: "worker_start_failed" })
+  );
+
+  assert.throws(
+    () =>
+      reduceOperation(
+        failed,
+        event(7, {
+          type: "presentation_cleanup_started",
+          cleanupId: "cleanup-1",
+          workspaceId: "workspace-1",
+        })
+      ),
+    TransitionError
+  );
+});
+
+test("workspace cleanup refuses a workspace Pions does not own", () => {
+  assert.throws(
+    () =>
+      reduceOperation(
+        cancelledOperation(true),
+        event(8, {
+          type: "presentation_cleanup_started",
+          cleanupId: "cleanup-1",
+          workspaceId: "someone-elses-workspace",
+        })
+      ),
+    TransitionError
   );
 });

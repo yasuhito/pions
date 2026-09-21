@@ -39,8 +39,8 @@ const timestamps = Array.from(
 
 function fixture(
   options: {
-    readonly paneClosureFails?: boolean;
-    readonly paneInspection?: "matching" | "missing" | "unavailable";
+    readonly workspaceClosureFails?: boolean;
+    readonly workspaceInspection?: "matching" | "missing" | "unavailable";
     readonly authenticator?: {
       authenticate(credential: string): Promise<{
         readonly subjectId: string;
@@ -54,12 +54,12 @@ function fixture(
   const clock = new FakeClock(timestamps);
   const store = new InMemoryEventStore([], clock);
   const presentation = new FakePresentation({
-    ...(options.paneClosureFails === undefined
+    ...(options.workspaceClosureFails === undefined
       ? {}
-      : { paneClosureFails: options.paneClosureFails }),
-    ...(options.paneInspection === undefined
+      : { workspaceClosureFails: options.workspaceClosureFails }),
+    ...(options.workspaceInspection === undefined
       ? {}
-      : { paneInspection: options.paneInspection }),
+      : { workspaceInspection: options.workspaceInspection }),
   });
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
@@ -141,7 +141,12 @@ async function recordWaitingOperation(
   await Effect.runPromise(
     store.advance(operationId, {
       type: "presentation_owned",
-      presentation: { kind: "herdr_pane", paneId: "pane", ownedByPions: true },
+      presentation: {
+        kind: "herdr_workspace",
+        workspaceId: "workspace",
+        paneId: "pane",
+        ownedByPions: true,
+      },
     })
   );
   await Effect.runPromise(
@@ -397,7 +402,7 @@ test("Operation snapshot retrieves completed Presentation cleanup evidence", asy
 });
 
 test("Operation snapshot retrieves cleanup diagnostics independently", async () => {
-  const { runtime } = fixture({ paneClosureFails: true });
+  const { runtime } = fixture({ workspaceClosureFails: true });
   const handle = await runtime.spawn({
     promptRef: "private://prompt/1",
     profile: "coding",
@@ -406,12 +411,12 @@ test("Operation snapshot retrieves cleanup diagnostics independently", async () 
   await handle.result();
 
   assert.deepEqual((await handle.read()).cleanupDiagnostics, [
-    { code: "pane_close_failed" },
+    { code: "workspace_close_failed" },
   ]);
 });
 
-test("a missing pane identity is retained as an unconfirmed cleanup", async () => {
-  const { runtime } = fixture({ paneInspection: "missing" });
+test("a missing workspace identity is retained as an unconfirmed cleanup", async () => {
+  const { runtime } = fixture({ workspaceInspection: "missing" });
   const handle = await runtime.spawn({
     promptRef: "private://prompt/1",
     profile: "coding",
@@ -422,8 +427,8 @@ test("a missing pane identity is retained as an unconfirmed cleanup", async () =
   assert.equal((await handle.read()).presentationCleanup?.state, "unconfirmed");
 });
 
-test("an unavailable pane identity is reported independently from Result acceptance", async () => {
-  const { runtime } = fixture({ paneInspection: "unavailable" });
+test("an unavailable workspace identity is reported independently from Result acceptance", async () => {
+  const { runtime } = fixture({ workspaceInspection: "unavailable" });
   const handle = await runtime.spawn({
     promptRef: "private://prompt/1",
     profile: "coding",
@@ -432,7 +437,7 @@ test("an unavailable pane identity is reported independently from Result accepta
   await handle.result();
 
   assert.deepEqual((await handle.read()).cleanupDiagnostics, [
-    { code: "pane_identity_unavailable" },
+    { code: "workspace_identity_unavailable" },
   ]);
 });
 
@@ -1177,11 +1182,11 @@ test("Result reads do not repeat Presentation cleanup", async () => {
     idempotencyKey: "task-1",
   });
   await handle.result();
-  const before = presentation.closedPaneIds.length;
+  const before = presentation.closedWorkspaceIds.length;
   await handle.readResult();
   await handle.readResultChunk({ maxBytes: 4 });
 
-  assert.equal(presentation.closedPaneIds.length, before);
+  assert.equal(presentation.closedWorkspaceIds.length, before);
 });
 
 test("complete Result retrieval does not add retention pins", async (context) => {

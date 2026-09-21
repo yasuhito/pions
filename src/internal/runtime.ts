@@ -3,7 +3,10 @@ import { isDeepStrictEqual } from "node:util";
 
 import { Cause, Effect, Exit, Schema } from "effect";
 
-import { RUNTIME_ACTOR_ID } from "./event-store/index.js";
+import {
+  presentationCleanupEligible,
+  RUNTIME_ACTOR_ID,
+} from "./event-store/index.js";
 import type {
   Operation,
   OperationIntent,
@@ -392,7 +395,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         : {
             presentationCleanup: Object.freeze({
               cleanupId: operation.presentationCleanup.cleanupId,
-              paneId: operation.presentationCleanup.paneId,
+              workspaceId: operation.presentationCleanup.workspaceId,
               state: operation.presentationCleanup.state,
               startedAt: operation.presentationCleanup.startedAt,
               ...(operation.presentationCleanup.finishedAt === undefined
@@ -686,14 +689,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     directResponseAvailable: boolean
   ): Promise<void> => {
     if (
-      initial.state !== "completed" ||
-      initial.result === undefined ||
-      initial.workerStopConfirmedAt === undefined ||
+      !presentationCleanupEligible(initial) ||
       initial.presentation === undefined
     )
       return;
 
-    const paneId = initial.presentation.paneId;
+    const workspaceId = initial.presentation.workspaceId;
     let operation = initial;
     let cleanup = operation.presentationCleanup;
     if (cleanup === undefined) {
@@ -703,7 +704,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           advanceOperation(operation.operationId, {
             type: "presentation_cleanup_started",
             cleanupId,
-            paneId,
+            workspaceId,
           })
         );
         cleanup = operation.presentationCleanup;
@@ -727,7 +728,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           advanceOperation(operation.operationId, {
             type: "presentation_cleanup_unconfirmed",
             cleanupId: cleanup.cleanupId,
-            paneId: cleanup.paneId,
+            workspaceId: cleanup.workspaceId,
             reason: code,
           })
         );
@@ -745,21 +746,21 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     let identity: "matching" | "missing";
     try {
       identity = await runEffect(
-        services.presentation.inspectOwnedPane(operation)
+        services.presentation.inspectOwnedWorkspace(operation)
       );
     } catch {
-      await finishUnconfirmed("pane_identity_unavailable");
+      await finishUnconfirmed("workspace_identity_unavailable");
       return;
     }
     if (identity === "missing") {
-      await finishUnconfirmed("pane_identity_missing");
+      await finishUnconfirmed("workspace_identity_missing");
       return;
     }
 
     try {
-      await runEffect(services.presentation.closeOwnedPane(operation));
+      await runEffect(services.presentation.closeOwnedWorkspace(operation));
     } catch {
-      await finishUnconfirmed("pane_close_failed");
+      await finishUnconfirmed("workspace_close_failed");
       return;
     }
     try {
@@ -767,7 +768,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         advanceOperation(operation.operationId, {
           type: "presentation_cleanup_completed",
           cleanupId: cleanup.cleanupId,
-          paneId: cleanup.paneId,
+          workspaceId: cleanup.workspaceId,
         })
       );
     } catch {
@@ -822,6 +823,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         })
       );
     } else if (operation.state === "cancelled") {
+      await performPresentationCleanup(operation, false);
       record.rejectTerminal(new OperationCancelledError(record.operationId));
     } else if (operation.state === "unknown") {
       record.rejectTerminal(

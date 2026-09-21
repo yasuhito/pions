@@ -58,7 +58,7 @@ export interface OperationLineage {
 
 export interface PresentationCleanupRecord {
   readonly cleanupId: string;
-  readonly paneId: string;
+  readonly workspaceId: string;
   readonly state: "pending" | "completed" | "unconfirmed";
   readonly startedAt: string;
   readonly finishedAt?: string;

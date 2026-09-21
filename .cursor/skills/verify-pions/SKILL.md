@@ -7,7 +7,7 @@ description: Verify Pions (durable Pi worker runtime and extension) by launching
 
 This skill helps a cold agent verify Pions, a durable Pi worker runtime and extension for delegating tasks to visible, persistent operations.
 
-**What Pions is:** TypeScript ESM library + Pi coding-agent extension that installs delegation tools (`pions_delegate`, `pions_result`, `pions_operation`) in trusted projects. Workers run as real Pi CLI sessions in Herdr panes. Lifecycle truth comes from persisted Operation/Result protocol, not UI state.
+**What Pions is:** TypeScript ESM library + Pi coding-agent extension that installs delegation tools (`pions_delegate`, `pions_result`, `pions_operation`) in trusted projects. Workers run as real Pi CLI sessions, each in its own Herdr workspace labelled `Pions <short operation id>`. Lifecycle truth comes from persisted Operation/Result protocol, not UI state.
 
 **When to use this skill:** When you need to verify changes to Pions, run smoke tests, or prove that the project builds and passes automated checks.
 
@@ -70,7 +70,7 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 
 ### Herdr and Pi (REQUIRED for user-path verification)
 
-**CRITICAL**: Pions workers require Herdr to create visible Pi TUI panes. The primary user path — live delegation via `pions_delegate` — cannot be verified without Herdr and Pi.
+**CRITICAL**: Pions workers require Herdr to create visible Pi TUI workspaces. The primary user path — live delegation via `pions_delegate` — cannot be verified without Herdr and Pi.
 
 1. **Check if Herdr is available**:
 

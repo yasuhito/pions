@@ -199,7 +199,12 @@ function operation(
   return {
     operationId,
     lineage: { rootOperationId: operationId, depth: 0 },
-    presentation: { kind: "herdr_pane", paneId, ownedByPions: true },
+    presentation: {
+      kind: "herdr_workspace",
+      workspaceId: `${paneId}:workspace`,
+      paneId,
+      ownedByPions: true,
+    },
     state: "starting",
     stateSeq: 3,
     workerLaunched: false,

@@ -9,6 +9,7 @@ import type {
 } from "../src/internal/event-store/index.js";
 import {
   HerdrPresentation,
+  workerWorkspaceLabel,
   type CommandExecutor,
   type CommandInvocation,
 } from "../src/internal/herdr-presentation.js";
@@ -72,10 +73,31 @@ const herdrEnvironment = {
   HERDR_PANE_ID: "existing-caller-pane",
 };
 
-function operation(paneId?: string): Operation {
+const OPERATION_ID = "0f6b1d2c-6a3e-4b1f-9d0e-5f2a7c8b9e41";
+
+const workspaceCreated = {
+  stdout: JSON.stringify({
+    result: {
+      type: "workspace_created",
+      workspace: {
+        workspace_id: "w7",
+        label: "Pions 0f6b1d2c",
+        focused: false,
+      },
+      tab: { tab_id: "w7:t1" },
+      root_pane: { pane_id: "w7:p1", focused: false },
+    },
+  }),
+};
+
+const ok = { stdout: JSON.stringify({ result: { type: "ok" } }) };
+
+function operation(
+  ownership?: Readonly<{ workspaceId: string; paneId: string }>
+): Operation {
   return {
-    operationId: "operation-1",
-    lineage: { rootOperationId: "operation-1", depth: 0 },
+    operationId: OPERATION_ID,
+    lineage: { rootOperationId: OPERATION_ID, depth: 0 },
     state: "running",
     stateSeq: 3,
     workerLaunched: true,
@@ -87,7 +109,7 @@ function operation(paneId?: string): Operation {
     requestedConfig,
     effectiveConfig,
     workProductRequirements,
-    resultRetentionPolicy: retentionPolicy("operation-1"),
+    resultRetentionPolicy: retentionPolicy(OPERATION_ID),
     startAuthorizationTiming: {
       createdAt: "2026-09-06T10:00:00.000Z",
       windowMs: 0,
@@ -104,17 +126,20 @@ function operation(paneId?: string): Operation {
     descendantFailure: false,
     spawnFrozen: false,
     cancellationEpoch: 0,
-    ...(paneId === undefined
+    ...(ownership === undefined
       ? {}
       : {
           presentation: {
-            kind: "herdr_pane" as const,
-            paneId,
+            kind: "herdr_workspace" as const,
+            workspaceId: ownership.workspaceId,
+            paneId: ownership.paneId,
             ownedByPions: true as const,
           },
         }),
   };
 }
+
+const owned = { workspaceId: "w7", paneId: "w7:p1" };
 
 function presentation(
   executor: CommandExecutor,
@@ -144,27 +169,24 @@ test("Herdr preflight does not invoke a command", async () => {
   assert.equal(executor.invocations.length, 0);
 });
 
-test("pane creation uses shell-free argv, explicit cwd, and no focus", async () => {
-  const executor = new FakeCommandExecutor([
-    {
-      stdout: JSON.stringify({
-        result: { pane: { pane_id: "opaque:new-pane" } },
-      }),
-    },
-  ]);
+test("the Worker workspace label is a short Operation identifier", () => {
+  assert.equal(workerWorkspaceLabel(OPERATION_ID), "Pions 0f6b1d2c");
+});
+
+test("workspace creation uses shell-free argv, explicit cwd, the label, and no focus", async () => {
+  const executor = new FakeCommandExecutor([workspaceCreated]);
   await Effect.runPromise(presentation(executor).create(operation()));
 
   assert.deepEqual(executor.invocations, [
     {
       executable: "herdr",
       args: [
-        "pane",
-        "split",
-        "--current",
-        "--direction",
-        "right",
+        "workspace",
+        "create",
         "--cwd",
         "/work/project",
+        "--label",
+        "Pions 0f6b1d2c",
         "--no-focus",
       ],
       cwd: "/work/project",
@@ -173,14 +195,18 @@ test("pane creation uses shell-free argv, explicit cwd, and no focus", async () 
   ]);
 });
 
-test("pane creation never targets existing or Qoral identifiers", async () => {
-  const executor = new FakeCommandExecutor([
-    {
-      stdout: JSON.stringify({
-        result: { pane: { pane_id: "opaque:new-pane" } },
-      }),
-    },
-  ]);
+test("workspace creation never splits a pane or creates a tab", async () => {
+  const executor = new FakeCommandExecutor([workspaceCreated]);
+  await Effect.runPromise(presentation(executor).create(operation()));
+
+  assert.deepEqual(
+    executor.invocations.map(({ args }) => args.slice(0, 2)),
+    [["workspace", "create"]]
+  );
+});
+
+test("workspace creation never targets existing or Qoral identifiers", async () => {
+  const executor = new FakeCommandExecutor([workspaceCreated]);
   const adapter = new HerdrPresentation({
     cwd: "/work/project",
     environment: { ...herdrEnvironment, QORAL_PANE_ID: "qoral-pane" },
@@ -203,54 +229,65 @@ test("pane creation never targets existing or Qoral identifiers", async () => {
   );
 });
 
-test("pane creation splits below when the available area is portrait", async () => {
-  const executor = new FakeCommandExecutor([
-    {
-      stdout: JSON.stringify({
-        result: { pane: { pane_id: "opaque:new-pane" } },
-      }),
-    },
-  ]);
-  const adapter = new HerdrPresentation({
-    cwd: "/work/project",
-    environment: herdrEnvironment,
-    executor,
-    terminalSize: { columns: 80, rows: 120 },
-  });
-  await Effect.runPromise(adapter.create(operation()));
+test("the workspace label excludes the private prompt reference", async () => {
+  const executor = new FakeCommandExecutor([workspaceCreated]);
+  await Effect.runPromise(presentation(executor).create(operation()));
 
-  assert.equal(executor.invocations[0]?.args[4], "down");
+  assert.equal(
+    JSON.stringify(executor.invocations).includes("private://prompt/1"),
+    false
+  );
 });
 
-test("pane creation returns only the opaque identifier from Herdr", async () => {
-  const executor = new FakeCommandExecutor([
-    {
-      stdout: JSON.stringify({
-        result: { pane: { pane_id: "opaque:new-pane", focused: false } },
-      }),
-    },
-  ]);
+test("workspace creation returns the opaque workspace and root pane identifiers", async () => {
+  const executor = new FakeCommandExecutor([workspaceCreated]);
 
   assert.deepEqual(
     await Effect.runPromise(presentation(executor).create(operation())),
-    { kind: "herdr_pane", paneId: "opaque:new-pane" }
+    { kind: "herdr_workspace", workspaceId: "w7", paneId: "w7:p1" }
   );
 });
 
-test("projection targets the persisted Pions-owned pane", async () => {
+test("workspace creation rejects a response without a workspace identifier", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: {} }) },
+    {
+      stdout: JSON.stringify({
+        result: { root_pane: { pane_id: "w7:p1" } },
+      }),
+    },
   ]);
-  await Effect.runPromise(
-    presentation(executor).project(operation("opaque:new-pane"))
+
+  await assert.rejects(
+    Effect.runPromise(presentation(executor).create(operation())),
+    /no opaque workspace identifier/u
   );
+});
+
+test("workspace creation rejects a response without a root pane identifier", async () => {
+  const executor = new FakeCommandExecutor([
+    {
+      stdout: JSON.stringify({
+        result: { workspace: { workspace_id: "w7" } },
+      }),
+    },
+  ]);
+
+  await assert.rejects(
+    Effect.runPromise(presentation(executor).create(operation())),
+    /no opaque root pane identifier/u
+  );
+});
+
+test("projection targets the root pane of the persisted Pions-owned workspace", async () => {
+  const executor = new FakeCommandExecutor([ok]);
+  await Effect.runPromise(presentation(executor).project(operation(owned)));
 
   assert.deepEqual(executor.invocations[0]?.args, [
     "pane",
     "report-metadata",
     "--source",
     "pions",
-    "opaque:new-pane",
+    "w7:p1",
     "--state-label",
     "working=running",
     "--display-agent",
@@ -261,12 +298,8 @@ test("projection targets the persisted Pions-owned pane", async () => {
 });
 
 test("configuration projection excludes the private prompt reference", async () => {
-  const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: {} }) },
-  ]);
-  await Effect.runPromise(
-    presentation(executor).project(operation("opaque:new-pane"))
-  );
+  const executor = new FakeCommandExecutor([ok]);
+  await Effect.runPromise(presentation(executor).project(operation(owned)));
 
   assert.equal(
     JSON.stringify(executor.invocations).includes("private://prompt/1"),
@@ -275,11 +308,9 @@ test("configuration projection excludes the private prompt reference", async () 
 });
 
 test("configuration projection is size-limited", async () => {
-  const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: {} }) },
-  ]);
+  const executor = new FakeCommandExecutor([ok]);
   const current: Operation = {
-    ...operation("opaque:new-pane"),
+    ...operation(owned),
     effectiveConfig: {
       ...effectiveConfig,
       cwd: `/${"長".repeat(600)}`,
@@ -293,7 +324,7 @@ test("configuration projection is size-limited", async () => {
   assert.equal(Buffer.byteLength(projected, "utf8") <= 512, true);
 });
 
-test("investigation-worthy and phase-one terminal states retain their owned panes", async () => {
+test("projection of any terminal state never closes the owned workspace", async () => {
   const retainedStates: ReadonlyArray<Operation["state"]> = [
     "blocked",
     "failed",
@@ -301,14 +332,10 @@ test("investigation-worthy and phase-one terminal states retain their owned pane
     "unknown",
     "completed",
   ];
-  const executor = new FakeCommandExecutor(
-    retainedStates.map(() => ({ stdout: JSON.stringify({ result: {} }) }))
-  );
+  const executor = new FakeCommandExecutor(retainedStates.map(() => ok));
   const adapter = presentation(executor);
   for (const state of retainedStates) {
-    await Effect.runPromise(
-      adapter.project({ ...operation("opaque:new-pane"), state })
-    );
+    await Effect.runPromise(adapter.project({ ...operation(owned), state }));
   }
 
   assert.equal(
@@ -317,98 +344,155 @@ test("investigation-worthy and phase-one terminal states retain their owned pane
   );
 });
 
-test("projection without durable ownership does not target a pane", async () => {
+test("projection without durable ownership does not target Herdr", async () => {
   const executor = new FakeCommandExecutor([]);
   await Effect.runPromise(presentation(executor).project(operation()));
 
   assert.equal(executor.invocations.length, 0);
 });
 
-test("rollback targets exactly the newly-created pane", async () => {
-  const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: {} }) },
-  ]);
+test("rollback closes exactly the newly-created workspace", async () => {
+  const executor = new FakeCommandExecutor([ok]);
   const adapter = presentation(executor);
   await Effect.runPromise(
-    adapter.rollbackCreated({ kind: "herdr_pane", paneId: "opaque:new-pane" })
+    adapter.rollbackCreated({
+      kind: "herdr_workspace",
+      workspaceId: "w7",
+      paneId: "w7:p1",
+    })
   );
 
-  assert.deepEqual(executor.invocations[0]?.args, [
-    "pane",
-    "close",
-    "opaque:new-pane",
-  ]);
+  assert.deepEqual(executor.invocations[0]?.args, ["workspace", "close", "w7"]);
 });
 
-test("owned pane inspection matches the persisted opaque identity", async () => {
+test("owned workspace inspection matches the persisted opaque identity", async () => {
   const executor = new FakeCommandExecutor([
     {
       stdout: JSON.stringify({
-        result: { panes: [{ pane_id: "opaque:owned-pane" }] },
+        result: {
+          workspaces: [{ workspace_id: "w1" }, { workspace_id: "w7" }],
+        },
       }),
     },
   ]);
 
   assert.equal(
     await Effect.runPromise(
-      presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))
+      presentation(executor).inspectOwnedWorkspace(operation(owned))
     ),
     "matching"
   );
 });
 
-test("owned pane inspection uses a read-only pane listing", async () => {
+test("owned workspace inspection uses a read-only workspace listing", async () => {
   const executor = new FakeCommandExecutor([
     {
       stdout: JSON.stringify({
-        result: { panes: [{ pane_id: "opaque:owned-pane" }] },
+        result: { workspaces: [{ workspace_id: "w7" }] },
       }),
     },
   ]);
   await Effect.runPromise(
-    presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))
+    presentation(executor).inspectOwnedWorkspace(operation(owned))
   );
 
-  assert.deepEqual(executor.invocations[0]?.args, ["pane", "list"]);
+  assert.deepEqual(executor.invocations[0]?.args, ["workspace", "list"]);
 });
 
-test("owned pane inspection reports a missing persisted identity", async () => {
+test("owned workspace inspection reports a missing persisted identity", async () => {
   const executor = new FakeCommandExecutor([
     {
       stdout: JSON.stringify({
-        result: { panes: [{ pane_id: "opaque:other-pane" }] },
+        result: { workspaces: [{ workspace_id: "w8" }] },
       }),
     },
   ]);
 
   assert.equal(
     await Effect.runPromise(
-      presentation(executor).inspectOwnedPane(operation("opaque:owned-pane"))
+      presentation(executor).inspectOwnedWorkspace(operation(owned))
     ),
     "missing"
   );
 });
 
-test("successful cleanup targets exactly the persistently owned pane", async () => {
+test("owned workspace inspection does not match on the root pane identifier", async () => {
   const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: {} }) },
+    {
+      stdout: JSON.stringify({
+        result: { workspaces: [{ workspace_id: "w7:p1" }] },
+      }),
+    },
   ]);
-  await Effect.runPromise(
-    presentation(executor).closeOwnedPane(operation("opaque:owned-pane"))
-  );
 
-  assert.deepEqual(executor.invocations[0]?.args, [
-    "pane",
-    "close",
-    "opaque:owned-pane",
-  ]);
+  assert.equal(
+    await Effect.runPromise(
+      presentation(executor).inspectOwnedWorkspace(operation(owned))
+    ),
+    "missing"
+  );
 });
 
-test("successful cleanup without durable ownership does not target a pane", async () => {
+test("owned workspace inspection fails on a malformed listing", async () => {
+  const executor = new FakeCommandExecutor([
+    { stdout: JSON.stringify({ result: { type: "workspace_list" } }) },
+  ]);
+
+  await assert.rejects(
+    Effect.runPromise(
+      presentation(executor).inspectOwnedWorkspace(operation(owned))
+    ),
+    /no workspace list/u
+  );
+});
+
+test("owned workspace inspection without durable ownership is missing", async () => {
   const executor = new FakeCommandExecutor([]);
-  await Effect.runPromise(presentation(executor).closeOwnedPane(operation()));
+
+  assert.equal(
+    await Effect.runPromise(
+      presentation(executor).inspectOwnedWorkspace(operation())
+    ),
+    "missing"
+  );
+});
+
+test("successful cleanup closes exactly the persistently owned workspace", async () => {
+  const executor = new FakeCommandExecutor([ok]);
+  await Effect.runPromise(
+    presentation(executor).closeOwnedWorkspace(operation(owned))
+  );
+
+  assert.deepEqual(executor.invocations[0]?.args, ["workspace", "close", "w7"]);
+});
+
+test("successful cleanup without durable ownership does not target Herdr", async () => {
+  const executor = new FakeCommandExecutor([]);
+  await Effect.runPromise(
+    presentation(executor).closeOwnedWorkspace(operation())
+  );
 
   assert.equal(executor.invocations.length, 0);
+});
+
+test("a Herdr error envelope on close is surfaced as a failure", async () => {
+  const executor = new FakeCommandExecutor([
+    {
+      stdout: JSON.stringify({
+        error: {
+          code: "workspace_not_found",
+          message: "workspace w7 not found",
+        },
+      }),
+    },
+  ]);
+
+  await assert.rejects(
+    Effect.runPromise(
+      presentation(executor).closeOwnedWorkspace(operation(owned))
+    ),
+    /workspace w7 not found/u
+  );
 });
 
 test("Runtime exposes a typed Herdr precondition violation", async () => {
@@ -460,15 +544,8 @@ test("Runtime rejects missing Herdr before creating any resource", async () => {
   );
 });
 
-test("failed ownership persistence rolls back exactly the created pane", async () => {
-  const executor = new FakeCommandExecutor([
-    {
-      stdout: JSON.stringify({
-        result: { pane: { pane_id: "opaque:new-pane" } },
-      }),
-    },
-    { stdout: JSON.stringify({ result: {} }) },
-  ]);
+test("failed ownership persistence rolls back exactly the created workspace", async () => {
+  const executor = new FakeCommandExecutor([workspaceCreated, ok]);
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
     clock: new FakeClock(["2026-09-06T10:00:00.000Z"]),
@@ -486,50 +563,36 @@ test("failed ownership persistence rolls back exactly the created pane", async (
     .catch(() => undefined);
 
   assert.deepEqual(executor.invocations.at(-1)?.args, [
-    "pane",
+    "workspace",
     "close",
-    "opaque:new-pane",
+    "w7",
   ]);
 });
 
-test("the default Worker-start failure policy retains the owned pane", async () => {
+test("the default Worker-start failure policy retains the owned workspace", async () => {
   const executor = new FakeCommandExecutor([]);
   await Effect.runPromise(
-    presentation(executor).onWorkerStartFailure(operation("opaque:new-pane"))
+    presentation(executor).onWorkerStartFailure(operation(owned))
   );
 
   assert.equal(executor.invocations.length, 0);
 });
 
-test("configured Worker-start rollback closes exactly the owned pane", async () => {
-  const executor = new FakeCommandExecutor([
-    { stdout: JSON.stringify({ result: {} }) },
-  ]);
+test("configured Worker-start rollback closes exactly the owned workspace", async () => {
+  const executor = new FakeCommandExecutor([ok]);
   const adapter = new HerdrPresentation({
     cwd: "/work/project",
     environment: herdrEnvironment,
     executor,
     retainOnWorkerStartFailure: false,
   });
-  await Effect.runPromise(
-    adapter.onWorkerStartFailure(operation("opaque:new-pane"))
-  );
+  await Effect.runPromise(adapter.onWorkerStartFailure(operation(owned)));
 
-  assert.deepEqual(executor.invocations[0]?.args, [
-    "pane",
-    "close",
-    "opaque:new-pane",
-  ]);
+  assert.deepEqual(executor.invocations[0]?.args, ["workspace", "close", "w7"]);
 });
 
 test("a Herdr projection failure cannot create Operation completion", async () => {
-  const executor = new FakeCommandExecutor([
-    {
-      stdout: JSON.stringify({
-        result: { pane: { pane_id: "opaque:new-pane" } },
-      }),
-    },
-  ]);
+  const executor = new FakeCommandExecutor([workspaceCreated]);
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({
@@ -560,19 +623,15 @@ test("a Herdr projection failure cannot create Operation completion", async () =
   );
 });
 
-test("Runtime persists ownership returned by Herdr", async () => {
+test("Runtime persists workspace ownership returned by Herdr", async () => {
   const executor = new FakeCommandExecutor([
-    {
-      stdout: JSON.stringify({
-        result: { pane: { pane_id: "opaque:new-pane" } },
-      }),
-    },
-    { stdout: JSON.stringify({ result: {} }) },
-    { stdout: JSON.stringify({ result: {} }) },
-    { stdout: JSON.stringify({ result: {} }) },
-    { stdout: JSON.stringify({ result: {} }) },
-    { stdout: JSON.stringify({ result: {} }) },
-    { stdout: JSON.stringify({ result: {} }) },
+    workspaceCreated,
+    ok,
+    ok,
+    ok,
+    ok,
+    ok,
+    ok,
   ]);
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
@@ -598,8 +657,9 @@ test("Runtime persists ownership returned by Herdr", async () => {
   assert.deepEqual(
     (await Effect.runPromise(store.read("operation-1"))).operation.presentation,
     {
-      kind: "herdr_pane",
-      paneId: "opaque:new-pane",
+      kind: "herdr_workspace",
+      workspaceId: "w7",
+      paneId: "w7:p1",
       ownedByPions: true,
     }
   );

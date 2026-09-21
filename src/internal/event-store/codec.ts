@@ -70,14 +70,15 @@ const RevisionMembership = Schema.Struct({
   attemptNumber: NonNegativeSafeInteger,
 });
 const Presentation = Schema.Struct({
-  kind: Schema.Literal("herdr_pane"),
-  paneId: Schema.String,
+  kind: Schema.Literal("herdr_workspace"),
+  workspaceId: Schema.NonEmptyString,
+  paneId: Schema.NonEmptyString,
   ownedByPions: Schema.Literal(true),
 });
 const CleanupDiagnosticCode = Schema.Literal(
-  "pane_close_failed",
-  "pane_identity_missing",
-  "pane_identity_unavailable",
+  "workspace_close_failed",
+  "workspace_identity_missing",
+  "workspace_identity_unavailable",
   "cleanup_record_unavailable"
 );
 const WorkerIdentity = Schema.Struct({
@@ -721,19 +722,19 @@ const OperationEventSchema = Schema.Union(
     ...EventMetadataFields,
     type: Schema.Literal("presentation_cleanup_started"),
     cleanupId: Schema.NonEmptyString,
-    paneId: Schema.NonEmptyString,
+    workspaceId: Schema.NonEmptyString,
   }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("presentation_cleanup_completed"),
     cleanupId: Schema.NonEmptyString,
-    paneId: Schema.NonEmptyString,
+    workspaceId: Schema.NonEmptyString,
   }),
   Schema.Struct({
     ...EventMetadataFields,
     type: Schema.Literal("presentation_cleanup_unconfirmed"),
     cleanupId: Schema.NonEmptyString,
-    paneId: Schema.NonEmptyString,
+    workspaceId: Schema.NonEmptyString,
     reason: CleanupDiagnosticCode,
   }),
   Schema.Struct({

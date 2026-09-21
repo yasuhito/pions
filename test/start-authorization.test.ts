@@ -792,7 +792,7 @@ test("a formal review Operation requires an operation-specific Review subject", 
     })
     .catch(() => undefined);
 
-  assert.equal(presentation.createdPaneIds.length, 0);
+  assert.equal(presentation.createdWorkspaceIds.length, 0);
 });
 
 test("a formal review Operation without a Review subject does not create a Worker", async (context) => {
@@ -808,7 +808,7 @@ test("a formal review Operation without a Review subject does not create a Worke
   assert.equal(worker.openCount, 0);
 });
 
-test("an incomplete formal reviewer profile does not create a Pane", async (context) => {
+test("an incomplete formal reviewer profile does not create a Workspace", async (context) => {
   const { runtime, artifactId, presentation } =
     await formalReviewAdmissionFixture(context, {
       reviewSubjectVerification: "disabled",
@@ -824,7 +824,7 @@ test("an incomplete formal reviewer profile does not create a Pane", async (cont
     )
     .catch(() => undefined);
 
-  assert.equal(presentation.createdPaneIds.length, 0);
+  assert.equal(presentation.createdWorkspaceIds.length, 0);
 });
 
 test("an incomplete formal reviewer profile does not create a Worker", async (context) => {
@@ -1204,7 +1204,7 @@ test("a deadline crossed during pre-begin checks keeps the Worker stopped", asyn
   );
 });
 
-test("an expired Start authorization retains its owned pane", async () => {
+test("an expired Start authorization retains its owned workspace", async () => {
   const { inbox, handle, presentation } = await fixture({
     beforeCurrentAuthorization: (callNumber, clock) => {
       if (callNumber === 3) clock.advanceBy(60_000);
@@ -1213,7 +1213,7 @@ test("an expired Start authorization retains its owned pane", async () => {
   await authorize(inbox);
   await handle.result().catch(() => undefined);
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+  assert.deepEqual(presentation.closedWorkspaceIds, []);
 });
 
 async function requiredAuthorizationRecovery(
@@ -1470,14 +1470,14 @@ test("authority loss during pre-begin revalidation invalidates the Operation", a
   );
 });
 
-test("an invalidated Start authorization retains its owned pane", async () => {
+test("an invalidated Start authorization retains its owned workspace", async () => {
   const { inbox, presentation } = await fixture({
     currentAuthority: (callNumber) =>
       callNumber < 4 ? "authorized" : "denied",
   });
   await authorize(inbox);
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+  assert.deepEqual(presentation.closedWorkspaceIds, []);
 });
 
 test("unproven stop after authorization invalidation retains the failure reason", async () => {
@@ -1509,7 +1509,7 @@ test("a rejected Start decision fails with the fixed reason after Worker stop", 
   assert.equal((await handle.read()).failureReason, "start_rejected");
 });
 
-test("a rejected Start decision retains its owned pane", async () => {
+test("a rejected Start decision retains its owned workspace", async () => {
   const { inbox, handle, presentation } = await fixture();
   const startupReceipt = await handle.waitForStartupReceipt();
   await inbox.decide({
@@ -1520,7 +1520,7 @@ test("a rejected Start decision retains its owned pane", async () => {
   });
   await handle.result().catch(() => undefined);
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+  assert.deepEqual(presentation.closedWorkspaceIds, []);
 });
 
 test("an unproven stop after rejection leaves the Operation unknown", async () => {

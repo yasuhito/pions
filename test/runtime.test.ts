@@ -41,7 +41,10 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import type { FakeWorkerAdapterOptions } from "../src/internal/testing.js";
+import type {
+  FakePresentationOptions,
+  FakeWorkerAdapterOptions,
+} from "../src/internal/testing.js";
 
 class InterruptedStartWorkerAdapter implements WorkerAdapter {
   recoveredDeliveryCount = 0;
@@ -825,14 +828,17 @@ async function spawnNested(
   );
 }
 
-function cancellableNestedRuntime(operationIds: ReadonlyArray<string>) {
+function cancellableNestedRuntime(
+  operationIds: ReadonlyArray<string>,
+  presentationOptions: FakePresentationOptions = {}
+) {
   const worker = new ControlledWorkerAdapter();
   const clock = new ControlledTestClock(
     Array.from({ length: 100 }, (_, index) => `cancel-time-${index}`)
   );
   const trace: Array<string> = [];
   const store = new InMemoryEventStore(trace);
-  const presentation = new FakePresentation();
+  const presentation = new FakePresentation(presentationOptions);
   const runtime = makeTestRuntime({
     worker,
     clock,
@@ -843,8 +849,13 @@ function cancellableNestedRuntime(operationIds: ReadonlyArray<string>) {
   return { clock, presentation, runtime, store, trace, worker };
 }
 
-async function spawnCancellationTree() {
-  const fixture = cancellableNestedRuntime(["root", "child", "grandchild"]);
+async function spawnCancellationTree(
+  presentationOptions: FakePresentationOptions = {}
+) {
+  const fixture = cancellableNestedRuntime(
+    ["root", "child", "grandchild"],
+    presentationOptions
+  );
   const root = await fixture.runtime.spawn({
     promptRef: "root",
     profile: "coding",
@@ -977,9 +988,11 @@ test("acknowledged subtree cancellation ends as cancelled", async () => {
   );
 });
 
-test("cancelled Operations retain their owned panes", async () => {
-  const { child, clock, grandchild, presentation, root, worker } =
-    await spawnCancellationTree();
+async function cancelTreeWithConfirmedStops(
+  presentationOptions: FakePresentationOptions = {}
+) {
+  const fixture = await spawnCancellationTree(presentationOptions);
+  const { child, clock, grandchild, root, worker } = fixture;
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
   worker.confirmWorkerStopped(grandchild.operationId);
@@ -987,8 +1000,77 @@ test("cancelled Operations retain their owned panes", async () => {
   worker.confirmWorkerStopped(root.operationId);
   await clock.advanceBy(1_000);
   await cancellation;
+  return fixture;
+}
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+test("stop-confirmed cancellations close their owned workspaces", async () => {
+  const { presentation } = await cancelTreeWithConfirmedStops();
+
+  assert.deepEqual(presentation.closedWorkspaceIds, [
+    "fake-workspace:grandchild",
+    "fake-workspace:child",
+    "fake-workspace:root",
+  ]);
+});
+
+test("a stop-confirmed cancellation records completed workspace cleanup", async () => {
+  const { root, store } = await cancelTreeWithConfirmedStops();
+
+  assert.equal(
+    (await storedOperation(store, root.operationId)).presentationCleanup?.state,
+    "completed"
+  );
+});
+
+test("cancellation cleanup follows stop confirmation and the cancelled state", async () => {
+  const { root, trace } = await cancelTreeWithConfirmedStops();
+
+  assert.deepEqual(
+    operationEvents(trace, root.operationId)
+      .slice(-4)
+      .map(({ type }) => type),
+    [
+      "cancel_acknowledged",
+      "operation_cancelled",
+      "presentation_cleanup_started",
+      "presentation_cleanup_completed",
+    ]
+  );
+});
+
+test("a cancelled Operation stays cancelled when its workspace cannot be closed", async () => {
+  const { root, store } = await cancelTreeWithConfirmedStops({
+    workspaceClosureFails: true,
+  });
+
+  assert.equal(
+    (await storedOperation(store, root.operationId)).state,
+    "cancelled"
+  );
+});
+
+test("a failed cancellation workspace close is recorded as a cleanup diagnostic", async () => {
+  const { root, store } = await cancelTreeWithConfirmedStops({
+    workspaceClosureFails: true,
+  });
+
+  assert.equal(
+    (await storedOperation(store, root.operationId)).presentationCleanup
+      ?.diagnostic,
+    "workspace_close_failed"
+  );
+});
+
+test("a cancelled Operation whose workspace identity is missing retains it as unconfirmed", async () => {
+  const { root, store } = await cancelTreeWithConfirmedStops({
+    workspaceInspection: "missing",
+  });
+
+  assert.equal(
+    (await storedOperation(store, root.operationId)).presentationCleanup
+      ?.diagnostic,
+    "workspace_identity_missing"
+  );
 });
 
 test("an unproven descendant makes subtree cancellation unknown", async () => {
@@ -1010,14 +1092,14 @@ test("an unproven descendant makes subtree cancellation unknown", async () => {
   );
 });
 
-test("unknown cancellations retain their owned panes", async () => {
+test("unknown cancellations retain their owned workspaces", async () => {
   const { clock, presentation, root } = await spawnCancellationTree();
   const cancellation = root.cancel({ scope: "subtree" });
   await waitForReceiver();
   await clock.advanceBy(1_000);
   await cancellation;
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+  assert.deepEqual(presentation.closedWorkspaceIds, []);
 });
 
 test("an acknowledged parent retains its evidence when a descendant is unproven", async () => {
@@ -1428,7 +1510,7 @@ test("a rejected model creates no identifier", async () => {
 test("a rejected model creates no Presentation resource", async () => {
   const { presentation } = await rejectedModelConfiguration();
 
-  assert.equal(presentation.createdPaneIds.length, 0);
+  assert.equal(presentation.createdWorkspaceIds.length, 0);
 });
 
 test("a rejected model creates no Worker resource", async () => {
@@ -1774,7 +1856,7 @@ test("Operation records Pi tool use at agent settlement", async () => {
   );
 });
 
-test("Operation records the worker's owned pane identity", async () => {
+test("Operation records the worker's owned workspace root pane identity", async () => {
   const { store } = await completeOperation();
 
   assert.equal(
@@ -1857,10 +1939,10 @@ test("Presentation failure cannot prevent terminal completion", async () => {
   );
 });
 
-test("completion without confirmed Worker stop retains its pane", async () => {
+test("completion without confirmed Worker stop retains its workspace", async () => {
   const { presentation } = await completeOperation();
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+  assert.deepEqual(presentation.closedWorkspaceIds, []);
 });
 
 class CleanupWriteFailingStore extends InMemoryEventStore {
@@ -1879,10 +1961,10 @@ class CleanupWriteFailingStore extends InMemoryEventStore {
   }
 }
 
-async function completeWithPaneClosureFailure(
+async function completeWithWorkspaceClosureFailure(
   store: InMemoryEventStore = new InMemoryEventStore()
 ) {
-  const presentation = new FakePresentation({ paneClosureFails: true });
+  const presentation = new FakePresentation({ workspaceClosureFails: true });
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
     clock: new FakeClock(
@@ -1950,8 +2032,8 @@ test("successful cleanup follows Result acceptance and Worker stop confirmation"
         "result_accepted",
         "worker_stop_confirmed",
         "presentation_cleanup_started",
-        "presentation:inspect-owned-pane",
-        "presentation:close-owned-pane",
+        "presentation:inspect-owned-workspace",
+        "presentation:close-owned-workspace",
         "presentation_cleanup_completed",
       ].includes(entry)
     );
@@ -1960,36 +2042,41 @@ test("successful cleanup follows Result acceptance and Worker stop confirmation"
     "result_accepted",
     "worker_stop_confirmed",
     "presentation_cleanup_started",
-    "presentation:inspect-owned-pane",
-    "presentation:close-owned-pane",
+    "presentation:inspect-owned-workspace",
+    "presentation:close-owned-workspace",
     "presentation_cleanup_completed",
   ]);
 });
 
-test("Runtime records failed successful-pane cleanup", async () => {
-  const { operation } = await completeWithPaneClosureFailure();
+test("Runtime records failed successful-workspace cleanup", async () => {
+  const { operation } = await completeWithWorkspaceClosureFailure();
 
-  assert.equal(operation.presentationCleanup?.diagnostic, "pane_close_failed");
+  assert.equal(
+    operation.presentationCleanup?.diagnostic,
+    "workspace_close_failed"
+  );
 });
 
-test("failed successful-pane cleanup cannot prevent terminal completion", async () => {
-  const { operation } = await completeWithPaneClosureFailure();
+test("failed successful-workspace cleanup cannot prevent terminal completion", async () => {
+  const { operation } = await completeWithWorkspaceClosureFailure();
 
   assert.equal(operation.state, "completed");
 });
 
-test("successful-worker cleanup targets only the Operation's persisted pane", async () => {
-  const { presentation } = await completeWithPaneClosureFailure();
+test("successful-worker cleanup targets only the Operation's persisted workspace", async () => {
+  const { presentation } = await completeWithWorkspaceClosureFailure();
 
-  assert.deepEqual(presentation.closedPaneIds, ["fake-pane:operation-1"]);
+  assert.deepEqual(presentation.closedWorkspaceIds, [
+    "fake-workspace:operation-1",
+  ]);
 });
 
-test("cleanup does not close a pane when its pending record cannot be saved", async () => {
-  const { presentation } = await completeWithPaneClosureFailure(
+test("cleanup does not close a workspace when its pending record cannot be saved", async () => {
+  const { presentation } = await completeWithWorkspaceClosureFailure(
     new CleanupWriteFailingStore("presentation_cleanup_started")
   );
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+  assert.deepEqual(presentation.closedWorkspaceIds, []);
 });
 
 test("a pending-record failure is returned as an independent cleanup diagnostic", async () => {
@@ -2023,7 +2110,7 @@ test("close and diagnostic persistence failures preserve both cleanup failures",
   const store = new CleanupWriteFailingStore(
     "presentation_cleanup_unconfirmed"
   );
-  const presentation = new FakePresentation({ paneClosureFails: true });
+  const presentation = new FakePresentation({ workspaceClosureFails: true });
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
     clock: new FakeClock(
@@ -2045,7 +2132,7 @@ test("close and diagnostic persistence failures preserve both cleanup failures",
 
   assert.deepEqual(
     completion.cleanupDiagnostics.map(({ code }) => code).sort(),
-    ["cleanup_record_unavailable", "pane_close_failed"]
+    ["cleanup_record_unavailable", "workspace_close_failed"]
   );
 });
 
@@ -2072,7 +2159,7 @@ async function recoverInterruptedCleanup() {
   await firstRuntime.close();
 
   const recoveredPresentation = new FakePresentation({
-    paneInspection: "missing",
+    workspaceInspection: "missing",
   });
   const recoveredRuntime = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
@@ -2088,10 +2175,10 @@ async function recoverInterruptedCleanup() {
   };
 }
 
-test("cleanup recovery does not close a pane whose identity is no longer present", async () => {
+test("cleanup recovery does not close a workspace whose identity is no longer present", async () => {
   const { presentation } = await recoverInterruptedCleanup();
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+  assert.deepEqual(presentation.closedWorkspaceIds, []);
 });
 
 test("cleanup recovery records missing completion proof as unconfirmed", async () => {
@@ -2202,10 +2289,10 @@ async function failOperation() {
   return { handle, presentation, store, trace };
 }
 
-test("failed Worker retains its pane", async () => {
+test("failed Worker retains its workspace", async () => {
   const { presentation } = await failOperation();
 
-  assert.deepEqual(presentation.closedPaneIds, []);
+  assert.deepEqual(presentation.closedWorkspaceIds, []);
 });
 
 async function settledAgentFailure() {
