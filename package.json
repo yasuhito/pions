@@ -7,8 +7,7 @@
     "dist"
   ],
   "exports": {
-    ".": "./dist/src/index.js",
-    "./formal-review": "./dist/src/formal-review.js"
+    ".": "./dist/src/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
