@@ -569,28 +569,6 @@ test("failed ownership persistence rolls back exactly the created workspace", as
   ]);
 });
 
-test("the default Worker-start failure policy retains the owned workspace", async () => {
-  const executor = new FakeCommandExecutor([]);
-  await Effect.runPromise(
-    presentation(executor).onWorkerStartFailure(operation(owned))
-  );
-
-  assert.equal(executor.invocations.length, 0);
-});
-
-test("configured Worker-start rollback closes exactly the owned workspace", async () => {
-  const executor = new FakeCommandExecutor([ok]);
-  const adapter = new HerdrPresentation({
-    cwd: "/work/project",
-    environment: herdrEnvironment,
-    executor,
-    retainOnWorkerStartFailure: false,
-  });
-  await Effect.runPromise(adapter.onWorkerStartFailure(operation(owned)));
-
-  assert.deepEqual(executor.invocations[0]?.args, ["workspace", "close", "w7"]);
-});
-
 test("a Herdr projection failure cannot create Operation completion", async () => {
   const executor = new FakeCommandExecutor([workspaceCreated]);
   const store = new InMemoryEventStore();

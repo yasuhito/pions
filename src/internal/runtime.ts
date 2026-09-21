@@ -1866,14 +1866,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await settleTerminal(record, operation);
           return;
         }
-        if (workerOutcome.state === "worker_start_failed") {
-          await runEffect(
-            Effect.catchAllCause(
-              services.presentation.onWorkerStartFailure(current),
-              () => Effect.void
-            )
-          );
-        }
         if (workerOutcome.state === "agent_failed") {
           operation = await runEffect(
             advanceOperation(record.operationId, {

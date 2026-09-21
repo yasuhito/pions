@@ -51,7 +51,6 @@ interface HerdrPresentationOptions {
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
   readonly executor: CommandExecutor;
-  readonly retainOnWorkerStartFailure?: boolean;
 }
 
 interface HerdrEnvelope {
@@ -126,12 +125,7 @@ function commandFailure(output: CommandOutput): Error | undefined {
 }
 
 export class HerdrPresentation implements Presentation {
-  private readonly retainOnWorkerStartFailure: boolean;
-
-  constructor(private readonly options: HerdrPresentationOptions) {
-    this.retainOnWorkerStartFailure =
-      options.retainOnWorkerStartFailure ?? true;
-  }
+  constructor(private readonly options: HerdrPresentationOptions) {}
 
   preflight(): Effect.Effect<void, HerdrPreconditionError> {
     return Effect.suspend(() => {
@@ -200,16 +194,6 @@ export class HerdrPresentation implements Presentation {
     return Effect.asVoid(
       this.executeJson(["workspace", "close", presentation.workspaceId])
     );
-  }
-
-  onWorkerStartFailure(operation: Operation): Effect.Effect<void, unknown> {
-    if (
-      this.retainOnWorkerStartFailure ||
-      operation.presentation === undefined
-    ) {
-      return Effect.void;
-    }
-    return this.rollbackCreated(operation.presentation);
   }
 
   /**

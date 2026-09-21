@@ -222,7 +222,6 @@ export interface Presentation {
   rollbackCreated(
     presentation: CreatedPresentation
   ): Effect.Effect<void, unknown>;
-  onWorkerStartFailure(operation: Operation): Effect.Effect<void, unknown>;
   inspectOwnedWorkspace(
     operation: Operation
   ): Effect.Effect<"matching" | "missing", unknown>;

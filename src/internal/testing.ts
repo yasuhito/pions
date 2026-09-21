@@ -465,10 +465,6 @@ export class FakePresentation implements Presentation {
     });
   }
 
-  onWorkerStartFailure(_operation: Operation): Effect.Effect<void> {
-    return Effect.void;
-  }
-
   inspectOwnedWorkspace(
     _operation: Operation
   ): Effect.Effect<"matching" | "missing", Error> {
