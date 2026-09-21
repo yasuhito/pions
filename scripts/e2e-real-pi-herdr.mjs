@@ -316,7 +316,9 @@ async function assertNoNewWorkspace(before, description) {
   const after = await workspaceIds();
   const added = [...after].filter((id) => !before.has(id));
   if (added.length !== 0) {
-    throw new Error(`${description} created Worker workspaces: ${added.join(", ")}`);
+    throw new Error(
+      `${description} created Worker workspaces: ${added.join(", ")}`
+    );
   }
 }
 
@@ -369,7 +371,11 @@ async function main() {
     await provisionSession(runDir);
 
     const knownString = `PIONS_E2E_107_${randomBytes(6).toString("hex")}_日本語テスト🚀🔥`;
-    const nestedCwd = join(ROOT_DIR, ".pions-e2e-nested", randomBytes(4).toString("hex"));
+    const nestedCwd = join(
+      ROOT_DIR,
+      ".pions-e2e-nested",
+      randomBytes(4).toString("hex")
+    );
     await mkdir(nestedCwd, { recursive: true });
     // A relative path proves the Worker writes into the parent's working
     // directory; the file is removed in the finally block below.
@@ -413,14 +419,17 @@ async function main() {
       "delegate",
       { extensions: [observerExtensionPath] }
     );
-    const parentPionsTools = JSON.parse(await readFile(parentToolsPath, "utf8"))
-      .filter((name) => name.startsWith("pions_"));
+    const parentPionsTools = JSON.parse(
+      await readFile(parentToolsPath, "utf8")
+    ).filter((name) => name.startsWith("pions_"));
     const expectedParentTools = [
       "pions_delegate",
       "pions_operation",
       "pions_result",
     ];
-    if (JSON.stringify(parentPionsTools) !== JSON.stringify(expectedParentTools)) {
+    if (
+      JSON.stringify(parentPionsTools) !== JSON.stringify(expectedParentTools)
+    ) {
       throw new Error(
         `parent Pions tool surface mismatch: ${JSON.stringify(parentPionsTools)}`
       );
@@ -519,25 +528,45 @@ async function main() {
       operationTranscript,
       "pions_operation"
     );
-    const effective = operationResult.details?.operation?.effectiveConfig ??
+    const effective =
+      operationResult.details?.operation?.effectiveConfig ??
       operationResult.details?.effectiveConfig;
-    const expectedWorkerTools = ["read", "write", "edit", "bash", "grep", "find", "ls"];
-    if (JSON.stringify(effective?.tools) !== JSON.stringify(expectedWorkerTools)) {
-      throw new Error(`Worker tool surface mismatch: ${JSON.stringify(effective?.tools)}`);
+    const expectedWorkerTools = [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ];
+    if (
+      JSON.stringify(effective?.tools) !== JSON.stringify(expectedWorkerTools)
+    ) {
+      throw new Error(
+        `Worker tool surface mismatch: ${JSON.stringify(effective?.tools)}`
+      );
     }
     if (effective?.cwd !== nestedCwd) {
-      throw new Error(`Worker cwd mismatch: expected ${nestedCwd}, got ${effective?.cwd}`);
+      throw new Error(
+        `Worker cwd mismatch: expected ${nestedCwd}, got ${effective?.cwd}`
+      );
     }
-    log("the persisted live Operation has the exact seven-tool Worker surface and nested cwd.");
+    log(
+      "the persisted live Operation has the exact seven-tool Worker surface and nested cwd."
+    );
 
     const projectConfigPath = join(ROOT_DIR, ".pions.json");
     originalProjectConfig = await readFile(projectConfigPath, "utf8");
     const rejectionPromptPath = join(runDir, "rejection-prompt.txt");
     await writeFile(
       rejectionPromptPath,
-      "Use the pions_delegate tool exactly once with task \"Respond with OK\". Do not do anything else.\n"
+      'Use the pions_delegate tool exactly once with task "Respond with OK". Do not do anything else.\n'
     );
-    await writeFile(projectConfigPath, JSON.stringify({ review: { thinkingLevel: "high" } }));
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({ review: { thinkingLevel: "high" } })
+    );
     const beforeLegacy = await workspaceIds();
     const legacyWorkspace = await createWorkspace("pions-e2e-legacy-config", {
       XDG_STATE_HOME: stateDir,
@@ -549,11 +578,18 @@ async function main() {
       rejectionPromptPath,
       "legacy-config"
     );
-    const legacyResult = await extractToolResult(legacyTranscript, "pions_delegate");
-    if (!legacyResult.isError) throw new Error("legacy review configuration was accepted");
+    const legacyResult = await extractToolResult(
+      legacyTranscript,
+      "pions_delegate"
+    );
+    if (!legacyResult.isError)
+      throw new Error("legacy review configuration was accepted");
     const beforeLegacyWithoutParent = new Set(beforeLegacy);
     beforeLegacyWithoutParent.add(legacyWorkspace.workspaceId);
-    await assertNoNewWorkspace(beforeLegacyWithoutParent, "legacy review rejection");
+    await assertNoNewWorkspace(
+      beforeLegacyWithoutParent,
+      "legacy review rejection"
+    );
     log("legacy review configuration was rejected before Worker creation.");
     await writeFile(projectConfigPath, originalProjectConfig);
 
@@ -632,9 +668,10 @@ async function main() {
     throw error;
   } finally {
     if (originalProjectConfig !== undefined) {
-      await writeFile(join(ROOT_DIR, ".pions.json"), originalProjectConfig).catch(
-        () => undefined
-      );
+      await writeFile(
+        join(ROOT_DIR, ".pions.json"),
+        originalProjectConfig
+      ).catch(() => undefined);
     }
     if (workerWriteName !== undefined) {
       await rm(join(ROOT_DIR, ".pions-e2e-nested"), {
