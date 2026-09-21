@@ -1,9 +1,7 @@
 {
-  "review": {
-    "model": {
-      "provider": "claude-bridge",
-      "id": "claude-opus-5"
-    },
-    "thinkingLevel": "medium"
-  }
+  "model": {
+    "provider": "openrouter",
+    "id": "z-ai/glm-5.3-flash"
+  },
+  "thinkingLevel": "max"
 }

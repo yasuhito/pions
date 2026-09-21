@@ -88,19 +88,21 @@ This is careful process plumbing, not an OS sandbox. Permission manifests descri
 
 ## Pi tools
 
-Pions installs delegation, result retrieval, operation inspection, and formal-review tools in trusted projects. Formal-review tools remain visible but fail closed unless trusted host configuration enables them.
+The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`. It registers no formal-review tools.
 
 ### `pions_delegate`
 
-Delegates one self-contained task to a read-oriented worker with an independent context.
+Delegates one self-contained task to a general-purpose worker with an independent context and waits until its result is durably accepted.
 
 ```text
 Use pions_delegate to investigate the lifecycle boundary in this change.
 ```
 
-The model cannot choose the worker model, thinking level, tools, working directory, persistence policy, presentation policy, or cancellation policy through the tool input. Every successful response includes the `Operation` identifier, whether or not the displayed result was truncated.
+The tool input is only `task`. The model cannot choose the worker model, thinking level, tools, working directory, persistence policy, presentation policy, or cancellation policy through the tool input. Every successful response returns the accepted final answer together with the `Operation` identifier, whether or not the displayed result was truncated.
 
-Independent delegations compose through Pi's normal parallel tool execution.
+The worker has `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`; it does not have `pions_delegate`, so delegation is one level deep. It runs in the same working directory as the delegating session and edits it directly: Pions creates no worktree or branch and does not merge changes. Failed delegations are never retried automatically; the parent starts a new `Operation` explicitly if needed.
+
+Independent delegations compose through Pi's normal parallel tool execution. Not running conflicting write delegations in parallel is the parent's responsibility.
 
 ### `pions_result`
 
@@ -112,88 +114,26 @@ operationId: <operation-id>
 
 If another chunk is available, pass the returned cursor to the next call. Each chunk reports the immutable result-acceptance identifier and the SHA-256 digest of the exact accepted bytes, so callers can bind retrieved content to the acceptance reported by operation inspection. The tool does not expose storage paths or allow callers to select chunk sizes. It only reads operations belonging to the current trusted repository.
 
-## Trusted formal-review integration
+### `pions_operation`
 
-Trusted host code can use the supported `pions/formal-review` entry point instead of importing runtime or storage internals:
+Returns the persisted state and diagnostics of an `Operation` without reading result bytes.
 
-```ts
-import { createHash } from "node:crypto";
-import {
-  createFormalReviewIntegration,
-  formalReviewIntegrationModule,
-} from "pions/formal-review";
-
-const sha256Digest = (bytes: Uint8Array): `sha256:${string}` =>
-  `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-
-const integration = createFormalReviewIntegration({
-  repositoryRoot,
-  trustedBootstrap: {
-    expectedModuleVersion: formalReviewIntegrationModule.version,
-    repository: {
-      repositoryId: "canonical-project-id",
-      canonicalRoot: repositoryRoot,
-      verifyIdentity: (normalizedRoot) =>
-        trustedRepositoryVerifier.matches(
-          "canonical-project-id",
-          normalizedRoot
-        ),
-    },
-    deployment: "non-production",
-    approvedAdapters: [
-      trustedFormalReviewConfiguration.resourceAuthority.identity,
-    ],
-  },
-  reviewSubjectRegistration: trustedRegistrationEvidenceConfiguration,
-  formalReview: trustedFormalReviewConfiguration,
-});
-
-const registration = await integration.registerReviewSubject({
-  registrationId,
-  bytes: manifestBytes,
-  expectedByteCount: manifestBytes.byteLength,
-  expectedDigest: sha256Digest(manifestBytes),
-  formatId: "pions.opaque.v1",
-  normalizationId: "identity.v1",
-  dependencies: [
-    {
-      path: "spec.md",
-      expectedByteCount: specBytes.byteLength,
-      expectedDigest: sha256Digest(specBytes),
-      formatId: "pions.opaque.v1",
-      normalizationId: "identity.v1",
-    },
-  ],
-  dependencyFiles: [{ path: "spec.md", bytes: specBytes }],
-  evidence: {
-    issuerId: "trusted-review-subject-issuer",
-    authentication: issuerAuthentication,
-    validatorId: "review-bundle-validator",
-    validatorVersion: "1",
-    root: {
-      byteCount: manifestBytes.byteLength,
-      digest: sha256Digest(manifestBytes),
-    },
-    dependencies: [
-      {
-        path: "spec.md",
-        byteCount: specBytes.byteLength,
-        digest: sha256Digest(specBytes),
-      },
-    ],
-    collectionDigest,
-  },
-});
-
-console.log(registration.evidence.evidenceId, registration.evidence.digest);
-integration.installPiExtension(pi);
+```text
+operationId: <operation-id>
 ```
 
-The integration exposes only review-subject registration and configured Pi extension installation. Install the package globally and import this public subpath from an operator-owned trusted bootstrap; do not copy the distribution into the consumer repository. The bootstrap must pin the exported module version, the canonical repository root, and each approved Resource Adapter identity (identifier, version, registration-artifact digest, and intended use). Pions fails closed on any mismatch. Production configuration rejects non-production adapters, internal test overrides, and formal-review enablement until a separate rollout approval exists. Adapter implementation locations, credentials, profile permissions, and enablement scope do not come from `.pions.json`.
+### Worker model configuration
 
-The integration owns Runtime construction, Artifact Store access, repository state paths, credentials, and recovery wiring. Registration verifies that dependency requirements and supplied files form the same closed set, authenticates the evidence issuer separately from content validation, registers dependencies first, registers the unchanged root bytes, and finally persists immutable registration evidence. The returned evidence identifier and digest are fixed into later Operation inspection data. Paths must be normalized relative paths, and every supplied byte count, digest, and collection digest must match the trusted versioned validator. Registration evidence is not a root dependency and does not grant Artifact use, Start authorization, Result acceptance, or Artifact adoption.
+A trusted repository pins the worker model and thinking level in `.pions.json`. Only top-level `model` and `thinkingLevel` are accepted; the former `review` block is rejected.
 
-Trusted configuration can also supply an external-allocation authenticator and resolver. Pions authenticates the externally issued allocation, checks its fixed subject, registration evidence, profile, deadline, and use limit, then reserves it in a repository-wide ledger before creating the `Operation`. Retries with the same request rejoin that reservation; conflicting requests and allocation reuse are rejected. Bundle, handoff, subject-version, axis, and external-execution values remain opaque, and a successful binding does not imply Start authorization, current external authority, workflow state, or Result adoption. A configured candidate profile or allocation adapter does not enable production formal review by itself.
+```json
+{
+  "model": { "provider": "anthropic", "id": "claude-opus-5" },
+  "thinkingLevel": "high"
+}
+```
+
+Pions bundles no model provider and loads none automatically. Installing and authenticating the configured provider is the Pi environment's responsibility. Workers start without extension discovery, so a provider that exists only because a Pi extension registered it in the delegating session is rejected with a configuration error before any worker starts; Pions never falls back to another model.
 
 ## Pions and pi-subagents
 
@@ -205,7 +145,7 @@ Pions is not a drop-in replacement for `pi-subagents`. They prioritize different
 | Worker UI              | Real Pi TUI in a Herdr pane                                | Foreground views, FleetView, and inspectors                      |
 | Result model           | Integrity-verified immutable artifact                      | Run results, notifications, replay records, and output archives  |
 | Completion model       | Separates worker settlement from operation-tree completion | Supports foreground, detached, background, and nested async runs |
-| Agent definitions      | Currently one read-oriented profile                        | Built-in and custom agents                                       |
+| Agent definitions      | One general-purpose worker profile                         | Built-in and custom agents                                       |
 | Parallelism and chains | Composed through Pi tool calls                             | Built into the extension                                         |
 | Background execution   | Not supported                                              | Supported                                                        |
 | Steering               | Not supported                                              | Supported                                                        |
@@ -220,9 +160,8 @@ Choose Pions when the important boundary is a persistent operation whose accepte
 Pions is under active development.
 
 - Herdr is required; Pions does not fall back to headless execution.
-- The Pi extension currently exposes one read-oriented worker profile.
-- Delegated implementation and other write-oriented roles are not enabled.
-- Custom agent definitions are not supported.
+- The Pi extension exposes one general-purpose worker profile; custom agent definitions are not supported.
+- Workers run without extension discovery, so only providers available to a plain Pi worker can be configured.
 - Background execution, chains, and mid-run steering are not supported.
 - Permission manifests are not an OS-level sandbox.
 - Pions is not yet published as an installable npm package.

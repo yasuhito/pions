@@ -264,16 +264,16 @@ Even when Herdr and Pi are present, live delegation fails if the parent Pi sessi
 
 ### Delegation worker model from `.pions.json` must be authenticated
 
-Top-level `.pions.json` `review.model` configures the **delegation worker** model (provider + id), not formal-review enablement. Parent Pi auth alone is not enough — the worker pair must also be ready.
+Top-level `.pions.json` `model` configures the **delegation worker** model (provider + id). Parent Pi auth alone is not enough — the worker pair must also be ready. The worker runs with `--no-extensions` and Pions bundles no provider extension, so the provider must be a Pi built-in one; a provider registered by a Pi extension in the parent session is rejected before the worker starts.
 
 Before live smoke, check the pair committed (or temporarily overridden locally) in `.pions.json`:
 
 ```bash
-# Example for committed .pions.json review.model (claude-bridge / claude-opus-5):
-pi auth check --provider claude-bridge --model claude-opus-5
+# Example for committed .pions.json model (anthropic / claude-opus-5):
+pi auth check --provider anthropic --model claude-opus-5
 ```
 
-Expected: ready / authenticated for that provider+model. If `pi auth check` returns `invalid_state` (or similar), live smoke can fail with terminal reason `model_auth_unavailable` even when the parent Pi works on another provider (e.g. parent on `openai-codex`, worker still on `claude-bridge`).
+Expected: ready / authenticated for that provider+model. If `pi auth check` returns `invalid_state` (or similar), live smoke can fail with terminal reason `model_auth_unavailable` even when the parent Pi works on another provider (e.g. parent on `openai-codex`, worker on `anthropic`).
 
 **Fix for box smoke only** (do **not** change committed `.pions.json` in a verify-pions docs PR):
 

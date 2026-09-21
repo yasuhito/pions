@@ -6,10 +6,7 @@
   "files": [
     "dist"
   ],
-  "exports": {
-    ".": "./dist/src/index.js",
-    "./formal-review": "./dist/src/formal-review.js"
-  },
+  "exports": {},
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.extension.json",
@@ -25,7 +22,6 @@
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",
     "effect": "3.22.1",
-    "pi-claude-bridge": "0.7.0",
     "typebox": "1.3.7"
   },
   "devDependencies": {

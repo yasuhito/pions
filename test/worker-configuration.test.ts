@@ -125,6 +125,51 @@ test("a reader profile cannot bypass Writer guarantees by declaring an editing t
   );
 });
 
+const GENERAL_PROFILE: WorkerProfilePolicy = {
+  intendedUse: "general",
+  modelCandidates: [{ provider: "test", id: "test-model" }],
+  thinkingLevel: "medium",
+  tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
+  resources: { resourceProofPolicy: "disabled" },
+  startAuthorization: { policy: "disabled" },
+  workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+  acceptedArtifactRetentionMs: 86_400_000,
+};
+
+test("a general profile provides editing tools without a Start gate or resource proof", () => {
+  assert.deepEqual(
+    resolveWorkerConfig({
+      requested: {},
+      profile: GENERAL_PROFILE,
+      runtimeCwd: "/workspace",
+    }).tools,
+    ["read", "write", "edit", "bash", "grep", "find", "ls"]
+  );
+});
+
+test("a general profile cannot provide a tool outside the Pi built-in set", () => {
+  assert.throws(
+    () =>
+      resolveWorkerConfig({
+        requested: {},
+        profile: { ...GENERAL_PROFILE, tools: ["read", "pions_delegate"] },
+        runtimeCwd: "/workspace",
+      }),
+    { name: "WorkerConfigurationError", reason: "tool_policy_violation" }
+  );
+});
+
+test("a general profile runs in the Runtime working directory", () => {
+  assert.equal(
+    resolveWorkerConfig({
+      requested: {},
+      profile: GENERAL_PROFILE,
+      runtimeCwd: "/workspace",
+    }).cwd,
+    "/workspace"
+  );
+});
+
 test("a formal reviewer candidate without required Start authorization is rejected", () => {
   assert.throws(
     () =>

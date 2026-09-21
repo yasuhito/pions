@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { promisify } from "node:util";
 
 import { Effect } from "effect";
 
@@ -49,8 +47,6 @@ import type {
   Runtime,
   WorkerProfilePolicy,
 } from "../src/public.js";
-
-const execFileAsync = promisify(execFile);
 
 function digest(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -344,91 +340,21 @@ function persistedResultFormatIntegration(
 const fixedReviewSubjectRegistration = () =>
   rootRegistration(Buffer.from("fixed review subject", "utf8"));
 
-test("the package publishes the stable formal review integration entry", async () => {
-  const manifest = JSON.parse(
-    await readFile(join(process.cwd(), "package.json"), "utf8")
-  ) as {
-    readonly files?: ReadonlyArray<string>;
-    readonly exports?: Readonly<Record<string, string>>;
-  };
-
-  assert.deepEqual(
-    {
-      files: manifest.files,
-      entry: manifest.exports?.["./formal-review"],
-    },
-    {
-      files: ["dist"],
-      entry: "./dist/src/formal-review.js",
-    }
-  );
-});
-
-test("a trusted bootstrap in another repository loads the globally installed public entry", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "pions-global-bootstrap-"));
-  context.after(() => rm(root, { recursive: true, force: true }));
-  await execFileAsync("npm", ["run", "build", "--silent"], {
-    cwd: process.cwd(),
+test("the package does not publish the formal review integration entry", async () => {
+  const entry = "pions/formal-review";
+  await assert.rejects(import(entry), {
+    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
   });
-  const packed = await execFileAsync(
-    "npm",
-    ["pack", "--silent", "--pack-destination", root],
-    { cwd: process.cwd() }
-  );
-  const archive = join(root, packed.stdout.trim().split("\n").at(-1)!);
-  const prefix = join(root, "global");
-  await execFileAsync("npm", [
-    "install",
-    "--silent",
-    "--ignore-scripts",
-    "--global",
-    "--prefix",
-    prefix,
-    archive,
-  ]);
-  const bootstrapDirectory = join(
-    prefix,
-    "lib",
-    "node_modules",
-    "trusted-bootstrap"
-  );
-  await mkdir(bootstrapDirectory, { recursive: true });
-  await writeFile(
-    join(bootstrapDirectory, "index.mjs"),
-    [
-      'import { createRequire } from "node:module";',
-      'import { pathToFileURL } from "node:url";',
-      "const require = createRequire(import.meta.url);",
-      'const entry = require.resolve("pions/formal-review");',
-      "await import(pathToFileURL(entry).href);",
-      "process.stdout.write(entry);",
-    ].join("\n"),
-    "utf8"
-  );
-  const consumerRepository = join(root, "consumer-repository");
-  await mkdir(consumerRepository);
-
-  const loaded = await execFileAsync(
-    process.execPath,
-    [join(bootstrapDirectory, "index.mjs")],
-    { cwd: consumerRepository }
-  );
-
-  assert.equal(
-    loaded.stdout,
-    join(
-      prefix,
-      "lib",
-      "node_modules",
-      "pions",
-      "dist",
-      "src",
-      "formal-review.js"
-    )
-  );
 });
 
-test("the public formal review module exposes its versioned identity", () => {
+test("the package does not publish a generic JavaScript API", async () => {
+  const entry = "pions";
+  await assert.rejects(import(entry), {
+    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  });
+});
+
+test("the retained formal review module exposes its versioned identity", () => {
   assert.deepEqual(formalReviewIntegrationModule, {
     moduleId: "pions.formal-review-integration",
     version: "1",
@@ -1443,7 +1369,7 @@ test("a persisted Result format version cannot change normalization after restar
   );
 });
 
-test("an unconfigured integration keeps the formal review tool registered and rejects its use", async (context) => {
+test("an unconfigured integration does not register the formal review tool", async (context) => {
   const integration = await fixture(context);
   const tools = new Map<string, RegisteredTool>();
   const pi = {
@@ -1453,24 +1379,8 @@ test("an unconfigured integration keeps the formal review tool registered and re
     on() {},
   } as unknown as ExtensionAPI;
   integration.installPiExtension(pi);
-  const review = tools.get("pions_review");
-  if (review === undefined) throw new Error("pions_review was not registered");
-  const extensionContext = {
-    cwd: process.cwd(),
-    sessionManager: { getSessionId: () => "session-1" },
-    isProjectTrusted: () => true,
-  } as unknown as ExtensionContext;
 
-  await assert.rejects(
-    review.execute(
-      "review-call-1",
-      { artifactId: "artifact-1", task: "Review this Artifact" },
-      undefined,
-      undefined,
-      extensionContext
-    ),
-    { name: "WorkerConfigurationError", reason: "unsupported_capability" }
-  );
+  assert.equal(tools.has("pions_review"), false);
 });
 
 test("a registered dependent root is available to the configured extension Runtime", async (context) => {
@@ -1597,6 +1507,7 @@ test("a registered dependent root is available to the configured extension Runti
     modelRegistry: {
       find: () => ({ provider: "test", id: "review-model" }),
       hasConfiguredAuth: () => true,
+      getRegisteredProviderIds: () => [],
     },
     sessionManager: { getSessionId: () => "session-1" },
     isProjectTrusted: () => true,
@@ -1963,6 +1874,7 @@ async function externalAllocationFixture(
     modelRegistry: {
       find: () => ({ provider: "test", id: "review-model" }),
       hasConfiguredAuth: () => true,
+      getRegisteredProviderIds: () => [],
     },
     sessionManager: { getSessionId: () => sessionId },
     isProjectTrusted: () => true,
