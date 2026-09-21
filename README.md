@@ -88,19 +88,21 @@ This is careful process plumbing, not an OS sandbox. Permission manifests descri
 
 ## Pi tools
 
-Pions installs delegation, result retrieval, operation inspection, and formal-review tools in trusted projects. Formal-review tools remain visible but fail closed unless trusted host configuration enables them.
+The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`. It registers no formal-review tools.
 
 ### `pions_delegate`
 
-Delegates one self-contained task to a read-oriented worker with an independent context.
+Delegates one self-contained task to a general-purpose worker with an independent context and waits until its result is durably accepted.
 
 ```text
 Use pions_delegate to investigate the lifecycle boundary in this change.
 ```
 
-The model cannot choose the worker model, thinking level, tools, working directory, persistence policy, presentation policy, or cancellation policy through the tool input. Every successful response includes the `Operation` identifier, whether or not the displayed result was truncated.
+The tool input is only `task`. The model cannot choose the worker model, thinking level, tools, working directory, persistence policy, presentation policy, or cancellation policy through the tool input. Every successful response returns the accepted final answer together with the `Operation` identifier, whether or not the displayed result was truncated.
 
-Independent delegations compose through Pi's normal parallel tool execution.
+The worker has `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`; it does not have `pions_delegate`, so delegation is one level deep. It runs in the same working directory as the delegating session and edits it directly: Pions creates no worktree or branch and does not merge changes. Failed delegations are never retried automatically; the parent starts a new `Operation` explicitly if needed.
+
+Independent delegations compose through Pi's normal parallel tool execution. Not running conflicting write delegations in parallel is the parent's responsibility.
 
 ### `pions_result`
 
@@ -112,9 +114,32 @@ operationId: <operation-id>
 
 If another chunk is available, pass the returned cursor to the next call. Each chunk reports the immutable result-acceptance identifier and the SHA-256 digest of the exact accepted bytes, so callers can bind retrieved content to the acceptance reported by operation inspection. The tool does not expose storage paths or allow callers to select chunk sizes. It only reads operations belonging to the current trusted repository.
 
+### `pions_operation`
+
+Returns the persisted state and diagnostics of an `Operation` without reading result bytes.
+
+```text
+operationId: <operation-id>
+```
+
+### Worker model configuration
+
+A trusted repository pins the worker model and thinking level in `.pions.json`. Only top-level `model` and `thinkingLevel` are accepted; the former `review` block is rejected.
+
+```json
+{
+  "model": { "provider": "anthropic", "id": "claude-opus-5" },
+  "thinkingLevel": "high"
+}
+```
+
+Pions bundles no model provider and loads none automatically. Installing and authenticating the configured provider is the Pi environment's responsibility. Workers start without extension discovery, so a provider that exists only because a Pi extension registered it in the delegating session is rejected with a configuration error before any worker starts; Pions never falls back to another model.
+
 ## Trusted formal-review integration
 
-Trusted host code can use the supported `pions/formal-review` entry point instead of importing runtime or storage internals:
+The Pi extension does not register formal-review tools. They remain reachable only through the `pions/formal-review` integration below, which is retained until its scheduled removal and is not part of the delegation contract.
+
+Trusted host code can use the `pions/formal-review` entry point instead of importing runtime or storage internals:
 
 ```ts
 import { createHash } from "node:crypto";
@@ -205,7 +230,7 @@ Pions is not a drop-in replacement for `pi-subagents`. They prioritize different
 | Worker UI              | Real Pi TUI in a Herdr pane                                | Foreground views, FleetView, and inspectors                      |
 | Result model           | Integrity-verified immutable artifact                      | Run results, notifications, replay records, and output archives  |
 | Completion model       | Separates worker settlement from operation-tree completion | Supports foreground, detached, background, and nested async runs |
-| Agent definitions      | Currently one read-oriented profile                        | Built-in and custom agents                                       |
+| Agent definitions      | One general-purpose worker profile                         | Built-in and custom agents                                       |
 | Parallelism and chains | Composed through Pi tool calls                             | Built into the extension                                         |
 | Background execution   | Not supported                                              | Supported                                                        |
 | Steering               | Not supported                                              | Supported                                                        |
@@ -220,9 +245,8 @@ Choose Pions when the important boundary is a persistent operation whose accepte
 Pions is under active development.
 
 - Herdr is required; Pions does not fall back to headless execution.
-- The Pi extension currently exposes one read-oriented worker profile.
-- Delegated implementation and other write-oriented roles are not enabled.
-- Custom agent definitions are not supported.
+- The Pi extension exposes one general-purpose worker profile; custom agent definitions are not supported.
+- Workers run without extension discovery, so only providers available to a plain Pi worker can be configured.
 - Background execution, chains, and mid-run steering are not supported.
 - Permission manifests are not an OS-level sandbox.
 - Pions is not yet published as an installable npm package.

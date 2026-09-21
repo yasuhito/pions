@@ -99,10 +99,10 @@ Check that Pions prerequisites and runtime dependencies are healthy:
 
    If not logged in, run `pi` and use `/login`, or configure provider API keys for the models Pi will use. In the Pi TUI you may see: `Not logged in · Please run /login`.
 
-   **Also check the delegation worker model** from `.pions.json` top-level `review.model` (this configures the **worker** model, not formal-review enablement). Parent auth alone is insufficient:
+   **Also check the delegation worker model** from `.pions.json` top-level `model` (this configures the **worker** model). Parent auth alone is insufficient:
 
    ```bash
-   # Use the provider/id from .pions.json review.model — must be ready before live smoke
+   # Use the provider/id from .pions.json model — must be ready before live smoke
    pi auth check --provider <provider> --model <id>
    ```
 
@@ -261,22 +261,21 @@ npm run typecheck
 
 **Expected outcome**: Exit code 0, no TypeScript errors.
 
-### Feature 5: Formal review fail-closed (behavior proof)
+### Feature 5: Formal review tools are not registered (behavior proof)
 
-**Harness**: Check that formal-review tools reject calls when unconfigured
+**Harness**: Check that the Pi extension registers only the three delegation tools
 
 **How to verify**:
-Formal-review tools (`pions_review`, `pions_review_decision`) are registered but fail closed when no trusted configuration exists. The default project extension does not enable production formal review.
+The project extension registers exactly `pions_delegate`, `pions_result`, and `pions_operation`. Formal-review tools (`pions_review`, `pions_review_decision`) are registered only when the retained `pions/formal-review` integration passes trusted formal-review configuration, which the project extension never does.
 
 This is verified by:
 
-1. Reviewing the extension code to confirm tools are registered
-2. Confirming that execution without trusted configuration rejects requests
-3. Checking automated tests that cover fail-closed behavior
+1. Reviewing `.pi/extensions/pions.ts` → `src/internal/pi-extension.ts` to confirm the formal-review registrations are gated on `options.formalReview`
+2. Checking automated tests that assert the three-tool registration and the absence of formal-review tools
 
-**What it proves**: Formal-review tools do not accidentally enable production review without explicit trusted bootstrap configuration.
+**What it proves**: The user-facing delegation path cannot reach formal review.
 
-**Expected outcome**: Tools registered but reject execution without configuration.
+**Expected outcome**: Only three tools registered; `pions_review` absent from the tool list.
 
 ## Evidence
 

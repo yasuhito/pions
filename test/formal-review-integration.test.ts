@@ -1443,7 +1443,7 @@ test("a persisted Result format version cannot change normalization after restar
   );
 });
 
-test("an unconfigured integration keeps the formal review tool registered and rejects its use", async (context) => {
+test("an unconfigured integration does not register the formal review tool", async (context) => {
   const integration = await fixture(context);
   const tools = new Map<string, RegisteredTool>();
   const pi = {
@@ -1453,24 +1453,8 @@ test("an unconfigured integration keeps the formal review tool registered and re
     on() {},
   } as unknown as ExtensionAPI;
   integration.installPiExtension(pi);
-  const review = tools.get("pions_review");
-  if (review === undefined) throw new Error("pions_review was not registered");
-  const extensionContext = {
-    cwd: process.cwd(),
-    sessionManager: { getSessionId: () => "session-1" },
-    isProjectTrusted: () => true,
-  } as unknown as ExtensionContext;
 
-  await assert.rejects(
-    review.execute(
-      "review-call-1",
-      { artifactId: "artifact-1", task: "Review this Artifact" },
-      undefined,
-      undefined,
-      extensionContext
-    ),
-    { name: "WorkerConfigurationError", reason: "unsupported_capability" }
-  );
+  assert.equal(tools.has("pions_review"), false);
 });
 
 test("a registered dependent root is available to the configured extension Runtime", async (context) => {
@@ -1597,6 +1581,7 @@ test("a registered dependent root is available to the configured extension Runti
     modelRegistry: {
       find: () => ({ provider: "test", id: "review-model" }),
       hasConfiguredAuth: () => true,
+      getRegisteredProviderIds: () => [],
     },
     sessionManager: { getSessionId: () => "session-1" },
     isProjectTrusted: () => true,
@@ -1963,6 +1948,7 @@ async function externalAllocationFixture(
     modelRegistry: {
       find: () => ({ provider: "test", id: "review-model" }),
       hasConfiguredAuth: () => true,
+      getRegisteredProviderIds: () => [],
     },
     sessionManager: { getSessionId: () => sessionId },
     isProjectTrusted: () => true,

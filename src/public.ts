@@ -149,7 +149,7 @@ export type WorkerStartAuthorizationPolicy =
     };
 
 export type WorkerProfileIntendedUse =
-  "reader" | "formal_reviewer" | "writer" | "revision_retry";
+  "general" | "reader" | "formal_reviewer" | "writer" | "revision_retry";
 
 export interface WorkerProfilePolicy {
   readonly intendedUse: WorkerProfileIntendedUse;

@@ -27,11 +27,7 @@ import {
   type VisibleRuntimeOptions,
 } from "./visible-runtime.js";
 import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "./worker-configuration.js";
-import {
-  resolveClaudeBridgeExtension,
-  resolveWorkerExtensionEntryPath,
-  validateClaudeBridgePolicy,
-} from "./worker-extension-entry.js";
+import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
 import type { FormalReviewExternalAllocationConfiguration } from "../formal-review.js";
 import {
   ExternalReviewAllocationRejoinedError,
@@ -54,9 +50,17 @@ import type {
   WorkerProfilePolicy,
 } from "../public.js";
 
-const REVIEW_PROFILE = "review";
+const WORKER_PROFILE = "worker";
 const FORMAL_REVIEW_PROFILE = "formal-review";
-const REVIEW_TOOLS = Object.freeze(["read", "grep", "find", "ls", "bash"]);
+const WORKER_TOOLS = Object.freeze([
+  "read",
+  "write",
+  "edit",
+  "bash",
+  "grep",
+  "find",
+  "ls",
+]);
 const THINKING_LEVELS: ReadonlyArray<ThinkingLevel> = [
   "off",
   "minimal",
@@ -70,7 +74,7 @@ const PROJECT_CONFIG_FILE = ".pions.json";
 const PROVIDER_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u;
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u;
 
-interface ReviewProjectConfig {
+interface ProjectConfig {
   readonly model?: Readonly<ModelReference>;
   readonly thinkingLevel?: ThinkingLevel;
 }
@@ -152,7 +156,6 @@ export interface PionsExtensionOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly homeDirectory?: string;
   readonly extensionEntryPath?: string;
-  readonly claudeBridgePackagePath?: string;
 }
 
 function selectedModel(context: ExtensionContext): ModelReference {
@@ -187,7 +190,7 @@ function requireKnownKeys(
   }
 }
 
-function decodeProjectConfig(source: string): ReviewProjectConfig {
+function decodeProjectConfig(source: string): ProjectConfig {
   let decoded: unknown;
   try {
     decoded = JSON.parse(source) as unknown;
@@ -203,66 +206,56 @@ function decodeProjectConfig(source: string): ReviewProjectConfig {
       `${PROJECT_CONFIG_FILE} must contain an object`
     );
   }
-  requireKnownKeys(decoded, ["review"], PROJECT_CONFIG_FILE);
-  const review = decoded.review;
-  if (!isRecord(review)) {
-    throw new ProjectConfigurationError(
-      "invalid_shape",
-      "review must contain an object"
-    );
-  }
-  requireKnownKeys(review, ["model", "thinkingLevel"], "review");
+  requireKnownKeys(decoded, ["model", "thinkingLevel"], PROJECT_CONFIG_FILE);
 
   let model: ModelReference | undefined;
-  if (review.model !== undefined) {
-    if (!isRecord(review.model)) {
+  if (decoded.model !== undefined) {
+    if (!isRecord(decoded.model)) {
       throw new ProjectConfigurationError(
         "invalid_shape",
-        "review.model must contain an object"
+        "model must contain an object"
       );
     }
-    requireKnownKeys(review.model, ["provider", "id"], "review.model");
+    requireKnownKeys(decoded.model, ["provider", "id"], "model");
     if (
-      typeof review.model.provider !== "string" ||
-      !PROVIDER_PATTERN.test(review.model.provider)
+      typeof decoded.model.provider !== "string" ||
+      !PROVIDER_PATTERN.test(decoded.model.provider)
     ) {
       throw new ProjectConfigurationError(
         "invalid_provider",
-        "review.model.provider is invalid"
+        "model.provider is invalid"
       );
     }
     if (
-      typeof review.model.id !== "string" ||
-      !MODEL_ID_PATTERN.test(review.model.id)
+      typeof decoded.model.id !== "string" ||
+      !MODEL_ID_PATTERN.test(decoded.model.id)
     ) {
       throw new ProjectConfigurationError(
         "invalid_model_id",
-        "review.model.id is invalid"
+        "model.id is invalid"
       );
     }
-    model = { provider: review.model.provider, id: review.model.id };
+    model = { provider: decoded.model.provider, id: decoded.model.id };
   }
 
   if (
-    review.thinkingLevel !== undefined &&
-    !isThinkingLevel(review.thinkingLevel)
+    decoded.thinkingLevel !== undefined &&
+    !isThinkingLevel(decoded.thinkingLevel)
   ) {
     throw new ProjectConfigurationError(
       "invalid_thinking_level",
-      "review.thinkingLevel is invalid"
+      "thinkingLevel is invalid"
     );
   }
   return {
     ...(model === undefined ? {} : { model }),
-    ...(review.thinkingLevel === undefined
+    ...(decoded.thinkingLevel === undefined
       ? {}
-      : { thinkingLevel: review.thinkingLevel }),
+      : { thinkingLevel: decoded.thinkingLevel }),
   };
 }
 
-async function projectConfig(
-  root: string
-): Promise<ReviewProjectConfig | undefined> {
+async function projectConfig(root: string): Promise<ProjectConfig | undefined> {
   try {
     return decodeProjectConfig(
       await readFile(join(root, PROJECT_CONFIG_FILE), "utf8")
@@ -287,16 +280,33 @@ function configuredModel(
   if (registered === undefined) {
     throw new WorkerConfigurationError(
       "model_not_found",
-      `Configured review model ${model.provider}/${model.id} was not found`
+      `Configured Worker model ${model.provider}/${model.id} was not found`
     );
   }
   if (!context.modelRegistry.hasConfiguredAuth(registered)) {
     throw new WorkerConfigurationError(
       "model_auth_unavailable",
-      `Configured review model provider ${model.provider} is not authenticated`
+      `Configured Worker model provider ${model.provider} is not authenticated`
     );
   }
   return { provider: registered.provider, id: registered.id };
+}
+
+// Workers start with --no-extensions, so a provider that only exists because
+// a Pi extension registered it in the delegating session is unavailable to
+// them. Pions neither bundles nor loads that extension for the Worker.
+function requireWorkerLoadableProvider(
+  context: ExtensionContext,
+  model: Readonly<ModelReference>
+): void {
+  if (
+    context.modelRegistry.getRegisteredProviderIds().includes(model.provider)
+  ) {
+    throw new WorkerConfigurationError(
+      "unsupported_capability",
+      `Model provider ${model.provider} is registered by a Pi extension, which Pions Workers do not load`
+    );
+  }
 }
 
 function selectedThinkingLevel(context: ExtensionContext): ThinkingLevel {
@@ -311,11 +321,12 @@ function selectedThinkingLevel(context: ExtensionContext): ThinkingLevel {
 
 function workerPrompt(task: string): string {
   return [
-    "You are a read-oriented Worker with an independent context.",
+    "You are a general-purpose Worker with an independent context.",
     "Follow the trusted project's AGENTS.md instructions.",
     "Do not load skills, extensions, or prompt templates.",
-    "Use only read, grep, find, ls, and bash. Use bash only for read-only investigation.",
-    "The bash policy is an instruction, not technical isolation or a security sandbox.",
+    `Use only ${WORKER_TOOLS.join(", ")}.`,
+    "You work in the same working directory as the delegating session; edits apply there directly, and Pions creates no worktree or branch for you.",
+    "You cannot delegate further; complete the task yourself.",
     "Return a self-contained textual Result.",
     "",
     "Task:",
@@ -527,8 +538,8 @@ export function installPionsExtension(
     readonly idempotencyKey: string;
     readonly normalizedRoot: string;
     readonly promptRef: string;
-    readonly readerModel: Readonly<ModelReference>;
-    readonly readerThinkingLevel: ThinkingLevel;
+    readonly workerModel: Readonly<ModelReference>;
+    readonly workerThinkingLevel: ThinkingLevel;
     readonly runtime: Runtime;
   }> {
     const inheritedModel = selectedModel(context);
@@ -536,28 +547,12 @@ export function installPionsExtension(
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
     const configured = await projectConfig(normalizedRoot);
-    const readerModel =
+    const workerModel =
       configured?.model === undefined
         ? inheritedModel
         : configuredModel(context, configured.model);
-    const usesClaudeBridge =
-      readerModel.provider === "claude-bridge" ||
-      requiredModel?.provider === "claude-bridge";
-    const claudeBridge = usesClaudeBridge
-      ? resolveClaudeBridgeExtension({
-          ...(options.claudeBridgePackagePath === undefined
-            ? {}
-            : { packagePath: options.claudeBridgePackagePath }),
-        })
-      : undefined;
-    if (claudeBridge !== undefined) {
-      validateClaudeBridgePolicy({
-        cwd: normalizedRoot,
-        environment: options.environment ?? process.env,
-        homeDirectory: options.homeDirectory ?? homedir(),
-      });
-    }
-    const readerThinkingLevel =
+    requireWorkerLoadableProvider(context, requiredModel ?? workerModel);
+    const workerThinkingLevel =
       configured?.thinkingLevel ?? inheritedThinkingLevel;
     const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
     const promptRef = join(
@@ -566,11 +561,11 @@ export function installPionsExtension(
       `${idempotencyKey.slice("pi-tool:".length)}.utf8`
     );
     await writePrivatePrompt(promptRef, prompt);
-    const readerProfile: WorkerProfilePolicy = {
-      intendedUse: "reader",
-      modelCandidates: [readerModel],
-      thinkingLevel: readerThinkingLevel,
-      tools: REVIEW_TOOLS,
+    const workerProfile: WorkerProfilePolicy = {
+      intendedUse: "general",
+      modelCandidates: [workerModel],
+      thinkingLevel: workerThinkingLevel,
+      tools: WORKER_TOOLS,
       resources: { resourceProofPolicy: "disabled" },
       startAuthorization: { policy: "disabled" },
       workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
@@ -591,7 +586,7 @@ export function installPionsExtension(
                 options.formalReview.resultFormats.registry.digest,
             })
           );
-    const configKey = `${normalizedRoot}\0${readerModel.provider}\0${readerModel.id}\0${readerThinkingLevel}\0${claudeBridge?.sourceDigest ?? "builtin"}\0${formalProfileDigest}`;
+    const configKey = `${normalizedRoot}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${formalProfileDigest}`;
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
     let runtime = options.runtime;
     if (runtime === undefined) {
@@ -608,7 +603,7 @@ export function installPionsExtension(
           cwd: normalizedRoot,
           stateDirectory: runtimeStateDirectory,
           profiles: {
-            [REVIEW_PROFILE]: readerProfile,
+            [WORKER_PROFILE]: workerProfile,
             ...(options.formalReview === undefined
               ? {}
               : { [FORMAL_REVIEW_PROFILE]: options.formalReview.profile }),
@@ -660,8 +655,8 @@ export function installPionsExtension(
       idempotencyKey,
       normalizedRoot,
       promptRef,
-      readerModel,
-      readerThinkingLevel,
+      workerModel,
+      workerThinkingLevel,
       runtime,
     };
   }
@@ -771,140 +766,149 @@ export function installPionsExtension(
     },
   });
 
-  pi.registerTool({
-    name: "pions_review",
-    label: "Pions Formal Review",
-    description:
-      "Create a non-waiting formal-review Operation for a registered Artifact and return its Operation identifier.",
-    parameters: FormalReviewParameters,
-    async execute(toolCallId, parameters, _signal, _onUpdate, context) {
-      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
-      if (!context.isProjectTrusted()) {
-        throw new Error("pions_review requires a trusted project");
-      }
-      const formalReview = options.formalReview;
-      if (formalReview === undefined) {
-        throw new WorkerConfigurationError(
-          "unsupported_capability",
-          "Formal review is not enabled by trusted configuration"
+  // Formal review tools stay reachable only for the retained trusted
+  // integration; the delegation-only extension entry never configures them.
+  if (options.formalReview !== undefined) {
+    pi.registerTool({
+      name: "pions_review",
+      label: "Pions Formal Review",
+      description:
+        "Create a non-waiting formal-review Operation for a registered Artifact and return its Operation identifier.",
+      parameters: FormalReviewParameters,
+      async execute(toolCallId, parameters, _signal, _onUpdate, context) {
+        if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+        if (!context.isProjectTrusted()) {
+          throw new Error("pions_review requires a trusted project");
+        }
+        const formalReview = options.formalReview;
+        if (formalReview === undefined) {
+          throw new WorkerConfigurationError(
+            "unsupported_capability",
+            "Formal review is not enabled by trusted configuration"
+          );
+        }
+        const modelCandidate = formalReview.profile.modelCandidates[0];
+        if (modelCandidate === undefined) {
+          throw new WorkerConfigurationError(
+            "unsupported_capability",
+            "Formal review has no configured model"
+          );
+        }
+        const model = configuredModel(context, modelCandidate);
+        const prepared = await prepareWorkerCall(
+          toolCallId,
+          formalReviewPrompt(parameters.task, formalReview.profile.tools),
+          context,
+          model
         );
-      }
-      const modelCandidate = formalReview.profile.modelCandidates[0];
-      if (modelCandidate === undefined) {
-        throw new WorkerConfigurationError(
-          "unsupported_capability",
-          "Formal review has no configured model"
-        );
-      }
-      const model = configuredModel(context, modelCandidate);
-      const prepared = await prepareWorkerCall(
-        toolCallId,
-        formalReviewPrompt(parameters.task, formalReview.profile.tools),
-        context,
-        model
-      );
-      const externalReviewAllocation =
-        formalReview.externalAllocation === undefined
-          ? undefined
-          : await formalReview.externalAllocation.allocationFor({
+        const externalReviewAllocation =
+          formalReview.externalAllocation === undefined
+            ? undefined
+            : await formalReview.externalAllocation.allocationFor({
+                reviewSubjectArtifactId: parameters.artifactId,
+              });
+        let handle: OperationHandle;
+        try {
+          handle = await prepared.runtime.spawn(
+            {
+              promptRef: prepared.promptRef,
+              profile: FORMAL_REVIEW_PROFILE,
+              idempotencyKey: prepared.idempotencyKey,
+              model,
+              thinkingLevel: formalReview.profile.thinkingLevel,
+              tools: formalReview.profile.tools,
+              cwd: prepared.normalizedRoot,
+            },
+            {
               reviewSubjectArtifactId: parameters.artifactId,
-            });
-      let handle: OperationHandle;
-      try {
-        handle = await prepared.runtime.spawn(
-          {
-            promptRef: prepared.promptRef,
-            profile: FORMAL_REVIEW_PROFILE,
-            idempotencyKey: prepared.idempotencyKey,
-            model,
-            thinkingLevel: formalReview.profile.thinkingLevel,
-            tools: formalReview.profile.tools,
-            cwd: prepared.normalizedRoot,
-          },
-          {
-            reviewSubjectArtifactId: parameters.artifactId,
-            ...(externalReviewAllocation === undefined
-              ? {}
-              : { externalReviewAllocation }),
-          }
-        );
-      } catch (error) {
-        if (!(error instanceof ExternalReviewAllocationRejoinedError))
-          throw error;
+              ...(externalReviewAllocation === undefined
+                ? {}
+                : { externalReviewAllocation }),
+            }
+          );
+        } catch (error) {
+          if (!(error instanceof ExternalReviewAllocationRejoinedError))
+            throw error;
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `[Operation: ${error.operationId}]`,
+              },
+            ],
+            details: { operationId: error.operationId, rejoined: true },
+          };
+        }
+        operationLifetime.track(handle);
+        sessionOwnedFormalReviews.set(handle.operationId, {
+          runtime: prepared.runtime,
+          sessionId: context.sessionManager.getSessionId(),
+          repositoryRoot: prepared.normalizedRoot,
+        });
         return {
           content: [
             {
               type: "text" as const,
-              text: `[Operation: ${error.operationId}]`,
+              text: `[Operation: ${handle.operationId}]`,
             },
           ],
-          details: { operationId: error.operationId, rejoined: true },
+          details: { operationId: handle.operationId, rejoined: false },
         };
-      }
-      operationLifetime.track(handle);
-      sessionOwnedFormalReviews.set(handle.operationId, {
-        runtime: prepared.runtime,
-        sessionId: context.sessionManager.getSessionId(),
-        repositoryRoot: prepared.normalizedRoot,
-      });
-      return {
-        content: [
-          { type: "text" as const, text: `[Operation: ${handle.operationId}]` },
-        ],
-        details: { operationId: handle.operationId, rejoined: false },
-      };
-    },
-  });
+      },
+    });
 
-  pi.registerTool({
-    name: "pions_review_decision",
-    label: "Pions Formal Review Decision",
-    description:
-      "Authorize or reject the inspected Startup receipt for a formal-review Operation owned by this Pi session.",
-    parameters: FormalReviewDecisionParameters,
-    async execute(toolCallId, parameters, _signal, _onUpdate, context) {
-      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
-      if (!context.isProjectTrusted()) {
-        throw new Error("pions_review_decision requires a trusted project");
-      }
-      const coordinator = options.formalReview?.coordinator;
-      if (coordinator === undefined) {
-        throw new WorkerConfigurationError(
-          "unsupported_capability",
-          "Formal review decisions are not enabled by trusted Coordinator configuration"
+    pi.registerTool({
+      name: "pions_review_decision",
+      label: "Pions Formal Review Decision",
+      description:
+        "Authorize or reject the inspected Startup receipt for a formal-review Operation owned by this Pi session.",
+      parameters: FormalReviewDecisionParameters,
+      async execute(toolCallId, parameters, _signal, _onUpdate, context) {
+        if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+        if (!context.isProjectTrusted()) {
+          throw new Error("pions_review_decision requires a trusted project");
+        }
+        const coordinator = options.formalReview?.coordinator;
+        if (coordinator === undefined) {
+          throw new WorkerConfigurationError(
+            "unsupported_capability",
+            "Formal review decisions are not enabled by trusted Coordinator configuration"
+          );
+        }
+        const ownedReview = sessionOwnedFormalReviews.get(
+          parameters.operationId
         );
-      }
-      const ownedReview = sessionOwnedFormalReviews.get(parameters.operationId);
-      const currentRepository = await resolveRepositoryContext(context);
-      if (
-        ownedReview === undefined ||
-        ownedReview.sessionId !== context.sessionManager.getSessionId() ||
-        ownedReview.repositoryRoot !== currentRepository.normalizedRoot
-      ) {
-        throw new Error("Operation is not owned by the current Pi session");
-      }
-      const inbox = await ownedReview.runtime.startAuthorizationInbox(
-        coordinator.credential
-      );
-      const outcome = await inbox.decide({
-        operationId: parameters.operationId,
-        decisionId: `pi-decision:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`,
-        kind: parameters.decision,
-        receiptDigest: parameters.receiptDigest as `sha256:${string}`,
-      });
-      const summary =
-        outcome.status === "rejected"
-          ? `[Operation: ${parameters.operationId}; decision: rejected; reason: ${outcome.reason}]`
-          : `[Operation: ${parameters.operationId}; decision: ${outcome.status}; gate: ${outcome.gate}]`;
-      return {
-        content: [{ type: "text" as const, text: summary }],
-        details:
+        const currentRepository = await resolveRepositoryContext(context);
+        if (
+          ownedReview === undefined ||
+          ownedReview.sessionId !== context.sessionManager.getSessionId() ||
+          ownedReview.repositoryRoot !== currentRepository.normalizedRoot
+        ) {
+          throw new Error("Operation is not owned by the current Pi session");
+        }
+        const inbox = await ownedReview.runtime.startAuthorizationInbox(
+          coordinator.credential
+        );
+        const outcome = await inbox.decide({
+          operationId: parameters.operationId,
+          decisionId: `pi-decision:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`,
+          kind: parameters.decision,
+          receiptDigest: parameters.receiptDigest as `sha256:${string}`,
+        });
+        const summary =
           outcome.status === "rejected"
-            ? { status: outcome.status, reason: outcome.reason }
-            : { status: outcome.status, gate: outcome.gate },
-      };
-    },
-  });
+            ? `[Operation: ${parameters.operationId}; decision: rejected; reason: ${outcome.reason}]`
+            : `[Operation: ${parameters.operationId}; decision: ${outcome.status}; gate: ${outcome.gate}]`;
+        return {
+          content: [{ type: "text" as const, text: summary }],
+          details:
+            outcome.status === "rejected"
+              ? { status: outcome.status, reason: outcome.reason }
+              : { status: outcome.status, gate: outcome.gate },
+        };
+      },
+    });
+  }
 
   pi.registerTool({
     name: "pions_delegate",
@@ -914,7 +918,7 @@ export function installPionsExtension(
       `The returned text is truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}; the complete Result remains persisted by Operation identifier.`,
     ].join(" "),
     promptSnippet:
-      "Use pions_delegate to start one read-oriented subagent with an independent context",
+      "Use pions_delegate to start one general-purpose subagent with an independent context",
     promptGuidelines: [
       "Use pions_delegate when asked to launch or delegate to a subagent, or to investigate in an independent context.",
       "Compose independent pions_delegate calls in parallel rather than combining multiple tasks in one call.",
@@ -932,11 +936,11 @@ export function installPionsExtension(
       );
       const handle = await prepared.runtime.spawn({
         promptRef: prepared.promptRef,
-        profile: REVIEW_PROFILE,
+        profile: WORKER_PROFILE,
         idempotencyKey: prepared.idempotencyKey,
-        model: prepared.readerModel,
-        thinkingLevel: prepared.readerThinkingLevel,
-        tools: REVIEW_TOOLS,
+        model: prepared.workerModel,
+        thinkingLevel: prepared.workerThinkingLevel,
+        tools: WORKER_TOOLS,
         cwd: prepared.normalizedRoot,
       });
       const operation = operationLifetime.track(handle);

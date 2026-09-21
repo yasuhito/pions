@@ -29,10 +29,6 @@ import type {
   WorkerProcessState,
 } from "../src/internal/worker-process-control.js";
 import { operationDirectoryKey } from "../src/internal/event-store/index.js";
-import {
-  type ApprovedProviderExtension,
-  resolveClaudeBridgeExtension,
-} from "../src/internal/worker-extension-entry.js";
 import { VisibleWorker } from "../src/internal/visible-worker.js";
 import {
   FakeClock,
@@ -308,7 +304,6 @@ async function fixture(
     ) => Effect.Effect<void>;
     readonly startInstructionAccepted?: WorkerRunHooks["startInstructionAccepted"];
     readonly startInstructionAcknowledged?: WorkerRunHooks["startInstructionAcknowledged"];
-    readonly providerExtension?: Readonly<ApprovedProviderExtension>;
     readonly operationModel?: Readonly<{
       readonly provider: string;
       readonly id: string;
@@ -326,9 +321,6 @@ async function fixture(
     cwd: "/work/project",
     executor,
     extensionEntryPath: "/pions/worker-extension.js",
-    ...(options.providerExtension === undefined
-      ? {}
-      : { providerExtension: options.providerExtension }),
     capabilityGenerator: { nextCapability: () => capability },
     promptReader: {
       read: () => Promise.resolve(Buffer.from("private prompt", "utf8")),
@@ -794,36 +786,6 @@ test("public visible Runtime composes the production path", async (context) => {
   );
 });
 
-test("public visible Runtime rejects unsafe Claude bridge configuration", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "pions-visible-runtime-"));
-  await mkdir(join(root, ".pi"));
-  await writeFile(
-    join(root, ".pi", "claude-bridge.json"),
-    JSON.stringify({
-      provider: { strictMcpConfig: false },
-    })
-  );
-  context.after(() => rm(root, { recursive: true, force: true }));
-
-  assert.throws(
-    () =>
-      makeVisibleRuntime({
-        cwd: root,
-        stateDirectory: join(root, "state"),
-        profiles: {
-          coding: {
-            ...profilePolicy,
-            modelCandidates: [
-              { provider: "claude-bridge", id: "claude-opus-5" },
-            ],
-          },
-        },
-        environment: {},
-      }),
-    /strictMcpConfig/u
-  );
-});
-
 test("visible Pi adapter satisfies the caller-facing Runtime Result contract", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pvc-"));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -956,30 +918,6 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--pions-worker-config",
     join(value.directory, "worker.v14.json"),
   ]);
-});
-
-test("visible Claude Worker loads only Pions and the approved provider extension", async (context) => {
-  const providerExtension = resolveClaudeBridgeExtension();
-  const value = await fixture({
-    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
-    providerExtension,
-  });
-  context.after(() => {
-    value.release();
-    return rm(value.root, { recursive: true, force: true });
-  });
-
-  assert.deepEqual(
-    value.executor.invocations[0]?.args.filter(
-      (argument, index, args) =>
-        argument === "--no-extensions" || args[index - 1] === "--extension"
-    ),
-    [
-      "--no-extensions",
-      "/pions/worker-extension.js",
-      providerExtension.entryPath,
-    ]
-  );
 });
 
 test("visible Worker agent name contains no task text", async (context) => {

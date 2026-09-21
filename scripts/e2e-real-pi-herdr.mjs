@@ -20,7 +20,16 @@ import { fileURLToPath } from "node:url";
 
 const ROOT_DIR = fileURLToPath(new URL("..", import.meta.url));
 const EXTENSION_PATH = join(ROOT_DIR, ".pi", "extensions", "pions.ts");
-const SESSION = `pions-e2e-${process.pid}-${randomBytes(3).toString("hex")}`;
+// A supervisor that owns Herdr lifecycle itself can hand over an already
+// running non-default session (PIONS_E2E_HERDR_SESSION) and a wrapper that
+// scopes every call to it (PIONS_E2E_HERDR_COMMAND). The script then neither
+// starts nor stops a Herdr server or session; it only creates and closes its
+// own workspaces inside the supplied one.
+const EXTERNAL_SESSION = process.env.PIONS_E2E_HERDR_SESSION;
+const EXTERNAL_HERDR_COMMAND = process.env.PIONS_E2E_HERDR_COMMAND;
+const SESSION =
+  EXTERNAL_SESSION ??
+  `pions-e2e-${process.pid}-${randomBytes(3).toString("hex")}`;
 const EVIDENCE_DIR =
   process.env.PIONS_E2E_EVIDENCE_DIR ??
   join(
@@ -65,7 +74,9 @@ async function requireCommand(command) {
 }
 
 async function herdrRaw(args) {
-  return run("herdr", ["--session", SESSION, ...args]);
+  return EXTERNAL_HERDR_COMMAND === undefined
+    ? run("herdr", ["--session", SESSION, ...args])
+    : run(EXTERNAL_HERDR_COMMAND, args);
 }
 
 async function herdr(args) {
@@ -118,6 +129,11 @@ async function preflight() {
   if (SESSION === "default") {
     throw new Error("refusing to use the default Herdr session");
   }
+  if (EXTERNAL_HERDR_COMMAND !== undefined && EXTERNAL_SESSION === undefined) {
+    throw new Error(
+      "PIONS_E2E_HERDR_COMMAND requires PIONS_E2E_HERDR_SESSION naming the session that command is scoped to"
+    );
+  }
   await requireCommand("herdr");
   await requireCommand("pi");
 
@@ -139,7 +155,7 @@ async function preflight() {
   const pionsConfigPath = join(ROOT_DIR, ".pions.json");
   if (await fileExists(pionsConfigPath)) {
     const config = JSON.parse(await readFile(pionsConfigPath, "utf8"));
-    const model = config.review?.model;
+    const model = config.model;
     if (model?.provider !== undefined && model?.id !== undefined) {
       const check = await run("pi", [
         "auth",
@@ -152,7 +168,7 @@ async function preflight() {
       if (check.code !== 0) {
         throw new Error(
           [
-            `configured delegation worker model ${model.provider}/${model.id} (.pions.json review.model) is not authenticated.`,
+            `configured delegation worker model ${model.provider}/${model.id} (.pions.json model) is not authenticated.`,
             `Run: pi auth check --provider ${model.provider} --model ${model.id}`,
             "See docs/e2e-real-pi-herdr.md for prerequisites.",
           ].join("\n")
@@ -163,12 +179,15 @@ async function preflight() {
 }
 
 async function provisionSession(runDir) {
-  const serverLog = await open(join(runDir, "herdr-server.log"), "a");
-  const server = spawn("herdr", ["server", "--session", SESSION], {
-    stdio: ["ignore", serverLog.fd, serverLog.fd],
-    detached: true,
-  });
-  server.unref();
+  let serverLog;
+  if (EXTERNAL_SESSION === undefined) {
+    serverLog = await open(join(runDir, "herdr-server.log"), "a");
+    const server = spawn("herdr", ["server", "--session", SESSION], {
+      stdio: ["ignore", serverLog.fd, serverLog.fd],
+      detached: true,
+    });
+    server.unref();
+  }
   await waitFor(
     async () => {
       const result = await herdrRaw(["status", "--json"]);
@@ -179,10 +198,10 @@ async function provisionSession(runDir) {
         return false;
       }
     },
-    SERVER_READY_TIMEOUT_MS,
+    EXTERNAL_SESSION === undefined ? SERVER_READY_TIMEOUT_MS : POLL_INTERVAL_MS,
     `the isolated Herdr session '${SESSION}' to become ready`
   );
-  await serverLog.close();
+  await serverLog?.close();
 }
 
 async function createWorkspace(label, env) {
@@ -289,6 +308,7 @@ async function cleanupHerdr(workspaceIds) {
   for (const workspaceId of workspaceIds) {
     await herdr(["workspace", "close", workspaceId]).catch(() => undefined);
   }
+  if (EXTERNAL_SESSION !== undefined) return;
   await herdr(["session", "stop", SESSION]).catch(() => undefined);
   await herdr(["session", "delete", SESSION]).catch(() => undefined);
 }
@@ -301,16 +321,25 @@ async function main() {
   const stateDir = join(runDir, "state");
   await mkdir(stateDir, { recursive: true });
   const createdWorkspaceIds = [];
+  let workerWriteName;
   let failed = false;
 
   try {
-    log(`provisioning isolated Herdr session '${SESSION}'...`);
+    log(
+      EXTERNAL_SESSION === undefined
+        ? `provisioning isolated Herdr session '${SESSION}'...`
+        : `using the supplied isolated Herdr session '${SESSION}'...`
+    );
     await provisionSession(runDir);
 
     const knownString = `PIONS_E2E_106_${randomBytes(6).toString("hex")}_日本語テスト🚀🔥`;
+    // A relative path proves the Worker writes into the parent's working
+    // directory; the file is removed in the finally block below.
+    workerWriteName = `.pions-e2e-worker-write-${randomBytes(4).toString("hex")}.txt`;
     const task = [
       `Run bash to execute exactly this command and capture its stdout: printf '%s' '${knownString}'`,
-      "Then respond with only that exact stdout text as your final answer. Do not add any other words, punctuation, or explanation before or after it.",
+      `Then use the write tool to create a file at the relative path ${workerWriteName} in your current working directory whose entire content is exactly that stdout text with no trailing newline.`,
+      "Finally respond with only that exact stdout text as your final answer. Do not add any other words, punctuation, or explanation before or after it.",
     ].join("\n");
     const delegatePromptPath = join(runDir, "delegate-prompt.txt");
     await writeFile(
@@ -353,6 +382,17 @@ async function main() {
     }
     const originalDigest = delegateResult.details.digest;
     log(`delegated Operation ${operationId} returned the known UTF-8 answer.`);
+
+    const workerWritten = await readFile(
+      join(ROOT_DIR, workerWriteName),
+      "utf8"
+    ).catch(() => undefined);
+    if (workerWritten !== knownString) {
+      throw new Error(
+        `worker write in the shared working directory mismatch: expected ${JSON.stringify(knownString)} at ${workerWriteName}, got ${JSON.stringify(workerWritten)}`
+      );
+    }
+    log("the Worker wrote the known string into the shared working directory.");
 
     const resultPromptPath = join(runDir, "result-prompt.txt");
     await writeFile(
@@ -401,6 +441,9 @@ async function main() {
     await captureDiagnostics(runDir);
     throw error;
   } finally {
+    if (workerWriteName !== undefined) {
+      await rm(join(ROOT_DIR, workerWriteName), { force: true });
+    }
     await cleanupHerdr(createdWorkspaceIds);
     if (failed) {
       log(`diagnostics preserved at ${EVIDENCE_DIR}`);

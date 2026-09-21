@@ -47,10 +47,6 @@ import {
   NodeWorkerProcessControl,
   type WorkerProcessControl,
 } from "./worker-process-control.js";
-import {
-  type ApprovedProviderExtension,
-  verifyApprovedProviderExtension,
-} from "./worker-extension-entry.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -71,7 +67,6 @@ export interface VisibleWorkerOptions {
   readonly cwd: string;
   readonly executor: CommandExecutor;
   readonly extensionEntryPath: string;
-  readonly providerExtension?: Readonly<ApprovedProviderExtension>;
   readonly capabilityGenerator?: WorkerCapabilityGenerator;
   readonly promptReader?: PromptReader;
   readonly serverFactory?: () => Server;
@@ -689,14 +684,6 @@ export class VisibleWorker implements WorkerAdapter {
 
       cancellation.requireLaunchAllowed();
       const effective = operation.effectiveConfig;
-      const providerExtension =
-        effective.model.provider === this.options.providerExtension?.provider
-          ? verifyApprovedProviderExtension(this.options.providerExtension)
-          : undefined;
-      const approvedExtensionArgs =
-        providerExtension === undefined
-          ? []
-          : ["--extension", providerExtension.entryPath];
       const output = await Effect.runPromise(
         this.options.executor.execute({
           executable: "herdr",
@@ -725,7 +712,6 @@ export class VisibleWorker implements WorkerAdapter {
             "--no-extensions",
             "--extension",
             this.options.extensionEntryPath,
-            ...approvedExtensionArgs,
             "--no-skills",
             "--no-prompt-templates",
             "--no-themes",

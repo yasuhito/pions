@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
-  mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   stat,
   unlink,
@@ -39,6 +39,7 @@ import {
   type PionsDelegateDetails,
   type PionsExtensionOptions,
 } from "../src/internal/pi-extension.js";
+import type { VisibleRuntimeOptions } from "../src/internal/visible-runtime.js";
 import {
   HerdrPreconditionError,
   OperationCancelledError,
@@ -481,6 +482,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   fixtureOptions: {
     readonly enableFormalReview?: boolean;
     readonly enableCoordinator?: boolean;
+    readonly registeredProviderIds?: ReadonlyArray<string>;
   } = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-extension-"));
@@ -507,7 +509,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   } as unknown as ExtensionAPI;
   installPionsExtension(pi, {
     ...(options.runtimeFactory === undefined ? { runtime } : {}),
-    ...(fixtureOptions.enableFormalReview !== false
+    ...(fixtureOptions.enableFormalReview === true
       ? {
           formalReview: {
             profile: FORMAL_REVIEW_PROFILE,
@@ -541,6 +543,8 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
     modelRegistry: {
       find: (provider: string, id: string) => ({ provider, id }),
       hasConfiguredAuth: () => true,
+      getRegisteredProviderIds: () =>
+        fixtureOptions.registeredProviderIds ?? [],
     },
     sessionManager: { getSessionId: () => sessionId },
     isProjectTrusted: () => true,
@@ -631,15 +635,52 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   };
 }
 
-test("project extension registers pions_review", async (context) => {
+// The retained formal review tools are reachable only when trusted host code
+// passes formalReview; the delegation-only extension entry never does.
+function formalReviewFixture<TRuntime extends Runtime = FakeRuntime>(
+  runtime?: TRuntime,
+  options: Parameters<typeof fixture>[1] = {},
+  fixtureOptions: Parameters<typeof fixture>[3] = {}
+) {
+  return fixture(runtime, options, false, {
+    enableFormalReview: true,
+    ...fixtureOptions,
+  });
+}
+
+test("the delegation-only extension registers exactly the three delegation tools", async (context) => {
   const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.deepEqual(
+    [...value.tools.keys()],
+    ["pions_result", "pions_operation", "pions_delegate"]
+  );
+});
+
+test("the delegation-only extension does not register pions_review", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(value.tools.has("pions_review"), false);
+});
+
+test("the delegation-only extension does not register pions_review_decision", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  assert.equal(value.tools.has("pions_review_decision"), false);
+});
+
+test("trusted formal review configuration registers pions_review", async (context) => {
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.equal(value.tools.get("pions_review")?.name, "pions_review");
 });
 
 test("pions_review accepts only an Artifact identifier and review task", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.deepEqual(value.tools.get("pions_review")?.parameters, {
@@ -658,7 +699,7 @@ test("pions_review accepts only an Artifact identifier and review task", async (
 });
 
 test("pions_review returns the created Operation identifier", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.equal(
@@ -668,7 +709,7 @@ test("pions_review returns the created Operation identifier", async (context) =>
 });
 
 test("pions_review fixes the registered Artifact as the Review subject", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review("artifact-42");
 
@@ -679,7 +720,7 @@ test("pions_review fixes the registered Artifact as the Review subject", async (
 });
 
 test("pions_review uses the formal reviewer profile", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
 
@@ -687,7 +728,7 @@ test("pions_review uses the formal reviewer profile", async (context) => {
 });
 
 test("pions_review uses the trusted formal-review model", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
 
@@ -698,7 +739,7 @@ test("pions_review uses the trusted formal-review model", async (context) => {
 });
 
 test("pions_review uses the trusted formal-review thinking level", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
 
@@ -708,7 +749,7 @@ test("pions_review uses the trusted formal-review thinking level", async (contex
 test("pions_review passes the trusted Review subject authority to the Runtime", async (context) => {
   let authority: RuntimeReviewSubjectAuthority | undefined;
   const runtime = new FakeRuntime();
-  const value = await fixture(runtime, {
+  const value = await formalReviewFixture(runtime, {
     runtimeFactory: (options) => {
       authority = options.reviewSubjectAuthority;
       return runtime;
@@ -723,7 +764,7 @@ test("pions_review passes the trusted Review subject authority to the Runtime", 
 test("pions_review registers a required Start gate in the Runtime", async (context) => {
   let profile: Readonly<WorkerProfilePolicy> | undefined;
   const runtime = new FakeRuntime();
-  const value = await fixture(runtime, {
+  const value = await formalReviewFixture(runtime, {
     runtimeFactory: (options) => {
       profile = options.profiles["formal-review"];
       return runtime;
@@ -735,22 +776,8 @@ test("pions_review registers a required Start gate in the Runtime", async (conte
   assert.equal(profile?.startAuthorization.policy, "required");
 });
 
-test("pions_review fails closed without trusted formal-review configuration", async (context) => {
-  const value = await fixture(new FakeRuntime(), {}, false, {
-    enableFormalReview: false,
-  });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  await assert.rejects(
-    value.review(),
-    (error) =>
-      error instanceof WorkerConfigurationError &&
-      error.reason === "unsupported_capability"
-  );
-});
-
 test("pions_review does not wait for the Result", async (context) => {
-  const value = await fixture(new PendingRuntime());
+  const value = await formalReviewFixture(new PendingRuntime());
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.equal(
@@ -762,7 +789,7 @@ test("pions_review does not wait for the Result", async (context) => {
 for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
   test(`session shutdown caused by ${reason} cancels an active formal review`, async (context) => {
     const runtime = new PendingRuntime();
-    const value = await fixture(runtime);
+    const value = await formalReviewFixture(runtime);
     context.after(() => rm(value.root, { recursive: true, force: true }));
     await value.review();
     await value.shutdown(reason);
@@ -775,7 +802,7 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
 
 test("session shutdown does not cancel a completed formal review", async (context) => {
   const runtime = new PendingRuntime();
-  const value = await fixture(runtime);
+  const value = await formalReviewFixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   runtime.results.get("operation-1")?.resolve({
@@ -791,7 +818,7 @@ test("session shutdown does not cancel a completed formal review", async (contex
 
 test("session shutdown does not cancel a failed formal review", async (context) => {
   const runtime = new PendingRuntime();
-  const value = await fixture(runtime);
+  const value = await formalReviewFixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   runtime.results
@@ -807,7 +834,7 @@ test("formal review shutdown keeps the Runtime open until cancellation is classi
   const runtime = new PendingRuntime();
   const classification = deferred<CancellationResult>();
   runtime.cancellationResponse = classification.promise;
-  const value = await fixture(runtime);
+  const value = await formalReviewFixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   const shutdown = value.shutdown("quit");
@@ -819,7 +846,7 @@ test("formal review shutdown keeps the Runtime open until cancellation is classi
 });
 
 test("project extension registers pions_review_decision", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.equal(
@@ -829,7 +856,7 @@ test("project extension registers pions_review_decision", async (context) => {
 });
 
 test("pions_review_decision accepts no Coordinator identity or credential", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   const parameters = value.tools.get("pions_review_decision")?.parameters as {
     readonly properties?: Readonly<Record<string, unknown>>;
@@ -843,7 +870,7 @@ test("pions_review_decision accepts no Coordinator identity or credential", asyn
 });
 
 test("pions_review_decision submits authorization for the owned Operation", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   await value.decide("authorize");
@@ -852,7 +879,7 @@ test("pions_review_decision submits authorization for the owned Operation", asyn
 });
 
 test("pions_review_decision submits rejection for the owned Operation", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   await value.decide("reject");
@@ -861,7 +888,7 @@ test("pions_review_decision submits rejection for the owned Operation", async (c
 });
 
 test("pions_review_decision binds the decision to the Operation identifier", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   await value.decide();
@@ -873,7 +900,7 @@ test("pions_review_decision binds the decision to the Operation identifier", asy
 });
 
 test("pions_review_decision binds the decision to the inspected Startup receipt", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   await value.decide();
@@ -885,7 +912,7 @@ test("pions_review_decision binds the decision to the inspected Startup receipt"
 });
 
 test("pions_review_decision derives a stable decision identifier from the Pi tool call", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   await value.decide();
@@ -898,7 +925,7 @@ test("pions_review_decision derives a stable decision identifier from the Pi too
 });
 
 test("pions_review_decision uses the trusted Coordinator credential", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   await value.decide();
@@ -910,7 +937,7 @@ test("pions_review_decision uses the trusted Coordinator credential", async (con
 });
 
 test("pions_review_decision returns the Runtime decision outcome", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
 
@@ -921,7 +948,7 @@ test("pions_review_decision returns the Runtime decision outcome", async (contex
 });
 
 test("pions_review_decision does not expose the Coordinator identity", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
 
@@ -932,9 +959,13 @@ test("pions_review_decision does not expose the Coordinator identity", async (co
 });
 
 test("pions_review_decision fails closed without trusted Coordinator configuration", async (context) => {
-  const value = await fixture(new FakeRuntime(), {}, false, {
-    enableCoordinator: false,
-  });
+  const value = await formalReviewFixture(
+    new FakeRuntime(),
+    {},
+    {
+      enableCoordinator: false,
+    }
+  );
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
 
@@ -947,7 +978,7 @@ test("pions_review_decision fails closed without trusted Coordinator configurati
 });
 
 test("pions_review_decision refuses an Operation not owned by the current session", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   await assert.rejects(
@@ -957,7 +988,7 @@ test("pions_review_decision refuses an Operation not owned by the current sessio
 });
 
 test("pions_review_decision refuses an Operation owned by another Pi session", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   value.setSessionId("pi-session-2");
@@ -969,7 +1000,7 @@ test("pions_review_decision refuses an Operation owned by another Pi session", a
 });
 
 test("pions_review does not pass the Coordinator credential to the Worker", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
   const promptRef = value.runtime.tasks[0]?.promptRef;
@@ -984,7 +1015,7 @@ test("pions_review does not pass the Coordinator credential to the Worker", asyn
 test("pions_review passes the trusted Start authorization authenticator to the Runtime", async (context) => {
   let authenticator: StartAuthorizationAuthenticator | undefined;
   const runtime = new FakeRuntime();
-  const value = await fixture(runtime, {
+  const value = await formalReviewFixture(runtime, {
     runtimeFactory: (options) => {
       authenticator = options.startAuthorizationAuthenticator;
       return runtime;
@@ -1036,7 +1067,7 @@ test("pions_operation reads an earlier session snapshot through a retrieval Runt
 });
 
 test("a newly requested formal review has no accepted Start instruction", async (context) => {
-  const value = await fixture();
+  const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.review();
 
@@ -1362,13 +1393,13 @@ test("delegation inherits the exact Pi thinking level", async (context) => {
   assert.equal(value.runtime.tasks[0]?.thinkingLevel, "high");
 });
 
-test("project configuration overrides the review model", async (context) => {
+test("project configuration overrides the Worker model", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "openai", id: "gpt-5.6-codex" } },
+      model: { provider: "openai", id: "gpt-5.6-codex" },
     })
   );
   await value.execute();
@@ -1385,7 +1416,7 @@ test("model-only project configuration inherits the Pi thinking level", async (c
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "openai", id: "gpt-5.6-codex" } },
+      model: { provider: "openai", id: "gpt-5.6-codex" },
     })
   );
   await value.execute();
@@ -1398,7 +1429,7 @@ test("thinking-only project configuration inherits the Pi model", async (context
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
     join(value.root, ".pions.json"),
-    JSON.stringify({ review: { thinkingLevel: "low" } })
+    JSON.stringify({ thinkingLevel: "low" })
   );
   await value.execute();
 
@@ -1408,12 +1439,12 @@ test("thinking-only project configuration inherits the Pi model", async (context
   });
 });
 
-test("project configuration overrides the review thinking level", async (context) => {
+test("project configuration overrides the Worker thinking level", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
     join(value.root, ".pions.json"),
-    JSON.stringify({ review: { thinkingLevel: "low" } })
+    JSON.stringify({ thinkingLevel: "low" })
   );
   await value.execute();
 
@@ -1426,10 +1457,8 @@ test("project configuration applies model and thinking level together", async (c
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: {
-        model: { provider: "anthropic", id: "claude-opus-5" },
-        thinkingLevel: "xhigh",
-      },
+      model: { provider: "anthropic", id: "claude-opus-5" },
+      thinkingLevel: "xhigh",
     })
   );
   await value.execute();
@@ -1464,7 +1493,7 @@ test("unknown project configuration keys are rejected", async (context) => {
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
     join(value.root, ".pions.json"),
-    JSON.stringify({ review: { apiKey: "secret" } })
+    JSON.stringify({ apiKey: "secret" })
   );
 
   await assert.rejects(
@@ -1473,6 +1502,39 @@ test("unknown project configuration keys are rejected", async (context) => {
       error instanceof ProjectConfigurationError &&
       error.reason === "unknown_key"
   );
+});
+
+test("the legacy review project configuration form is rejected", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({
+      review: {
+        model: { provider: "anthropic", id: "claude-opus-5" },
+        thinkingLevel: "high",
+      },
+    })
+  );
+
+  await assert.rejects(
+    value.execute(),
+    (error) =>
+      error instanceof ProjectConfigurationError &&
+      error.reason === "unknown_key"
+  );
+});
+
+test("the legacy review project configuration form does not spawn a Worker", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ review: { thinkingLevel: "high" } })
+  );
+  await value.execute().catch(() => undefined);
+
+  assert.equal(value.runtime.spawnCount, 0);
 });
 
 test("project configuration cannot select formal review authority or enablement", async (context) => {
@@ -1496,13 +1558,13 @@ test("project configuration cannot select formal review authority or enablement"
   });
 });
 
-test("invalid review model providers are rejected", async (context) => {
+test("invalid Worker model providers are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "not a provider", id: "model" } },
+      model: { provider: "not a provider", id: "model" },
     })
   );
 
@@ -1514,13 +1576,13 @@ test("invalid review model providers are rejected", async (context) => {
   );
 });
 
-test("invalid review model identifiers are rejected", async (context) => {
+test("invalid Worker model identifiers are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "anthropic", id: "" } },
+      model: { provider: "anthropic", id: "" },
     })
   );
 
@@ -1532,12 +1594,12 @@ test("invalid review model identifiers are rejected", async (context) => {
   );
 });
 
-test("invalid review thinking levels are rejected", async (context) => {
+test("invalid Worker thinking levels are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
     join(value.root, ".pions.json"),
-    JSON.stringify({ review: { thinkingLevel: "ultra" } })
+    JSON.stringify({ thinkingLevel: "ultra" })
   );
 
   await assert.rejects(
@@ -1563,7 +1625,7 @@ test("an unavailable configured model returns a typed failure", async (context) 
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "anthropic", id: "missing" } },
+      model: { provider: "anthropic", id: "missing" },
     })
   );
   (value.context.modelRegistry as unknown as { find: () => undefined }).find =
@@ -1583,7 +1645,7 @@ test("an unauthenticated configured model returns a typed failure", async (conte
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "anthropic", id: "claude-opus-5" } },
+      model: { provider: "anthropic", id: "claude-opus-5" },
     })
   );
   (
@@ -1607,7 +1669,7 @@ test("a configured model mismatch reaches the parent unchanged", async (context)
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "anthropic", id: "claude-opus-5" } },
+      model: { provider: "anthropic", id: "claude-opus-5" },
     })
   );
 
@@ -1620,7 +1682,7 @@ test("configured model failure does not fall back to the delegating model", asyn
   await writeFile(
     join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "anthropic", id: "missing" } },
+      model: { provider: "anthropic", id: "missing" },
     })
   );
   (value.context.modelRegistry as unknown as { find: () => undefined }).find =
@@ -1630,53 +1692,50 @@ test("configured model failure does not fall back to the delegating model", asyn
   assert.equal(value.runtime.spawnCount, 0);
 });
 
-test("unsafe Claude bridge MCP configuration fails before an Operation is spawned", async (context) => {
-  const runtime = new FakeRuntime();
-  const harness = await fixture(runtime);
+test("a configured model provider registered by a Pi extension is rejected before spawning", async (context) => {
+  const value = await fixture(new FakeRuntime(), {}, false, {
+    registeredProviderIds: ["claude-bridge"],
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
-    join(harness.root, ".pions.json"),
+    join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "claude-bridge", id: "claude-opus-5" } },
+      model: { provider: "claude-bridge", id: "claude-opus-5" },
     })
   );
-  await mkdir(join(harness.root, ".pi"));
-  await writeFile(
-    join(harness.root, ".pi", "claude-bridge.json"),
-    JSON.stringify({
-      provider: { strictMcpConfig: false },
-    })
-  );
-  context.after(() => rm(harness.root, { recursive: true, force: true }));
-  await harness.execute().catch(() => undefined);
 
-  assert.equal(runtime.spawnCount, 0);
+  await assert.rejects(
+    value.execute(),
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "unsupported_capability"
+  );
 });
 
-test("a Claude bridge version mismatch fails before an Operation is spawned", async (context) => {
-  const packageRoot = await mkdtemp(join(tmpdir(), "pions-bridge-version-"));
-  const packagePath = join(packageRoot, "package.json");
-  await writeFile(
-    packagePath,
-    JSON.stringify({ name: "pi-claude-bridge", version: "9.9.9" })
-  );
-  const runtime = new FakeRuntime();
-  const harness = await fixture(runtime, {
-    claudeBridgePackagePath: packagePath,
+test("an inherited model provider registered by a Pi extension is rejected before spawning", async (context) => {
+  const value = await fixture(new FakeRuntime(), {}, false, {
+    registeredProviderIds: ["anthropic"],
   });
-  context.after(() =>
-    Promise.all([
-      rm(harness.root, { recursive: true, force: true }),
-      rm(packageRoot, { recursive: true, force: true }),
-    ])
-  );
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute().catch(() => undefined);
+
+  assert.equal(value.runtime.spawnCount, 0);
+});
+
+test("a model provider registered by a Pi extension does not fall back to another provider", async (context) => {
+  const value = await fixture(new FakeRuntime(), {}, false, {
+    registeredProviderIds: ["claude-bridge"],
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
   await writeFile(
-    join(harness.root, ".pions.json"),
+    join(value.root, ".pions.json"),
     JSON.stringify({
-      review: { model: { provider: "claude-bridge", id: "claude-opus-5" } },
+      model: { provider: "claude-bridge", id: "claude-opus-5" },
     })
   );
+  await value.execute().catch(() => undefined);
 
-  await assert.rejects(harness.execute(), /version 9\.9\.9.*expected 0\.7\.0/u);
+  assert.equal(value.runtime.spawnCount, 0);
 });
 
 test("delegation resolves the default Worker extension from the Pions distribution", async (context) => {
@@ -1779,18 +1838,62 @@ test("delegation revalidates the Worker extension before reusing a runtime", asy
   );
 });
 
-test("delegation limits Worker tools to the review profile", async (context) => {
+test("delegation provides the general Worker tools", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
 
   assert.deepEqual(value.runtime.tasks[0]?.tools, [
     "read",
+    "write",
+    "edit",
+    "bash",
     "grep",
     "find",
     "ls",
-    "bash",
   ]);
+});
+
+test("delegation does not provide pions_delegate to the Worker", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute();
+
+  assert.equal(
+    value.runtime.tasks[0]?.tools?.includes("pions_delegate"),
+    false
+  );
+});
+
+test("delegation uses the general Worker profile", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute();
+
+  assert.equal(value.runtime.tasks[0]?.profile, "worker");
+});
+
+test("the Worker profile declares a general intended use", async (context) => {
+  let profiles: VisibleRuntimeOptions["profiles"] | undefined;
+  const runtime = new FakeRuntime();
+  const value = await fixture(runtime, {
+    runtimeFactory: (options) => {
+      profiles = options.profiles;
+      return runtime;
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute();
+
+  assert.equal(profiles?.worker?.intendedUse, "general");
+});
+
+test("the Worker runs in the delegating repository root", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute();
+
+  assert.equal(value.runtime.tasks[0]?.cwd, await realpath(value.root));
 });
 
 test("a later tool call inherits a newly selected Pi model", async (context) => {
@@ -1798,7 +1901,7 @@ test("a later tool call inherits a newly selected Pi model", async (context) => 
   const runtime = new FakeRuntime();
   const value = await fixture(runtime, {
     runtimeFactory: (options) => {
-      configuredModels.push(options.profiles.review?.modelCandidates[0]);
+      configuredModels.push(options.profiles.worker?.modelCandidates[0]);
       return runtime;
     },
   });
@@ -1839,7 +1942,7 @@ test("delegated task does not appear in TaskSpec metadata", async (context) => {
   );
 });
 
-test("Worker prompt begins with a read-oriented role without naming review", async (context) => {
+test("Worker prompt begins with a general-purpose role without naming review", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
@@ -1848,7 +1951,7 @@ test("Worker prompt begins with a read-oriented role without naming review", asy
 
   assert.equal(
     (await readFile(promptRef, "utf8")).startsWith(
-      "You are a read-oriented Worker with an independent context.\n"
+      "You are a general-purpose Worker with an independent context.\n"
     ),
     true
   );
@@ -1866,7 +1969,7 @@ test("Worker prompt instructions do not assign a review role", async (context) =
   assert.doesNotMatch(instructions, /\breview(?:er)?\b/i);
 });
 
-test("Worker prompt states that bash policy is not isolation", async (context) => {
+test("Worker prompt names the general Worker tools", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
@@ -1875,8 +1978,18 @@ test("Worker prompt states that bash policy is not isolation", async (context) =
 
   assert.match(
     await readFile(promptRef, "utf8"),
-    /bash.*not.*technical isolation/is
+    /^Use only read, write, edit, bash, grep, find, ls\.$/m
   );
+});
+
+test("Worker prompt forbids further delegation", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute();
+  const promptRef = value.runtime.tasks[0]?.promptRef;
+  if (promptRef === undefined) throw new Error("promptRef missing");
+
+  assert.match(await readFile(promptRef, "utf8"), /cannot delegate further/u);
 });
 
 test("the same Pi tool call derives the same idempotency key", async (context) => {

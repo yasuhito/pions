@@ -210,6 +210,9 @@ function validateStartAuthorizationPolicy(
 }
 
 function validateIntendedUse(profile: Readonly<WorkerProfilePolicy>): void {
+  // A general Worker edits the shared working directory without an external
+  // Start gate or resource proof; its tool ceiling is the Pi built-in set.
+  if (profile.intendedUse === "general") return;
   if (profile.intendedUse === "reader") {
     if (profile.tools.includes("edit") || profile.tools.includes("write")) {
       throw new WorkerConfigurationError(
