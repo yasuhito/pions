@@ -204,12 +204,12 @@ async function provisionSession(runDir) {
   await serverLog?.close();
 }
 
-async function createWorkspace(label, env) {
+async function createWorkspace(label, env, cwd = ROOT_DIR) {
   const args = [
     "workspace",
     "create",
     "--cwd",
-    ROOT_DIR,
+    cwd,
     "--label",
     label,
     "--no-focus",
@@ -224,7 +224,13 @@ async function createWorkspace(label, env) {
   };
 }
 
-async function runPiInPane(runDir, paneId, promptPath, label) {
+async function runPiInPane(
+  runDir,
+  paneId,
+  promptPath,
+  label,
+  { extensions = [] } = {}
+) {
   const outPath = join(runDir, `${label}-output.json`);
   const errPath = join(runDir, `${label}-stderr.log`);
   const markerPath = join(runDir, `${label}-exit.marker`);
@@ -235,6 +241,7 @@ async function runPiInPane(runDir, paneId, promptPath, label) {
     "--no-extensions",
     "--extension",
     shellQuote(EXTENSION_PATH),
+    ...extensions.flatMap((path) => ["--extension", shellQuote(path)]),
     "--approve",
     "--no-session",
     "-p",
@@ -285,6 +292,34 @@ async function extractToolResult(transcriptPath, toolName) {
   return last.message;
 }
 
+async function countToolResults(transcriptPath, toolName) {
+  const content = await readFile(transcriptPath, "utf8");
+  return content
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter(
+      (event) =>
+        event.type === "message_end" &&
+        event.message?.role === "toolResult" &&
+        event.message?.toolName === toolName
+    ).length;
+}
+
+async function workspaceIds() {
+  const listed = await herdrJson(["workspace", "list"]);
+  const workspaces = listed.result?.workspaces ?? listed.workspaces ?? [];
+  return new Set(workspaces.map((workspace) => workspace.workspace_id));
+}
+
+async function assertNoNewWorkspace(before, description) {
+  const after = await workspaceIds();
+  const added = [...after].filter((id) => !before.has(id));
+  if (added.length !== 0) {
+    throw new Error(`${description} created Worker workspaces: ${added.join(", ")}`);
+  }
+}
+
 function toolResultText(message) {
   const textPart = message.content?.find?.((part) => part.type === "text");
   return textPart?.text ?? "";
@@ -322,6 +357,7 @@ async function main() {
   await mkdir(stateDir, { recursive: true });
   const createdWorkspaceIds = [];
   let workerWriteName;
+  let originalProjectConfig;
   let failed = false;
 
   try {
@@ -332,7 +368,9 @@ async function main() {
     );
     await provisionSession(runDir);
 
-    const knownString = `PIONS_E2E_106_${randomBytes(6).toString("hex")}_日本語テスト🚀🔥`;
+    const knownString = `PIONS_E2E_107_${randomBytes(6).toString("hex")}_日本語テスト🚀🔥`;
+    const nestedCwd = join(ROOT_DIR, ".pions-e2e-nested", randomBytes(4).toString("hex"));
+    await mkdir(nestedCwd, { recursive: true });
     // A relative path proves the Worker writes into the parent's working
     // directory; the file is removed in the finally block below.
     workerWriteName = `.pions-e2e-worker-write-${randomBytes(4).toString("hex")}.txt`;
@@ -347,17 +385,47 @@ async function main() {
       `Use the pions_delegate tool exactly once with this exact task text:\n\n${task}\n\nDo not do anything else.\n`
     );
 
+    const parentToolsPath = join(runDir, "parent-tools.json");
+    const observerExtensionPath = join(runDir, "observe-tools.ts");
+    await writeFile(
+      observerExtensionPath,
+      [
+        'import { writeFileSync } from "node:fs";',
+        "export default function observeTools(pi) {",
+        '  pi.on("session_start", () => {',
+        `    writeFileSync(${JSON.stringify(parentToolsPath)}, JSON.stringify(pi.getActiveTools().sort()));`,
+        "  });",
+        "}",
+      ].join("\n")
+    );
+
     log("delegating a known UTF-8 task through pions_delegate...");
-    const workspace1 = await createWorkspace("pions-e2e-delegate", {
-      XDG_STATE_HOME: stateDir,
-    });
+    const workspace1 = await createWorkspace(
+      "pions-e2e-delegate",
+      { XDG_STATE_HOME: stateDir },
+      nestedCwd
+    );
     createdWorkspaceIds.push(workspace1.workspaceId);
     const delegateTranscript = await runPiInPane(
       runDir,
       workspace1.paneId,
       delegatePromptPath,
-      "delegate"
+      "delegate",
+      { extensions: [observerExtensionPath] }
     );
+    const parentPionsTools = JSON.parse(await readFile(parentToolsPath, "utf8"))
+      .filter((name) => name.startsWith("pions_"));
+    const expectedParentTools = [
+      "pions_delegate",
+      "pions_operation",
+      "pions_result",
+    ];
+    if (JSON.stringify(parentPionsTools) !== JSON.stringify(expectedParentTools)) {
+      throw new Error(
+        `parent Pions tool surface mismatch: ${JSON.stringify(parentPionsTools)}`
+      );
+    }
+    log("the live parent Pi exposes exactly the three Pions tools.");
     const delegateResult = await extractToolResult(
       delegateTranscript,
       "pions_delegate"
@@ -384,7 +452,7 @@ async function main() {
     log(`delegated Operation ${operationId} returned the known UTF-8 answer.`);
 
     const workerWritten = await readFile(
-      join(ROOT_DIR, workerWriteName),
+      join(nestedCwd, workerWriteName),
       "utf8"
     ).catch(() => undefined);
     if (workerWritten !== knownString) {
@@ -392,7 +460,7 @@ async function main() {
         `worker write in the shared working directory mismatch: expected ${JSON.stringify(knownString)} at ${workerWriteName}, got ${JSON.stringify(workerWritten)}`
       );
     }
-    log("the Worker wrote the known string into the shared working directory.");
+    log("the Worker inherited the parent's nested working directory.");
 
     const resultPromptPath = join(runDir, "result-prompt.txt");
     await writeFile(
@@ -432,6 +500,128 @@ async function main() {
       );
     }
 
+    const operationPromptPath = join(runDir, "operation-prompt.txt");
+    await writeFile(
+      operationPromptPath,
+      `Use the pions_operation tool exactly once with operationId "${operationId}". Do not do anything else.\n`
+    );
+    const workspace3 = await createWorkspace("pions-e2e-operation", {
+      XDG_STATE_HOME: stateDir,
+    });
+    createdWorkspaceIds.push(workspace3.workspaceId);
+    const operationTranscript = await runPiInPane(
+      runDir,
+      workspace3.paneId,
+      operationPromptPath,
+      "operation"
+    );
+    const operationResult = await extractToolResult(
+      operationTranscript,
+      "pions_operation"
+    );
+    const effective = operationResult.details?.operation?.effectiveConfig ??
+      operationResult.details?.effectiveConfig;
+    const expectedWorkerTools = ["read", "write", "edit", "bash", "grep", "find", "ls"];
+    if (JSON.stringify(effective?.tools) !== JSON.stringify(expectedWorkerTools)) {
+      throw new Error(`Worker tool surface mismatch: ${JSON.stringify(effective?.tools)}`);
+    }
+    if (effective?.cwd !== nestedCwd) {
+      throw new Error(`Worker cwd mismatch: expected ${nestedCwd}, got ${effective?.cwd}`);
+    }
+    log("the persisted live Operation has the exact seven-tool Worker surface and nested cwd.");
+
+    const projectConfigPath = join(ROOT_DIR, ".pions.json");
+    originalProjectConfig = await readFile(projectConfigPath, "utf8");
+    const rejectionPromptPath = join(runDir, "rejection-prompt.txt");
+    await writeFile(
+      rejectionPromptPath,
+      "Use the pions_delegate tool exactly once with task \"Respond with OK\". Do not do anything else.\n"
+    );
+    await writeFile(projectConfigPath, JSON.stringify({ review: { thinkingLevel: "high" } }));
+    const beforeLegacy = await workspaceIds();
+    const legacyWorkspace = await createWorkspace("pions-e2e-legacy-config", {
+      XDG_STATE_HOME: stateDir,
+    });
+    createdWorkspaceIds.push(legacyWorkspace.workspaceId);
+    const legacyTranscript = await runPiInPane(
+      runDir,
+      legacyWorkspace.paneId,
+      rejectionPromptPath,
+      "legacy-config"
+    );
+    const legacyResult = await extractToolResult(legacyTranscript, "pions_delegate");
+    if (!legacyResult.isError) throw new Error("legacy review configuration was accepted");
+    const beforeLegacyWithoutParent = new Set(beforeLegacy);
+    beforeLegacyWithoutParent.add(legacyWorkspace.workspaceId);
+    await assertNoNewWorkspace(beforeLegacyWithoutParent, "legacy review rejection");
+    log("legacy review configuration was rejected before Worker creation.");
+    await writeFile(projectConfigPath, originalProjectConfig);
+
+    const providerExtensionPath = join(runDir, "unavailable-provider.ts");
+    await writeFile(
+      providerExtensionPath,
+      [
+        "export default function unavailableProvider(pi) {",
+        '  pi.registerProvider("e2e-extension-provider", {',
+        '    name: "E2E extension provider",',
+        '    baseUrl: "http://127.0.0.1:1/v1",',
+        '    apiKey: "e2e",',
+        '    api: "openai-completions",',
+        "    models: [{",
+        '      id: "e2e-model", name: "E2E model", reasoning: false,',
+        '      input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },',
+        "      contextWindow: 4096, maxTokens: 1024",
+        "    }]",
+        "  });",
+        "}",
+      ].join("\n")
+    );
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        model: { provider: "e2e-extension-provider", id: "e2e-model" },
+      })
+    );
+    const beforeProvider = await workspaceIds();
+    const providerWorkspace = await createWorkspace(
+      "pions-e2e-provider-config",
+      { XDG_STATE_HOME: stateDir }
+    );
+    createdWorkspaceIds.push(providerWorkspace.workspaceId);
+    const providerTranscript = await runPiInPane(
+      runDir,
+      providerWorkspace.paneId,
+      rejectionPromptPath,
+      "provider-config",
+      { extensions: [providerExtensionPath] }
+    );
+    const providerResult = await extractToolResult(
+      providerTranscript,
+      "pions_delegate"
+    );
+    if (!providerResult.isError) {
+      throw new Error("extension-derived Worker provider was accepted");
+    }
+    const beforeProviderWithoutParent = new Set(beforeProvider);
+    beforeProviderWithoutParent.add(providerWorkspace.workspaceId);
+    await assertNoNewWorkspace(
+      beforeProviderWithoutParent,
+      "extension-derived provider rejection"
+    );
+    const failedDelegationCount = await countToolResults(
+      providerTranscript,
+      "pions_delegate"
+    );
+    if (failedDelegationCount !== 1) {
+      throw new Error(
+        `failed delegation executed ${failedDelegationCount} times instead of once`
+      );
+    }
+    log(
+      "an extension-derived provider was rejected before Worker creation without retry."
+    );
+    await writeFile(projectConfigPath, originalProjectConfig);
+
     const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     log(
       `PASS: Operation ${operationId} (digest ${originalDigest}) verified across two Pi sessions in ${elapsedSeconds}s.`
@@ -441,8 +631,16 @@ async function main() {
     await captureDiagnostics(runDir);
     throw error;
   } finally {
+    if (originalProjectConfig !== undefined) {
+      await writeFile(join(ROOT_DIR, ".pions.json"), originalProjectConfig).catch(
+        () => undefined
+      );
+    }
     if (workerWriteName !== undefined) {
-      await rm(join(ROOT_DIR, workerWriteName), { force: true });
+      await rm(join(ROOT_DIR, ".pions-e2e-nested"), {
+        recursive: true,
+        force: true,
+      });
     }
     await cleanupHerdr(createdWorkspaceIds);
     if (failed) {
