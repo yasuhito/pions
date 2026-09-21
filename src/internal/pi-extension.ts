@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -538,6 +538,7 @@ export function installPionsExtension(
     readonly idempotencyKey: string;
     readonly normalizedRoot: string;
     readonly promptRef: string;
+    readonly workerCwd: string;
     readonly workerModel: Readonly<ModelReference>;
     readonly workerThinkingLevel: ThinkingLevel;
     readonly runtime: Runtime;
@@ -546,6 +547,7 @@ export function installPionsExtension(
     const inheritedThinkingLevel = selectedThinkingLevel(context);
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
+    const workerCwd = await realpath(context.cwd);
     const configured = await projectConfig(normalizedRoot);
     const workerModel =
       configured?.model === undefined
@@ -586,7 +588,7 @@ export function installPionsExtension(
                 options.formalReview.resultFormats.registry.digest,
             })
           );
-    const configKey = `${normalizedRoot}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${formalProfileDigest}`;
+    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${formalProfileDigest}`;
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
     let runtime = options.runtime;
     if (runtime === undefined) {
@@ -594,13 +596,13 @@ export function installPionsExtension(
         ...(options.extensionEntryPath === undefined
           ? {}
           : { explicitPath: options.extensionEntryPath }),
-        cwd: normalizedRoot,
+        cwd: workerCwd,
       });
       runtime =
         runtimesByCall.get(idempotencyKey) ?? runtimesByConfig.get(configKey);
       if (runtime === undefined) {
         runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
-          cwd: normalizedRoot,
+          cwd: workerCwd,
           stateDirectory: runtimeStateDirectory,
           profiles: {
             [WORKER_PROFILE]: workerProfile,
@@ -655,6 +657,7 @@ export function installPionsExtension(
       idempotencyKey,
       normalizedRoot,
       promptRef,
+      workerCwd,
       workerModel,
       workerThinkingLevel,
       runtime,
@@ -941,7 +944,7 @@ export function installPionsExtension(
         model: prepared.workerModel,
         thinkingLevel: prepared.workerThinkingLevel,
         tools: WORKER_TOOLS,
-        cwd: prepared.normalizedRoot,
+        cwd: prepared.workerCwd,
       });
       const operation = operationLifetime.track(handle);
       const completion = await awaitOperation(operation, signal);

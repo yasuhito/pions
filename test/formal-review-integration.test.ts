@@ -347,6 +347,13 @@ test("the package does not publish the formal review integration entry", async (
   });
 });
 
+test("the package does not publish a generic JavaScript API", async () => {
+  const entry = "pions";
+  await assert.rejects(import(entry), {
+    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  });
+});
+
 test("the retained formal review module exposes its versioned identity", () => {
   assert.deepEqual(formalReviewIntegrationModule, {
     moduleId: "pions.formal-review-integration",

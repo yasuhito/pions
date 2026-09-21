@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -628,6 +629,9 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
     root,
     setSessionId: (value: string) => {
       sessionId = value;
+    },
+    setWorkingDirectory: (value: string) => {
+      (context as { cwd: string }).cwd = value;
     },
     runtime,
     shutdown,
@@ -1888,12 +1892,15 @@ test("the Worker profile declares a general intended use", async (context) => {
   assert.equal(profiles?.worker?.intendedUse, "general");
 });
 
-test("the Worker runs in the delegating repository root", async (context) => {
+test("the Worker runs in the delegating working directory", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
+  const workingDirectory = join(value.root, "packages", "app");
+  await mkdir(workingDirectory, { recursive: true });
+  value.setWorkingDirectory(workingDirectory);
   await value.execute();
 
-  assert.equal(value.runtime.tasks[0]?.cwd, await realpath(value.root));
+  assert.equal(value.runtime.tasks[0]?.cwd, await realpath(workingDirectory));
 });
 
 test("a later tool call inherits a newly selected Pi model", async (context) => {
