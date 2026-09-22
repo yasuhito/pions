@@ -1286,7 +1286,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         .then(() => {
           if (!closing) return recover();
         })
-        .catch(() => scheduleRecovery());
+        .catch(() => undefined);
     }, 20);
     recoveryTimer.unref();
   };
@@ -1308,7 +1308,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         await recoverCleanups();
         cleanupsRecovered = true;
       }
-    })();
+    })().catch((error) => {
+      scheduleRecovery();
+      throw error;
+    });
     recovery = started;
     void started
       .finally(() => {
@@ -1332,7 +1335,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     },
     async close(): Promise<void> {
       closing = true;
-      if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
+      if (recoveryTimer !== undefined) {
+        clearTimeout(recoveryTimer);
+        recoveryTimer = undefined;
+      }
       await Promise.allSettled([
         ...spawns.values(),
         ...(recovery === undefined ? [] : [recovery]),
