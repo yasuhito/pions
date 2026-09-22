@@ -828,10 +828,13 @@ export class VisibleWorker implements WorkerAdapter {
       rejectDeliveryGeneration: generation.reject,
       receptionCompleted: false,
       backendProcesses: undefined,
-      protocol: new HostProtocolPeer({
-        operationId: operation.operationId,
-        capability,
-      }),
+      protocol: new HostProtocolPeer(
+        {
+          operationId: operation.operationId,
+          capability,
+        },
+        { resultBytes: operation.maxResultByteCount }
+      ),
     };
     server.on("connection", (socket) => this.acceptConnection(session, socket));
     return session;

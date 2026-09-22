@@ -311,7 +311,8 @@ class PiWorkerBridge {
       },
       new FileStartInstructionAcceptanceStore(
         join(dirname(this.config.promptPath), "start-instruction.v15.json")
-      )
+      ),
+      { resultBytes: this.config.effectiveConfig.maxResultByteCount }
     );
     const socket = connect(this.config.socketPath);
     this.socket = socket;
