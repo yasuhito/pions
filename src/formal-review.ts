@@ -1,21 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { makeFormalReviewIntegration } from "./internal/formal-review-integration.js";
-import type {
-  CurrentStartAuthorization,
-  DeploymentMode,
-  ExternalReviewAllocationAuthenticator,
-  ExternalReviewAllocationRequest,
-  ResourceAdapterIdentity,
-  ResourceAuthorityRegistration,
-  ResultFormatValidationFailureReason,
-  WorkerProfilePolicy,
-} from "./public.js";
-
-export interface FormalReviewCoordinatorConfiguration {
-  readonly subjectId: string;
-  currentAuthorization(operationId: string): Promise<CurrentStartAuthorization>;
-}
+import type { DeploymentMode, ResultFormatValidationFailureReason } from "./public.js";
 
 export type FormalReviewResultFormatValidation =
   | { readonly kind: "valid" }
@@ -54,21 +40,8 @@ export interface FormalReviewResultFormatConfiguration {
   >;
 }
 
-export interface FormalReviewExternalAllocationConfiguration {
-  readonly authenticator: ExternalReviewAllocationAuthenticator;
-  allocationFor(input: {
-    readonly reviewSubjectId: string;
-  }): Promise<Readonly<ExternalReviewAllocationRequest>>;
-}
-
-export type FormalReviewAdapterIdentity = ResourceAdapterIdentity;
-
 export interface FormalReviewConfiguration {
-  readonly profile: Readonly<WorkerProfilePolicy>;
   readonly resultFormat: Readonly<FormalReviewResultFormatConfiguration>;
-  readonly resourceAuthority: Readonly<ResourceAuthorityRegistration>;
-  readonly externalAllocation?: Readonly<FormalReviewExternalAllocationConfiguration>;
-  readonly coordinator?: Readonly<FormalReviewCoordinatorConfiguration>;
 }
 
 export const formalReviewIntegrationModule = Object.freeze({
@@ -84,9 +57,6 @@ export interface FormalReviewTrustedBootstrap {
     verifyIdentity(normalizedRoot: string): boolean;
   }>;
   readonly deployment: DeploymentMode;
-  readonly approvedAdapters: ReadonlyArray<
-    Readonly<FormalReviewAdapterIdentity>
-  >;
 }
 
 export interface FormalReviewIntegrationConfiguration {
@@ -99,10 +69,7 @@ export type FormalReviewBootstrapFailureReason =
   | "invalid_bootstrap_configuration"
   | "module_version_mismatch"
   | "repository_identity_mismatch"
-  | "adapter_identity_mismatch"
-  | "non_production_adapter_rejected"
-  | "test_adapter_rejected"
-  | "production_formal_review_disabled";
+  | "test_adapter_rejected";
 
 export class FormalReviewBootstrapError extends Error {
   override readonly name = "FormalReviewBootstrapError";
@@ -118,18 +85,6 @@ export class FormalReviewBootstrapError extends Error {
 export interface FormalReviewIntegration {
   installPiExtension(pi: ExtensionAPI): void;
 }
-
-export type {
-  ExternalReviewAllocation,
-  ExternalReviewAllocationAuthentication,
-  ExternalReviewAllocationAuthenticator,
-  ExternalReviewAllocationBinding,
-  ExternalReviewAllocationFailureReason,
-  ExternalReviewAllocationRequest,
-} from "./public.js";
-export {
-  ExternalReviewAllocationError,
-} from "./public.js";
 
 export function createFormalReviewIntegration(
   configuration: Readonly<FormalReviewIntegrationConfiguration>

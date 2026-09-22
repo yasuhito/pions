@@ -42,7 +42,6 @@ import type {
 } from "../public.js";
 
 const WORKER_PROFILE = "worker";
-const FORMAL_REVIEW_PROFILE = "formal-review";
 const WORKER_TOOLS = Object.freeze([
   "read",
   "write",
@@ -80,14 +79,6 @@ const DelegateParameters = Type.Object(
   { additionalProperties: false }
 );
 
-const FormalReviewParameters = Type.Object(
-  {
-    reviewSubjectId: Type.String({ minLength: 1 }),
-    task: Type.String({ minLength: 1 }),
-  },
-  { additionalProperties: false }
-);
-
 const OperationParameters = Type.Object(
   { operationId: Type.String({ minLength: 1 }) },
   { additionalProperties: false }
@@ -118,7 +109,6 @@ export interface PionsExtensionOptions {
   readonly runtimeFactory?: typeof makeVisibleRuntime;
   readonly resultRuntimeFactory?: typeof makeResultRetrievalRuntime;
   readonly formalReview?: Readonly<{
-    readonly profile: Readonly<WorkerProfilePolicy>;
     readonly resultFormats: Readonly<ConfiguredResultFormats>;
   }>;
   readonly repositoryRoot?: string;
@@ -304,18 +294,6 @@ function workerPrompt(task: string): string {
   ].join("\n");
 }
 
-function formalReviewPrompt(reviewSubjectId: string, task: string): string {
-  return [
-    "You are a formal-review Worker with an independent context.",
-    "Follow the trusted project's AGENTS.md instructions.",
-    "Return a self-contained textual Result.",
-    "",
-    `Review subject: ${reviewSubjectId}`,
-    "Review task:",
-    task,
-  ].join("\n");
-}
-
 function boundedResultBody(
   body: string,
   operationId: string
@@ -348,7 +326,7 @@ class TrackedOperation {
 
   cancel(): Promise<CancellationResult> {
     if (this.cancellation !== undefined) return this.cancellation;
-    this.cancellation = this.handle.cancel({ scope: "subtree" });
+    this.cancellation = this.handle.cancel({});
     void this.cancellation.catch(() => undefined);
     return this.cancellation;
   }
@@ -490,8 +468,7 @@ export function installPionsExtension(
   async function prepareWorkerCall(
     toolCallId: string,
     prompt: string,
-    context: ExtensionContext,
-    requiredModel?: Readonly<ModelReference>
+    context: ExtensionContext
   ): Promise<{
     readonly idempotencyKey: string;
     readonly normalizedRoot: string;
@@ -511,7 +488,7 @@ export function installPionsExtension(
       configured?.model === undefined
         ? inheritedModel
         : configuredModel(context, configured.model);
-    requireWorkerLoadableProvider(context, requiredModel ?? workerModel);
+    requireWorkerLoadableProvider(context, workerModel);
     const workerThinkingLevel =
       configured?.thinkingLevel ?? inheritedThinkingLevel;
     const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
@@ -522,30 +499,26 @@ export function installPionsExtension(
     );
     await writePrivatePrompt(promptRef, prompt);
     const workerProfile: WorkerProfilePolicy = {
-      intendedUse: "general",
       modelCandidates: [workerModel],
       thinkingLevel: workerThinkingLevel,
       tools: WORKER_TOOLS,
-      resources: { resourceProofPolicy: "disabled" },
-      startAuthorization: { policy: "disabled" },
       maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     };
     const runtimeStateDirectory = join(repositoryState, "runtime");
     await options.formalReview?.resultFormats.registry.register(
       runtimeStateDirectory
     );
-    const formalProfileDigest =
+    const resultFormatDigest =
       options.formalReview === undefined
         ? "disabled"
         : opaqueDigest(
             JSON.stringify({
-              profile: options.formalReview.profile,
               resultFormat: options.formalReview.resultFormats.resultFormat,
               registryDigest:
                 options.formalReview.resultFormats.registry.digest,
             })
           );
-    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${formalProfileDigest}`;
+    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${resultFormatDigest}`;
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
     let runtime = options.runtime;
     if (runtime === undefined) {
@@ -561,12 +534,7 @@ export function installPionsExtension(
         runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
           cwd: workerCwd,
           stateDirectory: runtimeStateDirectory,
-          profiles: {
-            [WORKER_PROFILE]: workerProfile,
-            ...(options.formalReview === undefined
-              ? {}
-              : { [FORMAL_REVIEW_PROFILE]: options.formalReview.profile }),
-          },
+          profiles: { [WORKER_PROFILE]: workerProfile },
           environment: options.environment ?? process.env,
           extensionEntryPath,
           ...(options.formalReview === undefined
@@ -694,61 +662,6 @@ export function installPionsExtension(
       });
     },
   });
-
-  if (options.formalReview !== undefined) {
-    pi.registerTool({
-      name: "pions_review",
-      label: "Pions Formal Review",
-      description: "Create a format-pinned formal-review Operation.",
-      parameters: FormalReviewParameters,
-      async execute(toolCallId, parameters, _signal, _onUpdate, context) {
-        if (shuttingDown) throw new Error("Pions Runtime is shutting down");
-        if (!context.isProjectTrusted())
-          throw new Error("pions_review requires a trusted project");
-        const formalReview = options.formalReview;
-        if (formalReview === undefined)
-          throw new WorkerConfigurationError(
-            "unsupported_capability",
-            "Formal review is not enabled"
-          );
-        const modelCandidate = formalReview.profile.modelCandidates[0];
-        if (modelCandidate === undefined)
-          throw new WorkerConfigurationError(
-            "unsupported_capability",
-            "Formal review has no configured model"
-          );
-        const model = configuredModel(context, modelCandidate);
-        const prepared = await prepareWorkerCall(
-          toolCallId,
-          formalReviewPrompt(parameters.reviewSubjectId, parameters.task),
-          context,
-          model
-        );
-        const handle = await prepared.runtime.spawn(
-          {
-            promptRef: prepared.promptRef,
-            profile: FORMAL_REVIEW_PROFILE,
-            idempotencyKey: prepared.idempotencyKey,
-            model,
-            thinkingLevel: formalReview.profile.thinkingLevel,
-            tools: formalReview.profile.tools,
-            cwd: prepared.workerCwd,
-          },
-          { resultFormat: formalReview.resultFormats.resultFormat }
-        );
-        operationLifetime.track(handle);
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `[Operation: ${handle.operationId}]`,
-            },
-          ],
-          details: { operationId: handle.operationId },
-        };
-      },
-    });
-  }
 
   pi.registerTool({
     name: "pions_delegate",

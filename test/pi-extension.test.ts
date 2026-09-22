@@ -62,9 +62,7 @@ import type {
   Result,
   ResultChunk,
   Runtime,
-  SpawnOptions,
   TaskSpec,
-  WorkerProfilePolicy,
 } from "../src/index.js";
 
 const SNAPSHOT: OperationSnapshot = {
@@ -102,7 +100,6 @@ const ACCEPTANCE_ID = `pions.result-acceptance.v1:${"ef".repeat(32)}` as const;
 
 class FakeRuntime implements Runtime {
   readonly tasks: Array<TaskSpec> = [];
-  readonly spawnOptions: Array<SpawnOptions | undefined> = [];
   spawnCount = 0;
   operationReadCount = 0;
   resultReadCount = 0;
@@ -119,10 +116,9 @@ class FakeRuntime implements Runtime {
     private readonly snapshot: Readonly<OperationSnapshot> = SNAPSHOT
   ) {}
 
-  async spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
+  async spawn(task: TaskSpec): Promise<OperationHandle> {
     this.spawnCount += 1;
     this.tasks.push(task);
-    this.spawnOptions.push(options);
     const outcome = this.outcome;
     return {
       operationId: "operation-1",
@@ -204,10 +200,7 @@ async function waitForOperation(
 }
 
 class PendingRuntime implements Runtime {
-  readonly cancellations: Array<{
-    readonly operationId: string;
-    readonly scope: "subtree";
-  }> = [];
+  readonly cancellations: Array<{ readonly operationId: string }> = [];
   readonly results = new Map<string, ReturnType<typeof deferred<Result>>>();
   closeCount = 0;
   cancellationResponse: Promise<CancellationResult> = Promise.resolve({
@@ -231,8 +224,8 @@ class PendingRuntime implements Runtime {
           result: accepted,
           cleanupDiagnostics: [],
         })),
-      cancel: async ({ scope }) => {
-        this.cancellations.push({ operationId, scope });
+      cancel: async () => {
+        this.cancellations.push({ operationId });
         const response = await this.cancellationResponse;
         result.reject(
           response.state === "unknown"
@@ -273,34 +266,6 @@ interface RegisteredTool {
     readonly details?: unknown;
   }>;
 }
-
-const FORMAL_REVIEW_PROFILE: WorkerProfilePolicy = {
-  intendedUse: "formal_reviewer",
-  modelCandidates: [{ provider: "anthropic", id: "claude-opus-5" }],
-  thinkingLevel: "high",
-  tools: ["read", "grep", "find", "ls", "bash"],
-  resources: { resourceProofPolicy: "disabled" },
-  startAuthorization: {
-    policy: "required",
-    windowMs: 60_000,
-    authorizedSubjectIds: ["coordinator-1"],
-    receipt: {
-      workspace: {
-        workspaceId: "workspace-1",
-        normalizedPath: "/repository",
-        baseRevision: "revision-1",
-        owner: { state: "unknown" },
-        pionsMayDelete: false,
-      },
-      permissionManifest: {
-        manifestId: "manifest-1",
-        digest: `sha256:${"cd".repeat(32)}`,
-      },
-      reviewSubjectVerification: "required",
-    },
-  },
-  maxResultByteCount: 50_000,
-};
 
 const FORMAL_REVIEW_RESULT_FORMATS = makeResultFormatRegistry([
   {
@@ -363,7 +328,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
     ...(fixtureOptions.enableFormalReview === true
       ? {
           formalReview: {
-            profile: FORMAL_REVIEW_PROFILE,
             resultFormats: CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS,
           },
         }
@@ -408,21 +372,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       context
     );
   };
-  const review = (
-    reviewSubjectId = "subject-1",
-    task = "Review the change"
-  ) => {
-    const reviewTool = tools.get("pions_review");
-    if (reviewTool === undefined)
-      throw new Error("pions_review was not registered");
-    return reviewTool.execute(
-      "review-call-1",
-      { reviewSubjectId, task },
-      undefined,
-      undefined,
-      context
-    );
-  };
   const inspect = (operationId = "operation-1") => {
     const operationTool = tools.get("pions_operation");
     if (operationTool === undefined)
@@ -449,7 +398,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
     inspect,
     registered: tool,
     result,
-    review,
     root,
     setSessionId: (value: string) => {
       sessionId = value;
@@ -498,27 +446,25 @@ test("the delegation-only extension does not register pions_review_decision", as
   assert.equal(value.tools.has("pions_review_decision"), false);
 });
 
-test("trusted formal review configuration registers review creation", async (context) => {
+test("trusted formal review configuration pauses new review creation", async (context) => {
   const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.deepEqual([...value.tools.keys()], [
-    "pions_result",
-    "pions_operation",
-    "pions_review",
-    "pions_delegate",
-  ]);
+  assert.equal(value.tools.has("pions_review"), false);
 });
 
-test("formal review creation pins the trusted result format", async (context) => {
-  const value = await formalReviewFixture();
+test("trusted formal review configuration supplies recovery validators", async (context) => {
+  let configured: VisibleRuntimeOptions["formalReviewResultFormats"];
+  const value = await formalReviewFixture(undefined, {
+    runtimeFactory: (options) => {
+      configured = options.formalReviewResultFormats;
+      return new FakeRuntime();
+    },
+  });
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
+  await value.execute();
 
-  assert.deepEqual(
-    value.runtime.spawnOptions[0]?.resultFormat,
-    FORMAL_REVIEW_RESULT_FORMAT
-  );
+  assert.deepEqual(configured?.resultFormat, FORMAL_REVIEW_RESULT_FORMAT);
 });
 
 test("project extension registers pions_operation", async (context) => {
@@ -1301,7 +1247,7 @@ test("delegation uses the general Worker profile", async (context) => {
   assert.equal(value.runtime.tasks[0]?.profile, "worker");
 });
 
-test("the Worker profile declares a general intended use", async (context) => {
+test("the Worker profile allows only built-in tools", async (context) => {
   let profiles: VisibleRuntimeOptions["profiles"] | undefined;
   const runtime = new FakeRuntime();
   const value = await fixture(runtime, {
@@ -1313,7 +1259,7 @@ test("the Worker profile declares a general intended use", async (context) => {
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
 
-  assert.equal(profiles?.worker?.intendedUse, "general");
+  assert.deepEqual(profiles?.worker?.tools, ["read", "write", "edit", "bash", "grep", "find", "ls"]);
 });
 
 test("the Worker runs in the delegating working directory", async (context) => {
@@ -1552,7 +1498,7 @@ test("Pi interruption requests subtree cancellation once", async (context) => {
   await execution.catch(() => undefined);
 
   assert.deepEqual(runtime.cancellations, [
-    { operationId: "operation-1", scope: "subtree" },
+    { operationId: "operation-1" },
   ]);
 });
 
@@ -1630,7 +1576,7 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
     await value.shutdown(reason);
 
     assert.deepEqual(runtime.cancellations, [
-      { operationId: "operation-1", scope: "subtree" },
+      { operationId: "operation-1" },
     ]);
   });
 }
@@ -1732,8 +1678,8 @@ test("session shutdown cancels every active Operation by its identifier", async 
   await value.shutdown("quit");
 
   assert.deepEqual(runtime.cancellations, [
-    { operationId: "operation-1", scope: "subtree" },
-    { operationId: "operation-2", scope: "subtree" },
+    { operationId: "operation-1" },
+    { operationId: "operation-2" },
   ]);
 });
 

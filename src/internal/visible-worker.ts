@@ -31,10 +31,7 @@ import type {
   WorkerRunHooks,
   WorkerRunOutcome,
 } from "./services.js";
-import {
-  OperationPersistenceError,
-  ResourceProofRejectedError,
-} from "../public.js";
+import { OperationPersistenceError } from "../public.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
 import type {
   WorkerConfigurationFailureReason,
@@ -355,7 +352,7 @@ export class VisibleWorker implements WorkerAdapter {
     recovering: boolean
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResourceProofRejectedError
+    OperationPersistenceError
   > {
     let session: Session | undefined;
     let startDeliveryEntered = false;
@@ -586,15 +583,8 @@ export class VisibleWorker implements WorkerAdapter {
             error
           ): Effect.Effect<
             WorkerRunOutcome,
-            OperationPersistenceError | ResourceProofRejectedError
+            OperationPersistenceError
           > => {
-            if (error instanceof ResourceProofRejectedError) {
-              return startDeliveryEntered
-                ? Effect.promise(() =>
-                    this.cancelSession(operation, 1_000)
-                  ).pipe(Effect.andThen(Effect.fail(error)))
-                : Effect.fail(error);
-            }
             if (error instanceof OperationPersistenceError) {
               if (recovering && !startDeliveryEntered) {
                 return Effect.promise(() =>
@@ -770,9 +760,6 @@ export class VisibleWorker implements WorkerAdapter {
       dispatcherId: previous.dispatcherId,
       workerProcessInstanceId: previous.workerProcessInstanceId,
       receiptDigest: previous.receiptDigest,
-      ...(previous.authorizationDecisionId === undefined
-        ? {}
-        : { authorizationDecisionId: previous.authorizationDecisionId }),
       deliveryGeneration: previous.deliveryGeneration,
     });
     this.sessions.set(operation.operationId, session);

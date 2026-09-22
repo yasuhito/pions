@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 
 import { Cause, Effect, Exit, Schema } from "effect";
 
@@ -47,7 +46,6 @@ import type {
   OperationHandle,
   OperationReader,
   OperationSnapshot as PublicOperationSnapshot,
-  SpawnOptions,
   Result,
   ResultAcceptanceId,
   ResultChunkReadOutcome,
@@ -863,6 +861,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
       let current = await runEffect(getOperation(record.operationId));
       if (terminal(current) || current.state === "cancelling") return;
+      if (outcome.state === "validator_unavailable") return;
       if (outcome.state === "liveness-unproven") {
         current = await runEffect(
           advance(record.operationId, {
@@ -931,10 +930,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   };
 
-  const createOperation = async (
-    taskInput: TaskSpec,
-    options: SpawnOptions | undefined
-  ): Promise<OperationRecord> => {
+  const createOperation = async (taskInput: TaskSpec): Promise<OperationRecord> => {
     await runEffect(services.presentation.preflight());
     const decoded = await Effect.runPromise(
       Schema.decodeUnknown(TaskSpecSchema)(taskInput)
@@ -960,21 +956,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         "unsupported_capability",
         "Unknown Worker profile"
       );
-    if (
-      (profile.intendedUse !== "general" &&
-        profile.intendedUse !== "formal_reviewer") ||
-      (profile.intendedUse === "formal_reviewer") !==
-        (options?.resultFormat !== undefined) ||
-      (options?.resultFormat !== undefined &&
-        !isDeepStrictEqual(
-          options.resultFormat,
-          services.formalReviewResultFormats?.resultFormat
-        ))
-    )
-      throw new WorkerConfigurationError(
-        "unsupported_capability",
-        "Worker profile and Result format do not match trusted configuration"
-      );
     const requestedConfig = requestedWorkerConfig(task);
     const effectiveConfig = resolveWorkerConfig({
       requested: requestedConfig,
@@ -998,9 +979,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           requestedConfig,
           effectiveConfig,
           maxResultByteCount: profile.maxResultByteCount,
-          ...(options?.resultFormat === undefined
-            ? {}
-            : { resultFormat: options.resultFormat }),
         })
         .pipe(
           Effect.map((snapshot) => snapshot.operation),
@@ -1245,13 +1223,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await recovery;
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
     },
-    spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
+    spawn(task: TaskSpec): Promise<OperationHandle> {
       if (closing) return Promise.reject(new RuntimeClosedError());
       const existing = spawns.get(task.idempotencyKey);
       if (existing !== undefined) return existing;
       const admitted = (async () => {
         await recovery;
-        const record = await createOperation(task, options);
+        const record = await createOperation(task);
         track(execute(record, false));
         return {
           ...createReader(record.operationId),

@@ -25,7 +25,7 @@ export type ResultAcceptanceOutcome =
     }
   | {
       readonly state: "continuable";
-      readonly reason: "write_failed";
+      readonly reason: "write_failed" | "validator_unavailable";
     }
   | {
       readonly state: "failed";
@@ -90,6 +90,8 @@ async function validateResultFormat(
           Uint8Array.from(bytes)
         );
   if (validation.kind !== "invalid") return undefined;
+  if (validation.reason === "validator_unavailable")
+    return { state: "continuable", reason: "validator_unavailable" };
   return {
     state: "failed",
     terminal: true,

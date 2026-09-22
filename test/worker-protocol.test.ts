@@ -52,7 +52,6 @@ const instruction = {
   dispatcherId: "dispatcher-1",
   workerProcessInstanceId: identity.processInstanceId,
   receiptDigest: `sha256:${"e".repeat(64)}` as const,
-  authorizationDecisionId: "decision-1",
   deliveryGeneration: 1,
   deadline: "2099-09-06T10:01:00.000Z",
 };

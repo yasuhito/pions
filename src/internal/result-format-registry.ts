@@ -10,7 +10,6 @@ import type {
 } from "../formal-review.js";
 import type {
   PinnedResultFormat,
-  ResultFormatRejectionReason,
   ResultFormatValidatorIdentity,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
@@ -42,10 +41,7 @@ export type ResultFormatValidationOutcome =
   | FormalReviewResultFormatValidation
   | {
       readonly kind: "invalid";
-      readonly reason: Extract<
-        ResultFormatRejectionReason,
-        "validator_identity_mismatch" | "validator_unavailable"
-      >;
+      readonly reason: "validator_identity_mismatch" | "validator_unavailable";
     };
 
 export interface ResultFormatRegistry {

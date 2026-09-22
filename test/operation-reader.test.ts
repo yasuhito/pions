@@ -12,12 +12,9 @@ import {
 import type { WorkerProfilePolicy } from "../src/public.js";
 
 const profile: WorkerProfilePolicy = {
-  intendedUse: "general",
   modelCandidates: [{ provider: "test", id: "model" }],
   thinkingLevel: "medium",
   tools: ["read"],
-  resources: { resourceProofPolicy: "disabled" },
-  startAuthorization: { policy: "disabled" },
   maxResultByteCount: 1024,
 };
 

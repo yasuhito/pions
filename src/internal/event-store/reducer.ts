@@ -100,7 +100,6 @@ function validStartInstructionReference(
     instruction.workerProcessInstanceId ===
       operation.workerIdentity.processInstanceId &&
     instruction.receiptDigest === automaticStartScopeDigest(operation) &&
-    instruction.authorizationDecisionId === undefined &&
     Number.isSafeInteger(instruction.deliveryGeneration) &&
     instruction.deliveryGeneration >= 1
   );

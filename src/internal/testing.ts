@@ -27,7 +27,6 @@ import type {
 } from "./services.js";
 import type {
   OperationPersistenceError,
-  ResourceProofRejectedError,
   Result,
   Runtime,
 } from "../public.js";
@@ -194,7 +193,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
     hooks: Readonly<WorkerRunHooks>
   ): Effect.Effect<
     WorkerRunOutcome,
-    OperationPersistenceError | ResourceProofRejectedError
+    OperationPersistenceError
   > {
     return Effect.gen(this, function* () {
       this.startCount += 1;

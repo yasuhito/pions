@@ -794,7 +794,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
     configuration: {
       cwd: "/test/workspace",
       profiles: {
-        coding: { ...profilePolicy, intendedUse: "general" },
+        coding: profilePolicy,
       },
     },
   });

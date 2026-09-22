@@ -70,7 +70,6 @@ const StartInstructionReference = Schema.Struct({
   dispatcherId: Schema.NonEmptyString,
   workerProcessInstanceId: Schema.NonEmptyString,
   receiptDigest: Digest,
-  authorizationDecisionId: Schema.optional(Schema.String),
   deliveryGeneration: NonNegativeSafeInteger,
 });
 const Usage = Schema.Struct({
@@ -124,8 +123,7 @@ const ResultFormatRejectionEvidence = Schema.Struct({
     "invalid_verdict",
     "invalid_finding",
     "expectation_mismatch",
-    "validator_identity_mismatch",
-    "validator_unavailable"
+    "validator_identity_mismatch"
   ),
 });
 const FailureReason = Schema.Literal(

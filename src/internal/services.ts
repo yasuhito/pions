@@ -14,7 +14,6 @@ import type {
 import type {
   ObservedWorkerConfig,
   OperationPersistenceError,
-  ResourceProofRejectedError,
   ResultFormatRejectionEvidence,
   WorkerProducedResult,
   WorkerProfilePolicy,
@@ -67,28 +66,17 @@ export interface WorkerRunHooks {
   workerLaunched(): Effect.Effect<void, OperationPersistenceError>;
   workerIdentified(
     identity: Readonly<WorkerProcessIdentity>
-  ): Effect.Effect<
-    Readonly<StartInstruction>,
-    OperationPersistenceError | ResourceProofRejectedError
-  >;
+  ): Effect.Effect<Readonly<StartInstruction>, OperationPersistenceError>;
   startDeliveryAuthorityRevoked(
     successorDispatcherId: string,
     deliveryGeneration: number
   ): Effect.Effect<void, OperationPersistenceError>;
   deliveryGenerationConfirmed(
     confirmation: Readonly<DeliveryGenerationConfirmation>
-  ): Effect.Effect<
-    void,
-    | OperationPersistenceError
-    | ResourceProofRejectedError
-    | StartDeliveryAbortedError
-  >;
+  ): Effect.Effect<void, OperationPersistenceError | StartDeliveryAbortedError>;
   startDeliveryEntered(
     instruction: Readonly<StartInstruction>
-  ): Effect.Effect<
-    void,
-    OperationPersistenceError | ResourceProofRejectedError
-  >;
+  ): Effect.Effect<void, OperationPersistenceError>;
   startInstructionDispatched(
     instruction: Readonly<StartInstruction>
   ): Effect.Effect<void, OperationPersistenceError>;
@@ -112,6 +100,7 @@ export type WorkerRunOutcome = (
   | { readonly state: "worker_protocol_failed" }
   | { readonly state: "process-exited-without-result" }
   | { readonly state: "liveness-unproven" }
+  | { readonly state: "validator_unavailable" }
   | { readonly state: "model_mismatch" }
   | { readonly state: "thinking_level_mismatch" }
   | { readonly state: "model_not_found" }
@@ -131,12 +120,7 @@ export type WorkerRunOutcome = (
 export interface Worker {
   run(
     hooks: Readonly<WorkerRunHooks>
-  ): Effect.Effect<
-    WorkerRunOutcome,
-    | OperationPersistenceError
-    | ResourceProofRejectedError
-    | StartDeliveryAbortedError
-  >;
+  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError | StartDeliveryAbortedError>;
   cancel(
     cancellationEpoch: number,
     timeoutMs: number
@@ -167,6 +151,12 @@ export function acknowledgeResultAcceptance(
   ) => Effect.Effect<void, unknown>
 ): Effect.Effect<WorkerRunOutcome> {
   if (acceptance.state !== "accepted") {
+    if (
+      acceptance.state === "continuable" &&
+      acceptance.reason === "validator_unavailable"
+    ) {
+      return Effect.succeed({ state: "validator_unavailable" } as const);
+    }
     if (
       acceptance.state === "failed" &&
       acceptance.reason === "result_format_rejected" &&

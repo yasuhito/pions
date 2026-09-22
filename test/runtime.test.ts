@@ -21,15 +21,12 @@ import {
 } from "../src/internal/testing.js";
 import { sha256Digest } from "../src/internal/result-digest.js";
 import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
-import type { WorkerProfilePolicy } from "../src/public.js";
+import type { PinnedResultFormat, WorkerProfilePolicy } from "../src/public.js";
 
 const profile: WorkerProfilePolicy = {
-  intendedUse: "general",
   modelCandidates: [{ provider: "test", id: "model" }],
   thinkingLevel: "medium",
   tools: ["read"],
-  resources: { resourceProofPolicy: "disabled" },
-  startAuthorization: { policy: "disabled" },
   maxResultByteCount: 1024,
 };
 
@@ -62,76 +59,10 @@ test("Runtime exposes only delegation lifecycle operations", () => {
   assert.deepEqual(Object.keys(runtime), ["close", "spawn", "operation"]);
 });
 
-test("形式不適合の正式レビューは拒否理由を状態照会へ保存する", async () => {
-  const formats = makeResultFormatRegistry([
-    {
-      formatId: "review-result",
-      version: "1",
-      normalizationId: "identity.v1",
-      validator: {
-        validatorId: "review-validator",
-        validatorVersion: "1",
-        implementation: Buffer.from("invalid-result-validator", "utf8"),
-        validate: async () => ({ kind: "invalid", reason: "invalid_verdict" }),
-      },
-    },
-  ]);
-  const resultFormat = formats.pin({
-    formatId: "review-result",
-    version: "1",
-    expectations: {},
-  });
-  const reviewProfile: WorkerProfilePolicy = {
-    ...profile,
-    intendedUse: "formal_reviewer",
-    startAuthorization: {
-      policy: "required",
-      windowMs: 60_000,
-      authorizedSubjectIds: ["reviewer"],
-      receipt: {
-        workspace: {
-          workspaceId: "workspace-1",
-          normalizedPath: "/work",
-          baseRevision: "revision-1",
-          owner: { state: "unknown" },
-          pionsMayDelete: false,
-        },
-        permissionManifest: {
-          manifestId: "manifest-1",
-          digest: `sha256:${"ab".repeat(32)}`,
-        },
-        reviewSubjectVerification: "required",
-      },
-    },
-  };
-  const store = new InMemoryEventStore([], clock());
-  const runtime = makeTestRuntime({
-    ...services(
-      store,
-      new FakeWorkerAdapter({ messages: { body: "invalid" } })
-    ),
-    configuration: {
-      cwd: "/work",
-      profiles: { "formal-review": reviewProfile },
-    },
-    formalReviewResultFormats: { registry: formats, resultFormat },
-    recovery: "disabled",
-  });
-  const handle = await runtime.spawn(
-    {
-      promptRef: "private://review",
-      profile: "formal-review",
-      idempotencyKey: "review-1",
-    },
-    { resultFormat }
-  );
-  await handle.result().catch(() => undefined);
-  const snapshot = await handle.read();
-
-  assert.equal(snapshot.resultFormatRejection?.reason, "invalid_verdict");
-});
-
-async function seed(store: InMemoryEventStore): Promise<void> {
+async function seed(
+  store: InMemoryEventStore,
+  resultFormat?: Readonly<PinnedResultFormat>
+): Promise<void> {
   await Effect.runPromise(
     store.create({
       operationId: "operation-1",
@@ -156,6 +87,7 @@ async function seed(store: InMemoryEventStore): Promise<void> {
         },
       },
       maxResultByteCount: 1024,
+      ...(resultFormat === undefined ? {} : { resultFormat }),
     })
   );
 }
@@ -208,6 +140,11 @@ class RecoveryWorker implements WorkerAdapter {
         expectedByteCount: bytes.byteLength,
         expectedDigest: sha256Digest(bytes),
       });
+      if (
+        accepted.state === "continuable" &&
+        accepted.reason === "validator_unavailable"
+      )
+        return { state: "validator_unavailable" as const };
       if (accepted.state !== "accepted")
         return { state: "worker_protocol_failed" as const };
       return {
@@ -378,6 +315,42 @@ test("Runtime再起動後に結果受理を継続する", async () => {
   assert.equal(result.kind, "retrieved");
 });
 
+test("保存済み正式レビューは検証器復元後に結果受理を再開する", async () => {
+  const formats = makeResultFormatRegistry([{
+    formatId: "review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    validator: {
+      validatorId: "review-validator",
+      validatorVersion: "1",
+      implementation: Buffer.from("valid-review-validator", "utf8"),
+      validate: async () => ({ kind: "valid" }),
+    },
+  }]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  const store = new InMemoryEventStore([], clock());
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const unavailable = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+    recovery: "enabled",
+  });
+  await unavailable.close();
+  const restored = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+    formalReviewResultFormats: { registry: formats, resultFormat },
+    recovery: "enabled",
+  });
+  await waitForState(store, "completed");
+  const snapshot = await (await restored.operation("operation-1")).read();
+
+  assert.deepEqual(snapshot.resultFormat, resultFormat);
+});
+
 test("停止確認済みの親キャンセルを永続化する", async () => {
   const store = new InMemoryEventStore([], clock());
   const runtime = makeTestRuntime({
@@ -390,7 +363,7 @@ test("停止確認済みの親キャンセルを永続化する", async () => {
     idempotencyKey: "task-1",
   });
   await waitForState(store, "running");
-  const result = await handle.cancel({ scope: "subtree" });
+  const result = await handle.cancel({});
   assert.equal(result.state, "cancelled");
 });
 
@@ -406,6 +379,6 @@ test("停止未確認の親キャンセルを状態不明として永続化す�
     idempotencyKey: "task-1",
   });
   await waitForState(store, "running");
-  const result = await handle.cancel({ scope: "subtree" });
+  const result = await handle.cancel({});
   assert.equal(result.state, "unknown");
 });
