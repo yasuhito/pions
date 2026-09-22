@@ -2,35 +2,21 @@ import type {
   AcceptedResult,
   CleanupDiagnosticCode,
   EffectiveWorkerConfig,
-  ExternalReviewAllocationBinding,
   ObservedWorkerConfig,
   OperationFailureReason,
   OperationState,
-  PinnedResultFormat,
-  ResultFormatRejectionEvidence,
   RequestedWorkerConfig,
-  RetryClearanceEvidence,
-  RevisionReservation,
-  RevisionResultAdoptionRecord,
-  RevisionSeriesSnapshot,
-  StartAuthorizationDecisionAttemptRecord,
-  StartAuthorizationDecisionRecord,
-  StartAuthorizationTiming,
+  StartDeliveryAuthorityEvidence,
+  StartDeliveryEntryEvidence,
   StartDeliveryHandoffEvidence,
-  StartGateState,
   StartInstructionAcceptanceEvidence,
   StartInstructionAcknowledgementEvidence,
   StartInstructionDeliveryEvidence,
   StartInstructionReference,
-  StartDeliveryAuthorityEvidence,
-  StartDeliveryEntryEvidence,
-  StartupReceipt,
-  StartupReceiptPolicy,
   TaskSpec,
   WorkerIdentity,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
-import type { PersistedResourceRecord } from "../resource-controller.js";
 import type {
   PersistableOperationIntent,
   PresentationOwnership,
@@ -38,18 +24,6 @@ import type {
 
 export type { CreatedPresentation, PresentationOwnership } from "./intent.js";
 export type { WorkerIdentity } from "../../public.js";
-
-export interface RevisionMembership {
-  readonly seriesId: RevisionReservation["seriesId"];
-  readonly revisionNumber: number;
-  readonly attemptNumber: number;
-}
-
-export interface OperationLineage {
-  readonly rootOperationId: string;
-  readonly parentOperationId?: string;
-  readonly depth: number;
-}
 
 export interface PresentationCleanupRecord {
   readonly cleanupId: string;
@@ -60,28 +34,17 @@ export interface PresentationCleanupRecord {
   readonly diagnostic?: CleanupDiagnosticCode;
 }
 
+/** The complete durable state for one one-level delegation. */
 export interface Operation {
   readonly operationId: string;
-  readonly lineage: Readonly<OperationLineage>;
-  readonly revisionMembership?: Readonly<RevisionMembership>;
   readonly presentation?: Readonly<PresentationOwnership>;
   readonly workerIdentity?: Readonly<WorkerIdentity>;
+  readonly observedConfig?: Readonly<ObservedWorkerConfig>;
   readonly agentRunEvidence?: Readonly<AgentRunEvidence>;
   readonly presentationCleanup?: Readonly<PresentationCleanupRecord>;
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly maxResultByteCount: number;
-  readonly resultFormat?: Readonly<PinnedResultFormat>;
-  readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
-  readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
-  readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
-  readonly startupReceiptPolicy?: Readonly<StartupReceiptPolicy>;
-  readonly startGate: StartGateState;
-  readonly startupReceipt?: Readonly<StartupReceipt>;
-  readonly startAuthorizationDecision?: Readonly<StartAuthorizationDecisionRecord>;
-  readonly rejectedStartAuthorizationDecisions: ReadonlyArray<
-    Readonly<StartAuthorizationDecisionAttemptRecord>
-  >;
   readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
   readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
@@ -90,28 +53,22 @@ export interface Operation {
   readonly startDeliveryHandoffs: ReadonlyArray<
     Readonly<StartDeliveryHandoffEvidence>
   >;
-  readonly resultAcceptedAt?: string;
-  readonly revisionSeries?: Readonly<RevisionSeriesSnapshot>;
+  readonly result?: Readonly<AcceptedResult>;
   readonly workerStopConfirmedAt?: string;
-  readonly observedConfig?: Readonly<ObservedWorkerConfig>;
-  readonly resourceEvidenceRecord?: Readonly<PersistedResourceRecord>;
   readonly state: OperationState;
   readonly stateSeq: number;
   readonly workerLaunched: boolean;
   readonly task: Readonly<TaskSpec>;
-  readonly childOperationIds: ReadonlyArray<string>;
-  readonly settledChildOperationIds: ReadonlyArray<string>;
-  readonly descendantFailure: boolean;
-  readonly spawnFrozen: boolean;
   readonly cancellationEpoch: number;
-  readonly result?: Readonly<AcceptedResult>;
-  readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
   readonly terminalReason?:
-    OperationFailureReason | "cancel-unproven" | "liveness-unproven";
+    | OperationFailureReason
+    | "cancel-unproven"
+    | "start-acceptance-unknown"
+    | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 26 as const;
+export const EVENT_SCHEMA_VERSION = 27 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -133,30 +90,6 @@ export type OperationEvent = EventMetadata &
         readonly requestedConfig: Readonly<RequestedWorkerConfig>;
         readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
         readonly maxResultByteCount: number;
-        readonly resultFormat?: Readonly<PinnedResultFormat>;
-        readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
-        readonly lineage: Readonly<OperationLineage>;
-        readonly revisionMembership?: Readonly<RevisionMembership>;
-        readonly startAuthorizationTiming: Readonly<StartAuthorizationTiming>;
-        readonly startupReceiptPolicy?: Readonly<StartupReceiptPolicy>;
-      }
-    | {
-        readonly type: "startup_receipt_recorded";
-        readonly receipt: Readonly<StartupReceipt>;
-        readonly gate: "not_required" | "waiting" | "expired";
-      }
-    | {
-        readonly type: "start_authorization_decided";
-        readonly gate: "authorized" | "rejected";
-        readonly decision: Readonly<StartAuthorizationDecisionRecord>;
-      }
-    | {
-        readonly type: "start_gate_closed";
-        readonly gate: "expired" | "invalidated";
-      }
-    | {
-        readonly type: "start_authorization_decision_rejected";
-        readonly attempt: Readonly<StartAuthorizationDecisionAttemptRecord>;
       }
     | {
         readonly type: "start_delivery_authority_acquired";
@@ -195,22 +128,6 @@ export type OperationEvent = EventMetadata &
           | "authenticated-generation-acknowledgement";
       }
     | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
-    | {
-        readonly type: "resource_evidence_recorded";
-        readonly record: Readonly<PersistedResourceRecord>;
-      }
-    | {
-        readonly type: "retry_clearance_recorded";
-        readonly clearance: Readonly<RetryClearanceEvidence>;
-      }
-    | {
-        readonly type: "revision_reserved";
-        readonly reservation: Readonly<RevisionReservation>;
-      }
-    | {
-        readonly type: "revision_result_adopted";
-        readonly adoption: Readonly<RevisionResultAdoptionRecord>;
-      }
     | PersistableOperationIntent
     | {
         readonly type: "result_accepted";

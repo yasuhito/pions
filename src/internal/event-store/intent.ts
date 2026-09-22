@@ -2,18 +2,10 @@ import type {
   CleanupDiagnosticCode,
   ObservedWorkerConfig,
   OperationFailureReason,
-  ResultFormatRejectionEvidence,
-  RetryClearanceEvidence,
-  RevisionReservation,
-  RevisionResultAdoptionRecord,
-  StartAuthorizationDecisionAttemptRecord,
-  StartAuthorizationDecisionRecord,
   StartInstructionReference,
-  StartupReceipt,
   WorkerIdentity,
 } from "../../public.js";
 import type { AgentRunEvidence } from "../services.js";
-import type { PersistedResourceRecord } from "../resource-controller.js";
 
 export interface CreatedPresentation {
   readonly kind: "herdr_workspace";
@@ -30,33 +22,12 @@ export type OperationIntent =
       readonly type: "presentation_owned";
       readonly presentation: Readonly<PresentationOwnership>;
     }
-  | { readonly type: "child_attached"; readonly childOperationId: string }
-  | {
-      readonly type: "child_settled";
-      readonly childOperationId: string;
-      readonly outcome: "succeeded" | "failed";
-    }
   | { readonly type: "operation_starting" }
   | { readonly type: "worker_launched" }
   | {
-      readonly type: "startup_receipt_recorded";
-      readonly receipt: Readonly<Omit<StartupReceipt, "digest" | "recordedAt">>;
-      readonly gate: "not_required" | "waiting";
-    }
-  | {
-      readonly type: "start_authorization_decided";
-      readonly gate: "authorized" | "rejected";
-      readonly decision: Readonly<StartAuthorizationDecisionRecord>;
-    }
-  | {
-      readonly type: "start_gate_closed";
-      readonly gate: "expired" | "invalidated";
-    }
-  | {
-      readonly type: "start_authorization_decision_rejected";
-      readonly attempt: Readonly<
-        Omit<StartAuthorizationDecisionAttemptRecord, "attemptedAt">
-      >;
+      readonly type: "worker_identified";
+      readonly workerIdentity: Readonly<WorkerIdentity>;
+      readonly observedConfig: Readonly<ObservedWorkerConfig>;
     }
   | {
       readonly type: "start_delivery_authority_acquired";
@@ -96,27 +67,6 @@ export type OperationIntent =
     }
   | { readonly type: "worker_stop_confirmed"; readonly proof: "worker-stop" }
   | {
-      readonly type: "resource_evidence_recorded";
-      readonly record: Readonly<PersistedResourceRecord>;
-    }
-  | {
-      readonly type: "retry_clearance_recorded";
-      readonly clearance: Readonly<RetryClearanceEvidence>;
-    }
-  | {
-      readonly type: "revision_reserved";
-      readonly reservation: Readonly<RevisionReservation>;
-    }
-  | {
-      readonly type: "revision_result_adopted";
-      readonly adoption: Readonly<RevisionResultAdoptionRecord>;
-    }
-  | {
-      readonly type: "worker_identified";
-      readonly workerIdentity: Readonly<WorkerIdentity>;
-      readonly observedConfig: Readonly<ObservedWorkerConfig>;
-    }
-  | {
       readonly type: "agent_settled";
       readonly evidence: Readonly<AgentRunEvidence>;
     }
@@ -136,16 +86,11 @@ export type OperationIntent =
       readonly workspaceId: string;
       readonly reason: CleanupDiagnosticCode;
     }
-  | { readonly type: "operation_blocked" }
-  | { readonly type: "operation_unblocked" }
-  | { readonly type: "self_settled"; readonly outcome: "succeeded" }
-  | {
-      readonly type: "self_settled";
-      readonly outcome: "failed";
-      readonly reason: OperationFailureReason;
-      readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
-    }
   | { readonly type: "operation_completed" }
+  | {
+      readonly type: "operation_failed";
+      readonly reason: OperationFailureReason;
+    }
   | {
       readonly type: "cancellation_requested";
       readonly cancellationEpoch: number;
@@ -165,40 +110,9 @@ export type OperationIntent =
     }
   | {
       readonly type: "operation_unknown";
-      readonly cancellationEpoch: number;
-      readonly reason: "cancel-unproven";
-    }
-  | {
-      readonly type: "operation_unknown";
-      readonly reason: "liveness-unproven";
-      readonly failureReason?:
-        | "start_rejected"
-        | "start_authorization_timed_out"
-        | "start_authorization_invalidated";
-    }
-  | {
-      readonly type: "operation_failed";
-      readonly reason: OperationFailureReason;
+      readonly reason:
+        "cancel-unproven" | "start-acceptance-unknown" | "liveness-unproven";
+      readonly cancellationEpoch?: number;
     };
 
-export type PersistableOperationIntent =
-  | Exclude<
-      OperationIntent,
-      | { readonly type: "startup_receipt_recorded" }
-      | { readonly type: "start_authorization_decided" }
-      | { readonly type: "start_authorization_decision_rejected" }
-    >
-  | {
-      readonly type: "startup_receipt_recorded";
-      readonly receipt: Readonly<StartupReceipt>;
-      readonly gate: "not_required" | "waiting" | "expired";
-    }
-  | {
-      readonly type: "start_authorization_decided";
-      readonly gate: "authorized" | "rejected";
-      readonly decision: Readonly<StartAuthorizationDecisionRecord>;
-    }
-  | {
-      readonly type: "start_authorization_decision_rejected";
-      readonly attempt: Readonly<StartAuthorizationDecisionAttemptRecord>;
-    };
+export type PersistableOperationIntent = OperationIntent;

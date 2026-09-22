@@ -110,10 +110,18 @@ export const DEFAULT_MAX_RESULT_BYTE_COUNT = 1_048_576;
 
 export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
   {
-    intendedUse: "reader",
+    intendedUse: "general",
     modelCandidates: Object.freeze([{ provider: "test", id: "test-model" }]),
     thinkingLevel: "medium",
-    tools: Object.freeze(["read", "bash"]),
+    tools: Object.freeze([
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ]),
     resources: Object.freeze({ resourceProofPolicy: "disabled" }),
     startAuthorization: Object.freeze({ policy: "disabled" }),
     maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,

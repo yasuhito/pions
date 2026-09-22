@@ -198,13 +198,15 @@ async function provisionSession(runDir) {
         return false;
       }
     },
-    EXTERNAL_SESSION === undefined ? SERVER_READY_TIMEOUT_MS : POLL_INTERVAL_MS,
+    SERVER_READY_TIMEOUT_MS,
     `the isolated Herdr session '${SESSION}' to become ready`
   );
   await serverLog?.close();
 }
 
 async function createWorkspace(label, env, cwd = ROOT_DIR) {
+  const workspaceEnv =
+    process.env.PATH === undefined ? env : { PATH: process.env.PATH, ...env };
   const args = [
     "workspace",
     "create",
@@ -214,7 +216,7 @@ async function createWorkspace(label, env, cwd = ROOT_DIR) {
     label,
     "--no-focus",
   ];
-  for (const [key, value] of Object.entries(env)) {
+  for (const [key, value] of Object.entries(workspaceEnv)) {
     args.push("--env", `${key}=${value}`);
   }
   const created = await herdrJson(args);

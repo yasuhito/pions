@@ -230,15 +230,13 @@ export class HerdrPresentation implements Presentation {
   project(operation: Operation): Effect.Effect<void, unknown> {
     if (operation.presentation === undefined) return Effect.void;
     const status =
-      operation.state === "blocked"
-        ? "blocked"
-        : operation.state === "unknown"
-          ? "unknown"
-          : operation.state === "completed" ||
-              operation.state === "failed" ||
-              operation.state === "cancelled"
-            ? "done"
-            : "working";
+      operation.state === "unknown"
+        ? "unknown"
+        : operation.state === "completed" ||
+            operation.state === "failed" ||
+            operation.state === "cancelled"
+          ? "done"
+          : "working";
     return Effect.asVoid(
       this.executeJson([
         "pane",

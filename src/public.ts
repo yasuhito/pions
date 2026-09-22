@@ -283,7 +283,6 @@ export class ExternalReviewAllocationRejoinedError extends Error {
 }
 
 export interface SpawnOptions {
-  readonly parentOperationId?: string;
   readonly reviewSubjectId?: string;
   readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationRequest>;
 }
@@ -298,9 +297,6 @@ export type OperationState =
   | "queued"
   | "starting"
   | "running"
-  | "blocked"
-  | "self_settled"
-  | "draining_descendants"
   | "cancelling"
   | "completed"
   | "failed"
@@ -928,15 +924,13 @@ export interface OperationSnapshot {
   readonly operationId: string;
   readonly version: Readonly<OperationVersion>;
   readonly state: OperationState;
+  readonly unknownReason?:
+    "cancel-unproven" | "start-acceptance-unknown" | "liveness-unproven";
   readonly failureReason?: OperationFailureReason;
   readonly workerIdentity?: Readonly<WorkerIdentity>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
   readonly workerExecutionEvidence?: Readonly<WorkerExecutionEvidence>;
-  readonly resultFormat?: Readonly<PinnedResultFormat>;
-  readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
-  readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
-  readonly startAuthorization: Readonly<StartAuthorizationSnapshot>;
   readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
   readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
@@ -949,8 +943,6 @@ export interface OperationSnapshot {
   readonly stopConfirmation?: Readonly<StopConfirmationEvidence>;
   readonly presentationCleanup?: Readonly<PresentationCleanupEvidence>;
   readonly cleanupDiagnostics: ReadonlyArray<Readonly<CleanupDiagnostic>>;
-  readonly resourceEvidence?: Readonly<VersionedResourceEvidenceSnapshot>;
-  readonly revisionSeries?: Readonly<RevisionSeriesSnapshot>;
 }
 
 export type ResultReadOutcome =
@@ -998,8 +990,6 @@ export interface OperationReader {
     readonly maxBytes: number;
     readonly cursor?: string;
   }): Promise<Readonly<ResultChunkReadOutcome>>;
-  /** Returns undefined after a profile without an external Start gate terminates. */
-  waitForStartupReceipt(): Promise<Readonly<StartupReceipt> | undefined>;
 }
 
 export interface WaitingStartAuthorization {
@@ -1073,7 +1063,6 @@ export class StartAuthorizationAuthenticationError extends Error {
 export type OperationFailureReason =
   | "worker_start_failed"
   | "worker_protocol_failed"
-  | "result_format_rejected"
   | "process-exited-without-result"
   | "agent_failed"
   | "model_mismatch"
@@ -1081,12 +1070,7 @@ export type OperationFailureReason =
   | "model_not_found"
   | "model_auth_unavailable"
   | "unsupported_capability"
-  | "tool_policy_violation"
-  | "descendant_failed"
-  | "resource_proof_rejected"
-  | "start_rejected"
-  | "start_authorization_timed_out"
-  | "start_authorization_invalidated";
+  | "tool_policy_violation";
 
 export class HerdrPreconditionError extends Error {
   override readonly name = "HerdrPreconditionError";
@@ -1130,7 +1114,8 @@ export class OperationUnknownError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: "cancel-unproven" | "liveness-unproven"
+    readonly reason:
+      "cancel-unproven" | "start-acceptance-unknown" | "liveness-unproven"
   ) {
     super(`Operation ${operationId} has unknown outcome: ${reason}`);
   }

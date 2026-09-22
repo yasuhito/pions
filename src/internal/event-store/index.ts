@@ -2,25 +2,12 @@ import type { Effect } from "effect";
 
 import type {
   EffectiveWorkerConfig,
-  ExternalReviewAllocationBinding,
   OperationState,
-  PinnedResultFormat,
   RequestedWorkerConfig,
   ResultAcceptanceTransactionOutcome,
-  RetryClearanceEvidence,
-  RevisionReservation,
-  RevisionReservationOutcome,
-  RevisionResultAdoptionOutcome,
-  RevisionResultAdoptionRecord,
-  RevisionSeriesSnapshot,
-  StartupReceiptPolicy,
   TaskSpec,
 } from "../../public.js";
-import type {
-  Operation,
-  OperationLineage,
-  RevisionMembership,
-} from "./model.js";
+import type { Operation } from "./model.js";
 import type { OperationIntent } from "./intent.js";
 
 export type {
@@ -29,12 +16,7 @@ export type {
   PresentationOwnership,
 } from "./intent.js";
 export type { WorkerIdentity } from "../../public.js";
-export type {
-  Operation,
-  OperationEvent,
-  OperationLineage,
-  RevisionMembership,
-} from "./model.js";
+export type { Operation, OperationEvent } from "./model.js";
 export { RUNTIME_ACTOR_ID } from "./model.js";
 export { presentationCleanupEligible } from "./reducer.js";
 
@@ -57,17 +39,6 @@ export interface OperationRequest {
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly maxResultByteCount: number;
-  readonly resultFormat?: Readonly<PinnedResultFormat>;
-  readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
-  readonly lineage: Readonly<OperationLineage>;
-  readonly revisionMembership?: Readonly<RevisionMembership>;
-  readonly startAuthorization: Readonly<{
-    readonly configuredPolicy: "disabled" | "optional" | "required";
-    readonly policy: "disabled" | "required";
-    readonly windowMs: number;
-    readonly authorizedSubjectIds: ReadonlyArray<string>;
-    readonly receipt?: Readonly<StartupReceiptPolicy>;
-  }>;
 }
 
 export interface OperationSnapshot {
@@ -84,28 +55,6 @@ export interface ResultAcceptanceRequest {
   readonly bytes: Uint8Array;
 }
 
-export interface RevisionReservationCommand {
-  readonly seriesOriginOperationId: string;
-  readonly operationId: string;
-  readonly requestId: string;
-  readonly kind: "revision" | "retry";
-  readonly targetOperationId: string;
-  readonly targetResultId?: string;
-  readonly targetResultDigest?: `sha256:${string}`;
-  readonly retryOfOperationId?: string;
-  readonly reason: string;
-  readonly requestedBy: string;
-  readonly maxAttempts?: number;
-  readonly resultAdoptionSubjectIds?: ReadonlyArray<string>;
-  readonly task: Readonly<TaskSpec>;
-  readonly clearance?: Readonly<RetryClearanceEvidence>;
-}
-
-export interface RevisionAdoptionCommand extends Omit<
-  RevisionResultAdoptionRecord,
-  "decidedAt"
-> {}
-
 export interface EventStore {
   create(
     request: OperationRequest
@@ -114,38 +63,19 @@ export interface EventStore {
     operationId: string,
     intent: OperationIntent
   ): Effect.Effect<OperationSnapshot, StoreError>;
-  /** Persists one Worker final answer as the Operation-owned Result and publishes its acceptance. */
   acceptResult(
     request: Readonly<ResultAcceptanceRequest>
   ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
-  /** Returns the exact persisted Result bytes, or undefined when none were persisted. */
   readResultBody(
     operationId: string
   ): Effect.Effect<Uint8Array | undefined, StoreError>;
-  reserveRevision(
-    command: Readonly<RevisionReservationCommand>
-  ): Effect.Effect<RevisionReservationOutcome, StoreError>;
-  adoptRevisionResult(
-    command: Readonly<RevisionAdoptionCommand>
-  ): Effect.Effect<RevisionResultAdoptionOutcome, StoreError>;
-  readRevisionSeries(
-    seriesOriginOperationId: string
-  ): Effect.Effect<RevisionSeriesSnapshot, StoreError>;
   read(operationId: string): Effect.Effect<OperationSnapshot, StoreError>;
-  listWaitingStartAuthorizations(): Effect.Effect<
-    ReadonlyArray<OperationSnapshot>,
-    StoreError
-  >;
   listRecoverableOperations(): Effect.Effect<
     ReadonlyArray<OperationSnapshot>,
     StoreError
   >;
   listPendingPresentationCleanups(): Effect.Effect<
     ReadonlyArray<OperationSnapshot>,
-    StoreError
-  >;
-  listPendingRevisionReservations(): Effect.Effect<
-    ReadonlyArray<Readonly<RevisionReservation>>,
     StoreError
   >;
 }

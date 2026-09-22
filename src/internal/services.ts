@@ -15,7 +15,6 @@ import type {
 } from "./worker-protocol.js";
 import type {
   ObservedWorkerConfig,
-  ResultFormatRejectionEvidence,
   OperationPersistenceError,
   StartAuthorizationAuthenticator,
   StartAuthorizationAuthority,
@@ -116,10 +115,6 @@ export type WorkerRunOutcome = (
     }
   | { readonly state: "worker_start_failed" }
   | { readonly state: "worker_protocol_failed" }
-  | {
-      readonly state: "result_format_rejected";
-      readonly rejection: Readonly<ResultFormatRejectionEvidence>;
-    }
   | { readonly state: "process-exited-without-result" }
   | { readonly state: "liveness-unproven" }
   | { readonly state: "model_mismatch" }
@@ -172,16 +167,6 @@ export function acknowledgeResultAcceptance(
     proof: Readonly<ResultAcceptanceProof>
   ) => Effect.Effect<void, unknown>
 ): Effect.Effect<WorkerRunOutcome> {
-  if (
-    acceptance.state === "failed" &&
-    acceptance.reason === "result_format_rejected" &&
-    acceptance.resultFormatRejection !== undefined
-  ) {
-    return Effect.succeed({
-      state: "result_format_rejected",
-      rejection: acceptance.resultFormatRejection,
-    } as const);
-  }
   if (acceptance.state !== "accepted") {
     return Effect.succeed({ state: "worker_protocol_failed" } as const);
   }

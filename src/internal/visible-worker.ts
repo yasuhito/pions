@@ -774,9 +774,6 @@ export class VisibleWorker implements WorkerAdapter {
         ? {}
         : { authorizationDecisionId: previous.authorizationDecisionId }),
       deliveryGeneration: previous.deliveryGeneration,
-      ...(operation.startAuthorizationTiming.policy === "required"
-        ? { deadline: operation.startAuthorizationTiming.deadline }
-        : {}),
     });
     this.sessions.set(operation.operationId, session);
     try {

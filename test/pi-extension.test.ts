@@ -97,75 +97,6 @@ const SNAPSHOT: OperationSnapshot = {
     tools: { state: "observed", value: ["read"] },
     cwd: { state: "observed", value: "/repository" },
   },
-  startAuthorization: {
-    timing: {
-      createdAt: "2026-04-01T00:00:00.000Z",
-      windowMs: 60_000,
-      deadline: "2026-04-01T00:01:00.000Z",
-      configuredPolicy: "required",
-      policy: "required",
-      authorizedSubjectIds: ["coordinator-1"],
-    },
-    gate: "waiting",
-    receipt: {
-      operationId: "operation-1",
-      digest: `sha256:${"ef".repeat(32)}`,
-      recordedAt: "2026-04-01T00:00:03.000Z",
-      workerIdentity: {
-        processId: 123,
-        processInstanceId: "process-1",
-        processStartToken: "start-1",
-        piSessionId: "worker-session-1",
-        paneId: "pane-1",
-      },
-      requestedConfig: {
-        model: { provider: "anthropic", id: "claude-opus-5" },
-        thinkingLevel: "high",
-        tools: ["read"],
-        cwd: "/repository",
-      },
-      effectiveConfig: {
-        model: { provider: "anthropic", id: "claude-opus-5" },
-        thinkingLevel: "high",
-        tools: ["read"],
-        cwd: "/repository",
-        maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
-        modelPolicy: {
-          candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
-          attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
-          maxAttempts: 1,
-          fallback: "forbidden",
-          aliases: [],
-        },
-      },
-      observedConfig: {
-        model: {
-          state: "observed",
-          value: { provider: "anthropic", id: "claude-opus-5" },
-        },
-        thinkingLevel: { state: "observed", value: "high" },
-        tools: { state: "observed", value: ["read"] },
-        cwd: { state: "observed", value: "/repository" },
-      },
-      workspace: {
-        workspaceId: "workspace-1",
-        normalizedPath: "/repository",
-        baseRevision: "revision-1",
-        owner: { state: "unknown" },
-        pionsMayDelete: false,
-      },
-      permissionManifest: {
-        manifestId: "manifest-1",
-        digest: `sha256:${"cd".repeat(32)}`,
-      },
-      reviewSubjectId: "subject-1",
-      reviewSubjectVerification: "required",
-      configuredAuthorizationPolicy: "required",
-      authorizationPolicy: "required",
-      authorizationDeadline: "2026-04-01T00:01:00.000Z",
-    },
-    rejectedDecisions: [],
-  },
   startDeliveryHandoffs: [],
   cleanupDiagnostics: [{ code: "workspace_close_failed" }],
 };
@@ -209,7 +140,6 @@ class FakeRuntime implements Runtime {
       read: () => Promise.resolve(this.snapshot),
       readResult: () => Promise.reject(new Error("unused")),
       readResultChunk: () => Promise.reject(new Error("unused")),
-      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
       result: () =>
         outcome instanceof Error
           ? Promise.reject(outcome)
@@ -258,7 +188,6 @@ class FakeRuntime implements Runtime {
           },
         });
       },
-      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
     };
   }
 
@@ -337,7 +266,6 @@ class PendingRuntime implements Runtime {
       read: () => Promise.reject(new Error("unused")),
       readResult: () => Promise.reject(new Error("unused")),
       readResultChunk: () => Promise.reject(new Error("unused")),
-      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
       result: () =>
         result.promise.then((accepted) => ({
           result: accepted,
@@ -1047,39 +975,6 @@ test("a newly requested formal review has no accepted Start instruction", async 
   );
 });
 
-test("pions_operation returns the persisted Start gate", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .gate,
-    "waiting"
-  );
-});
-
-test("pions_operation returns the authorization deadline", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .timing.deadline,
-    "2026-04-01T00:01:00.000Z"
-  );
-});
-
-test("pions_operation returns the persisted Startup receipt", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.deepEqual(
-    ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .receipt,
-    SNAPSHOT.startAuthorization.receipt
-  );
-});
-
 test("pions_operation returns the effective model", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -1121,17 +1016,6 @@ test("pions_operation returns the observed thinking level", async (context) => {
     ((await value.inspect()).details as OperationSnapshot).observedConfig
       ?.thinkingLevel,
     { state: "observed", value: "high" }
-  );
-});
-
-test("pions_operation returns the fixed Review subject", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .receipt?.reviewSubjectId,
-    SNAPSHOT.startAuthorization.receipt?.reviewSubjectId
   );
 });
 

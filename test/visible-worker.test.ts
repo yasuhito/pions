@@ -197,7 +197,6 @@ function operation(
 ): Operation {
   return {
     operationId,
-    lineage: { rootOperationId: operationId, depth: 0 },
     presentation: {
       kind: "herdr_workspace",
       workspaceId: `${paneId}:workspace`,
@@ -215,21 +214,7 @@ function operation(
     requestedConfig,
     effectiveConfig: { ...effectiveConfig, model },
     maxResultByteCount,
-    startAuthorizationTiming: {
-      createdAt: "2026-09-06T10:00:00.000Z",
-      windowMs: 0,
-      deadline: "2026-09-06T10:00:00.000Z",
-      configuredPolicy: "disabled",
-      policy: "disabled",
-      authorizedSubjectIds: [],
-    },
-    startGate: "not_required",
-    rejectedStartAuthorizationDecisions: [],
     startDeliveryHandoffs: [],
-    childOperationIds: [],
-    settledChildOperationIds: [],
-    descendantFailure: false,
-    spawnFrozen: false,
     cancellationEpoch: 0,
   };
 }
@@ -793,6 +778,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
     promptReader: {
       read: () => Promise.resolve(Buffer.from("private prompt", "utf8")),
     },
+    processControl: new FakeProcessControl("stopped"),
   });
   const runtime = makeTestRuntime({
     worker,
@@ -805,6 +791,12 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store: new InMemoryEventStore(),
+    configuration: {
+      cwd: "/test/workspace",
+      profiles: {
+        coding: { ...profilePolicy, intendedUse: "general" },
+      },
+    },
   });
   const handle = await runtime.spawn({
     promptRef: "/private/prompt",
