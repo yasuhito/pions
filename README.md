@@ -31,7 +31,7 @@ Every delegation creates a uniquely identified `Operation`. Its persisted record
 - bounded execution evidence; and
 - presentation cleanup diagnostics.
 
-Losing the original handle does not lose the operation. A reopened runtime can reconstruct it from its identifier.
+Losing the original handle does not lose an operation stored in the current event format. A reopened runtime can reconstruct it from its identifier.
 
 ### Results are immutable, verified byte sequences
 
@@ -86,7 +86,7 @@ The worker protocol and private files do not provide an OS sandbox.
 
 The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`. It registers no formal-review tools.
 
-Existing format-pinned formal-review operations remain inspectable and recoverable. Creation of new formal-review operations is paused.
+Recovery reads only records in the current event format. Creation of new formal-review operations is paused.
 
 ### `pions_delegate`
 
