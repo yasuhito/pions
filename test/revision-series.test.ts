@@ -119,8 +119,8 @@ function authenticator(
   return {
     authenticate: async () => ({
       subjectId: "coordinator-1",
-      fixedArtifactAcceptanceSubjectIds: async () => ["coordinator-1"],
-      currentArtifactAcceptanceAuthority: async () => authority(),
+      fixedResultAdoptionSubjectIds: async () => ["coordinator-1"],
+      currentResultAdoptionAuthority: async () => authority(),
     }),
   };
 }
@@ -811,7 +811,7 @@ test("起動直後の Runtime close は保留中の Revision 予約の復旧を�
   );
 });
 
-test("Retry成功は別の成果物採否判断で系列へ採用する", async () => {
+test("Retry成功は別の結果採用判断で系列へ採用する", async () => {
   const { runtime, original, snapshot } = await fixture();
   const revision = await reserveFirst(
     runtime,
@@ -910,7 +910,7 @@ test("系列メンバーを別系列の起点にして上限を初期化でき�
   assert.deepEqual(fork, { status: "rejected", reason: "invalid_target" });
 });
 
-test("同じ成果物採否判断の再送は同じ採用へ合流する", async () => {
+test("同じ結果採用判断の再送は同じ採用へ合流する", async () => {
   const { runtime, original, snapshot } = await fixture();
   const revision = await reserveFirst(
     runtime,
@@ -939,7 +939,7 @@ test("同じ成果物採否判断の再送は同じ採用へ合流する", async
   assert.equal(repeated.status, "idempotent");
 });
 
-test("失効した成果物採否主体の採用を拒否する", async () => {
+test("失効した結果採用主体の採用を拒否する", async () => {
   const state = { authority: "authorized" as "authorized" | "revoked" };
   const clock = new FakeClock(
     Array.from({ length: 120 }, (_, index) =>

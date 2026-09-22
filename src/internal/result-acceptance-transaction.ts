@@ -1,25 +1,7 @@
-import type {
-  AcceptedResult,
-  ResultAcceptanceRetentionPolicyEvidence,
-} from "../public.js";
+import type { AcceptedResult } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
-
-export function resultAcceptanceRetentionPolicy(
-  operationId: string,
-  acceptedArtifactRetentionMs: number
-): ResultAcceptanceRetentionPolicyEvidence {
-  const value = {
-    formatId: "pions.result-acceptance-retention-policy.v1" as const,
-    operationId,
-    acceptedArtifactRetentionMs,
-  };
-  return {
-    ...value,
-    digest: sha256Digest(JSON.stringify(value)),
-  };
-}
 
 /**
  * The Result acceptance identifier is derived from the Operation, the

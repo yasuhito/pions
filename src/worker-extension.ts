@@ -287,17 +287,12 @@ class PiWorkerBridge {
     this.completionSent = true;
     const bytes = Buffer.from(body, "utf8");
     this.send({
-      type: "artifacts",
+      type: "result",
       result: {
         acceptanceRequestId: "result-1",
-        body: {
-          formatId: "pions.result-body.v1",
-          normalizationId: "identity.v1",
-          expectedByteCount: bytes.byteLength,
-          expectedDigest: sha256Digest(bytes),
-          bytes,
-        },
-        workProducts: [],
+        body,
+        expectedByteCount: bytes.byteLength,
+        expectedDigest: sha256Digest(bytes),
       },
     });
     this.send({ type: "done", usage: this.usage, toolUses: this.toolUses });
@@ -315,8 +310,9 @@ class PiWorkerBridge {
         capability: this.config.capability,
       },
       new FileStartInstructionAcceptanceStore(
-        join(dirname(this.config.promptPath), "start-instruction.v14.json")
-      )
+        join(dirname(this.config.promptPath), "start-instruction.v15.json")
+      ),
+      { resultBytes: this.config.effectiveConfig.maxResultByteCount }
     );
     const socket = connect(this.config.socketPath);
     this.socket = socket;

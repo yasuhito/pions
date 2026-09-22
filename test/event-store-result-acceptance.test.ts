@@ -7,8 +7,10 @@ import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
-import type { ResultAcceptanceRequest } from "../src/public.js";
-import type { EventStore } from "../src/internal/event-store/index.js";
+import type {
+  EventStore,
+  ResultAcceptanceRequest,
+} from "../src/internal/event-store/index.js";
 import {
   operationDirectoryKey,
   PrivateFileEventStore,
@@ -22,8 +24,7 @@ import {
 import {
   effectiveConfig,
   requestedConfig,
-  retentionPolicy,
-  workProductRequirements,
+  maxResultByteCount,
 } from "./worker-protocol-fixtures.js";
 
 const digest = (bytes: Uint8Array) =>
@@ -60,8 +61,7 @@ async function createOperation(store: EventStore): Promise<void> {
       },
       requestedConfig,
       effectiveConfig,
-      workProductRequirements,
-      resultRetentionPolicy: retentionPolicy("operation-1"),
+      maxResultByteCount,
       lineage: { rootOperationId: "operation-1", depth: 0 },
       startAuthorization: {
         configuredPolicy: "disabled",
@@ -262,10 +262,7 @@ test("another request with different bytes is a Result conflict", async () => {
 
 test("a body over the Operation body limit is rejected", async () => {
   const store = await runningStore();
-  const bytes = Buffer.alloc(
-    workProductRequirements.body.maxByteCount + 1,
-    "a"
-  );
+  const bytes = Buffer.alloc(maxResultByteCount + 1, "a");
 
   const outcome = await Effect.runPromise(store.acceptResult(request(bytes)));
 
@@ -277,7 +274,7 @@ test("a body over the Operation body limit is rejected", async () => {
 
 test("a body at the Operation body limit is accepted", async () => {
   const store = await runningStore();
-  const bytes = Buffer.alloc(workProductRequirements.body.maxByteCount, "a");
+  const bytes = Buffer.alloc(maxResultByteCount, "a");
 
   const outcome = await Effect.runPromise(store.acceptResult(request(bytes)));
 
@@ -434,7 +431,7 @@ test("a rewritten acceptance record is rejected as corrupt", async (context) => 
   const path = join(
     root,
     operationDirectoryKey("operation-1"),
-    "events.v20.json"
+    "events.v21.json"
   );
   const record = JSON.parse(await readFile(path, "utf8")) as {
     events: Array<{ type: string; acceptance?: { byteCount: number } }>;
@@ -458,7 +455,7 @@ test("an old Event Store root is rejected instead of initialized as the current 
   await makeRunning(store);
   const directory = join(root, operationDirectoryKey("operation-1"));
   await rename(
-    join(directory, "events.v20.json"),
+    join(directory, "events.v21.json"),
     join(directory, "events.v10.json")
   );
 

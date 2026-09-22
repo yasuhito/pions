@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0028
 ---
 
 # レビュー入力準備完了を着手ゲートへ束縛する

@@ -1,5 +1,4 @@
 import type {
-  ArtifactWriterOwnership,
   CleanupDiagnosticCode,
   ObservedWorkerConfig,
   OperationFailureReason,
@@ -67,7 +66,6 @@ export type OperationIntent =
       readonly type: "start_delivery_authority_revoked";
       readonly successorDispatcherId: string;
       readonly deliveryGeneration: number;
-      readonly writerOwnership: Readonly<ArtifactWriterOwnership>;
     }
   | {
       readonly type: "start_delivery_generation_confirmed";

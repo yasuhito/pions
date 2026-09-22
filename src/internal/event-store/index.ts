@@ -6,9 +6,6 @@ import type {
   OperationState,
   PinnedResultFormat,
   RequestedWorkerConfig,
-  ResolvedWorkProductRequirements,
-  ResultAcceptanceRequest,
-  ResultAcceptanceRetentionPolicyEvidence,
   ResultAcceptanceTransactionOutcome,
   RetryClearanceEvidence,
   RevisionReservation,
@@ -59,8 +56,7 @@ export interface OperationRequest {
   readonly task: Readonly<TaskSpec>;
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
-  readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
-  readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
+  readonly maxResultByteCount: number;
   readonly resultFormat?: Readonly<PinnedResultFormat>;
   readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
   readonly lineage: Readonly<OperationLineage>;
@@ -82,6 +78,12 @@ export interface OperationSnapshot {
   readonly operation: Operation;
 }
 
+export interface ResultAcceptanceRequest {
+  readonly operationId: string;
+  readonly acceptanceRequestId: string;
+  readonly bytes: Uint8Array;
+}
+
 export interface RevisionReservationCommand {
   readonly seriesOriginOperationId: string;
   readonly operationId: string;
@@ -94,7 +96,7 @@ export interface RevisionReservationCommand {
   readonly reason: string;
   readonly requestedBy: string;
   readonly maxAttempts?: number;
-  readonly artifactAcceptanceSubjectIds?: ReadonlyArray<string>;
+  readonly resultAdoptionSubjectIds?: ReadonlyArray<string>;
   readonly task: Readonly<TaskSpec>;
   readonly clearance?: Readonly<RetryClearanceEvidence>;
 }

@@ -105,33 +105,6 @@ const AgentRunEvidence = Schema.Struct({
   usage: Usage,
   toolUses: Schema.Array(ToolUse),
 });
-const ArtifactContentRequirement = Schema.Struct({
-  formatId: Schema.String,
-  normalizationId: Schema.String,
-  maxByteCount: NonNegativeSafeInteger,
-});
-const WorkProductRequirement = Schema.Struct({
-  key: Schema.String,
-  formatId: Schema.String,
-  normalizationId: Schema.String,
-  maxByteCount: NonNegativeSafeInteger,
-  minCount: NonNegativeSafeInteger,
-  maxCount: NonNegativeSafeInteger,
-});
-const ResolvedWorkProductRequirements = Schema.Struct({
-  requirementSetId: Schema.String,
-  digest: Digest,
-  canonicalJson: Schema.String,
-  body: ArtifactContentRequirement,
-  workProducts: Schema.Array(WorkProductRequirement),
-  maxTotalByteCount: NonNegativeSafeInteger,
-});
-const ResultAcceptanceRetentionPolicy = Schema.Struct({
-  formatId: Schema.Literal("pions.result-acceptance-retention-policy.v1"),
-  operationId: Schema.String,
-  acceptedArtifactRetentionMs: NonNegativeSafeInteger,
-  digest: Digest,
-});
 const AcceptedResult = Schema.Struct({
   acceptanceId: Schema.String,
   operationId: Schema.String,
@@ -172,52 +145,11 @@ const ResourceEvidenceReceipt = Schema.Struct({
   acquisitionState: Schema.Literal("held"),
   generation: Schema.optional(Schema.String),
 });
-const ReviewInputReadiness = Schema.Struct({
-  readinessId: Schema.String,
-  digest: Digest,
-  operationId: Schema.String,
-  registrationEvidenceId: Schema.String,
-  registrationEvidenceDigest: Digest,
-  collectionDigest: Digest,
-  authorityId: Schema.String,
-  authorityRegistrationId: Schema.String,
-  authorityGeneration: Schema.String,
-  acquisitionId: Schema.String,
-  workspaceId: Schema.String,
-  inputPath: Schema.String,
-  permissionManifestDigest: Digest,
-  writePermission: Schema.Union(
-    Schema.Struct({ kind: Schema.Literal("none") }),
-    Schema.Struct({ kind: Schema.Literal("workspace") }),
-    Schema.Struct({
-      kind: Schema.Literal("literals"),
-      paths: Schema.Array(Schema.String),
-    })
-  ),
-  files: Schema.Array(
-    Schema.Struct({
-      path: Schema.String,
-      byteCount: NonNegativeSafeInteger,
-      digest: Digest,
-    })
-  ),
-  writingClosed: Schema.Literal(true),
-});
-const ReviewSubjectReceipt = Schema.Struct({
-  artifactId: Schema.String,
-  byteCount: NonNegativeSafeInteger,
-  digest: Digest,
-  format: Schema.String,
-  normalization: Schema.String,
-  registrationEvidenceId: Schema.String,
-  registrationEvidenceDigest: Digest,
-});
 const StartupReceiptPolicy = Schema.Struct({
   workspace: WorkspaceReceipt,
   permissionManifest: PermissionManifestReceipt,
-  reviewSubject: Schema.optional(ReviewSubjectReceipt),
+  reviewSubjectId: Schema.optional(Schema.NonEmptyString),
   reviewSubjectVerification: Schema.Literal("disabled", "required"),
-  reviewInputPreparation: Schema.Literal("disabled", "required"),
 });
 const StartupReceipt = Schema.Struct({
   operationId: Schema.String,
@@ -230,8 +162,7 @@ const StartupReceipt = Schema.Struct({
   workspace: WorkspaceReceipt,
   permissionManifest: PermissionManifestReceipt,
   resourceEvidence: Schema.optional(ResourceEvidenceReceipt),
-  reviewInputReadiness: Schema.optional(ReviewInputReadiness),
-  reviewSubject: Schema.optional(ReviewSubjectReceipt),
+  reviewSubjectId: Schema.optional(Schema.NonEmptyString),
   reviewSubjectVerification: Schema.Literal("disabled", "required"),
   configuredAuthorizationPolicy: Schema.Literal(
     "disabled",
@@ -288,9 +219,7 @@ const PinnedResultFormat = Schema.Struct({
 const ExternalReviewAllocationBinding = Schema.Struct({
   allocationId: Schema.NonEmptyString,
   issuerId: Schema.NonEmptyString,
-  reviewSubjectArtifactId: Schema.NonEmptyString,
-  registrationEvidenceId: Schema.NonEmptyString,
-  registrationEvidenceDigest: Digest,
+  reviewSubjectId: Schema.NonEmptyString,
   profileId: Schema.NonEmptyString,
   expiresAt: Schema.NonEmptyString,
   useLimit: NonNegativeSafeInteger,
@@ -506,7 +435,7 @@ const RevisionReservation = Schema.Struct({
   reason: Schema.NonEmptyString,
   requestedBy: Schema.NonEmptyString,
   maxAttempts: NonNegativeSafeInteger,
-  artifactAcceptanceSubjectIds: Schema.Array(Schema.NonEmptyString),
+  resultAdoptionSubjectIds: Schema.Array(Schema.NonEmptyString),
   task: Task,
   reservedAt: Schema.NonEmptyString,
   retryClearanceId: Schema.optional(Schema.NonEmptyString),
@@ -529,8 +458,7 @@ const OperationEventSchema = Schema.Union(
     task: Task,
     requestedConfig: RequestedWorkerConfigSchema,
     effectiveConfig: EffectiveWorkerConfigSchema,
-    workProductRequirements: ResolvedWorkProductRequirements,
-    resultRetentionPolicy: ResultAcceptanceRetentionPolicy,
+    maxResultByteCount: NonNegativeSafeInteger,
     resultFormat: Schema.optional(PinnedResultFormat),
     externalReviewAllocation: Schema.optional(ExternalReviewAllocationBinding),
     lineage: Lineage,
@@ -570,10 +498,6 @@ const OperationEventSchema = Schema.Union(
     type: Schema.Literal("start_delivery_authority_revoked"),
     successorDispatcherId: Schema.NonEmptyString,
     deliveryGeneration: Schema.Number,
-    writerOwnership: Schema.Struct({
-      pid: Schema.Number,
-      processStartToken: Schema.NonEmptyString,
-    }),
   }),
   Schema.Struct({
     ...EventMetadataFields,

@@ -9,9 +9,7 @@ import type {
   WorkerProfilePolicy,
 } from "../src/public.js";
 import type { AgentRunEvidence } from "../src/internal/services.js";
-import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
-import { resolveWorkProductRequirements } from "../src/internal/result-acceptance-manifest.js";
-import { resultAcceptanceRetentionPolicy } from "../src/internal/result-acceptance-transaction.js";
+import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "../src/internal/worker-configuration.js";
 
 export const requestedConfig: RequestedWorkerConfig = {};
 export const effectiveConfig: EffectiveWorkerConfig = {
@@ -19,6 +17,7 @@ export const effectiveConfig: EffectiveWorkerConfig = {
   thinkingLevel: "medium",
   tools: ["read", "bash"],
   cwd: "/test/workspace",
+  maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
   modelPolicy: {
     candidates: [{ provider: "test", id: "test-model" }],
     attempted: [{ provider: "test", id: "test-model" }],
@@ -40,16 +39,9 @@ export const profilePolicy: WorkerProfilePolicy = {
   tools: ["read", "bash"],
   resources: { resourceProofPolicy: "disabled" },
   startAuthorization: { policy: "disabled" },
-  workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-  acceptedArtifactRetentionMs: 86_400_000,
+  maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
 };
-export const workProductRequirements =
-  resolveWorkProductRequirements(profilePolicy);
-export const retentionPolicy = (operationId: string) =>
-  resultAcceptanceRetentionPolicy(
-    operationId,
-    profilePolicy.acceptedArtifactRetentionMs
-  );
+export const maxResultByteCount = profilePolicy.maxResultByteCount;
 
 export const piSessionId = "pi-session-1";
 export const agentRunEvidence: AgentRunEvidence = {

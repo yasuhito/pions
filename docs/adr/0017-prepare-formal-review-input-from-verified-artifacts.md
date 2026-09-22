@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0028
 ---
 
 # 検証済み成果物から正式レビュー入力を準備する

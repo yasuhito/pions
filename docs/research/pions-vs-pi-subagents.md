@@ -30,7 +30,8 @@ Pionsでは、オペレーションが結果本文の固定バイト列を直接
 - [`src/internal/runtime.ts`](../../src/internal/runtime.ts)の`retrieveAcceptedResult`と`readResultChunk`
 - [`src/internal/result-acceptance.ts`](../../src/internal/result-acceptance.ts)
 - [ADR-0013](../adr/0013-use-runtime-as-the-result-retrieval-boundary.md)
-- [ADR-0007](../adr/0007-separate-result-integrity-adoption-and-retention.md)
+- [ADR-0027](../adr/0027-store-results-as-operation-owned-utf8-text.md)
+- [ADR-0028](../adr/0028-remove-generic-artifact-management.md)
 
 `pi-subagents@0.67.0`も背景実行の結果ファイル、再生記録、出力アーカイブを持つ。ただし公式文書では、結果ファイルは通知後に消費・削除され、再生記録は期限付きのベストエフォートな一時状態であって永続台帳ではないと説明されている。出力ファイルがない場合のアーカイブ本文も子ごとに64 KiBへ制限される。[`docs/observability.md`の「Async run artifacts」](https://github.com/nicobailon/pi-subagents/blob/v0.67.0/docs/observability.md#async-run-artifacts)
 
@@ -68,24 +69,23 @@ Pionsは、プロセスやペインが見えないことだけから停止済み
 
 そのため「Pionsだけが停止を検証する」とは書けない。Pions固有の訴求点は、停止確認をオペレーションの終端条件と再試行安全性へ一貫して結び付けていることである。
 
-### 4. 結果の保存、採用、保持を別の事実として扱う
+### 4. 結果の保存と改訂系列への採用を別の事実として扱う
 
 Pionsでは、次を意図的に分離している。
 
 - バイト列が完全に保存されたという結果受理
-- コーディネーターが成果物を採用するという判断
-- バイト列を削除から守る保持義務
+- コーディネーターが改訂結果を系列へ採用するという判断
 - 差戻しを新しいオペレーションとして表す改訂
 
-これにより、結果を保存したことを「正しい成果物として採用した」と読み替えず、改訂でも元の結果を書き換えない。
+これにより、結果を保存したことを「改訂系列へ採用した」と読み替えず、改訂でも元の結果を書き換えない。結果本文はオペレーションが直接所有し、利用者がPionsの保存領域を明示的に削除するまで保持する。
 
 根拠:
 
-- [`CONTEXT.md`](../../CONTEXT.md)の「Result acceptance」「Artifact acceptance」「Revision」「Artifact retention pin」
-- [ADR-0007](../adr/0007-separate-result-integrity-adoption-and-retention.md)
+- [`CONTEXT.md`](../../CONTEXT.md)の「Result acceptance」「Revision result adoption」「Revision」
+- [ADR-0028](../adr/0028-remove-generic-artifact-management.md)
 - [ADR-0010](../adr/0010-store-revision-series-on-origin-operation.md)
 
-`pi-subagents`にも受け入れ条件、実行時検査、レビューゲートを記録する受け入れ台帳があるため、「受け入れ概念がない」とは書けない。[`acceptance.ts`](https://github.com/nicobailon/pi-subagents/blob/v0.67.0/src/runs/shared/acceptance.ts) Pionsの違いは、意味上の採否と、結果バイト列の永続化・完全性・保持を別々の契約にしている点である。
+`pi-subagents`にも受け入れ条件、実行時検査、レビューゲートを記録する受け入れ台帳があるため、「受け入れ概念がない」とは書けない。[`acceptance.ts`](https://github.com/nicobailon/pi-subagents/blob/v0.67.0/src/runs/shared/acceptance.ts) Pionsの違いは、オペレーション所有結果の永続化・完全性と、改訂系列への採用判断を別々の契約にしている点である。
 
 ### 5. 実行中のワーカーを、実際のPi TUIとして観測できる
 

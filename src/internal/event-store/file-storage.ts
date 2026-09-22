@@ -20,7 +20,7 @@ import { syncDirectory } from "../sync-directory.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
-const RECORD_FILE = "events.v20.json";
+const RECORD_FILE = "events.v21.json";
 const RESULT_FILE = "result.v1.utf8";
 
 function isMissing(error: unknown): boolean {

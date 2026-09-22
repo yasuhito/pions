@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0028
 ---
 
 # 正式レビュー統合で依存成果物を先に登録する

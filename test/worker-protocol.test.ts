@@ -41,15 +41,10 @@ function produced(body = "finished") {
   const bytes = Buffer.from(body, "utf8");
   return {
     acceptanceRequestId: "request-1",
-    body: {
-      formatId: "pions.result-body.v1",
-      normalizationId: "identity.v1",
-      expectedByteCount: bytes.byteLength,
-      expectedDigest:
-        `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const,
-      bytes,
-    },
-    workProducts: [],
+    body,
+    expectedByteCount: bytes.byteLength,
+    expectedDigest:
+      `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const,
   };
 }
 
@@ -667,56 +662,21 @@ test("a Worker rejects old-generation begin after a generation update", () => {
   assert.equal(reception.startInstructions[0]?.status, "stale_generation");
 });
 
-test("authenticated Artifact frames deliver a Worker-produced Result", () => {
+test("authenticated Result frames deliver a Worker-produced Result", () => {
   const { host, worker } = connected();
-  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "result", result: produced() }));
 
   const events = host.receive(worker.send({ type: "done", ...evidence }));
 
   assert.equal(
-    events[0]?.type === "result_received"
-      ? Buffer.from(events[0].result.body.bytes as Uint8Array).toString("utf8")
-      : undefined,
+    events[0]?.type === "result_received" ? events[0].result.body : undefined,
     "finished"
-  );
-});
-
-test("work products retain their keys through the protocol", () => {
-  const { host, worker } = connected();
-  const result = produced();
-  const bytes = Buffer.from("patch", "utf8");
-  host.receive(
-    worker.send({
-      type: "artifacts",
-      result: {
-        ...result,
-        workProducts: [
-          {
-            key: "patch",
-            formatId: "pions.opaque.v1",
-            normalizationId: "identity.v1",
-            expectedByteCount: bytes.byteLength,
-            expectedDigest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-            bytes,
-          },
-        ],
-      },
-    })
-  );
-
-  const events = host.receive(worker.send({ type: "done", ...evidence }));
-
-  assert.equal(
-    events[0]?.type === "result_received"
-      ? events[0].result.workProducts[0]?.key
-      : undefined,
-    "patch"
   );
 });
 
 test("Result ACK contains the persisted acceptance identifier", () => {
   const { host, worker } = connected();
-  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "result", result: produced() }));
   host.receive(worker.send({ type: "done", ...evidence }));
 
   const acknowledgement = host.acknowledgeResult(proof());
@@ -729,7 +689,7 @@ test("Result ACK contains the persisted acceptance identifier", () => {
 
 test("worker recognizes a complete Result ACK", () => {
   const { host, worker } = connected();
-  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "result", result: produced() }));
   host.receive(worker.send({ type: "done", ...evidence }));
 
   const reception = worker.receive(host.acknowledgeResult(proof()).bytes);
@@ -739,7 +699,7 @@ test("worker recognizes a complete Result ACK", () => {
 
 test("repeating the same Result ACK is idempotent at the host", () => {
   const { host, worker } = connected();
-  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "result", result: produced() }));
   host.receive(worker.send({ type: "done", ...evidence }));
   const first = host.acknowledgeResult(proof());
 
@@ -750,7 +710,7 @@ test("repeating the same Result ACK is idempotent at the host", () => {
 
 test("repeating the same Result ACK remains complete at the worker", () => {
   const { host, worker } = connected();
-  host.receive(worker.send({ type: "artifacts", result: produced() }));
+  host.receive(worker.send({ type: "result", result: produced() }));
   host.receive(worker.send({ type: "done", ...evidence }));
   const acknowledgement = host.acknowledgeResult(proof()).bytes;
   worker.receive(acknowledgement);
@@ -760,10 +720,10 @@ test("repeating the same Result ACK remains complete at the worker", () => {
   assert.equal(repeated.acknowledgementsComplete, true);
 });
 
-test("disconnecting during Artifact chunks emits no Result", () => {
+test("disconnecting during Result chunks emits no Result", () => {
   const { host, worker } = connected();
   const frames = worker
-    .send({ type: "artifacts", result: produced() })
+    .send({ type: "result", result: produced() })
     .toString("utf8")
     .split("\n");
   const partialTransfer = Buffer.from(`${frames[0]}\n${frames[1]}\n`);
@@ -778,15 +738,15 @@ test("an invalid acceptance request identifier is rejected before Result deliver
   const result = { ...produced(), acceptanceRequestId: "invalid identifier" };
 
   const reason = violationReason(() =>
-    host.receive(worker.send({ type: "artifacts", result }))
+    host.receive(worker.send({ type: "result", result }))
   );
 
   assert.equal(reason, "invalid_frame");
 });
 
-test("a stale Artifact frame sequence is rejected", () => {
+test("a stale Result frame sequence is rejected", () => {
   const { host, worker } = connected();
-  const bytes = worker.send({ type: "artifacts", result: produced() });
+  const bytes = worker.send({ type: "result", result: produced() });
   const frames = bytes.toString("utf8").trimEnd().split("\n");
   const first = `${frames[0]}\n`;
   host.receive(Buffer.from(first));
@@ -797,11 +757,11 @@ test("a stale Artifact frame sequence is rejected", () => {
   );
 });
 
-test("an unauthenticated Artifact frame is rejected", () => {
+test("an unauthenticated Result frame is rejected", () => {
   const { host, worker } = connected();
   const frame = JSON.parse(
     worker
-      .send({ type: "artifacts", result: produced() })
+      .send({ type: "result", result: produced() })
       .toString("utf8")
       .split("\n")[0]!
   );
@@ -834,10 +794,10 @@ test("the removed result frame is rejected", () => {
   );
 });
 
-test("an Artifact exceeding the per-Artifact limit is rejected", () => {
-  const host = new HostProtocolPeer(authority, { artifactBytes: 3 });
+test("an Result exceeding the result limit is rejected", () => {
+  const host = new HostProtocolPeer(authority, { resultBytes: 3 });
   const worker = new WorkerProtocolPeer(authority, acceptanceStore(), {
-    artifactBytes: 3,
+    resultBytes: 3,
   });
   host.receive(worker.send(identity));
   host.receive(
@@ -847,8 +807,8 @@ test("an Artifact exceeding the per-Artifact limit is rejected", () => {
 
   assert.equal(
     violationReason(() =>
-      worker.send({ type: "artifacts", result: produced("four") })
+      worker.send({ type: "result", result: produced("four") })
     ),
-    "artifact_too_large"
+    "result_too_large"
   );
 });

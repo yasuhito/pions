@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
+  DEFAULT_MAX_RESULT_BYTE_COUNT,
   configurationMismatch,
   resolveWorkerConfig,
 } from "../src/internal/worker-configuration.js";
@@ -21,8 +21,7 @@ function candidateProfile(
     tools: ["read"],
     resources: { resourceProofPolicy: "disabled" },
     startAuthorization: { policy: "disabled" },
-    workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-    acceptedArtifactRetentionMs: 86_400_000,
+    maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     ...overrides,
   } as WorkerProfilePolicy;
 }
@@ -87,23 +86,6 @@ test("a profile without an explicit resource proof policy is rejected", () => {
   );
 });
 
-test("a profile without explicit work product requirements is rejected", () => {
-  assert.throws(
-    () =>
-      resolveWorkerConfig({
-        requested: {},
-        profile: {
-          modelCandidates: [{ provider: "test", id: "test-model" }],
-          thinkingLevel: "medium",
-          tools: ["read"],
-          resources: { resourceProofPolicy: "disabled" },
-        } as never,
-        runtimeCwd: "/workspace",
-      }),
-    { name: "WorkProductRequirementsError", reason: "invalid_requirement" }
-  );
-});
-
 test("a reader profile cannot bypass Writer guarantees by declaring an editing tool", () => {
   assert.throws(
     () =>
@@ -116,8 +98,7 @@ test("a reader profile cannot bypass Writer guarantees by declaring an editing t
           tools: ["read", "write"],
           resources: { resourceProofPolicy: "disabled" },
           startAuthorization: { policy: "disabled" },
-          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-          acceptedArtifactRetentionMs: 86_400_000,
+          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         },
         runtimeCwd: "/workspace",
       }),
@@ -132,8 +113,7 @@ const GENERAL_PROFILE: WorkerProfilePolicy = {
   tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
   resources: { resourceProofPolicy: "disabled" },
   startAuthorization: { policy: "disabled" },
-  workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-  acceptedArtifactRetentionMs: 86_400_000,
+  maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
 };
 
 test("a general profile provides editing tools without a Start gate or resource proof", () => {
@@ -222,36 +202,6 @@ test("a writer candidate without required resource proof is rejected", () => {
   );
 });
 
-test("a writer candidate without a required Work product is rejected", () => {
-  assert.throws(
-    () =>
-      resolveWorkerConfig({
-        requested: {},
-        profile: candidateProfile("writer", {
-          resources: {
-            resourceProofPolicy: "required",
-            authorityId: "launcher-1",
-            authorityRegistrationId: "registration-1",
-            authorityGeneration: "generation-1",
-            normalizationVersion: "selector-v1",
-            workspace: requiredAuthorization("required").receipt.workspace,
-            permissionManifest: writerPermissionManifest,
-            cleanupPolicy: "coordinator_required",
-            cleanupTimeoutMs: 1_000,
-            maxCleanupAttempts: 2,
-            safetyCleanupOperations: ["inspect", "revoke", "release"],
-          },
-          startAuthorization: requiredAuthorization(
-            "required",
-            permissionManifestDocument(writerPermissionManifest).digest
-          ),
-        }),
-        runtimeCwd: "/workspace",
-      }),
-    { name: "WorkerConfigurationError", reason: "unsupported_capability" }
-  );
-});
-
 test("a writer candidate with all required guarantees is accepted", () => {
   const authorization = requiredAuthorization(
     "required",
@@ -275,20 +225,7 @@ test("a writer candidate with all required guarantees is accepted", () => {
           safetyCleanupOperations: ["inspect", "revoke", "release"],
         },
         startAuthorization: authorization,
-        workProductRequirements: {
-          body: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS.body,
-          workProducts: [
-            {
-              key: "patch",
-              formatId: "pions.patch.v1",
-              normalizationId: "identity.v1",
-              minCount: 1,
-              maxCount: 1,
-              maxByteCount: 1_024,
-            },
-          ],
-          maxTotalByteCount: 1_049_600,
-        },
+        maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
       }),
       runtimeCwd: "/workspace",
     })

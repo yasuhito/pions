@@ -643,7 +643,7 @@ export class VisibleWorker implements WorkerAdapter {
     await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
     await chmod(directory, DIRECTORY_MODE);
     const promptPath = join(directory, "prompt.utf8");
-    const configPath = join(directory, "worker.v14.json");
+    const configPath = join(directory, "worker.v15.json");
     await mkdir(this.options.socketDirectory, {
       recursive: true,
       mode: DIRECTORY_MODE,
@@ -745,7 +745,7 @@ export class VisibleWorker implements WorkerAdapter {
       operationDirectoryKey(operation.operationId)
     );
     const config = decodeWorkerConfig(
-      await readFile(join(directory, "worker.v14.json"), "utf8")
+      await readFile(join(directory, "worker.v15.json"), "utf8")
     );
     if (config.operationId !== operation.operationId) {
       throw new Error(
@@ -828,10 +828,13 @@ export class VisibleWorker implements WorkerAdapter {
       rejectDeliveryGeneration: generation.reject,
       receptionCompleted: false,
       backendProcesses: undefined,
-      protocol: new HostProtocolPeer({
-        operationId: operation.operationId,
-        capability,
-      }),
+      protocol: new HostProtocolPeer(
+        {
+          operationId: operation.operationId,
+          capability,
+        },
+        { resultBytes: operation.maxResultByteCount }
+      ),
     };
     server.on("connection", (socket) => this.acceptConnection(session, socket));
     return session;

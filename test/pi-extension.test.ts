@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -27,7 +28,10 @@ import type {
 
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
 import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
-import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
+import {
+  DEFAULT_MAX_RESULT_BYTE_COUNT,
+  DEFAULT_WORKER_PROFILE_POLICY,
+} from "../src/internal/worker-configuration.js";
 import {
   FakeClock,
   FakeIdGenerator,
@@ -58,7 +62,6 @@ import type {
   Result,
   ResultChunk,
   Runtime,
-  RuntimeReviewSubjectAuthority,
   SpawnOptions,
   StartAuthorizationAuthenticator,
   StartAuthorizationDecisionRequest,
@@ -76,6 +79,7 @@ const SNAPSHOT: OperationSnapshot = {
     thinkingLevel: "high",
     tools: ["read"],
     cwd: "/repository",
+    maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     modelPolicy: {
       candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
       attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
@@ -125,6 +129,7 @@ const SNAPSHOT: OperationSnapshot = {
         thinkingLevel: "high",
         tools: ["read"],
         cwd: "/repository",
+        maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         modelPolicy: {
           candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
           attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
@@ -153,15 +158,7 @@ const SNAPSHOT: OperationSnapshot = {
         manifestId: "manifest-1",
         digest: `sha256:${"cd".repeat(32)}`,
       },
-      reviewSubject: {
-        artifactId: "artifact-1",
-        byteCount: 42,
-        digest: `sha256:${"ab".repeat(32)}`,
-        format: "pions.review.patch.v1",
-        normalization: "identity",
-        registrationEvidenceId: "review-subject-evidence-1",
-        registrationEvidenceDigest: `sha256:${"12".repeat(32)}`,
-      },
+      reviewSubjectId: "subject-1",
       reviewSubjectVerification: "required",
       configuredAuthorizationPolicy: "required",
       authorizationPolicy: "required",
@@ -426,16 +423,7 @@ const FORMAL_REVIEW_PROFILE: WorkerProfilePolicy = {
       reviewSubjectVerification: "required",
     },
   },
-  workProductRequirements: {
-    body: {
-      formatId: "pions.result-body.utf8.v1",
-      normalizationId: "identity",
-      maxByteCount: 50_000,
-    },
-    workProducts: [],
-    maxTotalByteCount: 50_000,
-  },
-  acceptedArtifactRetentionMs: 86_400_000,
+  maxResultByteCount: 50_000,
 };
 
 const FORMAL_REVIEW_RESULT_FORMATS = makeResultFormatRegistry([
@@ -446,7 +434,7 @@ const FORMAL_REVIEW_RESULT_FORMATS = makeResultFormatRegistry([
     validator: {
       validatorId: "test.formal-review-result-validator",
       validatorVersion: "1",
-      registrationArtifact: Buffer.from("test validator v1", "utf8"),
+      implementation: Buffer.from("test validator v1", "utf8"),
       validate: async () => ({ kind: "valid" }),
     },
   },
@@ -459,10 +447,6 @@ const FORMAL_REVIEW_RESULT_FORMAT = FORMAL_REVIEW_RESULT_FORMATS.pin({
 const CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS = {
   registry: FORMAL_REVIEW_RESULT_FORMATS,
   resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
-};
-
-const REVIEW_SUBJECT_AUTHORITY: RuntimeReviewSubjectAuthority = {
-  currentUse: async () => "allowed",
 };
 
 const START_AUTHORIZATION_AUTHENTICATOR: StartAuthorizationAuthenticator = {
@@ -514,7 +498,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       ? {
           formalReview: {
             profile: FORMAL_REVIEW_PROFILE,
-            reviewSubjectAuthority: REVIEW_SUBJECT_AUTHORITY,
             resultFormats: CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS,
             ...(fixtureOptions.enableCoordinator === false
               ? {}
@@ -568,7 +551,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
     );
   };
   const review = (
-    artifactId = "artifact-1",
+    reviewSubjectId = "subject-1",
     task = "Review the registered change"
   ) => {
     const reviewTool = tools.get("pions_review");
@@ -576,7 +559,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       throw new Error("pions_review was not registered");
     return reviewTool.execute(
       "review-call-1",
-      { artifactId, task },
+      { reviewSubjectId, task },
       undefined,
       undefined,
       context
@@ -683,16 +666,16 @@ test("trusted formal review configuration registers pions_review", async (contex
   assert.equal(value.tools.get("pions_review")?.name, "pions_review");
 });
 
-test("pions_review accepts only an Artifact identifier and review task", async (context) => {
+test("pions_review accepts only a Review subject identifier and review task", async (context) => {
   const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.deepEqual(value.tools.get("pions_review")?.parameters, {
     type: "object",
-    required: ["artifactId", "task"],
+    required: ["reviewSubjectId", "task"],
     additionalProperties: false,
     properties: {
-      artifactId: { type: "string", minLength: 1 },
+      reviewSubjectId: { type: "string", minLength: 1 },
       task: {
         type: "string",
         minLength: 1,
@@ -712,15 +695,12 @@ test("pions_review returns the created Operation identifier", async (context) =>
   );
 });
 
-test("pions_review fixes the registered Artifact as the Review subject", async (context) => {
+test("pions_review fixes the supplied Review subject identifier", async (context) => {
   const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review("artifact-42");
+  await value.review("subject-42");
 
-  assert.equal(
-    value.runtime.spawnOptions[0]?.reviewSubjectArtifactId,
-    "artifact-42"
-  );
+  assert.equal(value.runtime.spawnOptions[0]?.reviewSubjectId, "subject-42");
 });
 
 test("pions_review uses the formal reviewer profile", async (context) => {
@@ -748,21 +728,6 @@ test("pions_review uses the trusted formal-review thinking level", async (contex
   await value.review();
 
   assert.equal(value.runtime.tasks[0]?.thinkingLevel, "high");
-});
-
-test("pions_review passes the trusted Review subject authority to the Runtime", async (context) => {
-  let authority: RuntimeReviewSubjectAuthority | undefined;
-  const runtime = new FakeRuntime();
-  const value = await formalReviewFixture(runtime, {
-    runtimeFactory: (options) => {
-      authority = options.reviewSubjectAuthority;
-      return runtime;
-    },
-  });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-
-  assert.equal(authority, REVIEW_SUBJECT_AUTHORITY);
 });
 
 test("pions_review registers a required Start gate in the Runtime", async (context) => {
@@ -1163,10 +1128,10 @@ test("pions_operation returns the fixed Review subject", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.deepEqual(
+  assert.equal(
     ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .receipt?.reviewSubject,
-    SNAPSHOT.startAuthorization.receipt?.reviewSubject
+      .receipt?.reviewSubjectId,
+    SNAPSHOT.startAuthorization.receipt?.reviewSubjectId
   );
 });
 
@@ -2530,7 +2495,6 @@ test("pions_result retrieves a persisted Result after Pi session restart", async
   );
   const clock = new FakeClock(timestamps);
   const store = new PrivateFileEventStore(state, clock);
-  const artifactServices = runtimeArtifactStore(state, store);
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({
       messages: { body: "persisted result" },
@@ -2540,9 +2504,6 @@ test("pions_result retrieves a persisted Result after Pi session restart", async
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
-    artifacts: artifactServices.artifacts,
-    artifactCredential: artifactServices.credential,
-    synchronizeArtifactClock: artifactServices.synchronizeClock,
   });
   const handle = await runtime.spawn({
     promptRef: "private://prompt/1",
@@ -2562,4 +2523,54 @@ test("pions_result retrieves a persisted Result after Pi session restart", async
     (await value.result()).content[0]?.text ?? "",
     /^persisted result/
   );
+});
+
+async function persistedFilesContain(
+  root: string,
+  expected: string
+): Promise<boolean> {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (await persistedFilesContain(path, expected)) return true;
+      continue;
+    }
+    if ((await readFile(path, "utf8")).includes(expected)) return true;
+  }
+  return false;
+}
+
+test("shared-workspace file changes are not copied into Pions persistence", async (context) => {
+  const workspace = await mkdtemp(join(tmpdir(), "pions-shared-workspace-"));
+  const state = await mkdtemp(join(tmpdir(), "pions-shared-state-"));
+  context.after(() => rm(workspace, { recursive: true, force: true }));
+  context.after(() => rm(state, { recursive: true, force: true }));
+  const sentinel = "ordinary workspace mutation 31d245f7";
+  const clock = new FakeClock(
+    Array.from(
+      { length: 30 },
+      (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
+  const runtime = makeTestRuntime({
+    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
+    clock,
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store: new PrivateFileEventStore(state, clock),
+    configuration: {
+      cwd: workspace,
+      profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
+    },
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt/1",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await writeFile(join(workspace, "worker-change.txt"), sentinel, "utf8");
+  await handle.result();
+  await runtime.close();
+
+  assert.equal(await persistedFilesContain(state, sentinel), false);
 });

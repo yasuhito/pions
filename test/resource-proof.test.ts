@@ -17,7 +17,7 @@ import {
   type WorkerAdapter,
   type WorkerRunOutcome,
 } from "../src/internal/services.js";
-import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
+import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "../src/internal/worker-configuration.js";
 import {
   FakeClock,
   FakeIdGenerator,
@@ -506,7 +506,7 @@ class FakeResourceAdapter implements ResourceAdapter {
 function resourceAuthorityRegistration(
   adapter: ResourceAdapter
 ): ResourceAuthorityRegistration {
-  const registrationArtifact = Buffer.from("test launcher adapter v1", "utf8");
+  const implementation = Buffer.from("test launcher adapter v1", "utf8");
   return {
     authorityId: "launcher",
     registrationId: "launcher-registration-1",
@@ -516,11 +516,11 @@ function resourceAuthorityRegistration(
       adapterId: "test-launcher-adapter",
       version: "1",
       digest: `sha256:${createHash("sha256")
-        .update(registrationArtifact)
+        .update(implementation)
         .digest("hex")}`,
       intendedUse: "non-production",
     },
-    registrationArtifact,
+    implementation,
     issuer: {
       verify: async () => true,
       isCurrentlyTrusted: async () => "trusted",
@@ -594,8 +594,7 @@ function requiredRuntimeConfiguration(
           ...request.requirements,
         },
         startAuthorization: { policy: "disabled" as const },
-        workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-        acceptedArtifactRetentionMs: 86_400_000,
+        maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
       },
     },
   };
@@ -610,7 +609,7 @@ test("Resource authority registration rejects an Adapter identity digest mismatc
         registrations: [
           {
             ...registration,
-            registrationArtifact: Buffer.from("substituted adapter", "utf8"),
+            implementation: Buffer.from("substituted adapter", "utf8"),
           },
         ],
       }),
@@ -737,8 +736,7 @@ const unavailableRequiredRuntime = async () => {
             ...request.requirements,
           },
           startAuthorization: { policy: "disabled" },
-          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-          acceptedArtifactRetentionMs: 86_400_000,
+          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         },
       },
     },
@@ -791,8 +789,7 @@ test("a required Runtime profile revalidates the acquisition before execution", 
             ...request.requirements,
           },
           startAuthorization: { policy: "disabled" },
-          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-          acceptedArtifactRetentionMs: 86_400_000,
+          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         },
       },
     },
@@ -905,8 +902,7 @@ test("resource evidence is reconstructed from a reopened Operation event store",
             ...request.requirements,
           },
           startAuthorization: { policy: "disabled" },
-          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-          acceptedArtifactRetentionMs: 86_400_000,
+          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         },
       },
     },
@@ -963,8 +959,7 @@ test("Runtime Operation snapshots expose persisted resource evidence", async () 
             ...request.requirements,
           },
           startAuthorization: { policy: "disabled" },
-          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-          acceptedArtifactRetentionMs: 86_400_000,
+          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         },
       },
     },

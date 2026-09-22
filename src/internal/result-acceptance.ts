@@ -9,14 +9,12 @@ import type {
   PinnedResultFormat,
   ResultAcceptanceTransactionFailureReason,
   ResultFormatRejectionEvidence,
-  WorkerProducedArtifact,
   WorkerProducedResult,
 } from "../public.js";
 
 export type ResultAcceptanceFailureReason =
   | ResultAcceptanceTransactionFailureReason
   | "input_integrity_mismatch"
-  | "work_products_unsupported"
   | "result_format_rejected"
   | "cancelled";
 
@@ -65,26 +63,15 @@ function acceptanceProof(
   } as ResultAcceptanceProof;
 }
 
-/** Collects the declared body bytes and proves they match the Worker's own integrity claim. */
-async function materializeBody(
-  artifact: Readonly<WorkerProducedArtifact>
-): Promise<Buffer | undefined> {
-  const chunks: Array<Buffer> = [];
-  let byteCount = 0;
-  if (artifact.bytes instanceof Uint8Array) {
-    chunks.push(Buffer.from(artifact.bytes));
-    byteCount = artifact.bytes.byteLength;
-  } else {
-    for await (const chunk of artifact.bytes) {
-      byteCount += chunk.byteLength;
-      if (byteCount > artifact.expectedByteCount) return undefined;
-      chunks.push(Buffer.from(chunk));
-    }
-  }
-  const bytes = Buffer.concat(chunks);
+/** Encodes the final answer exactly once and proves the Worker's integrity claim. */
+function materializeBody(
+  result: Readonly<WorkerProducedResult>
+): Buffer | undefined {
+  const bytes = Buffer.from(result.body, "utf8");
   if (
-    byteCount !== artifact.expectedByteCount ||
-    sha256Digest(bytes) !== artifact.expectedDigest
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes) !== result.body ||
+    bytes.byteLength !== result.expectedByteCount ||
+    sha256Digest(bytes) !== result.expectedDigest
   )
     return undefined;
   return bytes;
@@ -134,10 +121,7 @@ export function makeResultAcceptance(
                 : "corrupt_record"
           );
         }
-        if (produced.workProducts.length > 0) {
-          return failed("work_products_unsupported");
-        }
-        const bytes = await materializeBody(produced.body);
+        const bytes = materializeBody(produced);
         if (bytes === undefined) return failed("input_integrity_mismatch");
         const operation = stored.right.operation;
         // A resent request for an already accepted Result joins the persisted

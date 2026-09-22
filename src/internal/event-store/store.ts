@@ -21,6 +21,7 @@ import type {
   OperationIntent,
   OperationRequest,
   OperationSnapshot,
+  ResultAcceptanceRequest,
   RevisionAdoptionCommand,
   RevisionReservationCommand,
   StoreError,
@@ -28,7 +29,6 @@ import type {
 } from "./index.js";
 import type {
   AcceptedResult,
-  ResultAcceptanceRequest,
   ResultAcceptanceTransactionOutcome,
   RevisionReservation,
   RevisionReservationOutcome,
@@ -215,8 +215,7 @@ export abstract class ValidatedEventStore implements EventStore {
           task: request.task,
           requestedConfig: request.requestedConfig,
           effectiveConfig: request.effectiveConfig,
-          workProductRequirements: request.workProductRequirements,
-          resultRetentionPolicy: request.resultRetentionPolicy,
+          maxResultByteCount: request.maxResultByteCount,
           ...(request.resultFormat === undefined
             ? {}
             : { resultFormat: structuredClone(request.resultFormat) }),
@@ -305,28 +304,9 @@ export abstract class ValidatedEventStore implements EventStore {
               manifestId: receipt.permissionManifest.manifestId,
               digest: receipt.permissionManifest.digest,
             },
-            ...(receipt.reviewInputReadiness === undefined
+            ...(receipt.reviewSubjectId === undefined
               ? {}
-              : {
-                  reviewInputReadiness: structuredClone(
-                    receipt.reviewInputReadiness
-                  ),
-                }),
-            ...(receipt.reviewSubject === undefined
-              ? {}
-              : {
-                  reviewSubject: {
-                    artifactId: receipt.reviewSubject.artifactId,
-                    byteCount: receipt.reviewSubject.byteCount,
-                    digest: receipt.reviewSubject.digest,
-                    format: receipt.reviewSubject.format,
-                    normalization: receipt.reviewSubject.normalization,
-                    registrationEvidenceId:
-                      receipt.reviewSubject.registrationEvidenceId,
-                    registrationEvidenceDigest:
-                      receipt.reviewSubject.registrationEvidenceDigest,
-                  },
-                }),
+              : { reviewSubjectId: receipt.reviewSubjectId }),
             reviewSubjectVerification: receipt.reviewSubjectVerification,
             configuredAuthorizationPolicy:
               receipt.configuredAuthorizationPolicy,
@@ -395,10 +375,7 @@ export abstract class ValidatedEventStore implements EventStore {
                 : "result_conflict"
             );
           }
-          if (
-            byteCount >
-            loaded.operation.workProductRequirements.body.maxByteCount
-          ) {
+          if (byteCount > loaded.operation.maxResultByteCount) {
             return terminalResultAcceptanceFailure("limit_exceeded");
           }
           if (!isValidUtf8(bytes)) {
@@ -517,10 +494,10 @@ export abstract class ValidatedEventStore implements EventStore {
               existing.requestedBy === command.requestedBy &&
               (command.maxAttempts === undefined ||
                 existing.maxAttempts === command.maxAttempts) &&
-              (command.artifactAcceptanceSubjectIds === undefined ||
+              (command.resultAdoptionSubjectIds === undefined ||
                 isDeepStrictEqual(
-                  existing.artifactAcceptanceSubjectIds,
-                  command.artifactAcceptanceSubjectIds
+                  existing.resultAdoptionSubjectIds,
+                  command.resultAdoptionSubjectIds
                 )) &&
               isDeepStrictEqual(existing.task, command.task) &&
               existing.retryClearanceId === command.clearance?.clearanceId;
@@ -540,22 +517,22 @@ export abstract class ValidatedEventStore implements EventStore {
             (command.maxAttempts !== undefined &&
               command.maxAttempts !== maxAttempts) ||
             (series !== undefined &&
-              command.artifactAcceptanceSubjectIds !== undefined &&
+              command.resultAdoptionSubjectIds !== undefined &&
               !isDeepStrictEqual(
-                series.artifactAcceptanceSubjectIds,
-                command.artifactAcceptanceSubjectIds
+                series.resultAdoptionSubjectIds,
+                command.resultAdoptionSubjectIds
               ))
           ) {
             return { status: "rejected", reason: "request_conflict" } as const;
           }
-          const artifactAcceptanceSubjectIds =
-            series?.artifactAcceptanceSubjectIds ??
-            command.artifactAcceptanceSubjectIds;
+          const resultAdoptionSubjectIds =
+            series?.resultAdoptionSubjectIds ??
+            command.resultAdoptionSubjectIds;
           if (
-            artifactAcceptanceSubjectIds === undefined ||
-            artifactAcceptanceSubjectIds.length < 1 ||
-            new Set(artifactAcceptanceSubjectIds).size !==
-              artifactAcceptanceSubjectIds.length
+            resultAdoptionSubjectIds === undefined ||
+            resultAdoptionSubjectIds.length < 1 ||
+            new Set(resultAdoptionSubjectIds).size !==
+              resultAdoptionSubjectIds.length
           )
             return { status: "rejected", reason: "invalid_target" } as const;
           if ((series?.reservations.length ?? 0) >= maxAttempts) {
@@ -722,7 +699,7 @@ export abstract class ValidatedEventStore implements EventStore {
             reason: command.reason,
             requestedBy: command.requestedBy,
             maxAttempts,
-            artifactAcceptanceSubjectIds: [...artifactAcceptanceSubjectIds],
+            resultAdoptionSubjectIds: [...resultAdoptionSubjectIds],
             task: structuredClone(command.task),
             reservedAt,
             ...(command.clearance === undefined

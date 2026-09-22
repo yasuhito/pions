@@ -272,19 +272,17 @@ export function makeResultFormatRegistry(
       !IDENTIFIER.test(registration.normalizationId) ||
       !IDENTIFIER.test(validator.validatorId) ||
       !IDENTIFIER.test(validator.validatorVersion) ||
-      validator.registrationArtifact.byteLength === 0
+      validator.implementation.byteLength === 0
     ) {
       throw new ResultFormatRegistrationError(
         "Formal review Result format registration is invalid"
       );
     }
-    const registrationArtifact = Uint8Array.from(
-      validator.registrationArtifact
-    );
+    const implementation = Uint8Array.from(validator.implementation);
     const identity = {
       validatorId: validator.validatorId,
       version: validator.validatorVersion,
-      digest: sha256Digest(registrationArtifact),
+      digest: sha256Digest(implementation),
     } as const;
     const identityKey = validatorKey(identity.validatorId, identity.version);
     const existingIdentity = validators.get(identityKey);
