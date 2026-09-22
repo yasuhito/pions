@@ -11,8 +11,6 @@ import type {
   ResultFormatRejectionEvidence,
   RequestedWorkerConfig,
   ResolvedWorkProductRequirements,
-  ResultAcceptancePreparationEvidence,
-  ResultAcceptanceReservation,
   ResultAcceptanceRetentionPolicyEvidence,
   RetryClearanceEvidence,
   RevisionReservation,
@@ -111,14 +109,13 @@ export interface Operation {
   readonly spawnFrozen: boolean;
   readonly cancellationEpoch: number;
   readonly result?: Readonly<AcceptedResult>;
-  readonly resultAcceptanceReservation?: Readonly<ResultAcceptanceReservation>;
   readonly selfOutcome?: "succeeded" | "failed";
   readonly failureReason?: OperationFailureReason;
   readonly terminalReason?:
     OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 24 as const;
+export const EVENT_SCHEMA_VERSION = 25 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -222,13 +219,8 @@ export type OperationEvent = EventMetadata &
       }
     | PersistableOperationIntent
     | {
-        readonly type: "result_acceptance_prepared";
-        readonly reservation: Readonly<ResultAcceptanceReservation>;
-      }
-    | {
         readonly type: "result_accepted";
         readonly acceptance: Readonly<AcceptedResult>;
-        readonly preparationEvidence: Readonly<ResultAcceptancePreparationEvidence>;
       }
   );
 

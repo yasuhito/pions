@@ -105,7 +105,7 @@ function proof(): ResultAcceptanceProof {
   return {
     operationId: authority.operationId,
     acceptanceId: `pions.result-acceptance.v1:${"c".repeat(64)}`,
-    manifestDigest: `sha256:${"d".repeat(64)}`,
+    digest: `sha256:${"d".repeat(64)}`,
     eventSequenceNumber: 7,
   } as unknown as ResultAcceptanceProof;
 }

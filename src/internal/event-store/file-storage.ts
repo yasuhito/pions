@@ -20,7 +20,8 @@ import { syncDirectory } from "../sync-directory.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
-const RECORD_FILE = "events.v19.json";
+const RECORD_FILE = "events.v20.json";
+const RESULT_FILE = "result.v1.utf8";
 
 function isMissing(error: unknown): boolean {
   return hasCode(error, "ENOENT");
@@ -175,6 +176,24 @@ export class PrivateFileEventStore extends ValidatedEventStore {
       join(directory, RECORD_FILE),
       Buffer.from(`${JSON.stringify(record)}\n`, "utf8")
     );
+  }
+
+  protected async writeResultBody(
+    operationId: string,
+    bytes: Uint8Array
+  ): Promise<void> {
+    const directory = await this.operationDirectory(operationId, true);
+    if (directory === undefined)
+      throw new Error("Unable to create Operation directory");
+    await this.atomicWrite(join(directory, RESULT_FILE), Buffer.from(bytes));
+  }
+
+  protected async readResultBytes(
+    operationId: string
+  ): Promise<Uint8Array | undefined> {
+    const directory = await this.operationDirectory(operationId, false);
+    if (directory === undefined) return undefined;
+    return this.readPrivateFile(join(directory, RESULT_FILE));
   }
 
   protected async listOperationIds(): Promise<ReadonlyArray<string>> {

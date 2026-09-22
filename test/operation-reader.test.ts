@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,7 +22,6 @@ import {
 } from "../src/internal/testing.js";
 import { ResultRetrievalError } from "../src/index.js";
 import type {
-  ArtifactFailureReason,
   ArtifactStore,
   OperationReader,
   ResultAcceptanceId,
@@ -242,8 +241,8 @@ test("Operation snapshot identifies one coherent persisted version", async () =>
   await handle.result();
 
   assert.deepEqual((await handle.read()).version, {
-    sequenceNumber: 18,
-    recordedAt: "2026-09-06T10:00:18.000Z",
+    sequenceNumber: 17,
+    recordedAt: "2026-09-06T10:00:16.000Z",
   });
 });
 
@@ -449,7 +448,7 @@ test("persisted Startup receipt omits authentication secrets", async (context) =
     extraReceiptFields: { capability: "worker-secret" },
   });
   const record = await readFile(
-    join(root, operationDirectoryKey("operation-1"), "events.v19.json"),
+    join(root, operationDirectoryKey("operation-1"), "events.v20.json"),
     "utf8"
   );
 
@@ -858,33 +857,22 @@ test("a modified result cursor is rejected", async () => {
   });
 });
 
-async function retrievalFailureFixture(
-  reason?: ArtifactFailureReason | "throw"
-): Promise<{
+async function persistedResultFixture(): Promise<{
   readonly reader: OperationReader;
-  readonly retentionPinCount: () => number;
+  readonly resultPath: string;
+  readonly artifactRetrievals: () => number;
   readonly close: () => Promise<void>;
 }> {
   const root = await mkdtemp(join(tmpdir(), "pions-result-retrieval-"));
   const clock = new FakeClock(timestamps);
-  const store = new InMemoryEventStore([], clock);
+  const store = new PrivateFileEventStore(root, clock);
   const artifactServices = runtimeArtifactStore(root, store);
-  let fail = false;
-  let retentionPinCount = 0;
+  let artifactRetrievals = 0;
   const artifacts: ArtifactStore = new Proxy(artifactServices.artifacts, {
     get(target, property) {
-      if (property === "createRetentionPin") {
-        return (...args: Parameters<ArtifactStore["createRetentionPin"]>) => {
-          retentionPinCount += 1;
-          return target.createRetentionPin(...args);
-        };
-      }
       if (property === "retrieve") {
-        return async (...args: Parameters<ArtifactStore["retrieve"]>) => {
-          if (fail) {
-            if (reason === "throw") throw new Error("storage unavailable");
-            return { kind: "failed", terminal: true, reason } as const;
-          }
+        return (...args: Parameters<ArtifactStore["retrieve"]>) => {
+          artifactRetrievals += 1;
           return target.retrieve(...args);
         };
       }
@@ -908,10 +896,14 @@ async function retrievalFailureFixture(
     idempotencyKey: "task-1",
   });
   await handle.result();
-  fail = reason !== undefined;
   return {
     reader: await runtime.operation("operation-1"),
-    retentionPinCount: () => retentionPinCount,
+    resultPath: join(
+      root,
+      operationDirectoryKey("operation-1"),
+      "result.v1.utf8"
+    ),
+    artifactRetrievals: () => artifactRetrievals,
     close: async () => {
       await runtime.close();
       await rm(root, { recursive: true, force: true });
@@ -919,9 +911,17 @@ async function retrievalFailureFixture(
   };
 }
 
-test("corrupt accepted Result storage has a typed retrieval reason", async (context) => {
-  const value = await retrievalFailureFixture("stored_artifact_corrupt");
+test("Result acceptance persists the exact body bytes in the Operation record directory", async (context) => {
+  const value = await persistedResultFixture();
   context.after(value.close);
+
+  assert.equal(await readFile(value.resultPath, "utf8"), "finished");
+});
+
+test("corrupt accepted Result storage has a typed retrieval reason", async (context) => {
+  const value = await persistedResultFixture();
+  context.after(value.close);
+  await writeFile(value.resultPath, "finishes");
 
   await assert.rejects(
     value.reader.readResult(),
@@ -931,33 +931,24 @@ test("corrupt accepted Result storage has a typed retrieval reason", async (cont
   );
 });
 
-test("policy-deleted accepted Result storage is distinct from non-acceptance", async (context) => {
-  const value = await retrievalFailureFixture("artifact_deleted");
+test("a missing accepted Result body is distinct from non-acceptance", async (context) => {
+  const value = await persistedResultFixture();
   context.after(value.close);
+  await rm(value.resultPath);
 
   await assert.rejects(
     value.reader.readResult(),
     (error) =>
       error instanceof ResultRetrievalError &&
-      error.reason === "artifact_deleted"
-  );
-});
-
-test("revoked Result retrieval authority is distinct from non-acceptance", async (context) => {
-  const value = await retrievalFailureFixture("authority_revoked");
-  context.after(value.close);
-
-  await assert.rejects(
-    value.reader.readResult(),
-    (error) =>
-      error instanceof ResultRetrievalError &&
-      error.reason === "authority_revoked"
+      error.reason === "stored_artifact_corrupt"
   );
 });
 
 test("unavailable Result storage inspection is distinct from non-acceptance", async (context) => {
-  const value = await retrievalFailureFixture("throw");
+  const value = await persistedResultFixture();
   context.after(value.close);
+  await rm(value.resultPath);
+  await mkdir(value.resultPath);
 
   await assert.rejects(
     value.reader.readResult(),
@@ -965,6 +956,15 @@ test("unavailable Result storage inspection is distinct from non-acceptance", as
       error instanceof ResultRetrievalError &&
       error.reason === "storage_inspection_unavailable"
   );
+});
+
+test("Result retrieval does not read the Artifact Store", async (context) => {
+  const value = await persistedResultFixture();
+  context.after(value.close);
+  await value.reader.readResult();
+  await value.reader.readResultChunk({ maxBytes: 4 });
+
+  assert.equal(value.artifactRetrievals(), 0);
 });
 
 test("Result reads do not append Operation events", async () => {
@@ -1189,27 +1189,10 @@ test("Result reads do not repeat Presentation cleanup", async () => {
   assert.equal(presentation.closedWorkspaceIds.length, before);
 });
 
-test("complete Result retrieval does not add retention pins", async (context) => {
-  const value = await retrievalFailureFixture();
+test("a corrupt accepted Result body prevents returning a Result chunk", async (context) => {
+  const value = await persistedResultFixture();
   context.after(value.close);
-  const before = value.retentionPinCount();
-  await value.reader.readResult();
-
-  assert.equal(value.retentionPinCount(), before);
-});
-
-test("chunked Result retrieval does not add retention pins", async (context) => {
-  const value = await retrievalFailureFixture();
-  context.after(value.close);
-  const before = value.retentionPinCount();
-  await value.reader.readResultChunk({ maxBytes: 4 });
-
-  assert.equal(value.retentionPinCount(), before);
-});
-
-test("a corrupt complete artifact prevents returning a Result chunk", async (context) => {
-  const value = await retrievalFailureFixture("stored_artifact_corrupt");
-  context.after(value.close);
+  await writeFile(value.resultPath, "finishes");
 
   await assert.rejects(
     value.reader.readResultChunk({ maxBytes: 4 }),

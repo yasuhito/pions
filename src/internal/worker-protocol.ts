@@ -172,7 +172,7 @@ const AcknowledgementSchema = Schema.Struct({
   acceptanceId: Schema.String.pipe(
     Schema.pattern(/^pions\.result-acceptance\.v1:[0-9a-f]{64}$/u)
   ),
-  manifestDigest: DigestSchema,
+  digest: DigestSchema,
   eventSequenceNumber: Schema.Number,
   type: Schema.Literal("ack"),
 });
@@ -259,7 +259,7 @@ declare const resultAcceptanceProof: unique symbol;
 export interface ResultAcceptanceProof {
   readonly operationId: string;
   readonly acceptanceId: ResultAcceptanceId;
-  readonly manifestDigest: `sha256:${string}`;
+  readonly digest: `sha256:${string}`;
   readonly eventSequenceNumber: number;
   readonly [resultAcceptanceProof]: true;
 }
@@ -832,7 +832,7 @@ export class HostProtocolPeer extends FramedPeer {
     if (
       !this.acknowledgementPending &&
       (this.acknowledgedProof?.acceptanceId !== acceptance.acceptanceId ||
-        this.acknowledgedProof.manifestDigest !== acceptance.manifestDigest ||
+        this.acknowledgedProof.digest !== acceptance.digest ||
         this.acknowledgedProof.eventSequenceNumber !==
           acceptance.eventSequenceNumber)
     ) {
@@ -845,7 +845,7 @@ export class HostProtocolPeer extends FramedPeer {
       protocolVersion: WORKER_PROTOCOL_VERSION,
       operationId: this.authority.operationId,
       acceptanceId: acceptance.acceptanceId,
-      manifestDigest: acceptance.manifestDigest,
+      digest: acceptance.digest,
       eventSequenceNumber: acceptance.eventSequenceNumber,
       type: "ack",
     });
@@ -1360,7 +1360,7 @@ export class WorkerProtocolPeer extends FramedPeer {
   private acceptedStartInstruction?: Readonly<StartInstruction>;
   private acknowledgedEvidence?: {
     readonly acceptanceId: string;
-    readonly manifestDigest: string;
+    readonly digest: string;
     readonly eventSequenceNumber: number;
   };
 
@@ -1863,8 +1863,7 @@ export class WorkerProtocolPeer extends FramedPeer {
           if (
             this.acknowledgedEvidence?.acceptanceId ===
               acknowledgement.acceptanceId &&
-            this.acknowledgedEvidence.manifestDigest ===
-              acknowledgement.manifestDigest &&
+            this.acknowledgedEvidence.digest === acknowledgement.digest &&
             this.acknowledgedEvidence.eventSequenceNumber ===
               acknowledgement.eventSequenceNumber
           )

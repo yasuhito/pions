@@ -15,11 +15,9 @@ import type {
   StoreError,
 } from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
-import {
-  resolveWorkProductRequirements,
-  resultAcceptanceManifestDocument,
-} from "./result-acceptance-manifest.js";
+import { resolveWorkProductRequirements } from "./result-acceptance-manifest.js";
 import { resultAcceptanceRetentionPolicy } from "./result-acceptance-transaction.js";
+import { sha256Digest } from "./result-digest.js";
 import { revisionSeriesOrigin } from "./revision-series.js";
 import {
   permissionManifestDocument,
@@ -164,12 +162,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   };
   const resultAcceptance = makeResultAcceptance({
     store: services.store,
-    artifacts: artifactServices.artifacts,
-    artifactCredential: artifactServices.credential,
-    clock: services.clock,
-    ...(artifactServices.synchronizeClock === undefined
-      ? {}
-      : { synchronizeArtifactClock: artifactServices.synchronizeClock }),
     ...(services.formalReviewResultFormats === undefined
       ? {}
       : { resultFormats: services.formalReviewResultFormats.registry }),
@@ -285,7 +277,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         : {
             acceptedAt: operation.result.acceptedAt,
             acceptanceId: operation.result.acceptanceId,
-            manifestDigest: operation.result.manifestDigest,
+            byteCount: operation.result.byteCount,
+            digest: operation.result.digest,
             eventSequenceNumber: operation.result.eventSequenceNumber,
           };
     return Object.freeze({
@@ -452,6 +445,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       : { failureReason: snapshot.operation.failureReason }),
   });
 
+  // Result retrieval re-verifies the persisted bytes against the accepted
+  // byte count and digest on every read; nothing is trusted from disk alone.
   const retrieveAcceptedResult = (
     operationId: string,
     accepted: NonNullable<StoredOperationSnapshot["operation"]["result"]>
@@ -464,42 +459,32 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     ResultRetrievalError
   > =>
     Effect.gen(function* () {
-      const manifest = resultAcceptanceManifestDocument({
-        formatId: accepted.manifestFormatId,
-        normalizationId: accepted.manifestNormalizationId,
-        bodyArtifactId: accepted.bodyArtifactId,
-        requirementSetId: accepted.requirementSetId,
-        requirementSetDigest: accepted.requirementsDigest,
-        workProducts: accepted.workProducts,
-      });
-      if (manifest.digest !== accepted.manifestDigest) {
+      const stored = yield* services.store
+        .readResultBody(operationId)
+        .pipe(
+          Effect.mapError(
+            () =>
+              new ResultRetrievalError(
+                operationId,
+                "storage_inspection_unavailable"
+              )
+          )
+        );
+      if (
+        stored === undefined ||
+        stored.byteLength !== accepted.byteCount ||
+        sha256Digest(stored) !== accepted.digest
+      ) {
         return yield* Effect.fail(
           new ResultRetrievalError(operationId, "stored_artifact_corrupt")
         );
       }
-      const retrieved = yield* Effect.tryPromise({
-        try: () =>
-          artifactServices.artifacts.retrieve(
-            artifactServices.credential,
-            accepted.bodyArtifactId
-          ),
-        catch: () =>
-          new ResultRetrievalError(
-            operationId,
-            "storage_inspection_unavailable"
-          ),
-      });
-      if (retrieved.kind !== "retrieved") {
-        return yield* Effect.fail(
-          new ResultRetrievalError(operationId, retrieved.reason)
-        );
-      }
-      const bytes = Buffer.from(retrieved.bytes);
+      const bytes = Buffer.from(stored);
       return {
         result: {
           body: bytes.toString("utf8"),
           byteCount: bytes.byteLength,
-          digest: retrieved.artifact.digest,
+          digest: accepted.digest,
         },
         bytes,
         acceptanceId: accepted.acceptanceId,

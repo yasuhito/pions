@@ -235,7 +235,7 @@ test("Runtime close 後の Revision 予約は拒否され、予約も Operation 
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   ).then(
     () => undefined,
     (error: unknown) => error
@@ -265,7 +265,7 @@ test("Runtime close は close 前に受理した Revision 予約の実行完了�
     requestId: "revision-request-1",
     targetOperationId: original.operationId,
     targetResultId: snapshot.resultAcceptance!.acceptanceId,
-    targetResultDigest: snapshot.resultAcceptance!.manifestDigest,
+    targetResultDigest: snapshot.resultAcceptance!.digest,
     reason: "close と重なった予約を完走させる",
     maxAttempts: 3,
     task: {
@@ -307,7 +307,7 @@ test("Revision予約は元Resultと系列上限を結び付けて永続化する
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
 
   assert.equal(
@@ -324,13 +324,13 @@ test("同じRevision依頼の再送は同じ予約へ合流する", async () => 
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   const repeated = await reserveFirst(
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
 
   assert.equal(repeated.status, "idempotent");
@@ -342,14 +342,14 @@ test("同じRevision依頼IDの異なる内容は競合する", async () => {
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   const revisions = await runtime.revisions("credential");
   const conflict = await revisions.reserveRevision({
     requestId: "revision-request-1",
     targetOperationId: original.operationId,
     targetResultId: snapshot.resultAcceptance!.acceptanceId,
-    targetResultDigest: snapshot.resultAcceptance!.manifestDigest,
+    targetResultDigest: snapshot.resultAcceptance!.digest,
     reason: "異なる理由",
     maxAttempts: 3,
     task: {
@@ -377,7 +377,7 @@ test("表示終了処理が完了済みでもunknownのRetryは安全証明な�
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -411,7 +411,7 @@ test("旧ワーカーの子プロセスへのアクセスが残るRetry clearanc
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -455,7 +455,7 @@ test("外部ジョブの資源引き渡しが未確認のRetry clearanceを拒�
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -520,7 +520,7 @@ test("表示終了処理の復旧と同時でもunknownのRetryは安全証明�
     firstRuntime,
     original.operationId,
     accepted.acceptanceId,
-    accepted.manifestDigest
+    accepted.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -573,7 +573,7 @@ test("Retry clearanceを永続化してからunknownのRetryを予約する", as
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -617,7 +617,7 @@ test("系列全体の上限に達した後は次のRevisionを予約しない", 
     requestId: "revision-request-1",
     targetOperationId: original.operationId,
     targetResultId: snapshot.resultAcceptance!.acceptanceId,
-    targetResultDigest: snapshot.resultAcceptance!.manifestDigest,
+    targetResultDigest: snapshot.resultAcceptance!.digest,
     reason: "唯一の改訂",
     maxAttempts: 1,
     task: {
@@ -636,7 +636,7 @@ test("系列全体の上限に達した後は次のRevisionを予約しない", 
     seriesId: first.reservation.seriesId,
     targetOperationId: first.reservation.operationId,
     targetResultId: accepted.acceptanceId,
-    targetResultDigest: accepted.manifestDigest,
+    targetResultDigest: accepted.digest,
     reason: "上限を超える改訂",
     task: {
       promptRef: "private://revision-2",
@@ -677,7 +677,7 @@ test("Retry clearanceの保存失敗時はRetryを予約しない", async () => 
     runtime,
     original.operationId,
     accepted.acceptanceId,
-    accepted.manifestDigest
+    accepted.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -745,7 +745,7 @@ test("予約後にOperation作成が中断しても再起動時に作成を再�
     firstRuntime,
     original.operationId,
     accepted.acceptanceId,
-    accepted.manifestDigest
+    accepted.digest
   ).catch(() => undefined);
   const recovered = makeTestRuntime({
     worker: new SequencedWorkerAdapter(["success"]),
@@ -793,7 +793,7 @@ test("起動直後の Runtime close は保留中の Revision 予約の復旧を�
     firstRuntime,
     original.operationId,
     accepted.acceptanceId,
-    accepted.manifestDigest
+    accepted.digest
   ).catch(() => undefined);
   const recovered = makeTestRuntime({
     worker: new SequencedWorkerAdapter(["success"]),
@@ -817,7 +817,7 @@ test("Retry成功は別の成果物採否判断で系列へ採用する", async 
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -833,7 +833,7 @@ test("Retry成功は別の成果物採否判断で系列へ採用する", async 
     revisionNumber: 1,
     retryOperationId: revision.reservation.operationId,
     resultId: result.acceptanceId,
-    resultDigest: result.manifestDigest,
+    resultDigest: result.digest,
   });
 
   assert.equal(
@@ -848,7 +848,7 @@ test("直接RevisionのResultから次のRevisionを同じ系列へ予約する"
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   if (first.status === "rejected") throw new Error("Revision was not reserved");
   await waitForState(runtime, first.reservation.operationId, "completed");
@@ -861,7 +861,7 @@ test("直接RevisionのResultから次のRevisionを同じ系列へ予約する"
     seriesId: first.reservation.seriesId,
     targetOperationId: first.reservation.operationId,
     targetResultId: result.acceptanceId,
-    targetResultDigest: result.manifestDigest,
+    targetResultDigest: result.digest,
     reason: "追加のレビュー指摘を反映する",
     task: {
       promptRef: "private://revision-2",
@@ -884,7 +884,7 @@ test("系列メンバーを別系列の起点にして上限を初期化でき�
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   if (first.status === "rejected") throw new Error("Revision was not reserved");
   await waitForState(runtime, first.reservation.operationId, "completed");
@@ -897,7 +897,7 @@ test("系列メンバーを別系列の起点にして上限を初期化でき�
     requestId: "fork-request",
     targetOperationId: first.reservation.operationId,
     targetResultId: accepted.acceptanceId,
-    targetResultDigest: accepted.manifestDigest,
+    targetResultDigest: accepted.digest,
     reason: "別系列へ分岐する",
     maxAttempts: 10,
     task: {
@@ -916,7 +916,7 @@ test("同じ成果物採否判断の再送は同じ採用へ合流する", async
     runtime,
     original.operationId,
     snapshot.resultAcceptance!.acceptanceId,
-    snapshot.resultAcceptance!.manifestDigest
+    snapshot.resultAcceptance!.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -930,7 +930,7 @@ test("同じ成果物採否判断の再送は同じ採用へ合流する", async
     revisionNumber: 1,
     retryOperationId: revision.reservation.operationId,
     resultId: result.acceptanceId,
-    resultDigest: result.manifestDigest,
+    resultDigest: result.digest,
   } as const;
   const revisions = await runtime.revisions("credential");
   await revisions.adopt(request);
@@ -968,7 +968,7 @@ test("失効した成果物採否主体の採用を拒否する", async () => {
     runtime,
     original.operationId,
     accepted.acceptanceId,
-    accepted.manifestDigest
+    accepted.digest
   );
   if (revision.status === "rejected")
     throw new Error("Revision was not reserved");
@@ -985,7 +985,7 @@ test("失効した成果物採否主体の採用を拒否する", async () => {
     revisionNumber: 1,
     retryOperationId: revision.reservation.operationId,
     resultId: result.acceptanceId,
-    resultDigest: result.manifestDigest,
+    resultDigest: result.digest,
   });
 
   assert.deepEqual(outcome, {

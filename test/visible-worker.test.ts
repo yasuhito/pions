@@ -275,7 +275,7 @@ function workerHooks(
     Effect.succeed({
       state: "failed",
       terminal: true,
-      reason: "invalid_manifest",
+      reason: "input_integrity_mismatch",
     })
 ): WorkerRunHooks {
   return {

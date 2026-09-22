@@ -1881,7 +1881,6 @@ test("Runtime records the successful Operation event sequence", async () => {
       "start_instruction_dispatched",
       "start_instruction_accepted",
       "start_instruction_acknowledged",
-      "result_acceptance_prepared",
       "result_accepted",
       "agent_settled",
       "self_settled",
@@ -1909,11 +1908,10 @@ test("Runtime uses deterministic event sequence numbers and timestamps", async (
       { seq: 8, timestamp: "2026-09-06T10:00:07.000Z" },
       { seq: 9, timestamp: "2026-09-06T10:00:08.000Z" },
       { seq: 10, timestamp: "2026-09-06T10:00:09.000Z" },
-      { seq: 11, timestamp: "2026-09-06T10:00:11.000Z" },
-      { seq: 12, timestamp: "2026-09-06T10:00:12.000Z" },
-      { seq: 13, timestamp: "2026-09-06T10:00:13.000Z" },
-      { seq: 14, timestamp: "2026-09-06T10:00:14.000Z" },
-      { seq: 15, timestamp: "2026-09-06T10:00:15.000Z" },
+      { seq: 11, timestamp: "2026-09-06T10:00:10.000Z" },
+      { seq: 12, timestamp: "2026-09-06T10:00:11.000Z" },
+      { seq: 13, timestamp: "2026-09-06T10:00:12.000Z" },
+      { seq: 14, timestamp: "2026-09-06T10:00:13.000Z" },
     ]
   );
 });
@@ -2456,8 +2454,8 @@ test("an acknowledgement failure retains the accepted Result", async () => {
 
   assert.equal(
     (await Effect.runPromise(store.read("operation-1"))).operation.result
-      ?.bodyArtifactId === undefined,
-    false
+      ?.acceptanceRequestId,
+    "request-1"
   );
 });
 

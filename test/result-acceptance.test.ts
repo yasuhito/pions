@@ -1,23 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test, type TestContext } from "node:test";
+import { test } from "node:test";
 
 import { Effect } from "effect";
 
-import type { ArtifactStoreFaultPoint } from "../src/internal/artifact-store.js";
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
 import {
   makeResultFormatRegistry,
   type ResultFormatRegistry,
 } from "../src/internal/result-format-registry.js";
-import {
-  resolveWorkProductRequirements,
-  validateResultAcceptanceManifest,
-} from "../src/internal/result-acceptance-manifest.js";
-import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import {
   FakeClock,
   InMemoryEventStore,
@@ -25,8 +16,6 @@ import {
 } from "../src/internal/testing.js";
 import type {
   PinnedResultFormat,
-  ResultAcceptancePreparationEvidence,
-  ResultAcceptanceTransactionOutcome,
   ResultFormatValidationFailureReason,
   WorkerProducedResult,
 } from "../src/public.js";
@@ -59,27 +48,7 @@ function produced(
   };
 }
 
-class PublicationRejectingStore extends InMemoryEventStore {
-  preparationId?: string;
-
-  override publishResultAcceptance(
-    evidence: Readonly<ResultAcceptancePreparationEvidence>
-  ): Effect.Effect<ResultAcceptanceTransactionOutcome> {
-    this.preparationId = evidence.preparationId;
-    return Effect.succeed({
-      kind: "failed",
-      terminal: true,
-      reason: "manifest_conflict",
-    });
-  }
-}
-
 async function fixture(
-  context: TestContext,
-  storeFactory: (clock: FakeClock) => InMemoryEventStore = (clock) =>
-    new InMemoryEventStore([], clock),
-  requirements = workProductRequirements,
-  artifactFault?: (point: ArtifactStoreFaultPoint) => void | Promise<void>,
   resultFormat?: Readonly<{
     readonly registry: ResultFormatRegistry;
     readonly pinned: Readonly<PinnedResultFormat>;
@@ -91,7 +60,7 @@ async function fixture(
       (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
     )
   );
-  const store = storeFactory(clock);
+  const store = new InMemoryEventStore([], clock);
   await Effect.runPromise(
     store.create({
       operationId: "operation-1",
@@ -102,7 +71,7 @@ async function fixture(
       },
       requestedConfig,
       effectiveConfig,
-      workProductRequirements: requirements,
+      workProductRequirements,
       resultRetentionPolicy: retentionPolicy("operation-1"),
       ...(resultFormat === undefined
         ? {}
@@ -117,34 +86,24 @@ async function fixture(
     })
   );
   await advanceTestOperationToRunning(store, "operation-1");
-  const root = await mkdtemp(join(tmpdir(), "pions-result-acceptance-"));
-  const artifactServices = runtimeArtifactStore(
-    root,
-    store,
-    undefined,
-    artifactFault
-  );
-  context.after(async () => {
-    await artifactServices.artifacts.close();
-    await rm(root, { recursive: true, force: true });
-  });
   return {
     store,
-    clock,
-    artifacts: artifactServices.artifacts,
-    credential: artifactServices.credential,
-    synchronizeArtifactClock: artifactServices.synchronizeClock,
     acceptance: makeResultAcceptance({
       store,
-      artifacts: artifactServices.artifacts,
-      artifactCredential: artifactServices.credential,
-      clock,
-      synchronizeArtifactClock: artifactServices.synchronizeClock,
       ...(resultFormat === undefined
         ? {}
         : { resultFormats: resultFormat.registry }),
     }),
   };
+}
+
+async function storedResult(store: InMemoryEventStore) {
+  return (await Effect.runPromise(store.read("operation-1"))).operation.result;
+}
+
+async function storedBody(store: InMemoryEventStore) {
+  const bytes = await Effect.runPromise(store.readResultBody("operation-1"));
+  return bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
 }
 
 function configuredResultFormat(
@@ -195,18 +154,12 @@ for (const reason of [
   "invalid_finding",
   "expectation_mismatch",
 ] as const) {
-  test(`a formal review Result rejected for ${reason} is not accepted`, async (context) => {
+  test(`a formal review Result rejected for ${reason} is not accepted`, async () => {
     const format = configuredResultFormat(async () => ({
       kind: "invalid",
       reason,
     }));
-    const { acceptance } = await fixture(
-      context,
-      undefined,
-      workProductRequirements,
-      undefined,
-      format
-    );
+    const { acceptance } = await fixture(format);
 
     const outcome = await Effect.runPromise(
       acceptance.accept("operation-1", produced())
@@ -221,7 +174,7 @@ for (const reason of [
   });
 }
 
-test("a formal review validator receives the pinned format contract", async (context) => {
+test("a formal review validator receives the pinned format contract", async () => {
   let received:
     | Readonly<{
         formatId: string;
@@ -239,13 +192,7 @@ test("a formal review validator receives the pinned format contract", async (con
     };
     return { kind: "valid" };
   });
-  const { acceptance } = await fixture(
-    context,
-    undefined,
-    workProductRequirements,
-    undefined,
-    format
-  );
+  const { acceptance } = await fixture(format);
 
   await Effect.runPromise(acceptance.accept("operation-1", produced()));
 
@@ -257,66 +204,37 @@ test("a formal review validator receives the pinned format contract", async (con
   });
 });
 
-test("a rejected formal review Result is not published", async (context) => {
+test("a rejected formal review Result is not published", async () => {
   const format = configuredResultFormat(async () => ({
     kind: "invalid",
     reason: "invalid_json",
   }));
-  const { acceptance, store } = await fixture(
-    context,
-    undefined,
-    workProductRequirements,
-    undefined,
-    format
-  );
+  const { acceptance, store } = await fixture(format);
 
   await Effect.runPromise(acceptance.accept("operation-1", produced()));
 
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result,
-    undefined
-  );
+  assert.equal(await storedResult(store), undefined);
 });
 
-test("a valid formal review Result preserves its original bytes", async (context) => {
+test("a valid formal review Result preserves its original bytes", async () => {
   const body = '{ "axis": "standards" }\n';
   const format = configuredResultFormat(async ({ bytes }) => {
     bytes.fill(0x78);
     return { kind: "valid" };
   });
-  const { acceptance, store, artifacts, credential } = await fixture(
-    context,
-    undefined,
-    workProductRequirements,
-    undefined,
-    format
-  );
+  const { acceptance, store } = await fixture(format);
+
   await Effect.runPromise(acceptance.accept("operation-1", produced(body)));
-  const accepted = (await Effect.runPromise(store.read("operation-1")))
-    .operation.result!;
 
-  const retrieved = await artifacts.retrieve(
-    credential,
-    accepted.bodyArtifactId
-  );
-
-  assert.equal(
-    retrieved.kind === "retrieved"
-      ? Buffer.from(retrieved.bytes).toString("utf8")
-      : undefined,
-    body
-  );
+  assert.equal(await storedBody(store), body);
 });
 
-test("an unavailable validator rejects a formal review Result", async (context) => {
+test("an unavailable validator rejects a formal review Result", async () => {
   const format = configuredResultFormat(async () => ({ kind: "valid" }));
-  const { acceptance } = await fixture(
-    context,
-    undefined,
-    workProductRequirements,
-    undefined,
-    { ...format, registry: makeResultFormatRegistry([]) }
-  );
+  const { acceptance } = await fixture({
+    ...format,
+    registry: makeResultFormatRegistry([]),
+  });
 
   const outcome = await Effect.runPromise(
     acceptance.accept("operation-1", produced())
@@ -330,7 +248,7 @@ test("an unavailable validator rejects a formal review Result", async (context) 
   );
 });
 
-test("a changed validator identity rejects an unaccepted formal review Result", async (context) => {
+test("a changed validator identity rejects an unaccepted formal review Result", async () => {
   const original = configuredResultFormat(async () => ({ kind: "valid" }));
   const replacement = makeResultFormatRegistry([
     {
@@ -345,13 +263,10 @@ test("a changed validator identity rejects an unaccepted formal review Result", 
       },
     },
   ]);
-  const { acceptance } = await fixture(
-    context,
-    undefined,
-    workProductRequirements,
-    undefined,
-    { registry: replacement, pinned: original.pinned }
-  );
+  const { acceptance } = await fixture({
+    registry: replacement,
+    pinned: original.pinned,
+  });
 
   const outcome = await Effect.runPromise(
     acceptance.accept("operation-1", produced())
@@ -365,15 +280,9 @@ test("a changed validator identity rejects an unaccepted formal review Result", 
   );
 });
 
-test("an accepted Result replay is not reinterpreted by a changed validator", async (context) => {
+test("an accepted Result replay is not reinterpreted by a changed validator", async () => {
   const original = configuredResultFormat(async () => ({ kind: "valid" }));
-  const { acceptance, store, clock, artifacts, credential } = await fixture(
-    context,
-    undefined,
-    workProductRequirements,
-    undefined,
-    original
-  );
+  const { acceptance, store } = await fixture(original);
   const first = await Effect.runPromise(
     acceptance.accept("operation-1", produced())
   );
@@ -395,9 +304,6 @@ test("an accepted Result replay is not reinterpreted by a changed validator", as
   ]);
   const replayAcceptance = makeResultAcceptance({
     store,
-    artifacts,
-    artifactCredential: credential,
-    clock,
     resultFormats: replacement,
   });
 
@@ -413,62 +319,8 @@ test("an accepted Result replay is not reinterpreted by a changed validator", as
   );
 });
 
-test("Artifact Store denies Result use before the Event Store reserves the Operation", async (context) => {
-  const { artifacts, credential, synchronizeArtifactClock } =
-    await fixture(context);
-  const now = "2026-09-06T10:01:00.000Z";
-  synchronizeArtifactClock(now);
-  const body = produced().body;
-  const registration = await artifacts.startRegistration(credential, {
-    registrationId: "unreserved-registration",
-    expectedByteCount: body.expectedByteCount,
-    expectedDigest: body.expectedDigest,
-    formatId: body.formatId,
-    normalizationId: body.normalizationId,
-    dependencies: [],
-    deadline: new Date(Date.parse(now) + 60_000).toISOString(),
-    recoveryBudget: 3,
-  });
-  const registered =
-    registration.kind === "continuable"
-      ? await artifacts.transfer(
-          credential,
-          registration.registration.registrationId,
-          body.bytes
-        )
-      : registration;
-  if (registered.kind !== "registered") throw new Error("registration failed");
-  const manifest = validateResultAcceptanceManifest(
-    {
-      formatId: "pions.result-acceptance-manifest.v1",
-      normalizationId: "pions.canonical-json.v1",
-      bodyArtifactId: registered.artifact.artifactId,
-      requirementSetId: workProductRequirements.requirementSetId,
-      requirementSetDigest: workProductRequirements.digest,
-      workProducts: [],
-    },
-    workProductRequirements,
-    [registered.artifact]
-  );
-
-  const outcome = await artifacts.prepareResultAcceptance(credential, {
-    preparationId: "unreserved-preparation",
-    operationId: "operation-1",
-    acceptanceRequestId: "unreserved-request",
-    manifestDigest: manifest.digest,
-    requirementsDigest: workProductRequirements.digest,
-    retentionPolicyDigest: retentionPolicy("operation-1").digest,
-    manifest: manifest.value,
-  });
-
-  assert.equal(
-    outcome.kind === "failed" ? outcome.reason : undefined,
-    "unauthorized"
-  );
-});
-
-test("Result acceptance reports a missing Operation as not found", async (context) => {
-  const { acceptance } = await fixture(context);
+test("Result acceptance reports a missing Operation as not found", async () => {
+  const { acceptance } = await fixture();
 
   const outcome = await Effect.runPromise(
     acceptance.accept("missing-operation", produced())
@@ -480,8 +332,8 @@ test("Result acceptance reports a missing Operation as not found", async (contex
   );
 });
 
-test("Result acceptance publishes only after Artifact Store preparation", async (context) => {
-  const { acceptance } = await fixture(context);
+test("a Worker final answer is accepted as the Operation-owned Result", async () => {
+  const { acceptance } = await fixture();
 
   const outcome = await Effect.runPromise(
     acceptance.accept("operation-1", produced())
@@ -490,36 +342,129 @@ test("Result acceptance publishes only after Artifact Store preparation", async 
   assert.equal(outcome.state, "accepted");
 });
 
-test("an interruption after body registration does not publish a Result", async (context) => {
-  const requirements = resolveWorkProductRequirements({
-    workProductRequirements: {
-      body: workProductRequirements.body,
+test("the acceptance proof carries the digest of the accepted bytes", async () => {
+  const { acceptance } = await fixture();
+
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", produced("finished"))
+  );
+
+  assert.equal(
+    outcome.state === "accepted" ? outcome.proof.digest : undefined,
+    digest(Buffer.from("finished", "utf8"))
+  );
+});
+
+test("Result acceptance persists the exact body bytes", async () => {
+  const { acceptance, store } = await fixture();
+
+  await Effect.runPromise(
+    acceptance.accept("operation-1", produced("先頭\r\n🌱\n末尾"))
+  );
+
+  assert.equal(await storedBody(store), "先頭\r\n🌱\n末尾");
+});
+
+test("a streamed body is accepted verbatim", async () => {
+  const { acceptance, store } = await fixture();
+  const bytes = Buffer.from("streamed 🌍 body", "utf8");
+  const result: WorkerProducedResult = {
+    ...produced(),
+    body: {
+      ...produced().body,
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: digest(bytes),
+      bytes: (async function* () {
+        yield bytes.subarray(0, 10);
+        yield bytes.subarray(10);
+      })(),
+    },
+  };
+
+  await Effect.runPromise(acceptance.accept("operation-1", result));
+
+  assert.equal(await storedBody(store), "streamed 🌍 body");
+});
+
+test("a body whose bytes do not match the declared digest is rejected", async () => {
+  const { acceptance } = await fixture();
+  const result: WorkerProducedResult = {
+    ...produced(),
+    body: {
+      ...produced().body,
+      expectedDigest: digest(Buffer.from("other", "utf8")),
+    },
+  };
+
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", result)
+  );
+
+  assert.equal(
+    outcome.state === "failed" ? outcome.reason : undefined,
+    "input_integrity_mismatch"
+  );
+});
+
+test("a body whose bytes do not match the declared byte count is rejected", async () => {
+  const { acceptance } = await fixture();
+  const result: WorkerProducedResult = {
+    ...produced(),
+    body: { ...produced().body, expectedByteCount: 1 },
+  };
+
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", result)
+  );
+
+  assert.equal(
+    outcome.state === "failed" ? outcome.reason : undefined,
+    "input_integrity_mismatch"
+  );
+});
+
+test("a mismatched body leaves the Operation without a Result", async () => {
+  const { acceptance, store } = await fixture();
+  const result: WorkerProducedResult = {
+    ...produced(),
+    body: { ...produced().body, expectedByteCount: 1 },
+  };
+
+  await Effect.runPromise(acceptance.accept("operation-1", result));
+
+  assert.equal(await storedResult(store), undefined);
+});
+
+test("a Result with work products is rejected", async () => {
+  const { acceptance } = await fixture();
+  const attachment = Buffer.from("attachment", "utf8");
+
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", {
+      ...produced(),
       workProducts: [
         {
           key: "attachment",
           formatId: "pions.opaque.v1",
           normalizationId: "identity.v1",
-          minCount: 0,
-          maxCount: 1,
-          maxByteCount: 128,
+          expectedByteCount: attachment.byteLength,
+          expectedDigest: digest(attachment),
+          bytes: attachment,
         },
       ],
-      maxTotalByteCount: workProductRequirements.maxTotalByteCount,
-    },
-  });
-  let interrupted = false;
-  const { acceptance, store } = await fixture(
-    context,
-    undefined,
-    requirements,
-    (point) => {
-      if (!interrupted && point === "success_response") {
-        interrupted = true;
-        throw new Error("simulated interruption");
-      }
-    }
+    })
   );
-  const attachment = Buffer.from("attachment");
+
+  assert.equal(
+    outcome.state === "failed" ? outcome.reason : undefined,
+    "work_products_unsupported"
+  );
+});
+
+test("a Result with work products leaves the Operation without a Result", async () => {
+  const { acceptance, store } = await fixture();
+  const attachment = Buffer.from("attachment", "utf8");
+
   await Effect.runPromise(
     acceptance.accept("operation-1", {
       ...produced(),
@@ -534,70 +479,13 @@ test("an interruption after body registration does not publish a Result", async 
         },
       ],
     })
-  ).catch(() => undefined);
-
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result,
-    undefined
   );
+
+  assert.equal(await storedResult(store), undefined);
 });
 
-test("an interruption before Artifact Store preparation does not publish a Result", async (context) => {
-  let interrupted = false;
-  const { acceptance, store } = await fixture(
-    context,
-    undefined,
-    workProductRequirements,
-    (point) => {
-      if (
-        !interrupted &&
-        point === "before_result_acceptance_first_pin_persisted"
-      ) {
-        interrupted = true;
-        throw new Error("simulated interruption");
-      }
-    }
-  );
-
-  await Effect.runPromise(acceptance.accept("operation-1", produced())).catch(
-    () => undefined
-  );
-
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result,
-    undefined
-  );
-});
-
-test("a terminal Event Store publication failure aborts Artifact Store preparation", async (context) => {
-  const { acceptance, artifacts, credential, store } = await fixture(
-    context,
-    (clock) => new PublicationRejectingStore([], clock)
-  );
-  await Effect.runPromise(acceptance.accept("operation-1", produced()));
-  const preparationId = (store as PublicationRejectingStore).preparationId;
-  if (preparationId === undefined)
-    throw new Error("publication was not attempted");
-
-  const status = await artifacts.resultAcceptancePreparationStatus(
-    credential,
-    preparationId
-  );
-
-  assert.equal(status.kind, "aborted");
-});
-
-test("Result acceptance records the body Artifact identifier", async (context) => {
-  const { acceptance, store } = await fixture(context);
-  await Effect.runPromise(acceptance.accept("operation-1", produced()));
-
-  const snapshot = await Effect.runPromise(store.read("operation-1"));
-
-  assert.equal(snapshot.operation.result?.bodyArtifactId.length === 0, false);
-});
-
-test("a repeated acceptance request returns the same acceptance identifier", async (context) => {
-  const { acceptance } = await fixture(context);
+test("a repeated acceptance request returns the same acceptance identifier", async () => {
+  const { acceptance } = await fixture();
   const first = await Effect.runPromise(
     acceptance.accept("operation-1", produced())
   );
@@ -614,56 +502,8 @@ test("a repeated acceptance request returns the same acceptance identifier", asy
   );
 });
 
-test("a replay with multiple work products under one key returns the accepted identifier", async (context) => {
-  const requirements = resolveWorkProductRequirements({
-    workProductRequirements: {
-      body: workProductRequirements.body,
-      workProducts: [
-        {
-          key: "attachment",
-          formatId: "pions.opaque.v1",
-          normalizationId: "identity.v1",
-          minCount: 2,
-          maxCount: 2,
-          maxByteCount: 128,
-        },
-      ],
-      maxTotalByteCount: workProductRequirements.maxTotalByteCount,
-    },
-  });
-  const { acceptance } = await fixture(context, undefined, requirements);
-  const withAttachments = (): WorkerProducedResult => ({
-    ...produced(),
-    workProducts: ["first", "second"].map((value) => {
-      const bytes = Buffer.from(value);
-      return {
-        key: "attachment",
-        formatId: "pions.opaque.v1",
-        normalizationId: "identity.v1",
-        expectedByteCount: bytes.byteLength,
-        expectedDigest: digest(bytes),
-        bytes,
-      };
-    }),
-  });
-  const first = await Effect.runPromise(
-    acceptance.accept("operation-1", withAttachments())
-  );
-
-  const replayed = await Effect.runPromise(
-    acceptance.accept("operation-1", withAttachments())
-  );
-
-  assert.equal(
-    replayed.state === "accepted" && first.state === "accepted"
-      ? replayed.proof.acceptanceId
-      : undefined,
-    first.state === "accepted" ? first.proof.acceptanceId : undefined
-  );
-});
-
-test("the same acceptance request with different content is a request mismatch", async (context) => {
-  const { acceptance } = await fixture(context);
+test("the same acceptance request with different content is a request mismatch", async () => {
+  const { acceptance } = await fixture();
   await Effect.runPromise(acceptance.accept("operation-1", produced("first")));
 
   const conflicting = await Effect.runPromise(
@@ -676,8 +516,8 @@ test("the same acceptance request with different content is a request mismatch",
   );
 });
 
-test("another request with the same content returns the accepted identifier", async (context) => {
-  const { acceptance } = await fixture(context);
+test("another request with the same content returns the accepted identifier", async () => {
+  const { acceptance } = await fixture();
   const first = await Effect.runPromise(
     acceptance.accept("operation-1", produced("same", "request-1"))
   );
@@ -694,8 +534,8 @@ test("another request with the same content returns the accepted identifier", as
   );
 });
 
-test("another request with different content is a manifest conflict", async (context) => {
-  const { acceptance } = await fixture(context);
+test("another request with different content is a Result conflict", async () => {
+  const { acceptance } = await fixture();
   await Effect.runPromise(
     acceptance.accept("operation-1", produced("first", "request-1"))
   );
@@ -706,12 +546,37 @@ test("another request with different content is a manifest conflict", async (con
 
   assert.equal(
     conflicting.state === "failed" ? conflicting.reason : undefined,
-    "manifest_conflict"
+    "result_conflict"
   );
 });
 
-test("a body with invalid UTF-8 is rejected before Result publication", async (context) => {
-  const { acceptance, store } = await fixture(context);
+test("a body with invalid UTF-8 is rejected", async () => {
+  const { acceptance } = await fixture();
+  const bytes = Uint8Array.from([0xff]);
+  const result: WorkerProducedResult = {
+    acceptanceRequestId: "request-invalid",
+    body: {
+      formatId: "pions.result-body.v1",
+      normalizationId: "identity.v1",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: digest(bytes),
+      bytes,
+    },
+    workProducts: [],
+  };
+
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", result)
+  );
+
+  assert.equal(
+    outcome.state === "failed" ? outcome.reason : undefined,
+    "invalid_utf8"
+  );
+});
+
+test("a body with invalid UTF-8 is not published", async () => {
+  const { acceptance, store } = await fixture();
   const bytes = Uint8Array.from([0xff]);
   const result: WorkerProducedResult = {
     acceptanceRequestId: "request-invalid",
@@ -727,27 +592,21 @@ test("a body with invalid UTF-8 is rejected before Result publication", async (c
 
   await Effect.runPromise(acceptance.accept("operation-1", result));
 
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result,
-    undefined
-  );
+  assert.equal(await storedResult(store), undefined);
 });
 
-test("an accepted body is retrieved from Artifact Store with verified integrity", async (context) => {
-  const { acceptance, store, artifacts, credential } = await fixture(context);
-  await Effect.runPromise(acceptance.accept("operation-1", produced()));
-  const accepted = (await Effect.runPromise(store.read("operation-1")))
-    .operation.result!;
+test("a body over the Operation body limit is rejected", async () => {
+  const { acceptance } = await fixture();
 
-  const retrieved = await artifacts.retrieve(
-    credential,
-    accepted.bodyArtifactId
+  const outcome = await Effect.runPromise(
+    acceptance.accept(
+      "operation-1",
+      produced("a".repeat(workProductRequirements.body.maxByteCount + 1))
+    )
   );
 
   assert.equal(
-    retrieved.kind === "retrieved"
-      ? Buffer.from(retrieved.bytes).toString("utf8")
-      : undefined,
-    "finished"
+    outcome.state === "failed" ? outcome.reason : undefined,
+    "limit_exceeded"
   );
 });

@@ -17,6 +17,7 @@ const systemClock: RuntimeClock = {
 
 export class InMemoryEventStore extends ValidatedEventStore {
   private readonly records = new Map<string, StoredOperationRecord>();
+  private readonly resultBodies = new Map<string, Uint8Array>();
 
   constructor(
     private readonly trace: Array<string> = [],
@@ -35,6 +36,23 @@ export class InMemoryEventStore extends ValidatedEventStore {
   ): Promise<void> {
     this.records.set(operationId, structuredClone(record));
     return Promise.resolve();
+  }
+
+  protected writeResultBody(
+    operationId: string,
+    bytes: Uint8Array
+  ): Promise<void> {
+    this.resultBodies.set(operationId, Uint8Array.from(bytes));
+    return Promise.resolve();
+  }
+
+  protected readResultBytes(
+    operationId: string
+  ): Promise<Uint8Array | undefined> {
+    const bytes = this.resultBodies.get(operationId);
+    return Promise.resolve(
+      bytes === undefined ? undefined : Uint8Array.from(bytes)
+    );
   }
 
   protected listOperationIds(): Promise<ReadonlyArray<string>> {

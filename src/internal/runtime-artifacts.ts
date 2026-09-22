@@ -61,22 +61,10 @@ function runtimePrincipal(
       .currentUse(request.operationId, artifactId)
       .catch(() => "unknown");
   };
+  // Result acceptance no longer stages bodies in the Artifact Store: the
+  // Event Store owns the Result bytes, so no Artifact may be bound to it.
   const canUseForResultAcceptance: ArtifactPrincipal["canPrepareResultAcceptance"] =
-    async (request, artifactId) => {
-      const stored = await Effect.runPromise(
-        Effect.either(store.read(request.operationId))
-      );
-      if (stored._tag === "Left") {
-        return stored.left.code === "not_found" ? "denied" : "unknown";
-      }
-      const reservation = stored.right.operation.resultAcceptanceReservation;
-      return reservation?.preparationId === request.preparationId &&
-        reservation.acceptanceRequestId === request.acceptanceRequestId &&
-        reservation.manifestDigest === request.manifestDigest &&
-        reservation.artifactIds.includes(artifactId)
-        ? "allowed"
-        : "denied";
-    };
+    async () => "denied";
   return {
     subjectId,
     canRegister: async () => "allowed",
