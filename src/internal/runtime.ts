@@ -880,7 +880,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         await settleTerminal(record, current);
         return;
       }
-      if (outcome.state === "validator_unavailable") return;
+      if (outcome.state === "validator_unavailable")
+        return "validator_unavailable" as const;
       if (outcome.state === "liveness-unproven") {
         current = await runEffect(
           advance(record.operationId, {
@@ -1233,16 +1234,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await settleTerminal(record, unknown);
           continue;
         }
+        const resume = (): void => {
+          records.delete(operation.operationId);
+          workersRecovered = false;
+          scheduleRecovery();
+        };
         track(
           (operation.state === "cancelling"
             ? recoverCancellation(record, operation)
             : execute(record, true)
-          ).catch((error) => {
-            record.rejectTerminal(error);
-            records.delete(operation.operationId);
-            workersRecovered = false;
-            throw error;
-          })
+          )
+            .then((outcome) => {
+              if (outcome === "validator_unavailable") resume();
+            })
+            .catch((error) => {
+              record.rejectTerminal(error);
+              resume();
+            })
         );
       } catch (error) {
         records.delete(operation.operationId);
@@ -1268,6 +1276,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   let cleanupsRecovered = false;
   let recovery: Promise<void> | undefined;
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleRecovery = (): void => {
+    if (closing || recoveryTimer !== undefined) return;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = undefined;
+      void Promise.resolve(recovery)
+        .catch(() => undefined)
+        .then(() => {
+          if (!closing) return recover();
+        })
+        .catch(() => scheduleRecovery());
+    }, 20);
+    recoveryTimer.unref();
+  };
   const recover = (): Promise<void> => {
     if (recovery !== undefined) return recovery;
     if (workersRecovered && cleanupsRecovered) return Promise.resolve();
@@ -1310,6 +1332,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     },
     async close(): Promise<void> {
       closing = true;
+      if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
       await Promise.allSettled([
         ...spawns.values(),
         ...(recovery === undefined ? [] : [recovery]),
@@ -1323,7 +1346,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const admitted = (async () => {
         await recover();
         const record = await createOperation(task);
-        track(execute(record, false));
+        track(execute(record, false).then(() => undefined));
         return {
           ...createReader(record.operationId),
           result: () => record.terminalPromise,

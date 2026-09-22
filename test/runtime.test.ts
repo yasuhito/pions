@@ -23,7 +23,10 @@ import {
   makeTestRuntime,
 } from "../src/internal/testing.js";
 import { sha256Digest } from "../src/internal/result-digest.js";
-import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
+import {
+  makeResultFormatRegistry,
+  type ResultFormatRegistry,
+} from "../src/internal/result-format-registry.js";
 import type { PinnedResultFormat, WorkerProfilePolicy } from "../src/public.js";
 
 const profile: WorkerProfilePolicy = {
@@ -334,7 +337,7 @@ test("Runtime再起動後に結果受理を継続する", async () => {
   assert.equal(result.kind, "retrieved");
 });
 
-test("復旧した実行の保存失敗を同じRuntimeで再処理する", async () => {
+test("復旧した実行の保存失敗を追加のreadyなしで再処理する", async () => {
   class FailingOnceStore extends InMemoryEventStore {
     private fail = true;
 
@@ -358,8 +361,6 @@ test("復旧した実行の保存失敗を同じRuntimeで再処理する", asyn
     services(store, new RecoveryWorker("accepted", true))
   );
   await runtime.ready();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await runtime.ready();
   await waitForState(store, "completed");
 
   assert.equal(
@@ -367,6 +368,79 @@ test("復旧した実行の保存失敗を同じRuntimeで再処理する", asyn
       entry.includes('"type":"start_instruction_dispatched"')
     ).length,
     1
+  );
+});
+
+test("復旧中の完了保存失敗を受理済み結果から再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "operation_completed") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const worker = new RecoveryWorker("accepted", true);
+  let recoveries = 0;
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => { throw new Error("worker reopened"); },
+      recover: (operation) => {
+        recoveries += 1;
+        return worker.recover(operation);
+      },
+    })
+  );
+  await runtime.ready();
+  await waitForState(store, "completed");
+
+  assert.equal(recoveries, 1);
+});
+
+test("復旧したキャンセルの保存失敗を追加のreadyなしで再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "cancel_dispatched") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  const runtime = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", false))
+  );
+  await runtime.ready();
+  await waitForState(store, "cancelled");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "cancelled"
   );
 });
 
@@ -402,6 +476,56 @@ test("保存済み正式レビューは検証器復元後に結果受理を再�
   const snapshot = await (await restored.operation("operation-1")).read();
 
   assert.deepEqual(snapshot.resultFormat, resultFormat);
+});
+
+test("検証器の一時的な不在から追加のreadyなしで結果受理を再開する", async () => {
+  const formats = makeResultFormatRegistry([{
+    formatId: "review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    validator: {
+      validatorId: "review-validator",
+      validatorVersion: "1",
+      implementation: Buffer.from("valid-review-validator", "utf8"),
+      validate: async () => ({ kind: "valid" }),
+    },
+  }]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  let available = false;
+  let firstValidation!: () => void;
+  const attempted = new Promise<void>((resolve) => {
+    firstValidation = resolve;
+  });
+  const registry: ResultFormatRegistry = {
+    ...formats,
+    validate: async (pinned, bytes) => {
+      if (!available) {
+        firstValidation();
+        return { kind: "invalid", reason: "validator_unavailable" };
+      }
+      return formats.validate(pinned, bytes);
+    },
+  };
+  const store = new InMemoryEventStore([], clock());
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+    formalReviewResultFormats: { registry, resultFormat },
+  });
+  await runtime.ready();
+  await attempted;
+  available = true;
+  await waitForState(store, "completed");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
 });
 
 test("停止確認済みの親キャンセルを永続化する", async () => {
