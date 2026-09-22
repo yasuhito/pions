@@ -470,7 +470,6 @@ export function installPionsExtension(
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
     let runtime = options.runtime ?? runtimesByRepository.get(normalizedRoot);
-    let created = false;
     if (runtime === undefined) {
       const workerCwd = await realpath(context.cwd);
       const runtimeStateDirectory = join(repositoryState, "runtime");
@@ -489,16 +488,10 @@ export function installPionsExtension(
           ? {}
           : { formalReviewResultFormats: options.formalReview.resultFormats }),
       });
-      created = true;
       runtimesByRepository.set(normalizedRoot, runtime);
     }
-    try {
-      await runtime.ready();
-      knownRuntimes.add(runtime);
-    } catch (error) {
-      if (created) runtimesByRepository.delete(normalizedRoot);
-      throw error;
-    }
+    knownRuntimes.add(runtime);
+    await runtime.ready();
   });
 
   async function prepareWorkerCall(
@@ -519,14 +512,7 @@ export function installPionsExtension(
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
     const recoveredRuntime = runtimesByRepository.get(normalizedRoot);
-    if (recoveredRuntime !== undefined) {
-      try {
-        await recoveredRuntime.ready();
-      } catch (error) {
-        runtimesByRepository.delete(normalizedRoot);
-        throw error;
-      }
-    }
+    if (recoveredRuntime !== undefined) await recoveredRuntime.ready();
     const workerCwd = await realpath(context.cwd);
     const configured = await projectConfig(normalizedRoot);
     const workerModel =
@@ -589,8 +575,10 @@ export function installPionsExtension(
             ? {}
             : { formalReviewResultFormats: options.formalReview.resultFormats }),
         });
-        await runtime.ready();
         runtimesByConfig.set(configKey, runtime);
+        runtimesByRepository.set(normalizedRoot, runtime);
+        knownRuntimes.add(runtime);
+        await runtime.ready();
       }
     }
     runtimesByCall.set(idempotencyKey, runtime);

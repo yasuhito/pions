@@ -520,6 +520,33 @@ test("delegation after cold recovery does not recover the same Workers twice", a
   assert.deepEqual(recoveryModes, [undefined, "disabled"]);
 });
 
+test("一時的な復旧失敗後も同じRuntimeが回収を続ける", async (context) => {
+  const recoveryModes: Array<VisibleRuntimeOptions["recovery"]> = [];
+  let fail = true;
+  class FailingOnceRuntime extends FakeRuntime {
+    override async ready(): Promise<void> {
+      if (fail) {
+        fail = false;
+        throw new Error("temporary recovery failure");
+      }
+      await super.ready();
+    }
+  }
+  const value = await fixture(undefined, {
+    runtimeFactory: (options) => {
+      recoveryModes.push(options.recovery);
+      return recoveryModes.length === 1
+        ? new FailingOnceRuntime()
+        : new FakeRuntime();
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.start().catch(() => undefined);
+  await value.execute();
+
+  assert.deepEqual(recoveryModes, [undefined, "disabled"]);
+});
+
 test("cold session resumes format-pinned Result acceptance", async (context) => {
   const repository = await realpath(
     await mkdtemp(join(tmpdir(), "pions-cold-repository-"))

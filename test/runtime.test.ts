@@ -456,6 +456,118 @@ test("復旧一覧の一時的な失敗をreadyが通知する", async () => {
   await assert.rejects(runtime.ready(), { name: "OperationPersistenceError" });
 });
 
+test("復旧一覧の一時的な失敗を同じRuntimeで再試行する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override listRecoverableOperations() {
+      if (this.fail) {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listRecoverableOperations();
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
+  await runtime.ready().catch(() => undefined);
+  await runtime.ready();
+  await waitForState(store, "completed");
+
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+});
+
+test("表示終了処理の復旧失敗後も起動済みWorkerを二重に回収しない", async () => {
+  class FailingCleanupStore extends InMemoryEventStore {
+    private fail = true;
+
+    override listPendingPresentationCleanups() {
+      if (this.fail) {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listPendingPresentationCleanups();
+    }
+  }
+  const store = new FailingCleanupStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  let recoverCount = 0;
+  let release!: () => void;
+  const workerFinished = new Promise<{ readonly state: "liveness-unproven" }>((resolve) => {
+    release = () => resolve({ state: "liveness-unproven" });
+  });
+  const runtime = makeTestRuntime(services(store, {
+    open: () => { throw new Error("not used"); },
+    recover: () => {
+      recoverCount += 1;
+      return {
+        run: () => Effect.promise(() => workerFinished),
+        cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+      };
+    },
+  }));
+  await runtime.ready().catch(() => undefined);
+  await runtime.ready();
+  assert.equal(recoverCount, 1);
+  release();
+  await runtime.close();
+});
+
+test("終了処理は一覧取得後に回収されたWorkerも待つ", async () => {
+  let releaseListing!: () => void;
+  let enterListing!: () => void;
+  let releaseWorker!: () => void;
+  let enterWorker!: () => void;
+  const listed = new Promise<void>((resolve) => { enterListing = resolve; });
+  const listingHeld = new Promise<void>((resolve) => { releaseListing = resolve; });
+  const workerStarted = new Promise<void>((resolve) => { enterWorker = resolve; });
+  const workerFinished = new Promise<{ readonly state: "liveness-unproven" }>((resolve) => {
+    releaseWorker = () => resolve({ state: "liveness-unproven" });
+  });
+  class HeldListingStore extends InMemoryEventStore {
+    override listRecoverableOperations() {
+      return Effect.promise(async () => {
+        enterListing();
+        await listingHeld;
+        return Effect.runPromise(super.listRecoverableOperations());
+      });
+    }
+  }
+  const store = new HeldListingStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(services(store, {
+    open: () => { throw new Error("not used"); },
+    recover: () => ({
+      run: () => Effect.promise(() => {
+        enterWorker();
+        return workerFinished;
+      }),
+      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+    }),
+  }));
+  await listed;
+  let closed = false;
+  const closing = runtime.close().then(() => { closed = true; });
+  releaseListing();
+  await workerStarted;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(closed, false);
+  releaseWorker();
+  await closing;
+});
+
 test("終了処理は作成中の委譲を待つ", async () => {
   let enterPreflight!: () => void;
   let leavePreflight!: () => void;

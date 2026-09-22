@@ -1170,63 +1170,75 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         rejectTerminal: deferred.reject,
       };
       records.set(operation.operationId, record);
-      if (operation.state === "cancelling" && operation.workerStopConfirmedAt !== undefined) {
-        const cancelled = await runEffect(
-          advance(operation.operationId, {
-            type: "operation_cancelled",
-            cancellationEpoch: operation.cancellationEpoch,
-          })
-        );
-        await settleTerminal(record, cancelled);
-        continue;
-      }
-      if (operation.state === "running" && operation.result !== undefined && operation.workerStopConfirmedAt !== undefined) {
-        const completed = await runEffect(
-          advance(operation.operationId, { type: "operation_completed" })
-        );
-        await settleTerminal(record, completed);
-        continue;
-      }
-      if (
-        operation.workerIdentity === undefined ||
-        operation.startDeliveryAuthority === undefined
-      ) {
-        const unknown = await runEffect(
-          advance(operation.operationId, {
-            type: "operation_unknown",
-            ...(operation.state === "cancelling"
-              ? {
-                  reason: "cancel-unproven" as const,
-                  cancellationEpoch: operation.cancellationEpoch,
-                }
-              : { reason: "liveness-unproven" as const }),
-          })
-        );
-        await settleTerminal(record, unknown);
-        continue;
-      }
       try {
-        record.worker = services.worker.recover(operation);
-      } catch {
-        const unknown = await runEffect(
-          advance(operation.operationId, {
-            type: "operation_unknown",
-            ...(operation.state === "cancelling"
-              ? {
-                  reason: "cancel-unproven" as const,
-                  cancellationEpoch: operation.cancellationEpoch,
-                }
-              : { reason: "liveness-unproven" as const }),
-          })
+        if (
+          operation.state === "cancelling" &&
+          operation.workerStopConfirmedAt !== undefined
+        ) {
+          const cancelled = await runEffect(
+            advance(operation.operationId, {
+              type: "operation_cancelled",
+              cancellationEpoch: operation.cancellationEpoch,
+            })
+          );
+          await settleTerminal(record, cancelled);
+          continue;
+        }
+        if (
+          operation.state === "running" &&
+          operation.result !== undefined &&
+          operation.workerStopConfirmedAt !== undefined
+        ) {
+          const completed = await runEffect(
+            advance(operation.operationId, { type: "operation_completed" })
+          );
+          await settleTerminal(record, completed);
+          continue;
+        }
+        if (
+          operation.workerIdentity === undefined ||
+          operation.startDeliveryAuthority === undefined
+        ) {
+          const unknown = await runEffect(
+            advance(operation.operationId, {
+              type: "operation_unknown",
+              ...(operation.state === "cancelling"
+                ? {
+                    reason: "cancel-unproven" as const,
+                    cancellationEpoch: operation.cancellationEpoch,
+                  }
+                : { reason: "liveness-unproven" as const }),
+            })
+          );
+          await settleTerminal(record, unknown);
+          continue;
+        }
+        try {
+          record.worker = services.worker.recover(operation);
+        } catch {
+          const unknown = await runEffect(
+            advance(operation.operationId, {
+              type: "operation_unknown",
+              ...(operation.state === "cancelling"
+                ? {
+                    reason: "cancel-unproven" as const,
+                    cancellationEpoch: operation.cancellationEpoch,
+                  }
+                : { reason: "liveness-unproven" as const }),
+            })
+          );
+          await settleTerminal(record, unknown);
+          continue;
+        }
+        track(
+          operation.state === "cancelling"
+            ? recoverCancellation(record, operation)
+            : execute(record, true)
         );
-        await settleTerminal(record, unknown);
-        continue;
+      } catch (error) {
+        records.delete(operation.operationId);
+        throw error;
       }
-      track(
-        operation.state === "cancelling"
-          ? recoverCancellation(record, operation)
-          : execute(record, true)
-      );
     }
   };
 
@@ -1245,8 +1257,32 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await performCleanup(operation, false);
   };
 
-  const recovery = Promise.all([recoverWorkers(), recoverCleanups()]);
-  void recovery.catch(() => undefined);
+  let workersRecovered = false;
+  let cleanupsRecovered = false;
+  let recovery: Promise<void> | undefined;
+  const recover = (): Promise<void> => {
+    if (workersRecovered && cleanupsRecovered) return Promise.resolve();
+    if (recovery !== undefined) return recovery;
+    if (closing) return Promise.reject(new RuntimeClosedError());
+    const started = (async () => {
+      if (!workersRecovered) {
+        await recoverWorkers();
+        workersRecovered = true;
+      }
+      if (!cleanupsRecovered) {
+        await recoverCleanups();
+        cleanupsRecovered = true;
+      }
+    })();
+    recovery = started;
+    void started
+      .finally(() => {
+        if (recovery === started) recovery = undefined;
+      })
+      .catch(() => undefined);
+    return started;
+  };
+  void recover().catch(() => undefined);
 
   const createReader = (operationId: string): OperationReader => ({
     operationId,
@@ -1257,20 +1293,22 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   return {
     async ready(): Promise<void> {
-      await recovery;
+      await recover();
     },
     async close(): Promise<void> {
       closing = true;
-      await Promise.allSettled([...spawns.values()]);
+      await Promise.allSettled([
+        ...spawns.values(),
+        ...(recovery === undefined ? [] : [recovery]),
+      ]);
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
-      await recovery;
     },
     spawn(task: TaskSpec): Promise<OperationHandle> {
       if (closing) return Promise.reject(new RuntimeClosedError());
       const existing = spawns.get(task.idempotencyKey);
       if (existing !== undefined) return existing;
       const admitted = (async () => {
-        await recovery;
+        await recover();
         const record = await createOperation(task);
         track(execute(record, false));
         return {
@@ -1283,7 +1321,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       return admitted;
     },
     async operation(operationId: string): Promise<OperationReader> {
-      await recovery;
       await storedSnapshot(operationId);
       return createReader(operationId);
     },
