@@ -1,4 +1,3 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -22,11 +21,7 @@ import {
   formalReviewIntegrationModule,
   FormalReviewBootstrapError,
 } from "../formal-review.js";
-import type {
-  Runtime,
-  StartAuthorizationAuthenticator,
-  StartAuthorizationAuthority,
-} from "../public.js";
+import type { Runtime } from "../public.js";
 
 export interface FormalReviewIntegrationDependencies {
   readonly stateBaseDirectory?: string;
@@ -139,44 +134,6 @@ function validateTrustedBootstrap(
   }
 }
 
-function coordinatorConfiguration(
-  configuration: Readonly<FormalReviewIntegrationConfiguration>
-):
-  | Readonly<{
-      credential: string;
-      authenticator: StartAuthorizationAuthenticator;
-      authority: StartAuthorizationAuthority;
-    }>
-  | undefined {
-  const coordinator = configuration.formalReview?.coordinator;
-  if (coordinator === undefined) return undefined;
-  const credential = randomBytes(32).toString("hex");
-  const credentialBytes = Buffer.from(credential, "utf8");
-  const authority: StartAuthorizationAuthority = {
-    currentAuthorization: (subjectId, operationId) =>
-      subjectId === coordinator.subjectId
-        ? coordinator.currentAuthorization(operationId)
-        : Promise.resolve("denied"),
-  };
-  const authenticator: StartAuthorizationAuthenticator = {
-    authenticate: async (candidate) => {
-      const candidateBytes = Buffer.from(candidate, "utf8");
-      if (
-        candidateBytes.byteLength !== credentialBytes.byteLength ||
-        !timingSafeEqual(candidateBytes, credentialBytes)
-      ) {
-        throw new Error("Invalid formal review Coordinator credential");
-      }
-      return {
-        subjectId: coordinator.subjectId,
-        currentAuthorization: (operationId) =>
-          coordinator.currentAuthorization(operationId),
-      };
-    },
-  };
-  return { credential, authenticator, authority };
-}
-
 export function makeFormalReviewIntegration(
   configuration: Readonly<FormalReviewIntegrationConfiguration>
 ): FormalReviewIntegration {
@@ -185,7 +142,6 @@ export function makeFormalReviewIntegration(
   const dependencies = configuredDependencies ?? {};
   const environment = dependencies.environment ?? process.env;
   const homeDirectory = dependencies.homeDirectory ?? homedir();
-  const coordinator = coordinatorConfiguration(configuration);
   const formalReviewSetup =
     configuration.formalReview === undefined
       ? undefined
@@ -217,30 +173,6 @@ export function makeFormalReviewIntegration(
               formalReview: {
                 profile: formalReviewSetup.configuration.profile,
                 resultFormats: formalReviewSetup.resultFormats,
-                resourceAdapterApprovalPolicy: {
-                  deployment: configuration.trustedBootstrap.deployment,
-                  approvedAdapters:
-                    configuration.trustedBootstrap.approvedAdapters,
-                },
-                resourceAuthorities: [
-                  formalReviewSetup.configuration.resourceAuthority,
-                ],
-                ...(formalReviewSetup.configuration.externalAllocation ===
-                undefined
-                  ? {}
-                  : {
-                      externalAllocation:
-                        formalReviewSetup.configuration.externalAllocation,
-                    }),
-                ...(coordinator === undefined
-                  ? {}
-                  : {
-                      coordinator: {
-                        credential: coordinator.credential,
-                        authenticator: coordinator.authenticator,
-                        authority: coordinator.authority,
-                      },
-                    }),
               },
             }),
       });

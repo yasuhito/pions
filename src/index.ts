@@ -11,7 +11,6 @@ export type { VisibleRuntimeOptions } from "./internal/visible-runtime.js";
 export {
   CancellationRejectedError,
   ExternalReviewAllocationError,
-  ExternalReviewAllocationRejoinedError,
   HerdrPreconditionError,
   OperationCancelledError,
   OperationUnknownError,
@@ -108,7 +107,6 @@ export type {
   WorkerStartAuthorizationPolicy,
   ConfiguredStartupReceiptPolicy,
   StartupReceiptPolicy,
-  SpawnOptions,
   StartAuthorizationAuthenticator,
   StartAuthorizationDecisionAttemptRecord,
   StartAuthorizationDecisionOutcome,

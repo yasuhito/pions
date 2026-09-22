@@ -51,6 +51,15 @@ function services(store: InMemoryEventStore, worker: WorkerAdapter) {
   };
 }
 
+test("Runtime exposes only delegation lifecycle operations", () => {
+  const runtime = makeTestRuntime({
+    ...services(new InMemoryEventStore(), new CancellableWorker(true)),
+    recovery: "disabled",
+  });
+
+  assert.deepEqual(Object.keys(runtime), ["close", "spawn", "operation"]);
+});
+
 async function seed(store: InMemoryEventStore): Promise<void> {
   await Effect.runPromise(
     store.create({

@@ -5,10 +5,8 @@ import type {
   EventStore,
   Operation,
 } from "./event-store/index.js";
-import type { ExternalReviewAllocationRegistry } from "./external-review-allocation.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
 import type { ConfiguredResultFormats } from "./result-format-registry.js";
-import type { InternalResourceProofController } from "./resource-controller.js";
 import type {
   ResultAcceptanceProof,
   StartInstruction,
@@ -16,11 +14,7 @@ import type {
 import type {
   ObservedWorkerConfig,
   OperationPersistenceError,
-  StartAuthorizationAuthenticator,
-  StartAuthorizationAuthority,
   ResourceProofRejectedError,
-  RevisionAuthenticator,
-  RetryClearanceVerifier,
   WorkerProducedResult,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -219,12 +213,6 @@ export interface RuntimeServices {
   readonly presentation: Presentation;
   readonly store: EventStore;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
-  readonly externalReviewAllocations?: ExternalReviewAllocationRegistry;
-  readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
-  readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
-  readonly revisionAuthenticator?: RevisionAuthenticator;
-  readonly retryClearanceVerifier?: RetryClearanceVerifier;
-  readonly resourceProofController?: InternalResourceProofController;
   readonly recovery?: "enabled" | "disabled";
   readonly configuration?: Readonly<{
     readonly cwd: string;

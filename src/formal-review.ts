@@ -129,7 +129,6 @@ export type {
 } from "./public.js";
 export {
   ExternalReviewAllocationError,
-  ExternalReviewAllocationRejoinedError,
 } from "./public.js";
 
 export function createFormalReviewIntegration(

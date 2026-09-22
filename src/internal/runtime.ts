@@ -1230,27 +1230,5 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await storedSnapshot(operationId);
       return createReader(operationId);
     },
-    startAuthorizationInbox(): Promise<never> {
-      return Promise.reject(
-        new WorkerConfigurationError(
-          "unsupported_capability",
-          "Start authorization is not part of delegation lifecycle"
-        )
-      );
-    },
-    revisions(): Promise<never> {
-      return Promise.reject(
-        new WorkerConfigurationError(
-          "unsupported_capability",
-          "Revision series are not part of delegation lifecycle"
-        )
-      );
-    },
-    resourceProofs(): never {
-      throw new WorkerConfigurationError(
-        "unsupported_capability",
-        "Resource proofs are not part of delegation lifecycle"
-      );
-    },
   };
 }

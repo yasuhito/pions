@@ -274,19 +274,6 @@ export class ExternalReviewAllocationError extends Error {
   }
 }
 
-export class ExternalReviewAllocationRejoinedError extends Error {
-  override readonly name = "ExternalReviewAllocationRejoinedError";
-
-  constructor(readonly operationId: string) {
-    super(`External review allocation already belongs to ${operationId}`);
-  }
-}
-
-export interface SpawnOptions {
-  readonly reviewSubjectId?: string;
-  readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationRequest>;
-}
-
 export interface Result {
   readonly body: string;
   readonly byteCount: number;
@@ -1208,11 +1195,8 @@ export interface OperationHandle extends OperationReader {
 }
 
 export interface Runtime {
-  spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle>;
+  spawn(task: TaskSpec): Promise<OperationHandle>;
   operation(operationId: string): Promise<OperationReader>;
-  startAuthorizationInbox(credential: string): Promise<StartAuthorizationInbox>;
-  revisions(credential: string): Promise<RevisionCoordinator>;
-  resourceProofs(): ResourceProofController;
   close(): Promise<void>;
 }
 
