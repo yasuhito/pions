@@ -635,7 +635,7 @@ export class VisibleWorker implements WorkerAdapter {
   ): Promise<Session> {
     cancellation.requireLaunchAllowed();
     if (operation.presentation === undefined)
-      throw new Error("Worker pane ownership is missing");
+      throw new Error("Worker workspace ownership is missing");
     const directory = join(
       this.options.rootDirectory,
       operationDirectoryKey(operation.operationId)

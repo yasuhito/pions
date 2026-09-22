@@ -51,11 +51,6 @@ interface HerdrPresentationOptions {
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
   readonly executor: CommandExecutor;
-  readonly retainOnWorkerStartFailure?: boolean;
-  readonly terminalSize?: Readonly<{
-    readonly columns: number;
-    readonly rows: number;
-  }>;
 }
 
 interface HerdrEnvelope {
@@ -69,7 +64,17 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 const MAX_PRESENTATION_CONFIG_BYTES = 512;
+const SHORT_OPERATION_IDENTIFIER_LENGTH = 8;
+
+/** The Worker workspace label: a short Operation identifier and never the task body. */
+export function workerWorkspaceLabel(operationId: string): string {
+  return `Pions ${operationId.slice(0, SHORT_OPERATION_IDENTIFIER_LENGTH)}`;
+}
 
 function boundedPresentationText(value: string): string {
   const normalized = value.replaceAll(/[\r\n\0]/gu, " ");
@@ -120,12 +125,7 @@ function commandFailure(output: CommandOutput): Error | undefined {
 }
 
 export class HerdrPresentation implements Presentation {
-  private readonly retainOnWorkerStartFailure: boolean;
-
-  constructor(private readonly options: HerdrPresentationOptions) {
-    this.retainOnWorkerStartFailure =
-      options.retainOnWorkerStartFailure ?? true;
-  }
+  constructor(private readonly options: HerdrPresentationOptions) {}
 
   preflight(): Effect.Effect<void, HerdrPreconditionError> {
     return Effect.suspend(() => {
@@ -149,35 +149,39 @@ export class HerdrPresentation implements Presentation {
     });
   }
 
-  create(_operation: Operation): Effect.Effect<CreatedPresentation, Error> {
-    const columns =
-      this.options.terminalSize?.columns ?? process.stdout.columns;
-    const rows = this.options.terminalSize?.rows ?? process.stdout.rows;
-    const direction =
-      columns !== undefined && rows !== undefined && rows > columns
-        ? "down"
-        : "right";
+  /**
+   * Create one dedicated Worker workspace without moving focus. The current
+   * workspace, tab, and pane are never split or targeted.
+   */
+  create(operation: Operation): Effect.Effect<CreatedPresentation, Error> {
     return this.executeJson([
-      "pane",
-      "split",
-      "--current",
-      "--direction",
-      direction,
+      "workspace",
+      "create",
       "--cwd",
       this.options.cwd,
+      "--label",
+      workerWorkspaceLabel(operation.operationId),
       "--no-focus",
     ]).pipe(
       Effect.map((envelope) => {
         const result = object(envelope.result);
-        const pane = object(result?.pane);
-        const paneId = pane?.pane_id;
-        if (typeof paneId !== "string" || paneId.length === 0) {
+        const workspaceId = nonEmptyString(
+          object(result?.workspace)?.workspace_id
+        );
+        const paneId = nonEmptyString(object(result?.root_pane)?.pane_id);
+        if (workspaceId === undefined) {
           throw new Error(
-            "Herdr pane split response has no opaque pane identifier"
+            "Herdr workspace create response has no opaque workspace identifier"
+          );
+        }
+        if (paneId === undefined) {
+          throw new Error(
+            "Herdr workspace create response has no opaque root pane identifier"
           );
         }
         return Object.freeze({
-          kind: "herdr_pane" as const,
+          kind: "herdr_workspace" as const,
+          workspaceId,
           paneId,
         });
       })
@@ -188,39 +192,37 @@ export class HerdrPresentation implements Presentation {
     presentation: CreatedPresentation
   ): Effect.Effect<void, unknown> {
     return Effect.asVoid(
-      this.executeJson(["pane", "close", presentation.paneId])
+      this.executeJson(["workspace", "close", presentation.workspaceId])
     );
   }
 
-  onWorkerStartFailure(operation: Operation): Effect.Effect<void, unknown> {
-    if (
-      this.retainOnWorkerStartFailure ||
-      operation.presentation === undefined
-    ) {
-      return Effect.void;
-    }
-    return this.rollbackCreated(operation.presentation);
-  }
-
-  inspectOwnedPane(
+  /**
+   * Herdr never reuses a closed workspace identifier, so the persisted
+   * identifier appearing in the current workspace list is the identity check.
+   */
+  inspectOwnedWorkspace(
     operation: Operation
   ): Effect.Effect<"matching" | "missing", unknown> {
     if (operation.presentation === undefined) return Effect.succeed("missing");
-    const paneId = operation.presentation.paneId;
-    return this.executeJson(["pane", "list"]).pipe(
+    const workspaceId = operation.presentation.workspaceId;
+    return this.executeJson(["workspace", "list"]).pipe(
       Effect.map((envelope) => {
         const result = object(envelope.result);
-        const panes = result?.panes;
-        if (!Array.isArray(panes))
-          throw new Error("Herdr pane list response has no pane list");
-        return panes.some((pane) => object(pane)?.pane_id === paneId)
+        const workspaces = result?.workspaces;
+        if (!Array.isArray(workspaces))
+          throw new Error(
+            "Herdr workspace list response has no workspace list"
+          );
+        return workspaces.some(
+          (workspace) => object(workspace)?.workspace_id === workspaceId
+        )
           ? ("matching" as const)
           : ("missing" as const);
       })
     );
   }
 
-  closeOwnedPane(operation: Operation): Effect.Effect<void, unknown> {
+  closeOwnedWorkspace(operation: Operation): Effect.Effect<void, unknown> {
     if (operation.presentation === undefined) return Effect.void;
     return this.rollbackCreated(operation.presentation);
   }

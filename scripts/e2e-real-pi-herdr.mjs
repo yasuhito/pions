@@ -306,10 +306,47 @@ async function countToolResults(transcriptPath, toolName) {
     ).length;
 }
 
-async function workspaceIds() {
+async function listWorkspaces() {
   const listed = await herdrJson(["workspace", "list"]);
-  const workspaces = listed.result?.workspaces ?? listed.workspaces ?? [];
-  return new Set(workspaces.map((workspace) => workspace.workspace_id));
+  return listed.result?.workspaces ?? listed.workspaces ?? [];
+}
+
+async function workspaceIds() {
+  return new Set((await listWorkspaces()).map((w) => w.workspace_id));
+}
+
+// Observes Worker workspaces that appear while the parent Pi runs: their
+// label and focus state, plus whether the parent kept focus, are only visible
+// while the Worker is alive because a successful Worker closes its workspace.
+function observeWorkerWorkspaces(before, parentWorkspaceId) {
+  const observed = new Map();
+  let parentLostFocus = false;
+  let stopped = false;
+  const loop = (async () => {
+    while (!stopped) {
+      const workspaces = await listWorkspaces().catch(() => []);
+      for (const workspace of workspaces) {
+        if (before.has(workspace.workspace_id)) continue;
+        observed.set(workspace.workspace_id, {
+          label: workspace.label,
+          focused: workspace.focused,
+        });
+        const parent = workspaces.find(
+          (w) => w.workspace_id === parentWorkspaceId
+        );
+        if (parent !== undefined && parent.focused !== true)
+          parentLostFocus = true;
+      }
+      await delay(POLL_INTERVAL_MS);
+    }
+  })();
+  return {
+    async stop() {
+      stopped = true;
+      await loop;
+      return { observed, parentLostFocus };
+    },
+  };
 }
 
 async function assertNoNewWorkspace(before, description) {
@@ -412,13 +449,24 @@ async function main() {
       nestedCwd
     );
     createdWorkspaceIds.push(workspace1.workspaceId);
-    const delegateTranscript = await runPiInPane(
-      runDir,
-      workspace1.paneId,
-      delegatePromptPath,
-      "delegate",
-      { extensions: [observerExtensionPath] }
+    const beforeDelegate = await workspaceIds();
+    const workerObserver = observeWorkerWorkspaces(
+      beforeDelegate,
+      workspace1.workspaceId
     );
+    let delegateTranscript;
+    let workerWorkspaces;
+    try {
+      delegateTranscript = await runPiInPane(
+        runDir,
+        workspace1.paneId,
+        delegatePromptPath,
+        "delegate",
+        { extensions: [observerExtensionPath] }
+      );
+    } finally {
+      workerWorkspaces = await workerObserver.stop();
+    }
     const parentPionsTools = JSON.parse(
       await readFile(parentToolsPath, "utf8")
     ).filter((name) => name.startsWith("pions_"));
@@ -459,6 +507,33 @@ async function main() {
     }
     const originalDigest = delegateResult.details.digest;
     log(`delegated Operation ${operationId} returned the known UTF-8 answer.`);
+
+    const observedWorkerWorkspaces = [...workerWorkspaces.observed.entries()];
+    if (observedWorkerWorkspaces.length !== 1) {
+      throw new Error(
+        `expected exactly one Worker workspace during delegation, observed ${JSON.stringify(observedWorkerWorkspaces)}`
+      );
+    }
+    const [workerWorkspaceId, workerWorkspace] = observedWorkerWorkspaces[0];
+    const expectedWorkerLabel = `Pions ${operationId.slice(0, 8)}`;
+    if (workerWorkspace.label !== expectedWorkerLabel) {
+      throw new Error(
+        `Worker workspace label mismatch: expected ${JSON.stringify(expectedWorkerLabel)}, got ${JSON.stringify(workerWorkspace.label)}`
+      );
+    }
+    if (workerWorkspace.focused === true || workerWorkspaces.parentLostFocus) {
+      throw new Error(
+        `Worker workspace ${workerWorkspaceId} took focus away from the parent workspace`
+      );
+    }
+    if ((await workspaceIds()).has(workerWorkspaceId)) {
+      throw new Error(
+        `Worker workspace ${workerWorkspaceId} is still open after the successful delegation`
+      );
+    }
+    log(
+      `the Worker ran in its own workspace ${workerWorkspaceId} (${expectedWorkerLabel}) without taking focus, and the workspace closed on success.`
+    );
 
     const workerWritten = await readFile(
       join(nestedCwd, workerWriteName),
@@ -554,6 +629,25 @@ async function main() {
     }
     log(
       "the persisted live Operation has the exact seven-tool Worker surface and nested cwd."
+    );
+    const snapshot =
+      operationResult.details?.operation ?? operationResult.details ?? {};
+    const cleanup = snapshot.presentationCleanup;
+    if (
+      cleanup?.state !== "completed" ||
+      cleanup?.workspaceId !== workerWorkspaceId
+    ) {
+      throw new Error(
+        `persisted workspace cleanup mismatch: expected completed cleanup of ${workerWorkspaceId}, got ${JSON.stringify(cleanup)}`
+      );
+    }
+    if ((snapshot.cleanupDiagnostics ?? []).length !== 0) {
+      throw new Error(
+        `unexpected cleanup diagnostics: ${JSON.stringify(snapshot.cleanupDiagnostics)}`
+      );
+    }
+    log(
+      "the persisted Operation records the completed cleanup of exactly the owned Worker workspace."
     );
 
     const projectConfigPath = join(ROOT_DIR, ".pions.json");

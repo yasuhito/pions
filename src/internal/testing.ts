@@ -64,7 +64,8 @@ export async function advanceTestOperationToStartDeliveryAuthority(
     store.advance(operationId, {
       type: "presentation_owned",
       presentation: {
-        kind: "herdr_pane",
+        kind: "herdr_workspace",
+        workspaceId: "test-workspace",
         paneId: "test-pane",
         ownedByPions: true,
       },
@@ -418,28 +419,28 @@ export interface FakePresentationOptions {
   readonly trace?: Array<string>;
   readonly attemptedState?: OperationState;
   readonly projectionFails?: boolean;
-  readonly paneInspection?: "matching" | "missing" | "unavailable";
-  readonly paneClosureFails?: boolean;
+  readonly workspaceInspection?: "matching" | "missing" | "unavailable";
+  readonly workspaceClosureFails?: boolean;
 }
 
 export class FakePresentation implements Presentation {
   readonly projections: Array<Operation> = [];
-  readonly createdPaneIds: Array<string> = [];
-  readonly rolledBackPaneIds: Array<string> = [];
-  readonly closedPaneIds: Array<string> = [];
+  readonly createdWorkspaceIds: Array<string> = [];
+  readonly rolledBackWorkspaceIds: Array<string> = [];
+  readonly closedWorkspaceIds: Array<string> = [];
   stateChangeSucceeded = false;
   private readonly trace: Array<string>;
   private readonly attemptedState: OperationState | undefined;
   private readonly projectionFails: boolean;
-  private readonly paneInspection: "matching" | "missing" | "unavailable";
-  private readonly paneClosureFails: boolean;
+  private readonly workspaceInspection: "matching" | "missing" | "unavailable";
+  private readonly workspaceClosureFails: boolean;
 
   constructor(options: FakePresentationOptions = {}) {
     this.trace = options.trace ?? [];
     this.attemptedState = options.attemptedState;
     this.projectionFails = options.projectionFails ?? false;
-    this.paneInspection = options.paneInspection ?? "matching";
-    this.paneClosureFails = options.paneClosureFails ?? false;
+    this.workspaceInspection = options.workspaceInspection ?? "matching";
+    this.workspaceClosureFails = options.workspaceClosureFails ?? false;
   }
 
   preflight(): Effect.Effect<void> {
@@ -448,39 +449,40 @@ export class FakePresentation implements Presentation {
 
   create(operation: Operation): Effect.Effect<CreatedPresentation> {
     return Effect.sync(() => {
-      const paneId = `fake-pane:${operation.operationId}`;
-      this.createdPaneIds.push(paneId);
-      return { kind: "herdr_pane", paneId };
+      const workspaceId = `fake-workspace:${operation.operationId}`;
+      this.createdWorkspaceIds.push(workspaceId);
+      return {
+        kind: "herdr_workspace",
+        workspaceId,
+        paneId: `fake-pane:${operation.operationId}`,
+      };
     });
   }
 
   rollbackCreated(presentation: CreatedPresentation): Effect.Effect<void> {
     return Effect.sync(() => {
-      this.rolledBackPaneIds.push(presentation.paneId);
+      this.rolledBackWorkspaceIds.push(presentation.workspaceId);
     });
   }
 
-  onWorkerStartFailure(_operation: Operation): Effect.Effect<void> {
-    return Effect.void;
-  }
-
-  inspectOwnedPane(
+  inspectOwnedWorkspace(
     _operation: Operation
   ): Effect.Effect<"matching" | "missing", Error> {
     return Effect.sync(() => {
-      this.trace.push("presentation:inspect-owned-pane");
-      if (this.paneInspection === "unavailable")
-        throw new Error("Pane inspection unavailable");
-      return this.paneInspection;
+      this.trace.push("presentation:inspect-owned-workspace");
+      if (this.workspaceInspection === "unavailable")
+        throw new Error("Workspace inspection unavailable");
+      return this.workspaceInspection;
     });
   }
 
-  closeOwnedPane(operation: Operation): Effect.Effect<void> {
+  closeOwnedWorkspace(operation: Operation): Effect.Effect<void> {
     return Effect.sync(() => {
-      this.trace.push("presentation:close-owned-pane");
+      this.trace.push("presentation:close-owned-workspace");
       if (operation.presentation === undefined) return;
-      this.closedPaneIds.push(operation.presentation.paneId);
-      if (this.paneClosureFails) throw new Error("Pane closure failed");
+      this.closedWorkspaceIds.push(operation.presentation.workspaceId);
+      if (this.workspaceClosureFails)
+        throw new Error("Workspace closure failed");
     });
   }
 

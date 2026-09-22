@@ -4,7 +4,7 @@
 
 Most subagent extensions focus on starting a child session and returning its answer. Pions treats delegation as a persistent `Operation` with lifecycle evidence and an integrity-verified `Result`.
 
-Each worker runs as a real Pi TUI in a Herdr pane. The pane is for humans to observe—not a source of truth. Pions determines completion from persisted protocol records rather than terminal text, process appearance, or pane state.
+Each worker runs as a real Pi TUI in its own Herdr workspace. The workspace is for humans to observe—not a source of truth. Pions determines completion from persisted protocol records rather than terminal text, process appearance, or workspace state.
 
 ## Why Pions?
 
@@ -57,7 +57,7 @@ An operation reaches terminal completion only after its own result and all requi
 
 ### Uncertainty remains explicit
 
-A missing process or pane is not proof that a worker stopped safely.
+A missing process or workspace is not proof that a worker stopped safely.
 
 Pions identifies worker process instances with start tokens and records stop evidence. If cancellation or liveness cannot be proven, the operation remains `unknown` instead of being guessed into success or cancellation.
 
@@ -74,7 +74,7 @@ Persisting a result does not claim that the result is correct. Revising it does 
 
 ### Workers are visible, but the UI is not authoritative
 
-Pions starts each worker as an actual `pi` CLI in a sibling Herdr pane. Humans can inspect the normal Pi TUI directly; Pions does not simulate it.
+Pions starts each worker as an actual `pi` CLI in a dedicated Herdr workspace labelled `Pions <short operation id>`, created without moving focus or splitting the caller's pane. Humans can pick it from Herdr's workspace list and inspect the normal Pi TUI directly; Pions does not simulate it. A successful or stop-confirmed cancelled worker closes its own workspace; failed or unknown workers leave it open for investigation.
 
 Semantic completion still comes exclusively from the authenticated worker protocol and persistent runtime state. Terminal rendering is evidence for an observer, not a lifecycle database.
 
@@ -142,7 +142,7 @@ Pions is not a drop-in replacement for `pi-subagents`. They prioritize different
 |                        | Pions                                                      | `pi-subagents`                                                   |
 | ---------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------- |
 | Primary goal           | Durable, verifiable delegation                             | Flexible, feature-rich orchestration                             |
-| Worker UI              | Real Pi TUI in a Herdr pane                                | Foreground views, FleetView, and inspectors                      |
+| Worker UI              | Real Pi TUI in a dedicated Herdr workspace                 | Foreground views, FleetView, and inspectors                      |
 | Result model           | Integrity-verified immutable artifact                      | Run results, notifications, replay records, and output archives  |
 | Completion model       | Separates worker settlement from operation-tree completion | Supports foreground, detached, background, and nested async runs |
 | Agent definitions      | One general-purpose worker profile                         | Built-in and custom agents                                       |

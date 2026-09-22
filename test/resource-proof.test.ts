@@ -757,10 +757,10 @@ test("an unavailable required adapter returns a durably failed Operation", async
   assert.equal((await handle.read()).failureReason, "resource_proof_rejected");
 });
 
-test("an unavailable required adapter creates no pane", async () => {
+test("an unavailable required adapter creates no workspace", async () => {
   const { presentation } = await unavailableRequiredRuntime();
 
-  assert.equal(presentation.createdPaneIds.length, 0);
+  assert.equal(presentation.createdWorkspaceIds.length, 0);
 });
 
 test("a required Runtime profile revalidates the acquisition before execution", async () => {

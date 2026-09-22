@@ -264,6 +264,20 @@ function validStartInstructionReference(
   );
 }
 
+/**
+ * Presentation cleanup closes the owned Worker workspace only after a
+ * confirmed Worker stop, on a completed Operation with an accepted Result or
+ * on a stop-confirmed cancellation. Failed and unknown Operations keep their
+ * workspace for investigation.
+ */
+export function presentationCleanupEligible(operation: Operation): boolean {
+  if (operation.workerStopConfirmedAt === undefined) return false;
+  return (
+    (operation.state === "completed" && operation.result !== undefined) ||
+    operation.state === "cancelled"
+  );
+}
+
 function hasUnsettledChildren(operation: Operation): boolean {
   return (
     operation.childOperationIds.length !==
@@ -458,7 +472,8 @@ export function reduceOperation(
         throw new TransitionError("illegal_transition");
       }
       if (
-        event.presentation.kind !== "herdr_pane" ||
+        event.presentation.kind !== "herdr_workspace" ||
+        event.presentation.workspaceId.length === 0 ||
         event.presentation.paneId.length === 0 ||
         event.presentation.ownedByPions !== true
       ) {
@@ -1153,11 +1168,9 @@ export function reduceOperation(
 
     case "presentation_cleanup_started":
       if (
-        current.state !== "completed" ||
-        current.result === undefined ||
-        current.workerStopConfirmedAt === undefined ||
+        !presentationCleanupEligible(current) ||
         current.presentation === undefined ||
-        current.presentation.paneId !== event.paneId ||
+        current.presentation.workspaceId !== event.workspaceId ||
         current.presentationCleanup !== undefined ||
         event.cleanupId.length === 0
       ) {
@@ -1167,7 +1180,7 @@ export function reduceOperation(
         ...current,
         presentationCleanup: {
           cleanupId: event.cleanupId,
-          paneId: event.paneId,
+          workspaceId: event.workspaceId,
           state: "pending",
           startedAt: event.timestamp,
         },
@@ -1177,10 +1190,10 @@ export function reduceOperation(
     case "presentation_cleanup_completed": {
       const cleanup = current.presentationCleanup;
       if (
-        current.state !== "completed" ||
+        !presentationCleanupEligible(current) ||
         cleanup?.state !== "pending" ||
         cleanup.cleanupId !== event.cleanupId ||
-        cleanup.paneId !== event.paneId
+        cleanup.workspaceId !== event.workspaceId
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -1198,10 +1211,10 @@ export function reduceOperation(
     case "presentation_cleanup_unconfirmed": {
       const cleanup = current.presentationCleanup;
       if (
-        current.state !== "completed" ||
+        !presentationCleanupEligible(current) ||
         cleanup?.state !== "pending" ||
         cleanup.cleanupId !== event.cleanupId ||
-        cleanup.paneId !== event.paneId
+        cleanup.workspaceId !== event.workspaceId
       ) {
         throw new TransitionError("illegal_transition");
       }

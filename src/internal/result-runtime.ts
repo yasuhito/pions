@@ -29,10 +29,9 @@ const unavailablePresentation: Presentation = {
   preflight: () => Effect.die("Result retrieval has no Presentation"),
   create: () => Effect.die("Result retrieval has no Presentation"),
   rollbackCreated: () => Effect.die("Result retrieval has no Presentation"),
-  onWorkerStartFailure: () =>
+  inspectOwnedWorkspace: () =>
     Effect.die("Result retrieval has no Presentation"),
-  inspectOwnedPane: () => Effect.die("Result retrieval has no Presentation"),
-  closeOwnedPane: () => Effect.die("Result retrieval has no Presentation"),
+  closeOwnedWorkspace: () => Effect.die("Result retrieval has no Presentation"),
   project: () => Effect.die("Result retrieval has no Presentation"),
 };
 

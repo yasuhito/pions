@@ -55,15 +55,15 @@ class PausedCleanupPresentation extends FakePresentation {
     this.releaseInspection?.();
   }
 
-  override inspectOwnedPane(
+  override inspectOwnedWorkspace(
     operation: Operation
   ): Effect.Effect<"matching" | "missing", Error> {
     if (this.inspectionGate === undefined)
-      return super.inspectOwnedPane(operation);
+      return super.inspectOwnedWorkspace(operation);
     this.reportInspectionStarted?.();
     return Effect.promise(() => this.inspectionGate!).pipe(
       Effect.orDie,
-      Effect.andThen(super.inspectOwnedPane(operation))
+      Effect.andThen(super.inspectOwnedWorkspace(operation))
     );
   }
 }

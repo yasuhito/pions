@@ -610,9 +610,9 @@ export interface StopConfirmationEvidence {
 }
 
 export type CleanupDiagnosticCode =
-  | "pane_close_failed"
-  | "pane_identity_missing"
-  | "pane_identity_unavailable"
+  | "workspace_close_failed"
+  | "workspace_identity_missing"
+  | "workspace_identity_unavailable"
   | "cleanup_record_unavailable";
 
 export interface CleanupDiagnostic {
@@ -621,7 +621,7 @@ export interface CleanupDiagnostic {
 
 export interface PresentationCleanupEvidence {
   readonly cleanupId: string;
-  readonly paneId: string;
+  readonly workspaceId: string;
   readonly state: "pending" | "completed" | "unconfirmed";
   readonly startedAt: string;
   readonly finishedAt?: string;

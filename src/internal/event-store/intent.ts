@@ -17,7 +17,8 @@ import type { AgentRunEvidence } from "../services.js";
 import type { PersistedResourceRecord } from "../resource-controller.js";
 
 export interface CreatedPresentation {
-  readonly kind: "herdr_pane";
+  readonly kind: "herdr_workspace";
+  readonly workspaceId: string;
   readonly paneId: string;
 }
 
@@ -124,17 +125,17 @@ export type OperationIntent =
   | {
       readonly type: "presentation_cleanup_started";
       readonly cleanupId: string;
-      readonly paneId: string;
+      readonly workspaceId: string;
     }
   | {
       readonly type: "presentation_cleanup_completed";
       readonly cleanupId: string;
-      readonly paneId: string;
+      readonly workspaceId: string;
     }
   | {
       readonly type: "presentation_cleanup_unconfirmed";
       readonly cleanupId: string;
-      readonly paneId: string;
+      readonly workspaceId: string;
       readonly reason: CleanupDiagnosticCode;
     }
   | { readonly type: "operation_blocked" }

@@ -222,11 +222,10 @@ export interface Presentation {
   rollbackCreated(
     presentation: CreatedPresentation
   ): Effect.Effect<void, unknown>;
-  onWorkerStartFailure(operation: Operation): Effect.Effect<void, unknown>;
-  inspectOwnedPane(
+  inspectOwnedWorkspace(
     operation: Operation
   ): Effect.Effect<"matching" | "missing", unknown>;
-  closeOwnedPane(operation: Operation): Effect.Effect<void, unknown>;
+  closeOwnedWorkspace(operation: Operation): Effect.Effect<void, unknown>;
   project(operation: Operation): Effect.Effect<void, unknown>;
 }
 

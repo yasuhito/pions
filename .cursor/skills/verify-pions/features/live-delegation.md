@@ -1,13 +1,13 @@
 # Feature: Live Delegation (PRIMARY USER PATH)
 
-**This is the primary user path for Pions.** Live delegation uses `pions_delegate` to spawn a real Pi worker in a Herdr pane, execute a task, and return a verified Result. Without proving this feature works, you have not verified Pions end-to-end.
+**This is the primary user path for Pions.** Live delegation uses `pions_delegate` to spawn a real Pi worker in a dedicated Herdr workspace, execute a task, and return a verified Result. Without proving this feature works, you have not verified Pions end-to-end.
 
 ## Sub-features
 
-1. **Worker launch in Herdr pane** (sibling pane created without stealing focus)
+1. **Worker launch in a dedicated Herdr workspace** (labelled `Pions <short operation id>`, created without stealing focus or splitting the caller's pane)
 2. **Task execution with Pi TUI** (visible, observable Pi "regular" TUI)
 3. **Result acceptance and verification** (immutable UTF-8 artifact with SHA-256 digest)
-4. **Pane auto-close on success** (Pions-owned success panes only, per AGENTS.md)
+4. **Workspace auto-close on success** (Pions-owned workspaces only; stop-confirmed cancellations also close, failures and unknown states stay open)
 5. **Operation persistence and retrieval** (persisted Operation records under `$XDG_STATE_HOME/pions/repositories/<digest>/`, default `~/.local/state/pions/repositories/<digest>/`)
 
 ## Dedicated Herdr session on the Grok Bot box (REQUIRED)
@@ -115,7 +115,7 @@ The model sees `pions_delegate` as a registered tool and calls it with the task 
 
 ### CRITICAL: Must run inside a Herdr pane (verify-pions session)
 
-**The harness must execute inside a Herdr pane** in the `verify-pions` session, not from a bare shell. Pions workers require Herdr environment variables (`HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`) to create sibling panes.
+**The harness must execute inside a Herdr pane** in the `verify-pions` session, not from a bare shell. Pions workers require Herdr environment variables (`HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`) to create worker workspaces.
 
 **This will NOT work** (even if a default Herdr server is running):
 
@@ -216,9 +216,9 @@ Use only when debugging; prefer programmatic steps above for smoke/maintain.
 4. **Observe**:
 
    - Pi calls `pions_delegate` tool
-   - A sibling Herdr pane opens (right or bottom)
-   - Worker executes in the sibling pane; the parent awaits terminal completion (worker emits at `agent_settled`; result is returned when the operation completes — not streamed incrementally)
-   - On success, the worker pane auto-closes
+   - A new Herdr workspace labelled `Pions <short operation id>` appears in the workspace list without taking focus
+   - Worker executes in that workspace's root pane; the parent awaits terminal completion (worker emits at `agent_settled`; result is returned when the operation completes — not streamed incrementally)
+   - On success, the worker workspace auto-closes
 
 5. **Close the verify workspace when done** — do not leave smoke panes on gmktec or in Yasuhito's default session.
 
@@ -226,7 +226,7 @@ Use only when debugging; prefer programmatic steps above for smoke/maintain.
 
 - Operation succeeds
 - Result text returned to parent (may be truncated in the visible body)
-- Worker pane closes automatically (success only)
+- Worker workspace closes automatically (success and stop-confirmed cancellation only)
 - Operation ID in tool response text; digest in tool **details**
 
 Example tool response shape:
@@ -342,9 +342,9 @@ herdr agent start pions-<id> --kind pi --pane <pane> --timeout <ms> -- \
 
 Workers use `--no-session`, so they don't save standard Pi sessions. This is intentional.
 
-### Pane auto-close applies to success only
+### Workspace auto-close applies to success and stop-confirmed cancellation only
 
-**Success workers auto-close their panes.** Failed, cancelled, or unknown workers **leave panes open for debugging** (per AGENTS.md).
+**Success workers auto-close their workspaces.** Failed or unknown workers **leave their workspace open for debugging**. A cancellation closes the workspace only when the worker stop was confirmed.
 
 ### Result truncation
 
@@ -356,7 +356,7 @@ Workers are foreground operations. They block until complete or cancelled.
 
 ### Cancellation
 
-If you interrupt the parent Pi, Pions cancels the worker. Cancelled operations leave their panes open for debugging.
+If you interrupt the parent Pi, Pions cancels the worker. A stop-confirmed cancellation closes the worker workspace; an unproven stop leaves it open for debugging.
 
 ### State storage
 

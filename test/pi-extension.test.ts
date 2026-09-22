@@ -170,7 +170,7 @@ const SNAPSHOT: OperationSnapshot = {
     rejectedDecisions: [],
   },
   startDeliveryHandoffs: [],
-  cleanupDiagnostics: [{ code: "pane_close_failed" }],
+  cleanupDiagnostics: [{ code: "workspace_close_failed" }],
 };
 
 const ACCEPTANCE_ID = `pions.result-acceptance.v1:${"ef".repeat(32)}` as const;
@@ -1176,7 +1176,7 @@ test("pions_operation returns Cleanup diagnostics independently", async (context
 
   assert.deepEqual(
     ((await value.inspect()).details as OperationSnapshot).cleanupDiagnostics,
-    [{ code: "pane_close_failed" }]
+    [{ code: "workspace_close_failed" }]
   );
 });
 
@@ -1277,7 +1277,7 @@ test("successful delegation returns Result diagnostics", async (context) => {
 test("successful delegation returns every cleanup failure", async (context) => {
   const value = await fixture(
     new FakeRuntime(undefined, [
-      { code: "pane_close_failed" },
+      { code: "workspace_close_failed" },
       { code: "cleanup_record_unavailable" },
     ])
   );
@@ -1287,13 +1287,13 @@ test("successful delegation returns every cleanup failure", async (context) => {
     (
       (await value.execute()).details as PionsDelegateDetails
     ).cleanupDiagnostics.map(({ code }) => code),
-    ["pane_close_failed", "cleanup_record_unavailable"]
+    ["workspace_close_failed", "cleanup_record_unavailable"]
   );
 });
 
 test("cleanup diagnostics do not change the accepted Result body", async (context) => {
   const value = await fixture(
-    new FakeRuntime(undefined, [{ code: "pane_close_failed" }])
+    new FakeRuntime(undefined, [{ code: "workspace_close_failed" }])
   );
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
@@ -1305,7 +1305,7 @@ test("cleanup diagnostics do not change the accepted Result body", async (contex
 
 test("cleanup diagnostics do not change the accepted Result byte count", async (context) => {
   const value = await fixture(
-    new FakeRuntime(undefined, [{ code: "pane_close_failed" }])
+    new FakeRuntime(undefined, [{ code: "workspace_close_failed" }])
   );
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
@@ -1317,7 +1317,7 @@ test("cleanup diagnostics do not change the accepted Result byte count", async (
 
 test("cleanup diagnostics do not change the accepted Result digest", async (context) => {
   const value = await fixture(
-    new FakeRuntime(undefined, [{ code: "pane_close_failed" }])
+    new FakeRuntime(undefined, [{ code: "workspace_close_failed" }])
   );
   context.after(() => rm(value.root, { recursive: true, force: true }));
 

@@ -40,6 +40,7 @@ export type {
   RevisionMembership,
 } from "./model.js";
 export { RUNTIME_ACTOR_ID } from "./model.js";
+export { presentationCleanupEligible } from "./reducer.js";
 
 export type StoreErrorCode =
   | "not_found"
