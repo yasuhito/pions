@@ -2396,24 +2396,27 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   while (executor.invocations.length < 2) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
+  // Capabilities are handed out in launch order, which the two concurrent
+  // starts do not fix. Read each Worker's assigned capability instead of
+  // assuming which one reached the generator first.
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
   const firstConfig = JSON.parse(
     await readFile(join(firstDirectory, "worker.v14.json"), "utf8")
-  ) as { readonly socketPath: string };
+  ) as { readonly socketPath: string; readonly capability: string };
   const secondConfig = JSON.parse(
     await readFile(join(secondDirectory, "worker.v14.json"), "utf8")
-  ) as { readonly socketPath: string };
+  ) as { readonly socketPath: string; readonly capability: string };
   const secondClient = await socket(secondConfig.socketPath);
   await sendResultDelivery(secondClient, {
-    capability: "cd".repeat(32),
+    capability: secondConfig.capability,
     operationId: second.operationId,
     body: "second",
   });
   await secondAtAcceptance;
   const firstClient = await socket(firstConfig.socketPath);
   await sendResultDelivery(firstClient, {
-    capability: "ab".repeat(32),
+    capability: firstConfig.capability,
     operationId: first.operationId,
     body: "first",
   });
