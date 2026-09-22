@@ -25,7 +25,7 @@ Every delegation creates a uniquely identified `Operation`. Its persisted record
 - lifecycle state and version;
 - worker process and Pi session identity;
 - requested, effective, and observed configuration;
-- start authorization and delivery evidence;
+- start instruction acceptance and delivery evidence;
 - result acceptance evidence;
 - worker stop confirmation;
 - bounded execution evidence; and
@@ -50,11 +50,11 @@ Large results can be retrieved in UTF-8-safe chunks using an opaque cursor. The 
 
 By contrast, `pi-subagents` documents its async completion replay records as best-effort temporary state rather than a permanent run ledger. Pions makes retrieval of the accepted byte sequence part of the public runtime contract.
 
-### Worker settlement is not tree completion
+### Completion requires result acceptance and worker stop
 
 A worker producing its own answer is **self-settlement**. It is not necessarily **terminal completion**.
 
-An operation reaches terminal completion only after its own result and all required descendant settlement and result-delivery obligations are resolved. This prevents a parent answer from silently standing in for completion of the whole operation tree.
+An operation reaches terminal completion when its result has been durably accepted and its worker has been confirmed stopped. Worker settlement alone does not establish either fact.
 
 ### Uncertainty remains explicit
 
@@ -80,11 +80,13 @@ The Pi subagent example passes delegated task text as a child-process argument. 
 
 Worker lifecycle and result frames travel over a local Unix-domain socket authenticated with an operation-specific capability. A result acknowledgement is sent only after durable acceptance.
 
-This is careful process plumbing, not an OS sandbox. Permission manifests describe intended access; they do not by themselves provide container or kernel isolation.
+The worker protocol and private files do not provide an OS sandbox.
 
 ## Pi tools
 
 The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`. It registers no formal-review tools.
+
+Existing format-pinned formal-review operations remain inspectable and recoverable. Creation of new formal-review operations is paused.
 
 ### `pions_delegate`
 
@@ -140,7 +142,7 @@ Pions is not a drop-in replacement for `pi-subagents`. They prioritize different
 | Primary goal           | Durable, verifiable delegation                             | Flexible, feature-rich orchestration                             |
 | Worker UI              | Real Pi TUI in a dedicated Herdr workspace                 | Foreground views, FleetView, and inspectors                      |
 | Result model           | Operation-owned, integrity-verified immutable UTF-8 text   | Run results, notifications, replay records, and output archives  |
-| Completion model       | Separates worker settlement from operation-tree completion | Supports foreground, detached, background, and nested async runs |
+| Completion model       | Requires result acceptance and confirmed worker stop       | Supports foreground, detached, background, and nested async runs |
 | Agent definitions      | One general-purpose worker profile                         | Built-in and custom agents                                       |
 | Parallelism and chains | Composed through Pi tool calls                             | Built into the extension                                         |
 | Background execution   | Not supported                                              | Supported                                                        |
@@ -149,7 +151,7 @@ Pions is not a drop-in replacement for `pi-subagents`. They prioritize different
 
 Choose `pi-subagents` when you want broad orchestration, configurable roles, background work, chains, steering, or packaged workflows.
 
-Choose Pions when the important boundary is a persistent operation whose accepted output, lifecycle, stop evidence, and descendant completion can be inspected after the original call is gone.
+Choose Pions when the important boundary is a persistent operation whose accepted output, lifecycle, and stop evidence can be inspected after the original call is gone.
 
 ## Current limitations
 
@@ -159,7 +161,6 @@ Pions is under active development.
 - The Pi extension exposes one general-purpose worker profile; custom agent definitions are not supported.
 - Workers run without extension discovery, so only providers available to a plain Pi worker can be configured.
 - Background execution, chains, and mid-run steering are not supported.
-- Permission manifests are not an OS-level sandbox.
 - Pions is not yet published as an installable npm package.
 - APIs, persistence formats, configuration, and installation may change without compatibility paths.
 
