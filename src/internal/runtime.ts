@@ -579,65 +579,70 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     record: OperationRecord,
     operation: Operation
   ): Promise<void> => {
-    await runEffect(project(operation));
-    if (operation.state === "completed") {
-      await performCleanup(operation, true);
-      const outcome = await readResult(record.operationId);
-      if (outcome.kind !== "retrieved")
-        throw new OperationPersistenceError(
-          record.operationId,
-          "incomplete_record"
+    try {
+      await runEffect(project(operation));
+      if (operation.state === "completed") {
+        await performCleanup(operation, true);
+        const outcome = await readResult(record.operationId);
+        if (outcome.kind !== "retrieved")
+          throw new OperationPersistenceError(
+            record.operationId,
+            "incomplete_record"
+          );
+        const snapshot = await readPublicSnapshot(record.operationId);
+        const volatile = [
+          ...(volatileCleanupDiagnostics.get(record.operationId) ?? []),
+        ]
+          .filter(
+            (code) =>
+              !snapshot.cleanupDiagnostics.some(
+                (diagnostic) => diagnostic.code === code
+              )
+          )
+          .map((code) => Object.freeze({ code }));
+        volatileCleanupDiagnostics.delete(record.operationId);
+        record.resolveTerminal(
+          Object.freeze({
+            result: outcome.result,
+            ...(snapshot.presentationCleanup === undefined
+              ? {}
+              : { presentationCleanup: snapshot.presentationCleanup }),
+            cleanupDiagnostics: Object.freeze([
+              ...snapshot.cleanupDiagnostics,
+              ...volatile,
+            ]),
+          })
         );
-      const snapshot = await readPublicSnapshot(record.operationId);
-      const volatile = [
-        ...(volatileCleanupDiagnostics.get(record.operationId) ?? []),
-      ]
-        .filter(
-          (code) =>
-            !snapshot.cleanupDiagnostics.some(
-              (diagnostic) => diagnostic.code === code
-            )
-        )
-        .map((code) => Object.freeze({ code }));
-      volatileCleanupDiagnostics.delete(record.operationId);
-      record.resolveTerminal(
-        Object.freeze({
-          result: outcome.result,
-          ...(snapshot.presentationCleanup === undefined
-            ? {}
-            : { presentationCleanup: snapshot.presentationCleanup }),
-          cleanupDiagnostics: Object.freeze([
-            ...snapshot.cleanupDiagnostics,
-            ...volatile,
-          ]),
-        })
-      );
-      return;
-    }
-    if (operation.state === "cancelled") {
-      await performCleanup(operation, false);
-      record.rejectTerminal(new OperationCancelledError(record.operationId));
-      return;
-    }
-    if (operation.state === "unknown") {
+        return;
+      }
+      if (operation.state === "cancelled") {
+        await performCleanup(operation, false);
+        record.rejectTerminal(new OperationCancelledError(record.operationId));
+        return;
+      }
+      if (operation.state === "unknown") {
+        record.rejectTerminal(
+          new OperationUnknownError(
+            record.operationId,
+            operation.terminalReason === "cancel-unproven"
+              ? "cancel-unproven"
+              : operation.terminalReason === "start-acceptance-unknown"
+                ? "start-acceptance-unknown"
+                : "liveness-unproven"
+          )
+        );
+        return;
+      }
       record.rejectTerminal(
-        new OperationUnknownError(
+        new OperationFailedError(
           record.operationId,
-          operation.terminalReason === "cancel-unproven"
-            ? "cancel-unproven"
-            : operation.terminalReason === "start-acceptance-unknown"
-              ? "start-acceptance-unknown"
-              : "liveness-unproven"
+          operation.failureReason ?? "worker_protocol_failed"
         )
       );
-      return;
+    } catch (error) {
+      record.rejectTerminal(error);
+      throw error;
     }
-    record.rejectTerminal(
-      new OperationFailedError(
-        record.operationId,
-        operation.failureReason ?? "worker_protocol_failed"
-      )
-    );
   };
 
   const execute = async (
@@ -932,16 +937,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       const current = await runEffect(getOperation(record.operationId)).catch(
         () => undefined
       );
-      if (current?.state === "unknown") {
-        await settleTerminal(record, current).catch(record.rejectTerminal);
+      if (current !== undefined && terminal(current)) {
+        await settleTerminal(record, current);
         return;
       }
-      if (current !== undefined && terminal(current)) return;
-      record.rejectTerminal(
+      const failure =
         error instanceof OperationPersistenceError
           ? error
-          : new OperationPersistenceError(record.operationId, "write_failed")
-      );
+          : new OperationPersistenceError(record.operationId, "write_failed");
+      if (recovering) throw failure;
+      record.rejectTerminal(failure);
     }
   };
 
@@ -1105,51 +1110,48 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     record: OperationRecord,
     operation: Operation
   ): Promise<void> => {
-    try {
-      const worker = record.worker;
-      const dispatched = await runEffect(
+    const worker = record.worker;
+    const dispatched = await runEffect(
+      advance(record.operationId, {
+        type: "cancel_dispatched",
+        cancellationEpoch: operation.cancellationEpoch,
+      })
+    );
+    await runEffect(project(dispatched));
+    const evidence =
+      worker === undefined
+        ? undefined
+        : await runEffect(
+            worker.cancel(operation.cancellationEpoch, 1_000)
+          ).catch(() => undefined);
+    if (evidence === undefined) {
+      const unknown = await runEffect(
         advance(record.operationId, {
-          type: "cancel_dispatched",
+          type: "operation_unknown",
+          reason: "cancel-unproven",
           cancellationEpoch: operation.cancellationEpoch,
         })
       );
-      await runEffect(project(dispatched));
-      const evidence =
-        worker === undefined
-          ? undefined
-          : await runEffect(
-              worker.cancel(operation.cancellationEpoch, 1_000)
-            ).catch(() => undefined);
-      if (evidence === undefined) {
-        const unknown = await runEffect(
-          advance(record.operationId, {
-            type: "operation_unknown",
-            reason: "cancel-unproven",
-            cancellationEpoch: operation.cancellationEpoch,
-          })
-        );
-        await settleTerminal(record, unknown);
-        return;
-      }
-      await runEffect(
-        advanceAndProject(record.operationId, {
-          type: "cancel_acknowledged",
-          cancellationEpoch: operation.cancellationEpoch,
-          proof: evidence.proof,
-        })
-      );
-      const cancelled = await runEffect(
-        advance(record.operationId, {
-          type: "operation_cancelled",
-          cancellationEpoch: operation.cancellationEpoch,
-        })
-      );
-      await settleTerminal(record, cancelled);
-    } catch (error) {
-      record.rejectTerminal(error);
+      await settleTerminal(record, unknown);
+      return;
     }
+    await runEffect(
+      advanceAndProject(record.operationId, {
+        type: "cancel_acknowledged",
+        cancellationEpoch: operation.cancellationEpoch,
+        proof: evidence.proof,
+      })
+    );
+    const cancelled = await runEffect(
+      advance(record.operationId, {
+        type: "operation_cancelled",
+        cancellationEpoch: operation.cancellationEpoch,
+      })
+    );
+    await settleTerminal(record, cancelled);
   };
 
+  let workersRecovered = false;
   const recoverWorkers = async (): Promise<void> => {
     if (services.recovery === "disabled") return;
     const snapshots = await runEffect(
@@ -1232,9 +1234,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           continue;
         }
         track(
-          operation.state === "cancelling"
+          (operation.state === "cancelling"
             ? recoverCancellation(record, operation)
             : execute(record, true)
+          ).catch((error) => {
+            record.rejectTerminal(error);
+            records.delete(operation.operationId);
+            workersRecovered = false;
+            throw error;
+          })
         );
       } catch (error) {
         records.delete(operation.operationId);
@@ -1258,17 +1266,21 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await performCleanup(operation, false);
   };
 
-  let workersRecovered = false;
   let cleanupsRecovered = false;
   let recovery: Promise<void> | undefined;
   const recover = (): Promise<void> => {
-    if (workersRecovered && cleanupsRecovered) return Promise.resolve();
     if (recovery !== undefined) return recovery;
+    if (workersRecovered && cleanupsRecovered) return Promise.resolve();
     if (closing) return Promise.reject(new RuntimeClosedError());
     const started = (async () => {
       if (!workersRecovered) {
-        await recoverWorkers();
         workersRecovered = true;
+        try {
+          await recoverWorkers();
+        } catch (error) {
+          workersRecovered = false;
+          throw error;
+        }
       }
       if (!cleanupsRecovered) {
         await recoverCleanups();

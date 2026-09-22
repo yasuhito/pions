@@ -3,7 +3,10 @@ import test from "node:test";
 
 import { Effect } from "effect";
 
-import type { Operation } from "../src/internal/event-store/index.js";
+import type {
+  Operation,
+  OperationIntent,
+} from "../src/internal/event-store/index.js";
 import type {
   Worker,
   WorkerAdapter,
@@ -331,6 +334,42 @@ test("Runtime再起動後に結果受理を継続する", async () => {
   assert.equal(result.kind, "retrieved");
 });
 
+test("復旧した実行の保存失敗を同じRuntimeで再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "start_delivery_authority_revoked") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const trace: Array<string> = [];
+  const store = new FailingOnceStore(trace, clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", true))
+  );
+  await runtime.ready();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await runtime.ready();
+  await waitForState(store, "completed");
+
+  assert.equal(
+    trace.filter((entry) =>
+      entry.includes('"type":"start_instruction_dispatched"')
+    ).length,
+    1
+  );
+});
+
 test("保存済み正式レビューは検証器復元後に結果受理を再開する", async () => {
   const formats = makeResultFormatRegistry([{
     formatId: "review-result",
@@ -440,6 +479,39 @@ test("停止未確認の親キャンセルを状態不明として永続化す�
   await waitForState(store, "running");
   const result = await handle.cancel({});
   assert.equal(result.state, "unknown");
+});
+
+test("終端結果の再読込失敗を結果待機者へ通知する", async () => {
+  class FailingResultStore extends InMemoryEventStore {
+    private fail = true;
+
+    override readResultBody(operationId: string) {
+      if (this.fail) {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.readResultBody(operationId);
+    }
+  }
+  const store = new FailingResultStore([], clock());
+  const runtime = makeTestRuntime({
+    ...services(
+      store,
+      new FakeWorkerAdapter({ successfulExitConfirmed: true })
+    ),
+    recovery: "disabled",
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+
+  await assert.rejects(handle.result(), { name: "ResultRetrievalError" });
 });
 
 test("停止確認と受理済み結果からWorkerを再起動せず完了する", async () => {
