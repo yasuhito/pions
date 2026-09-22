@@ -2,7 +2,6 @@ import { Effect } from "effect";
 
 import { PrivateFileEventStore } from "./event-store/index.js";
 import { makeRuntime } from "./runtime.js";
-import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import type { Presentation, RuntimeClock, WorkerAdapter } from "./services.js";
 import type { Runtime } from "../public.js";
 
@@ -41,11 +40,6 @@ export function makeResultRetrievalRuntime(options: {
   readonly stateDirectory: string;
 }): Runtime {
   const store = new PrivateFileEventStore(options.stateDirectory, clock);
-  const artifactServices = runtimeArtifactStore(
-    options.stateDirectory,
-    store,
-    () => new Date()
-  );
   return makeRuntime({
     worker: unavailableWorker,
     clock,
@@ -55,8 +49,6 @@ export function makeResultRetrievalRuntime(options: {
     },
     presentation: unavailablePresentation,
     store,
-    artifacts: artifactServices.artifacts,
-    artifactCredential: artifactServices.credential,
     recovery: "disabled",
     configuration: { cwd: options.cwd, profiles: {} },
   });

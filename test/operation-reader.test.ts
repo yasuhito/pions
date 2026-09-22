@@ -11,7 +11,6 @@ import {
   PrivateFileEventStore,
 } from "../src/internal/event-store/index.js";
 import type { EventStore } from "../src/internal/event-store/index.js";
-import { runtimeArtifactStore } from "../src/internal/runtime-artifacts.js";
 import {
   FakeClock,
   FakeIdGenerator,
@@ -21,15 +20,8 @@ import {
   makeTestRuntime,
 } from "../src/internal/testing.js";
 import { ResultRetrievalError } from "../src/index.js";
-import type {
-  ArtifactStore,
-  OperationReader,
-  ResultAcceptanceId,
-} from "../src/index.js";
-import {
-  retentionPolicy,
-  workProductRequirements,
-} from "./worker-protocol-fixtures.js";
+import type { OperationReader, ResultAcceptanceId } from "../src/index.js";
+import { maxResultByteCount } from "./worker-protocol-fixtures.js";
 
 const timestamps = Array.from(
   { length: 40 },
@@ -102,8 +94,7 @@ async function recordWaitingOperation(
           aliases: [],
         },
       },
-      workProductRequirements,
-      resultRetentionPolicy: retentionPolicy(operationId),
+      maxResultByteCount,
       lineage: { rootOperationId: operationId, depth: 0 },
       startAuthorization: {
         configuredPolicy: "required",
@@ -122,17 +113,8 @@ async function recordWaitingOperation(
             manifestId: `manifest:${operationId}`,
             digest: `sha256:${"cd".repeat(32)}`,
           },
-          reviewSubject: {
-            artifactId: `artifact:${operationId}`,
-            byteCount: 10,
-            digest: `sha256:${"ef".repeat(32)}`,
-            format: "text/plain",
-            normalization: "utf8",
-            registrationEvidenceId: `evidence:${operationId}`,
-            registrationEvidenceDigest: `sha256:${"12".repeat(32)}`,
-          },
+          reviewSubjectId: `subject:${operationId}`,
           reviewSubjectVerification: "disabled",
-          reviewInputPreparation: "disabled",
         },
       },
     })
@@ -190,15 +172,7 @@ async function recordWaitingOperation(
       manifestId: `manifest:${operationId}`,
       digest: `sha256:${"cd".repeat(32)}` as const,
     },
-    reviewSubject: {
-      artifactId: `artifact:${operationId}`,
-      byteCount: 10,
-      digest: `sha256:${"ef".repeat(32)}` as const,
-      format: "text/plain",
-      normalization: "utf8",
-      registrationEvidenceId: `evidence:${operationId}`,
-      registrationEvidenceDigest: `sha256:${"12".repeat(32)}` as const,
-    },
+    reviewSubjectId: `subject:${operationId}`,
     reviewSubjectVerification: "disabled" as const,
     configuredAuthorizationPolicy: "required" as const,
     authorizationPolicy: "required" as const,
@@ -448,7 +422,7 @@ test("persisted Startup receipt omits authentication secrets", async (context) =
     extraReceiptFields: { capability: "worker-secret" },
   });
   const record = await readFile(
-    join(root, operationDirectoryKey("operation-1"), "events.v20.json"),
+    join(root, operationDirectoryKey("operation-1"), "events.v21.json"),
     "utf8"
   );
 
@@ -860,35 +834,17 @@ test("a modified result cursor is rejected", async () => {
 async function persistedResultFixture(): Promise<{
   readonly reader: OperationReader;
   readonly resultPath: string;
-  readonly artifactRetrievals: () => number;
   readonly close: () => Promise<void>;
 }> {
   const root = await mkdtemp(join(tmpdir(), "pions-result-retrieval-"));
   const clock = new FakeClock(timestamps);
   const store = new PrivateFileEventStore(root, clock);
-  const artifactServices = runtimeArtifactStore(root, store);
-  let artifactRetrievals = 0;
-  const artifacts: ArtifactStore = new Proxy(artifactServices.artifacts, {
-    get(target, property) {
-      if (property === "retrieve") {
-        return (...args: Parameters<ArtifactStore["retrieve"]>) => {
-          artifactRetrievals += 1;
-          return target.retrieve(...args);
-        };
-      }
-      const value = target[property as keyof ArtifactStore];
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
   const runtime = makeTestRuntime({
     worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
     clock,
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store,
-    artifacts,
-    artifactCredential: artifactServices.credential,
-    synchronizeArtifactClock: artifactServices.synchronizeClock,
   });
   const handle = await runtime.spawn({
     promptRef: "private://prompt/1",
@@ -903,7 +859,6 @@ async function persistedResultFixture(): Promise<{
       operationDirectoryKey("operation-1"),
       "result.v1.utf8"
     ),
-    artifactRetrievals: () => artifactRetrievals,
     close: async () => {
       await runtime.close();
       await rm(root, { recursive: true, force: true });
@@ -927,7 +882,7 @@ test("corrupt accepted Result storage has a typed retrieval reason", async (cont
     value.reader.readResult(),
     (error) =>
       error instanceof ResultRetrievalError &&
-      error.reason === "stored_artifact_corrupt"
+      error.reason === "stored_result_corrupt"
   );
 });
 
@@ -940,7 +895,7 @@ test("a missing accepted Result body is distinct from non-acceptance", async (co
     value.reader.readResult(),
     (error) =>
       error instanceof ResultRetrievalError &&
-      error.reason === "stored_artifact_corrupt"
+      error.reason === "stored_result_corrupt"
   );
 });
 
@@ -956,15 +911,6 @@ test("unavailable Result storage inspection is distinct from non-acceptance", as
       error instanceof ResultRetrievalError &&
       error.reason === "storage_inspection_unavailable"
   );
-});
-
-test("Result retrieval does not read the Artifact Store", async (context) => {
-  const value = await persistedResultFixture();
-  context.after(value.close);
-  await value.reader.readResult();
-  await value.reader.readResultChunk({ maxBytes: 4 });
-
-  assert.equal(value.artifactRetrievals(), 0);
 });
 
 test("Result reads do not append Operation events", async () => {
@@ -993,7 +939,6 @@ async function reopenedResultFixture(): Promise<{
   const state = join(root, "runtime");
   const firstClock = new FakeClock(timestamps);
   const firstStore = new PrivateFileEventStore(state, firstClock);
-  const firstArtifacts = runtimeArtifactStore(state, firstStore);
   const first = makeTestRuntime({
     worker: new FakeWorkerAdapter({
       messages: { body: "abcdefghi" },
@@ -1003,9 +948,6 @@ async function reopenedResultFixture(): Promise<{
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: new FakePresentation(),
     store: firstStore,
-    artifacts: firstArtifacts.artifacts,
-    artifactCredential: firstArtifacts.credential,
-    synchronizeArtifactClock: firstArtifacts.synchronizeClock,
   });
   const handle = await first.spawn({
     promptRef: "private://prompt/1",
@@ -1026,16 +968,12 @@ async function reopenedResultFixture(): Promise<{
 
   const reopenedClock = new FakeClock(timestamps);
   const reopenedStore = new PrivateFileEventStore(state, reopenedClock);
-  const reopenedArtifacts = runtimeArtifactStore(state, reopenedStore);
   const reopened = makeTestRuntime({
     worker: new FakeWorkerAdapter(),
     clock: reopenedClock,
     ids: new FakeIdGenerator([]),
     presentation: new FakePresentation(),
     store: reopenedStore,
-    artifacts: reopenedArtifacts.artifacts,
-    artifactCredential: reopenedArtifacts.credential,
-    synchronizeArtifactClock: reopenedArtifacts.synchronizeClock,
   });
   return {
     root,
@@ -1198,7 +1136,7 @@ test("a corrupt accepted Result body prevents returning a Result chunk", async (
     value.reader.readResultChunk({ maxBytes: 4 }),
     (error) =>
       error instanceof ResultRetrievalError &&
-      error.reason === "stored_artifact_corrupt"
+      error.reason === "stored_result_corrupt"
   );
 });
 

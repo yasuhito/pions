@@ -20,8 +20,7 @@ import {
 import {
   effectiveConfig,
   requestedConfig,
-  retentionPolicy,
-  workProductRequirements,
+  maxResultByteCount,
 } from "./worker-protocol-fixtures.js";
 
 const task = {
@@ -50,8 +49,7 @@ async function create(store: EventStore, operationId = "operation-1") {
       task,
       requestedConfig,
       effectiveConfig,
-      workProductRequirements,
-      resultRetentionPolicy: retentionPolicy(operationId),
+      maxResultByteCount,
       lineage: { rootOperationId: operationId, depth: 0 },
       startAuthorization: {
         configuredPolicy: "disabled",
@@ -126,7 +124,7 @@ test("Operation identifiers are not used as record paths", async (context) => {
         join(
           directory,
           operationDirectoryKey("../private-operation"),
-          "events.v20.json"
+          "events.v21.json"
         )
       )
     ).byteLength > 0,
@@ -140,7 +138,7 @@ test("an unsupported record schema is rejected", async (context) => {
   const path = join(
     directory,
     operationDirectoryKey("operation-1"),
-    "events.v20.json"
+    "events.v21.json"
   );
   const record = JSON.parse(await readFile(path, "utf8"));
   record.schemaVersion = 11;
@@ -161,7 +159,7 @@ test("an unsupported event schema is rejected", async (context) => {
   const path = join(
     directory,
     operationDirectoryKey("operation-1"),
-    "events.v20.json"
+    "events.v21.json"
   );
   const record = JSON.parse(await readFile(path, "utf8"));
   record.events[0].schemaVersion = 11;

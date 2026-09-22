@@ -15,7 +15,6 @@ import type { ResourceAdapterApprovalPolicy } from "./resource-adapter-identity.
 import { makeResourceProofController } from "./resource-controller.js";
 import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import { makeRuntime } from "./runtime.js";
-import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
@@ -23,7 +22,6 @@ import type {
   ExternalReviewAllocationAuthenticator,
   ResourceAuthorityRegistration,
   ResourceCleanupAuthenticator,
-  RuntimeReviewSubjectAuthority,
   RetryClearanceVerifier,
   RevisionAuthenticator,
   Runtime,
@@ -47,7 +45,6 @@ export interface VisibleRuntimeOptions {
   >;
   readonly resourceAdapterApprovalPolicy?: Readonly<ResourceAdapterApprovalPolicy>;
   readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
-  readonly reviewSubjectAuthority?: RuntimeReviewSubjectAuthority;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
   readonly externalReviewAllocationAuthenticator?: ExternalReviewAllocationAuthenticator;
 }
@@ -98,21 +95,12 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     }),
   });
   const store = new PrivateFileEventStore(options.stateDirectory, systemClock);
-  const artifactServices = runtimeArtifactStore(
-    options.stateDirectory,
-    store,
-    () => new Date(),
-    undefined,
-    options.reviewSubjectAuthority
-  );
   return makeRuntime({
     worker,
     clock: systemClock,
     ids: { nextOperationId: () => Effect.sync(() => randomUUID()) },
     presentation,
     store,
-    artifacts: artifactServices.artifacts,
-    artifactCredential: artifactServices.credential,
     ...(options.formalReviewResultFormats === undefined
       ? {}
       : { formalReviewResultFormats: options.formalReviewResultFormats }),

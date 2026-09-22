@@ -14,7 +14,6 @@ import type {
   StartInstruction,
 } from "./worker-protocol.js";
 import type {
-  ArtifactStore,
   ObservedWorkerConfig,
   ResultFormatRejectionEvidence,
   OperationPersistenceError,
@@ -199,7 +198,6 @@ export function acknowledgeResultAcceptance(
 }
 
 export interface WorkerAdapter {
-  readonly producesWorkProducts?: boolean;
   open(operation: Operation): Worker;
   recover(operation: Operation): Worker;
 }
@@ -235,9 +233,6 @@ export interface RuntimeServices {
   readonly ids: IdGenerator;
   readonly presentation: Presentation;
   readonly store: EventStore;
-  readonly artifacts: ArtifactStore;
-  readonly artifactCredential: string;
-  readonly synchronizeArtifactClock?: (timestamp: string) => void;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
   readonly externalReviewAllocations?: ExternalReviewAllocationRegistry;
   readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;

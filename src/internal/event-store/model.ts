@@ -1,6 +1,5 @@
 import type {
   AcceptedResult,
-  ArtifactWriterOwnership,
   CleanupDiagnosticCode,
   EffectiveWorkerConfig,
   ExternalReviewAllocationBinding,
@@ -10,8 +9,6 @@ import type {
   PinnedResultFormat,
   ResultFormatRejectionEvidence,
   RequestedWorkerConfig,
-  ResolvedWorkProductRequirements,
-  ResultAcceptanceRetentionPolicyEvidence,
   RetryClearanceEvidence,
   RevisionReservation,
   RevisionResultAdoptionRecord,
@@ -73,8 +70,7 @@ export interface Operation {
   readonly presentationCleanup?: Readonly<PresentationCleanupRecord>;
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
-  readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
-  readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
+  readonly maxResultByteCount: number;
   readonly resultFormat?: Readonly<PinnedResultFormat>;
   readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
   readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
@@ -115,7 +111,7 @@ export interface Operation {
     OperationFailureReason | "cancel-unproven" | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 25 as const;
+export const EVENT_SCHEMA_VERSION = 26 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -136,8 +132,7 @@ export type OperationEvent = EventMetadata &
         readonly task: Readonly<TaskSpec>;
         readonly requestedConfig: Readonly<RequestedWorkerConfig>;
         readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
-        readonly workProductRequirements: Readonly<ResolvedWorkProductRequirements>;
-        readonly resultRetentionPolicy: Readonly<ResultAcceptanceRetentionPolicyEvidence>;
+        readonly maxResultByteCount: number;
         readonly resultFormat?: Readonly<PinnedResultFormat>;
         readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationBinding>;
         readonly lineage: Readonly<OperationLineage>;
@@ -171,7 +166,6 @@ export type OperationEvent = EventMetadata &
         readonly type: "start_delivery_authority_revoked";
         readonly successorDispatcherId: string;
         readonly deliveryGeneration: number;
-        readonly writerOwnership: Readonly<ArtifactWriterOwnership>;
       }
     | {
         readonly type: "start_delivery_generation_confirmed";

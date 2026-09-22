@@ -21,8 +21,7 @@ import {
   effectiveConfig,
   observedConfig,
   requestedConfig,
-  retentionPolicy,
-  workProductRequirements,
+  maxResultByteCount,
 } from "./worker-protocol-fixtures.js";
 
 const metadata = {
@@ -40,8 +39,7 @@ type TestEventInput =
       | "lineage"
       | "requestedConfig"
       | "effectiveConfig"
-      | "workProductRequirements"
-      | "resultRetentionPolicy"
+      | "maxResultByteCount"
       | "startAuthorizationTiming"
     >;
 
@@ -53,8 +51,7 @@ function event(seq: number, value: TestEventInput): OperationEvent {
           lineage: { rootOperationId: metadata.operationId, depth: 0 },
           requestedConfig,
           effectiveConfig,
-          workProductRequirements,
-          resultRetentionPolicy: retentionPolicy(metadata.operationId),
+          maxResultByteCount,
           startAuthorizationTiming: {
             createdAt: metadata.timestamp,
             windowMs: 0,
@@ -344,23 +341,6 @@ test("replay reconstructs the same snapshot", () => {
   assert.deepEqual(replayOperation(events), snapshot);
 });
 
-test("Start delivery authority revocation records writer ownership independently", () => {
-  const revoked = reduceOperation(
-    runningOperation(),
-    event(5, {
-      type: "start_delivery_authority_revoked",
-      successorDispatcherId: "dispatcher-2",
-      deliveryGeneration: 2,
-      writerOwnership: { pid: 1234, processStartToken: "writer-start" },
-    })
-  );
-
-  assert.deepEqual(revoked.startDeliveryHandoffs[0]?.writerOwnership, {
-    pid: 1234,
-    processStartToken: "writer-start",
-  });
-});
-
 test("a blocked Operation can revoke its Start delivery authority during recovery", () => {
   const blocked = reduceOperation(
     runningOperation(),
@@ -372,7 +352,6 @@ test("a blocked Operation can revoke its Start delivery authority during recover
       type: "start_delivery_authority_revoked",
       successorDispatcherId: "dispatcher-2",
       deliveryGeneration: 2,
-      writerOwnership: { pid: 1234, processStartToken: "writer-start" },
     })
   );
 
@@ -380,32 +359,6 @@ test("a blocked Operation can revoke its Start delivery authority during recover
     revoked.startDeliveryHandoffs.at(-1)?.successorDispatcherId,
     "dispatcher-2"
   );
-});
-
-test("a pending Start delivery handoff records the recovering writer ownership", () => {
-  const revoked = reduceOperation(
-    runningOperation(),
-    event(5, {
-      type: "start_delivery_authority_revoked",
-      successorDispatcherId: "dispatcher-2",
-      deliveryGeneration: 2,
-      writerOwnership: { pid: 1234, processStartToken: "first-writer" },
-    })
-  );
-  const resumed = reduceOperation(
-    revoked,
-    event(6, {
-      type: "start_delivery_authority_revoked",
-      successorDispatcherId: "dispatcher-2",
-      deliveryGeneration: 2,
-      writerOwnership: { pid: 5678, processStartToken: "recovering-writer" },
-    })
-  );
-
-  assert.deepEqual(resumed.startDeliveryHandoffs.at(-1)?.writerOwnership, {
-    pid: 5678,
-    processStartToken: "recovering-writer",
-  });
 });
 
 test("reducer rejects an unsupported event schema", () => {

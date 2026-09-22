@@ -19,7 +19,6 @@ import {
   normalizePermissionManifest,
   permissionManifestDocument,
 } from "./resource-proof.js";
-import { resolveWorkProductRequirements } from "./result-acceptance-manifest.js";
 
 export const ModelReferenceSchema = Schema.Struct({
   provider: Schema.NonEmptyString,
@@ -106,15 +105,7 @@ const PI_BUILTIN_TOOLS = new Set([
   "ls",
 ]);
 
-export const BODY_ONLY_WORK_PRODUCT_REQUIREMENTS = Object.freeze({
-  body: Object.freeze({
-    formatId: "pions.result-body.v1",
-    normalizationId: "identity.v1",
-    maxByteCount: 1_048_576,
-  }),
-  workProducts: Object.freeze([]),
-  maxTotalByteCount: 1_048_576,
-});
+export const DEFAULT_MAX_RESULT_BYTE_COUNT = 1_048_576;
 
 export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
   {
@@ -124,8 +115,7 @@ export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
     tools: Object.freeze(["read", "bash"]),
     resources: Object.freeze({ resourceProofPolicy: "disabled" }),
     startAuthorization: Object.freeze({ policy: "disabled" }),
-    workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-    acceptedArtifactRetentionMs: 86_400_000,
+    maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
   }
 );
 
@@ -286,16 +276,6 @@ function validateIntendedUse(profile: Readonly<WorkerProfilePolicy>): void {
       `A ${intendedUse} profile Start receipt differs from its resource guarantees`
     );
   }
-  if (
-    !profile.workProductRequirements.workProducts.some(
-      ({ minCount }) => minCount > 0
-    )
-  ) {
-    throw new WorkerConfigurationError(
-      "unsupported_capability",
-      `A ${intendedUse} profile requires at least one Work product`
-    );
-  }
 }
 
 function sameModel(
@@ -360,7 +340,15 @@ export function resolveWorkerConfig(options: {
   if (profile === undefined)
     fail("unsupported_capability", "Unknown Worker profile");
   validateWorkerResourcePolicy(profile);
-  resolveWorkProductRequirements(profile);
+  if (
+    !Number.isSafeInteger(profile.maxResultByteCount) ||
+    profile.maxResultByteCount <= 0
+  ) {
+    fail(
+      "unsupported_capability",
+      "Result size limit must be a positive integer"
+    );
+  }
   validateStartAuthorizationPolicy(profile);
   validateIntendedUse(profile);
   boundedString(options.runtimeCwd, "working directory");

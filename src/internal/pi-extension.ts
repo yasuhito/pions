@@ -26,7 +26,7 @@ import {
   makeVisibleRuntime,
   type VisibleRuntimeOptions,
 } from "./visible-runtime.js";
-import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "./worker-configuration.js";
+import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "./worker-configuration.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
 import type { FormalReviewExternalAllocationConfiguration } from "../formal-review.js";
 import {
@@ -43,7 +43,6 @@ import type {
   OperationCompletion,
   OperationHandle,
   Runtime,
-  RuntimeReviewSubjectAuthority,
   StartAuthorizationAuthenticator,
   StartAuthorizationAuthority,
   ThinkingLevel,
@@ -91,7 +90,7 @@ const DelegateParameters = Type.Object(
 
 const FormalReviewParameters = Type.Object(
   {
-    artifactId: Type.String({ minLength: 1 }),
+    reviewSubjectId: Type.String({ minLength: 1 }),
     task: Type.String({
       minLength: 1,
       description: "Self-contained formal review task",
@@ -140,7 +139,6 @@ export interface PionsExtensionOptions {
   readonly resultRuntimeFactory?: typeof makeResultRetrievalRuntime;
   readonly formalReview?: Readonly<{
     readonly profile: Readonly<WorkerProfilePolicy>;
-    readonly reviewSubjectAuthority: RuntimeReviewSubjectAuthority;
     readonly resultFormats: Readonly<ConfiguredResultFormats>;
     readonly resourceAuthorities?: VisibleRuntimeOptions["resourceAuthorities"];
     readonly resourceAdapterApprovalPolicy?: Readonly<ResourceAdapterApprovalPolicy>;
@@ -570,8 +568,7 @@ export function installPionsExtension(
       tools: WORKER_TOOLS,
       resources: { resourceProofPolicy: "disabled" },
       startAuthorization: { policy: "disabled" },
-      workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-      acceptedArtifactRetentionMs: 86_400_000,
+      maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     };
     const runtimeStateDirectory = join(repositoryState, "runtime");
     await options.formalReview?.resultFormats.registry.register(
@@ -615,8 +612,6 @@ export function installPionsExtension(
           ...(options.formalReview === undefined
             ? {}
             : {
-                reviewSubjectAuthority:
-                  options.formalReview.reviewSubjectAuthority,
                 formalReviewResultFormats: options.formalReview.resultFormats,
                 ...(options.formalReview.resourceAuthorities === undefined
                   ? {}
@@ -776,7 +771,7 @@ export function installPionsExtension(
       name: "pions_review",
       label: "Pions Formal Review",
       description:
-        "Create a non-waiting formal-review Operation for a registered Artifact and return its Operation identifier.",
+        "Create a non-waiting formal-review Operation and return its Operation identifier.",
       parameters: FormalReviewParameters,
       async execute(toolCallId, parameters, _signal, _onUpdate, context) {
         if (shuttingDown) throw new Error("Pions Runtime is shutting down");
@@ -808,7 +803,7 @@ export function installPionsExtension(
           formalReview.externalAllocation === undefined
             ? undefined
             : await formalReview.externalAllocation.allocationFor({
-                reviewSubjectArtifactId: parameters.artifactId,
+                reviewSubjectId: parameters.reviewSubjectId,
               });
         let handle: OperationHandle;
         try {
@@ -823,7 +818,7 @@ export function installPionsExtension(
               cwd: prepared.normalizedRoot,
             },
             {
-              reviewSubjectArtifactId: parameters.artifactId,
+              reviewSubjectId: parameters.reviewSubjectId,
               ...(externalReviewAllocation === undefined
                 ? {}
                 : { externalReviewAllocation }),

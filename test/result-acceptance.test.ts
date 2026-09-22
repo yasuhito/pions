@@ -22,8 +22,7 @@ import type {
 import {
   effectiveConfig,
   requestedConfig,
-  retentionPolicy,
-  workProductRequirements,
+  maxResultByteCount,
 } from "./worker-protocol-fixtures.js";
 
 function digest(bytes: Uint8Array) {
@@ -37,14 +36,9 @@ function produced(
   const bytes = Buffer.from(body, "utf8");
   return {
     acceptanceRequestId,
-    body: {
-      formatId: "pions.result-body.v1",
-      normalizationId: "identity.v1",
-      expectedByteCount: bytes.byteLength,
-      expectedDigest: digest(bytes),
-      bytes,
-    },
-    workProducts: [],
+    body,
+    expectedByteCount: bytes.byteLength,
+    expectedDigest: digest(bytes),
   };
 }
 
@@ -71,8 +65,7 @@ async function fixture(
       },
       requestedConfig,
       effectiveConfig,
-      workProductRequirements,
-      resultRetentionPolicy: retentionPolicy("operation-1"),
+      maxResultByteCount,
       ...(resultFormat === undefined
         ? {}
         : { resultFormat: resultFormat.pinned }),
@@ -129,7 +122,7 @@ function configuredResultFormat(
       validator: {
         validatorId: "test.formal-review-result-validator",
         validatorVersion: "1",
-        registrationArtifact: Buffer.from("test validator v1", "utf8"),
+        implementation: Buffer.from("test validator v1", "utf8"),
         validate,
       },
     },
@@ -258,7 +251,7 @@ test("a changed validator identity rejects an unaccepted formal review Result", 
       validator: {
         validatorId: "test.formal-review-result-validator",
         validatorVersion: "2",
-        registrationArtifact: Buffer.from("replacement validator", "utf8"),
+        implementation: Buffer.from("replacement validator", "utf8"),
         validate: async () => ({ kind: "valid" }),
       },
     },
@@ -294,7 +287,7 @@ test("an accepted Result replay is not reinterpreted by a changed validator", as
       validator: {
         validatorId: "test.formal-review-result-validator",
         validatorVersion: "2",
-        registrationArtifact: Buffer.from("replacement validator", "utf8"),
+        implementation: Buffer.from("replacement validator", "utf8"),
         validate: async () => ({
           kind: "invalid" as const,
           reason: "invalid_json" as const,
@@ -365,35 +358,11 @@ test("Result acceptance persists the exact body bytes", async () => {
   assert.equal(await storedBody(store), "先頭\r\n🌱\n末尾");
 });
 
-test("a streamed body is accepted verbatim", async () => {
-  const { acceptance, store } = await fixture();
-  const bytes = Buffer.from("streamed 🌍 body", "utf8");
-  const result: WorkerProducedResult = {
-    ...produced(),
-    body: {
-      ...produced().body,
-      expectedByteCount: bytes.byteLength,
-      expectedDigest: digest(bytes),
-      bytes: (async function* () {
-        yield bytes.subarray(0, 10);
-        yield bytes.subarray(10);
-      })(),
-    },
-  };
-
-  await Effect.runPromise(acceptance.accept("operation-1", result));
-
-  assert.equal(await storedBody(store), "streamed 🌍 body");
-});
-
 test("a body whose bytes do not match the declared digest is rejected", async () => {
   const { acceptance } = await fixture();
   const result: WorkerProducedResult = {
     ...produced(),
-    body: {
-      ...produced().body,
-      expectedDigest: digest(Buffer.from("other", "utf8")),
-    },
+    expectedDigest: digest(Buffer.from("other", "utf8")),
   };
 
   const outcome = await Effect.runPromise(
@@ -410,7 +379,7 @@ test("a body whose bytes do not match the declared byte count is rejected", asyn
   const { acceptance } = await fixture();
   const result: WorkerProducedResult = {
     ...produced(),
-    body: { ...produced().body, expectedByteCount: 1 },
+    expectedByteCount: 1,
   };
 
   const outcome = await Effect.runPromise(
@@ -427,59 +396,10 @@ test("a mismatched body leaves the Operation without a Result", async () => {
   const { acceptance, store } = await fixture();
   const result: WorkerProducedResult = {
     ...produced(),
-    body: { ...produced().body, expectedByteCount: 1 },
+    expectedByteCount: 1,
   };
 
   await Effect.runPromise(acceptance.accept("operation-1", result));
-
-  assert.equal(await storedResult(store), undefined);
-});
-
-test("a Result with work products is rejected", async () => {
-  const { acceptance } = await fixture();
-  const attachment = Buffer.from("attachment", "utf8");
-
-  const outcome = await Effect.runPromise(
-    acceptance.accept("operation-1", {
-      ...produced(),
-      workProducts: [
-        {
-          key: "attachment",
-          formatId: "pions.opaque.v1",
-          normalizationId: "identity.v1",
-          expectedByteCount: attachment.byteLength,
-          expectedDigest: digest(attachment),
-          bytes: attachment,
-        },
-      ],
-    })
-  );
-
-  assert.equal(
-    outcome.state === "failed" ? outcome.reason : undefined,
-    "work_products_unsupported"
-  );
-});
-
-test("a Result with work products leaves the Operation without a Result", async () => {
-  const { acceptance, store } = await fixture();
-  const attachment = Buffer.from("attachment", "utf8");
-
-  await Effect.runPromise(
-    acceptance.accept("operation-1", {
-      ...produced(),
-      workProducts: [
-        {
-          key: "attachment",
-          formatId: "pions.opaque.v1",
-          normalizationId: "identity.v1",
-          expectedByteCount: attachment.byteLength,
-          expectedDigest: digest(attachment),
-          bytes: attachment,
-        },
-      ],
-    })
-  );
 
   assert.equal(await storedResult(store), undefined);
 });
@@ -550,58 +470,13 @@ test("another request with different content is a Result conflict", async () => 
   );
 });
 
-test("a body with invalid UTF-8 is rejected", async () => {
-  const { acceptance } = await fixture();
-  const bytes = Uint8Array.from([0xff]);
-  const result: WorkerProducedResult = {
-    acceptanceRequestId: "request-invalid",
-    body: {
-      formatId: "pions.result-body.v1",
-      normalizationId: "identity.v1",
-      expectedByteCount: bytes.byteLength,
-      expectedDigest: digest(bytes),
-      bytes,
-    },
-    workProducts: [],
-  };
-
-  const outcome = await Effect.runPromise(
-    acceptance.accept("operation-1", result)
-  );
-
-  assert.equal(
-    outcome.state === "failed" ? outcome.reason : undefined,
-    "invalid_utf8"
-  );
-});
-
-test("a body with invalid UTF-8 is not published", async () => {
-  const { acceptance, store } = await fixture();
-  const bytes = Uint8Array.from([0xff]);
-  const result: WorkerProducedResult = {
-    acceptanceRequestId: "request-invalid",
-    body: {
-      formatId: "pions.result-body.v1",
-      normalizationId: "identity.v1",
-      expectedByteCount: bytes.byteLength,
-      expectedDigest: digest(bytes),
-      bytes,
-    },
-    workProducts: [],
-  };
-
-  await Effect.runPromise(acceptance.accept("operation-1", result));
-
-  assert.equal(await storedResult(store), undefined);
-});
-
 test("a body over the Operation body limit is rejected", async () => {
   const { acceptance } = await fixture();
 
   const outcome = await Effect.runPromise(
     acceptance.accept(
       "operation-1",
-      produced("a".repeat(workProductRequirements.body.maxByteCount + 1))
+      produced("a".repeat(maxResultByteCount + 1))
     )
   );
 

@@ -1,6 +1,3 @@
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-
 import { Effect } from "effect";
 
 import type {
@@ -11,7 +8,6 @@ import type {
 } from "./event-store/index.js";
 import type { ResultAcceptanceProof } from "./worker-protocol.js";
 import { makeRuntime } from "./runtime.js";
-import { runtimeArtifactStore } from "./runtime-artifacts.js";
 import { InMemoryEventStore } from "./event-store/memory-storage.js";
 export { InMemoryEventStore };
 import {
@@ -41,11 +37,7 @@ import {
   startInstructionReference,
 } from "./start-instruction.js";
 
-type TestRuntimeServices = Omit<
-  RuntimeServices,
-  "artifacts" | "artifactCredential"
-> &
-  Partial<Pick<RuntimeServices, "artifacts" | "artifactCredential">>;
+type TestRuntimeServices = RuntimeServices;
 
 export async function advanceTestOperationToStartDeliveryAuthority(
   store: EventStore,
@@ -141,34 +133,7 @@ export async function advanceTestOperationToRunning(
 }
 
 export function makeTestRuntime(services: TestRuntimeServices): Runtime {
-  if (
-    services.artifacts !== undefined &&
-    services.artifactCredential !== undefined
-  ) {
-    return makeRuntime({
-      ...services,
-      artifacts: services.artifacts,
-      artifactCredential: services.artifactCredential,
-    });
-  }
-  if (
-    services.artifacts !== undefined ||
-    services.artifactCredential !== undefined
-  ) {
-    throw new Error(
-      "Test Artifact Store and credential must be supplied together"
-    );
-  }
-  const artifactServices = runtimeArtifactStore(
-    join(process.cwd(), ".test-dist", "runtime-artifacts", randomUUID()),
-    services.store
-  );
-  return makeRuntime({
-    ...services,
-    artifacts: artifactServices.artifacts,
-    artifactCredential: artifactServices.credential,
-    synchronizeArtifactClock: artifactServices.synchronizeClock,
-  });
+  return makeRuntime(services);
 }
 
 export interface FakeResultMessage {
@@ -304,14 +269,9 @@ export class FakeWorkerAdapter implements WorkerAdapter {
       const bytes = Buffer.from(message.body, "utf8");
       const acceptance = yield* hooks.acceptResult({
         acceptanceRequestId: `request-${message.sequenceNumber ?? 1}`,
-        body: {
-          formatId: "pions.result-body.v1",
-          normalizationId: "identity.v1",
-          expectedByteCount: bytes.byteLength,
-          expectedDigest: message.digest ?? sha256Digest(bytes),
-          bytes,
-        },
-        workProducts: [],
+        body: message.body,
+        expectedByteCount: bytes.byteLength,
+        expectedDigest: message.digest ?? sha256Digest(bytes),
       });
       const acknowledged = yield* acknowledgeResultAcceptance(
         acceptance,

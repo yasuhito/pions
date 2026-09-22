@@ -56,7 +56,7 @@ async function extensionResult(
   const root = await mkdtemp(join(tmpdir(), "pions-worker-extension-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v14.json");
+  const configPath = join(root, "worker.v15.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",
@@ -244,12 +244,7 @@ async function extensionResult(
 
 test("Pi Worker extension returns the final settled assistant message", async () => {
   const delivery = await extensionResult();
-  assert.equal(
-    Buffer.from(
-      (delivery.delivery as { body: { bytes: Uint8Array } }).body.bytes
-    ).toString("utf8"),
-    "review finished"
-  );
+  assert.equal((delivery.delivery as { body: string }).body, "review finished");
 });
 
 test("Pi Worker extension injects a repeated begin prompt only once", async () => {
@@ -263,12 +258,7 @@ test("Pi Worker extension reconnects without reinjecting an accepted prompt", as
 test("Pi Worker extension recovers Result delivery after connection loss", async () => {
   const delivery = await extensionResult(false, false, true);
 
-  assert.equal(
-    Buffer.from(
-      (delivery.delivery as { body: { bytes: Uint8Array } }).body.bytes
-    ).toString("utf8"),
-    "review finished"
-  );
+  assert.equal((delivery.delivery as { body: string }).body, "review finished");
 });
 
 test("Pi Worker extension acknowledges every repeated begin", async () => {
@@ -287,7 +277,7 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
   const root = await mkdtemp(join(tmpdir(), "pions-worker-cancellation-"));
   const socketPath = join(root, "worker.sock");
   const promptPath = join(root, "prompt.utf8");
-  const configPath = join(root, "worker.v14.json");
+  const configPath = join(root, "worker.v15.json");
   const capability = "ab".repeat(32);
   const config: WorkerConfig = {
     operationId: "operation-1",

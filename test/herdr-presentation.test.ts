@@ -24,8 +24,7 @@ import { HerdrPreconditionError } from "../src/index.js";
 import {
   effectiveConfig,
   requestedConfig,
-  retentionPolicy,
-  workProductRequirements,
+  maxResultByteCount,
 } from "./worker-protocol-fixtures.js";
 
 class OwnershipFailingStore extends InMemoryEventStore {
@@ -108,8 +107,7 @@ function operation(
     },
     requestedConfig,
     effectiveConfig,
-    workProductRequirements,
-    resultRetentionPolicy: retentionPolicy(OPERATION_ID),
+    maxResultByteCount,
     startAuthorizationTiming: {
       createdAt: "2026-09-06T10:00:00.000Z",
       windowMs: 0,

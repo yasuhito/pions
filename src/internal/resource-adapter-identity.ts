@@ -31,7 +31,7 @@ export function validResourceAuthorityIdentity(
     identity.version.length > 0 &&
     (identity.intendedUse === "non-production" ||
       identity.intendedUse === "production") &&
-    sha256Digest(registration.registrationArtifact) === identity.digest
+    sha256Digest(registration.implementation) === identity.digest
   );
 }
 

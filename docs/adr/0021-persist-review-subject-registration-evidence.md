@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0028
 ---
 
 # レビュー対象登録証跡を成果物ストアへ保存する

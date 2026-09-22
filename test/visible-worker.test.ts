@@ -50,10 +50,9 @@ import {
   piSessionId,
   profilePolicy,
   requestedConfig,
-  retentionPolicy,
   resultAcceptanceProof,
   resultDigest,
-  workProductRequirements,
+  maxResultByteCount,
 } from "./worker-protocol-fixtures.js";
 import { HerdrPreconditionError, makeVisibleRuntime } from "../src/index.js";
 
@@ -215,8 +214,7 @@ function operation(
     },
     requestedConfig,
     effectiveConfig: { ...effectiveConfig, model },
-    workProductRequirements,
-    resultRetentionPolicy: retentionPolicy(operationId),
+    maxResultByteCount,
     startAuthorizationTiming: {
       createdAt: "2026-09-06T10:00:00.000Z",
       windowMs: 0,
@@ -399,7 +397,7 @@ async function fixture(
   }
   const directory = join(root, operationDirectoryKey(current.operationId));
   const config = JSON.parse(
-    await readFile(join(directory, "worker.v14.json"), "utf8")
+    await readFile(join(directory, "worker.v15.json"), "utf8")
   ) as {
     readonly socketPath: string;
   };
@@ -557,11 +555,8 @@ async function sendResultDelivery(
   send(
     client,
     withOperation(
-      frame(options.capability, 5, "artifact_begin", {
+      frame(options.capability, 5, "result_begin", {
         acceptanceRequestId: "request-1",
-        slot: "body",
-        formatId: "pions.result-body.v1",
-        normalizationId: "identity.v1",
         expectedByteCount: bytes.byteLength,
         expectedDigest: resultDigest(options.body),
       })
@@ -570,7 +565,7 @@ async function sendResultDelivery(
   send(
     client,
     withOperation(
-      frame(options.capability, 6, "artifact_chunk", {
+      frame(options.capability, 6, "result_chunk", {
         payload: bytes.toString("base64"),
       })
     )
@@ -578,22 +573,14 @@ async function sendResultDelivery(
   send(
     client,
     withOperation(
-      frame(options.capability, 7, "artifact_commit", {
+      frame(options.capability, 7, "result_commit", {
         expectedDigest: resultDigest(options.body),
       })
     )
   );
   send(
     client,
-    withOperation(
-      frame(options.capability, 8, "result_manifest", {
-        acceptanceRequestId: "request-1",
-      })
-    )
-  );
-  send(
-    client,
-    withOperation(frame(options.capability, 9, "done", { ...agentRunEvidence }))
+    withOperation(frame(options.capability, 8, "done", { ...agentRunEvidence }))
   );
   return { acknowledgement, begin: receivedBegin };
 }
@@ -627,7 +614,7 @@ test("visible Worker recovery does not redispatch a durably accepted Start instr
   );
   await mkdir(directory, { recursive: true });
   await writeFile(
-    join(directory, "worker.v14.json"),
+    join(directory, "worker.v15.json"),
     encodeWorkerConfig({
       operationId: recovered.operationId,
       capability: "ab".repeat(32),
@@ -742,7 +729,7 @@ test("recovery timeout confirms a stopped Worker instead of waiting forever", as
   );
   await mkdir(directory, { recursive: true });
   await writeFile(
-    join(directory, "worker.v14.json"),
+    join(directory, "worker.v15.json"),
     encodeWorkerConfig({
       operationId: recovered.operationId,
       capability: "ab".repeat(32),
@@ -830,7 +817,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   const configPath = join(
     root,
     operationDirectoryKey("operation-1"),
-    "worker.v14.json"
+    "worker.v15.json"
   );
   const config = JSON.parse(await readFile(configPath, "utf8")) as {
     readonly socketPath: string;
@@ -921,7 +908,7 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--no-themes",
     "--approve",
     "--pions-worker-config",
-    join(value.directory, "worker.v14.json"),
+    join(value.directory, "worker.v15.json"),
   ]);
 });
 
@@ -969,7 +956,7 @@ test("visible Worker configuration uses private permissions", async (context) =>
     return rm(value.root, { recursive: true, force: true });
   });
 
-  assert.equal(await mode(join(value.directory, "worker.v14.json")), 0o600);
+  assert.equal(await mode(join(value.directory, "worker.v15.json")), 0o600);
 });
 
 test("invalid Worker configuration reports a Worker start failure", async (context) => {
@@ -1282,10 +1269,7 @@ test("authenticated Result is observed through the Worker interface", async (con
   });
   await deliver(value);
 
-  assert.equal(
-    Buffer.from(value.deliveries[0]?.body.bytes as Uint8Array).toString("utf8"),
-    "finished"
-  );
+  assert.equal(value.deliveries[0]?.body, "finished");
 });
 
 test("authenticated Worker identity is observed before Result delivery", async (context) => {
@@ -2402,10 +2386,10 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
   const firstConfig = JSON.parse(
-    await readFile(join(firstDirectory, "worker.v14.json"), "utf8")
+    await readFile(join(firstDirectory, "worker.v15.json"), "utf8")
   ) as { readonly socketPath: string; readonly capability: string };
   const secondConfig = JSON.parse(
-    await readFile(join(secondDirectory, "worker.v14.json"), "utf8")
+    await readFile(join(secondDirectory, "worker.v15.json"), "utf8")
   ) as { readonly socketPath: string; readonly capability: string };
   const secondClient = await socket(secondConfig.socketPath);
   await sendResultDelivery(secondClient, {

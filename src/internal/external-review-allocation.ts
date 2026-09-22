@@ -35,11 +35,7 @@ export interface ExternalReviewAllocationReservationInput {
   readonly request: Readonly<ExternalReviewAllocationRequest>;
   readonly operationId: string;
   readonly profileId: string;
-  readonly reviewSubject: Readonly<{
-    readonly artifactId: string;
-    readonly registrationEvidenceId: string;
-    readonly registrationEvidenceDigest: `sha256:${string}`;
-  }>;
+  readonly reviewSubjectId: string;
 }
 
 export interface ExternalReviewAllocationReservation {
@@ -57,9 +53,7 @@ function allocationDocument(allocation: Readonly<ExternalReviewAllocation>) {
   return {
     allocationId: allocation.allocationId,
     issuerId: allocation.issuerId,
-    reviewSubjectArtifactId: allocation.reviewSubjectArtifactId,
-    registrationEvidenceId: allocation.registrationEvidenceId,
-    registrationEvidenceDigest: allocation.registrationEvidenceDigest,
+    reviewSubjectId: allocation.reviewSubjectId,
     profileId: allocation.profileId,
     expiresAt: allocation.expiresAt,
     useLimit: allocation.useLimit,
@@ -109,10 +103,7 @@ function validAllocation(allocation: Readonly<UnknownAllocation>): boolean {
   return (
     validOpaqueValue(allocation.allocationId) &&
     validOpaqueValue(allocation.issuerId) &&
-    validOpaqueValue(allocation.reviewSubjectArtifactId) &&
-    validOpaqueValue(allocation.registrationEvidenceId) &&
-    typeof allocation.registrationEvidenceDigest === "string" &&
-    DIGEST.test(allocation.registrationEvidenceDigest) &&
+    validOpaqueValue(allocation.reviewSubjectId) &&
     validOpaqueValue(allocation.profileId) &&
     validAbsoluteTimestamp(allocation.expiresAt) &&
     typeof allocation.useLimit === "number" &&
@@ -134,13 +125,11 @@ export function validExternalReviewAllocationBinding(
     return false;
   }
   const candidate = value as Record<string, unknown>;
-  if (Object.keys(candidate).length !== 17) return false;
+  if (Object.keys(candidate).length !== 15) return false;
   const allocation = {
     allocationId: candidate.allocationId,
     issuerId: candidate.issuerId,
-    reviewSubjectArtifactId: candidate.reviewSubjectArtifactId,
-    registrationEvidenceId: candidate.registrationEvidenceId,
-    registrationEvidenceDigest: candidate.registrationEvidenceDigest,
+    reviewSubjectId: candidate.reviewSubjectId,
     profileId: candidate.profileId,
     expiresAt: candidate.expiresAt,
     useLimit: candidate.useLimit,
@@ -359,11 +348,7 @@ export function makeExternalReviewAllocationRegistry(
         );
       }
       if (
-        allocation.reviewSubjectArtifactId !== input.reviewSubject.artifactId ||
-        allocation.registrationEvidenceId !==
-          input.reviewSubject.registrationEvidenceId ||
-        allocation.registrationEvidenceDigest !==
-          input.reviewSubject.registrationEvidenceDigest ||
+        allocation.reviewSubjectId !== input.reviewSubjectId ||
         allocation.profileId !== input.profileId
       ) {
         throw new ExternalReviewAllocationError(

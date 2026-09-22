@@ -35,7 +35,9 @@ Losing the original handle does not lose the operation. A reopened runtime can r
 
 ### Results are immutable, verified byte sequences
 
-A worker answer is not merely a string returned by a tool call. Its `Operation` directly owns the immutable UTF-8 bytes together with their byte length, SHA-256 digest, and result-acceptance identifier; the result does not pass through the generic artifact contract.
+A worker answer is not merely a string returned by a tool call. Its `Operation` directly owns the immutable UTF-8 bytes together with their byte length, SHA-256 digest, and result-acceptance identifier. Pions has no generic artifact store: it does not ingest attachments, binary outputs, work products, or dependency closures.
+
+Files changed by a worker remain in the shared working directory. Pions does not copy those changes into its persistent state.
 
 Retrieval verifies the complete stored result before returning any content. It distinguishes:
 
@@ -180,7 +182,8 @@ Start with:
 - [Use an authenticated local worker protocol](docs/adr/0002-use-an-authenticated-local-worker-protocol.md)
 - [Delegate operations through a Pi extension](docs/adr/0004-use-a-pi-extension-for-operation-delegation.md)
 - [Use the Pi CLI for visible workers](docs/adr/0005-use-pi-cli-for-visible-workers.md)
-- [Separate result integrity, adoption, and retention](docs/adr/0007-separate-result-integrity-adoption-and-retention.md)
+- [Store results as Operation-owned UTF-8 text](docs/adr/0027-store-results-as-operation-owned-utf8-text.md)
+- [Remove generic artifact management](docs/adr/0028-remove-generic-artifact-management.md)
 - [Use the runtime as the result retrieval boundary](docs/adr/0013-use-runtime-as-the-result-retrieval-boundary.md)
 
 The source comparison behind this README is documented in [`docs/research/pions-vs-pi-subagents.md`](docs/research/pions-vs-pi-subagents.md).

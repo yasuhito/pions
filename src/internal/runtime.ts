@@ -15,19 +15,12 @@ import type {
   StoreError,
 } from "./event-store/index.js";
 import { makeResultAcceptance } from "./result-acceptance.js";
-import { resolveWorkProductRequirements } from "./result-acceptance-manifest.js";
-import { resultAcceptanceRetentionPolicy } from "./result-acceptance-transaction.js";
 import { sha256Digest } from "./result-digest.js";
 import { revisionSeriesOrigin } from "./revision-series.js";
 import {
   permissionManifestDocument,
   validateWorkspaceScope,
 } from "./resource-proof.js";
-import {
-  prepareReviewInput,
-  revalidateReviewInput,
-} from "./review-input-preparation.js";
-import { reviewSubjectUseBindingRequest } from "./review-subject.js";
 import {
   DEFAULT_WORKER_PROFILE_POLICY,
   RequestedWorkerConfigSchema,
@@ -56,7 +49,6 @@ import {
   ResourceProofRejectedError,
   ResultCursorError,
   ResultRetrievalError,
-  ReviewSubjectError,
   RevisionAuthenticationError,
   RuntimeClosedError,
   SpawnRejectedError,
@@ -83,7 +75,6 @@ import type {
   StartAuthorizationDecisionOutcome,
   StartAuthorizationDecisionRejectionReason,
   StartAuthorizationDecisionRequest,
-  StartupReceiptPolicy,
   TaskSpec,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -155,11 +146,6 @@ function isTerminal(operation: Operation): boolean {
 }
 
 export function makeRuntime(services: RuntimeServices): Runtime {
-  const artifactServices = {
-    artifacts: services.artifacts,
-    credential: services.artifactCredential,
-    synchronizeClock: services.synchronizeArtifactClock,
-  };
   const resultAcceptance = makeResultAcceptance({
     store: services.store,
     ...(services.formalReviewResultFormats === undefined
@@ -476,7 +462,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         sha256Digest(stored) !== accepted.digest
       ) {
         return yield* Effect.fail(
-          new ResultRetrievalError(operationId, "stored_artifact_corrupt")
+          new ResultRetrievalError(operationId, "stored_result_corrupt")
         );
       }
       const bytes = Buffer.from(stored);
@@ -911,24 +897,24 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   const resolvedStartAuthorization = async (
     profile: Readonly<WorkerProfilePolicy>,
-    reviewSubjectArtifactId: string | undefined
+    reviewSubjectId: string | undefined
   ) => {
     if (
       profile.intendedUse === "formal_reviewer" &&
-      reviewSubjectArtifactId === undefined
+      reviewSubjectId === undefined
     ) {
       throw new WorkerConfigurationError(
         "unsupported_capability",
-        "A formal review Operation requires a Review subject Artifact"
+        "A formal review Operation requires a Review subject"
       );
     }
     if (
       profile.intendedUse !== "formal_reviewer" &&
-      reviewSubjectArtifactId !== undefined
+      reviewSubjectId !== undefined
     ) {
       throw new WorkerConfigurationError(
         "unsupported_capability",
-        "Only a formal review Operation accepts a Review subject Artifact"
+        "Only a formal review Operation accepts a Review subject"
       );
     }
     const configured = profile.startAuthorization;
@@ -951,33 +937,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         authorizedSubjectIds: [],
       };
     }
-    let reviewSubject: StartupReceiptPolicy["reviewSubject"];
-    if (reviewSubjectArtifactId !== undefined) {
-      const retrieval = await services.artifacts.resolveMetadata(
-        services.artifactCredential,
-        reviewSubjectArtifactId
-      );
-      if (retrieval.kind !== "resolved") {
-        throw new ReviewSubjectError(retrieval.reason);
-      }
-      const evidence =
-        await services.artifacts.resolveReviewSubjectRegistrationEvidence(
-          services.artifactCredential,
-          retrieval.artifact.artifactId
-        );
-      if (evidence.kind !== "resolved") {
-        throw new ReviewSubjectError(evidence.reason);
-      }
-      reviewSubject = {
-        artifactId: retrieval.artifact.artifactId,
-        byteCount: retrieval.artifact.byteCount,
-        digest: retrieval.artifact.digest,
-        format: retrieval.artifact.formatId,
-        normalization: retrieval.artifact.normalizationId,
-        registrationEvidenceId: evidence.evidence.evidenceId,
-        registrationEvidenceDigest: evidence.evidence.digest,
-      };
-    }
     return {
       configuredPolicy: configured.policy,
       policy: "required" as const,
@@ -989,12 +948,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           configured.receipt.permissionManifest
         ),
         reviewSubjectVerification: configured.receipt.reviewSubjectVerification,
-        reviewInputPreparation:
-          profile.intendedUse === "formal_reviewer" &&
-          profile.resources?.resourceProofPolicy === "required"
-            ? ("required" as const)
-            : ("disabled" as const),
-        ...(reviewSubject === undefined ? {} : { reviewSubject }),
+        ...(reviewSubjectId === undefined ? {} : { reviewSubjectId }),
       },
     };
   };
@@ -1140,61 +1094,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       .catch(() => false);
   };
 
-  const verifyReviewSubject = async (
-    operationId: string,
-    policy: Readonly<StartupReceiptPolicy>,
-    prepare: boolean
-  ) => {
-    if (policy.reviewSubjectVerification === "disabled") return undefined;
-    const subject = policy.reviewSubject;
-    if (subject === undefined) {
-      throw new ResourceProofRejectedError(
-        "binding_mismatch",
-        "Review subject is unavailable"
-      );
-    }
-    const bindingRequest = reviewSubjectUseBindingRequest(
-      operationId,
-      subject.artifactId
-    );
-    if (prepare) {
-      const binding = await services.artifacts.prepareUseBinding(
-        services.artifactCredential,
-        bindingRequest
-      );
-      if (binding.kind !== "available") {
-        throw new ResourceProofRejectedError(
-          "binding_mismatch",
-          "Review subject could not be retained"
-        );
-      }
-    }
-    const retrieval = await services.artifacts.retrieveReviewInputForUseBinding(
-      services.artifactCredential,
-      bindingRequest.bindingId,
-      subject.registrationEvidenceId
-    );
-    if (
-      retrieval.kind !== "retrieved" ||
-      retrieval.integrity !== "verified" ||
-      retrieval.operationId !== operationId ||
-      retrieval.root.artifactId !== subject.artifactId ||
-      retrieval.root.byteCount !== subject.byteCount ||
-      retrieval.root.digest !== subject.digest ||
-      retrieval.root.formatId !== subject.format ||
-      retrieval.root.normalizationId !== subject.normalization ||
-      retrieval.registrationEvidenceId !== subject.registrationEvidenceId ||
-      retrieval.registrationEvidenceDigest !==
-        subject.registrationEvidenceDigest
-    ) {
-      throw new ResourceProofRejectedError(
-        "binding_mismatch",
-        "Review subject integrity could not be verified"
-      );
-    }
-    return retrieval;
-  };
-
   const waitAtStartGate = async (
     record: OperationRecord,
     identified: Operation
@@ -1260,32 +1159,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         );
       }
     }
-    const reviewInput = await verifyReviewSubject(
-      record.operationId,
-      receiptPolicy,
-      true
-    );
-    const resourcePolicy =
-      services.configuration?.profiles[identified.task.profile]?.resources;
-    let reviewInputReadiness;
-    if (
-      reviewInput !== undefined &&
-      receiptPolicy.reviewInputPreparation === "required" &&
-      resourcePolicy?.resourceProofPolicy === "required"
-    ) {
-      const controller = services.resourceProofController;
-      if (controller === undefined) {
-        throw new ResourceProofRejectedError(
-          "authority_unavailable",
-          "Required review input preparation is unavailable"
-        );
-      }
-      const target = await controller.reviewInputTarget(
-        record.operationId,
-        reviewInput.files.map((file) => file.path)
-      );
-      reviewInputReadiness = await prepareReviewInput(reviewInput, target);
-    }
     const waiting = await runEffect(
       advanceOperation(record.operationId, {
         type: "startup_receipt_recorded",
@@ -1299,12 +1172,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           workspace: receiptPolicy.workspace,
           permissionManifest: receiptPolicy.permissionManifest,
           ...(resourceEvidence === undefined ? {} : { resourceEvidence }),
-          ...(reviewInputReadiness === undefined
+          ...(receiptPolicy.reviewSubjectId === undefined
             ? {}
-            : { reviewInputReadiness }),
-          ...(receiptPolicy.reviewSubject === undefined
-            ? {}
-            : { reviewSubject: receiptPolicy.reviewSubject }),
+            : { reviewSubjectId: receiptPolicy.reviewSubjectId }),
           reviewSubjectVerification: receiptPolicy.reviewSubjectVerification,
           configuredAuthorizationPolicy: authorization.configuredPolicy,
           authorizationPolicy: "required",
@@ -1375,9 +1245,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const revalidateStartDelivery = async (
     operationId: string
   ): Promise<void> => {
-    let current = await runEffect(getOperation(operationId));
-    const readiness = current.startupReceipt?.reviewInputReadiness;
-    if (readiness === undefined) return;
+    const current = await runEffect(getOperation(operationId));
     if (
       current.state !== "starting" ||
       (current.startGate !== "not_required" &&
@@ -1396,52 +1264,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       throw new ResourceProofRejectedError(
         "authority_revoked",
         "Start authorization expired before delivery"
-      );
-    }
-    const policy = current.startupReceiptPolicy;
-    if (policy === undefined) {
-      throw new ResourceProofRejectedError(
-        "binding_mismatch",
-        "Fixed Startup receipt policy is unavailable"
-      );
-    }
-    const closure = await verifyReviewSubject(operationId, policy, false);
-    const resourcePolicy =
-      services.configuration?.profiles[current.task.profile]?.resources;
-    if (
-      closure === undefined ||
-      resourcePolicy?.resourceProofPolicy !== "required"
-    ) {
-      throw new ResourceProofRejectedError(
-        "invalid_profile",
-        "Review input readiness requires the fixed formal review profile"
-      );
-    }
-    const controller = services.resourceProofController;
-    if (controller === undefined) {
-      throw new ResourceProofRejectedError(
-        "authority_unavailable",
-        "Review input authority is unavailable"
-      );
-    }
-    const target = await controller.reviewInputTarget(
-      operationId,
-      closure.files.map((file) => file.path)
-    );
-    await revalidateReviewInput(closure, target, readiness);
-    current = await runEffect(getOperation(operationId));
-    const validationFinishedAt = await runEffect(services.clock.now());
-    if (
-      current.state !== "starting" ||
-      (current.startGate !== "not_required" &&
-        current.startGate !== "authorized") ||
-      (current.startAuthorizationTiming.policy === "required" &&
-        Date.parse(validationFinishedAt) >=
-          Date.parse(current.startAuthorizationTiming.deadline))
-    ) {
-      throw new ResourceProofRejectedError(
-        "handoff_unconfirmed",
-        "Operation changed during Start delivery validation"
       );
     }
   };
@@ -1603,23 +1425,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             successorDispatcherId,
             deliveryGeneration
           ) =>
-            Effect.tryPromise({
-              try: () => services.artifacts.writerOwnership(),
-              catch: () =>
-                new OperationPersistenceError(
-                  record.operationId,
-                  "write_failed"
-                ),
-            }).pipe(
-              Effect.flatMap((writerOwnership) =>
-                advanceAndProject(record.operationId, {
-                  type: "start_delivery_authority_revoked",
-                  successorDispatcherId,
-                  deliveryGeneration,
-                  writerOwnership,
-                })
-              )
-            ),
+            advanceAndProject(record.operationId, {
+              type: "start_delivery_authority_revoked",
+              successorDispatcherId,
+              deliveryGeneration,
+            }),
           deliveryGenerationConfirmed: (confirmation) =>
             Effect.gen(function* () {
               yield* advanceAndProject(record.operationId, {
@@ -1715,32 +1525,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                     `Start authorization is no longer current for Operation ${record.operationId}`
                   )
                 );
-              }
-              if (current.startAuthorizationTiming.policy === "required") {
-                const receiptPolicy = current.startupReceiptPolicy;
-                if (receiptPolicy === undefined) {
-                  return yield* Effect.fail(
-                    new OperationPersistenceError(
-                      record.operationId,
-                      "corrupt_record"
-                    )
-                  );
-                }
-                yield* Effect.tryPromise({
-                  try: () =>
-                    verifyReviewSubject(
-                      record.operationId,
-                      receiptPolicy,
-                      true
-                    ),
-                  catch: (error) =>
-                    error instanceof ResourceProofRejectedError
-                      ? error
-                      : new OperationPersistenceError(
-                          record.operationId,
-                          "write_failed"
-                        ),
-                });
               }
               yield* revalidateRequiredResourceProof(current);
               const revalidated = yield* getOperation(record.operationId);
@@ -2083,8 +1867,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       throw error;
     }
 
-    const workProductRequirements =
-      resolveWorkProductRequirements(configuredProfile);
     const isFormalReview = configuredProfile.intendedUse === "formal_reviewer";
     const resultFormat = isFormalReview
       ? services.formalReviewResultFormats?.resultFormat
@@ -2096,17 +1878,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         "A formal reviewer requires a trusted Result format"
       );
     }
-    if (
-      services.worker.producesWorkProducts !== true &&
-      workProductRequirements.workProducts.some(({ minCount }) => minCount > 0)
-    ) {
-      if (parent !== undefined) parent.pendingAdmissions -= 1;
-      throw new WorkerConfigurationError(
-        "unsupported_capability",
-        "The Worker adapter cannot produce required work products"
-      );
-    }
-
     const resourcePolicy = configuredProfile.resources;
     const resourceAdmissionRejected =
       resourcePolicy.resourceProofPolicy === "required" &&
@@ -2137,7 +1908,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     try {
       authorization = await resolvedStartAuthorization(
         configuredProfile,
-        options?.reviewSubjectArtifactId
+        options?.reviewSubjectId
       );
     } catch (error) {
       if (parent !== undefined) parent.pendingAdmissions -= 1;
@@ -2154,7 +1925,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     if (options?.externalReviewAllocation !== undefined) {
       if (
         !isFormalReview ||
-        authorization.receipt?.reviewSubject === undefined ||
+        authorization.receipt?.reviewSubjectId === undefined ||
         services.externalReviewAllocations === undefined
       ) {
         if (parent !== undefined) parent.pendingAdmissions -= 1;
@@ -2169,13 +1940,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             request: options.externalReviewAllocation,
             operationId,
             profileId: task.profile,
-            reviewSubject: {
-              artifactId: authorization.receipt.reviewSubject.artifactId,
-              registrationEvidenceId:
-                authorization.receipt.reviewSubject.registrationEvidenceId,
-              registrationEvidenceDigest:
-                authorization.receipt.reviewSubject.registrationEvidenceDigest,
-            },
+            reviewSubjectId: authorization.receipt.reviewSubjectId,
           });
         externalReviewAllocation = externalReviewAllocationReservation.binding;
         operationId = externalReviewAllocation.operationId;
@@ -2245,11 +2010,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             task,
             requestedConfig,
             effectiveConfig,
-            workProductRequirements,
-            resultRetentionPolicy: resultAcceptanceRetentionPolicy(
-              operationId,
-              configuredProfile.acceptedArtifactRetentionMs
-            ),
+            maxResultByteCount: configuredProfile.maxResultByteCount,
             ...(resultFormat === undefined ? {} : { resultFormat }),
             ...(externalReviewAllocation === undefined
               ? {}
@@ -2708,11 +2469,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await recovery;
       rejectStartGateWaiters();
       // An execution may spawn further executions while settling, so drain
-      // until nothing is in flight before the Artifact Store goes away.
+      // until nothing remains in flight.
       while (inFlightExecutions.size > 0) {
         await Promise.allSettled([...inFlightExecutions]);
       }
-      await artifactServices.artifacts.close();
     },
 
     spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
@@ -2782,9 +2542,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           if (!verified)
             return { status: "rejected", reason: "retry_clearance_invalid" };
         }
-        const artifactAcceptanceSubjectIds =
+        const resultAdoptionSubjectIds =
           revision !== undefined && revision.seriesId === undefined
-            ? await principal.fixedArtifactAcceptanceSubjectIds(
+            ? await principal.fixedResultAdoptionSubjectIds(
                 revision.targetOperationId
               )
             : undefined;
@@ -2805,11 +2565,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                     ...(revision.maxAttempts === undefined
                       ? {}
                       : { maxAttempts: revision.maxAttempts }),
-                    ...(artifactAcceptanceSubjectIds === undefined
+                    ...(resultAdoptionSubjectIds === undefined
                       ? {}
                       : {
-                          artifactAcceptanceSubjectIds: [
-                            ...artifactAcceptanceSubjectIds,
+                          resultAdoptionSubjectIds: [
+                            ...resultAdoptionSubjectIds,
                           ],
                         }),
                   }),
@@ -2902,9 +2662,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             throw persistenceError(originId, result.left);
           }
           const series = result.right;
-          if (
-            !series.artifactAcceptanceSubjectIds.includes(principal.subjectId)
-          ) {
+          if (!series.resultAdoptionSubjectIds.includes(principal.subjectId)) {
             return {
               status: "rejected",
               reason: "fixed_scope_denied",
@@ -2912,7 +2670,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           }
           const currentAuthority = async () =>
             currentPrincipal
-              .currentArtifactAcceptanceAuthority(request.seriesId)
+              .currentResultAdoptionAuthority(request.seriesId)
               .catch(() => "unknown" as const);
           const authorityImmediatelyBeforeDecision = await currentAuthority();
           if (authorityImmediatelyBeforeDecision !== "authorized") {
@@ -3252,14 +3010,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                   request.operationId
                 );
               }
-              if (latest.startupReceiptPolicy === undefined) {
-                throw new Error("Fixed Startup receipt policy unavailable");
-              }
-              await verifyReviewSubject(
-                request.operationId,
-                latest.startupReceiptPolicy,
-                false
-              );
               const revalidated = await runEffect(
                 getOperation(request.operationId)
               );

@@ -85,30 +85,6 @@ export type WorkerResourcePolicy =
   | { readonly resourceProofPolicy: "disabled" }
   | ({ readonly resourceProofPolicy: "required" } & ResourceProofRequirements);
 
-export interface ArtifactContentRequirement {
-  readonly formatId: string;
-  readonly normalizationId: string;
-  readonly maxByteCount: number;
-}
-
-export interface WorkProductRequirement extends ArtifactContentRequirement {
-  readonly key: string;
-  readonly minCount: number;
-  readonly maxCount: number;
-}
-
-export interface WorkProductRequirementsPolicy {
-  readonly body: Readonly<ArtifactContentRequirement>;
-  readonly workProducts: ReadonlyArray<Readonly<WorkProductRequirement>>;
-  readonly maxTotalByteCount: number;
-}
-
-export interface ResolvedWorkProductRequirements extends WorkProductRequirementsPolicy {
-  readonly requirementSetId: `pions.work-product-requirements.v1:${string}`;
-  readonly digest: ArtifactDigest;
-  readonly canonicalJson: string;
-}
-
 export interface ConfiguredStartupReceiptPolicy {
   readonly workspace: Readonly<ResourceWorkspace>;
   readonly permissionManifest: Readonly<{
@@ -119,16 +95,7 @@ export interface ConfiguredStartupReceiptPolicy {
 }
 
 export interface StartupReceiptPolicy extends ConfiguredStartupReceiptPolicy {
-  readonly reviewInputPreparation: "disabled" | "required";
-  readonly reviewSubject?: Readonly<{
-    readonly artifactId: string;
-    readonly byteCount: number;
-    readonly digest: `sha256:${string}`;
-    readonly format: string;
-    readonly normalization: string;
-    readonly registrationEvidenceId: string;
-    readonly registrationEvidenceDigest: ArtifactDigest;
-  }>;
+  readonly reviewSubjectId?: string;
 }
 
 export type WorkerStartAuthorizationPolicy =
@@ -158,28 +125,13 @@ export interface WorkerProfilePolicy {
   readonly tools: ReadonlyArray<string>;
   readonly resources: Readonly<WorkerResourcePolicy>;
   readonly startAuthorization: Readonly<WorkerStartAuthorizationPolicy>;
-  readonly workProductRequirements: Readonly<WorkProductRequirementsPolicy>;
-  readonly acceptedArtifactRetentionMs: number;
-}
-
-export type WorkProductRequirementsFailureReason =
-  "invalid_key" | "duplicate_key" | "invalid_requirement";
-
-export class WorkProductRequirementsError extends Error {
-  override readonly name = "WorkProductRequirementsError";
-
-  constructor(
-    readonly reason: WorkProductRequirementsFailureReason,
-    message: string
-  ) {
-    super(message);
-  }
+  readonly maxResultByteCount: number;
 }
 
 export interface ResultFormatValidatorIdentity {
   readonly validatorId: string;
   readonly version: string;
-  readonly digest: ArtifactDigest;
+  readonly digest: Sha256Digest;
 }
 
 export interface PinnedResultFormat {
@@ -212,81 +164,11 @@ export interface ResultFormatRejectionEvidence {
   readonly reason: ResultFormatRejectionReason;
 }
 
-export interface WorkerProducedArtifact {
-  readonly formatId: string;
-  readonly normalizationId: string;
-  readonly expectedByteCount: number;
-  readonly expectedDigest: ArtifactDigest;
-  readonly bytes: Uint8Array | AsyncIterable<Uint8Array>;
-}
-
-export interface WorkerProducedWorkProduct extends WorkerProducedArtifact {
-  readonly key: string;
-}
-
 export interface WorkerProducedResult {
   readonly acceptanceRequestId: string;
-  readonly body: Readonly<WorkerProducedArtifact>;
-  readonly workProducts: ReadonlyArray<Readonly<WorkerProducedWorkProduct>>;
-}
-
-export interface ResultAcceptanceManifestWorkProduct {
-  readonly key: string;
-  readonly artifactIds: ReadonlyArray<string>;
-}
-
-export interface ResultAcceptanceManifest {
-  readonly formatId: "pions.result-acceptance-manifest.v1";
-  readonly normalizationId: "pions.canonical-json.v1";
-  readonly bodyArtifactId: string;
-  readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
-  readonly requirementSetDigest: ArtifactDigest;
-  readonly workProducts: ReadonlyArray<
-    Readonly<ResultAcceptanceManifestWorkProduct>
-  >;
-}
-
-export interface CanonicalResultAcceptanceManifestDocument {
-  readonly json: string;
-  readonly bytes: Uint8Array;
-  readonly byteCount: number;
-  readonly digest: ArtifactDigest;
-  readonly value: Readonly<ResultAcceptanceManifest>;
-}
-
-export interface ValidatedResultAcceptanceManifest extends CanonicalResultAcceptanceManifestDocument {
-  readonly totalByteCount: number;
-  readonly artifactIds: ReadonlyArray<string>;
-}
-
-export type ResultAcceptanceManifestFailureReason =
-  | "invalid_manifest"
-  | "unsupported_format"
-  | "unsupported_normalization"
-  | "duplicate_key"
-  | "duplicate_artifact"
-  | "unknown_field"
-  | "requirement_set_mismatch"
-  | "undeclared_key"
-  | "missing_required_work_product"
-  | "work_product_count_below_minimum"
-  | "work_product_count_exceeded"
-  | "artifact_not_found"
-  | "artifact_format_mismatch"
-  | "artifact_normalization_mismatch"
-  | "artifact_size_exceeded"
-  | "total_size_exceeded"
-  | "artifact_dependency_cycle";
-
-export class ResultAcceptanceManifestError extends Error {
-  override readonly name = "ResultAcceptanceManifestError";
-
-  constructor(
-    readonly reason: ResultAcceptanceManifestFailureReason,
-    message: string
-  ) {
-    super(message);
-  }
+  readonly body: string;
+  readonly expectedByteCount: number;
+  readonly expectedDigest: Sha256Digest;
 }
 
 export interface TaskSpec extends RequestedWorkerConfig {
@@ -336,9 +218,7 @@ export class ProjectConfigurationError extends Error {
 export interface ExternalReviewAllocation {
   readonly allocationId: string;
   readonly issuerId: string;
-  readonly reviewSubjectArtifactId: string;
-  readonly registrationEvidenceId: string;
-  readonly registrationEvidenceDigest: ArtifactDigest;
+  readonly reviewSubjectId: string;
   readonly profileId: string;
   readonly expiresAt: string;
   readonly useLimit: number;
@@ -369,7 +249,7 @@ export interface ExternalReviewAllocationBinding extends ExternalReviewAllocatio
   readonly requestId: string;
   readonly operationId: string;
   readonly boundAt: string;
-  readonly digest: ArtifactDigest;
+  readonly digest: Sha256Digest;
 }
 
 export type ExternalReviewAllocationFailureReason =
@@ -403,7 +283,7 @@ export class ExternalReviewAllocationRejoinedError extends Error {
 
 export interface SpawnOptions {
   readonly parentOperationId?: string;
-  readonly reviewSubjectArtifactId?: string;
+  readonly reviewSubjectId?: string;
   readonly externalReviewAllocation?: Readonly<ExternalReviewAllocationRequest>;
 }
 
@@ -448,31 +328,6 @@ export type StartGateState =
   | "expired"
   | "invalidated";
 
-export interface ReviewInputReadiness {
-  readonly readinessId: `pions.review-input-readiness.v1:${string}`;
-  readonly digest: ArtifactDigest;
-  readonly operationId: string;
-  readonly registrationEvidenceId: string;
-  readonly registrationEvidenceDigest: ArtifactDigest;
-  readonly collectionDigest: ArtifactDigest;
-  readonly authorityId: string;
-  readonly authorityRegistrationId: string;
-  readonly authorityGeneration: string;
-  readonly acquisitionId: string;
-  readonly workspaceId: string;
-  readonly inputPath: string;
-  readonly permissionManifestDigest: ArtifactDigest;
-  readonly writePermission: Readonly<PermissionManifest["write"]>;
-  readonly files: ReadonlyArray<
-    Readonly<{
-      readonly path: string;
-      readonly byteCount: number;
-      readonly digest: ArtifactDigest;
-    }>
-  >;
-  readonly writingClosed: true;
-}
-
 export interface StartupReceipt {
   readonly operationId: string;
   readonly digest: `sha256:${string}`;
@@ -509,16 +364,7 @@ export interface StartupReceipt {
     readonly acquisitionState: "held";
     readonly generation?: string;
   }>;
-  readonly reviewInputReadiness?: Readonly<ReviewInputReadiness>;
-  readonly reviewSubject?: Readonly<{
-    readonly artifactId: string;
-    readonly byteCount: number;
-    readonly digest: `sha256:${string}`;
-    readonly format: string;
-    readonly normalization: string;
-    readonly registrationEvidenceId: string;
-    readonly registrationEvidenceDigest: ArtifactDigest;
-  }>;
+  readonly reviewSubjectId?: string;
   readonly reviewSubjectVerification: "disabled" | "required";
   readonly configuredAuthorizationPolicy: "disabled" | "optional" | "required";
   readonly authorizationPolicy: "disabled" | "required";
@@ -590,7 +436,6 @@ export interface StartDeliveryHandoffEvidence {
   readonly successorDispatcherId: string;
   readonly deliveryGeneration: number;
   readonly authorityRevokedAt: string;
-  readonly writerOwnership: Readonly<ArtifactWriterOwnership>;
   readonly workerGenerationConfirmedAt?: string;
   readonly acceptanceState?: "not_accepted" | "accepted" | "unknown";
 }
@@ -601,7 +446,7 @@ export interface ResultAcceptanceEvidence {
   readonly acceptedAt: string;
   readonly acceptanceId: ResultAcceptanceId;
   readonly byteCount: number;
-  readonly digest: ArtifactDigest;
+  readonly digest: Sha256Digest;
   readonly eventSequenceNumber: number;
 }
 
@@ -785,70 +630,12 @@ export interface ResourceAdapter {
   ): Promise<"released" | "unknown">;
 }
 
-export interface ReviewInputFile {
-  readonly path: string;
-  readonly artifactId: string;
-  readonly byteCount: number;
-  readonly digest: ArtifactDigest;
-  readonly bytes: Uint8Array;
-}
-
-export interface ReviewInputPreparationRequest {
-  readonly operationId: string;
-  readonly acquisitionId: string;
-  readonly workspace: Readonly<ResourceWorkspace>;
-  readonly registrationEvidenceId: string;
-  readonly registrationEvidenceDigest: ArtifactDigest;
-  readonly collectionDigest: ArtifactDigest;
-  readonly root: Readonly<{
-    readonly artifact: Readonly<ArtifactMetadata>;
-    readonly bytes: Uint8Array;
-  }>;
-  readonly files: ReadonlyArray<Readonly<ReviewInputFile>>;
-}
-
-export type ReviewInputPreparationOutcome =
-  | {
-      readonly kind: "prepared";
-      readonly operationId: string;
-      readonly acquisitionId: string;
-      readonly workspaceId: string;
-      readonly workspaceDedicatedToOperationId: string;
-      readonly collectionDigest: ArtifactDigest;
-      readonly writingClosed: true;
-      readonly files: ReadonlyArray<
-        Readonly<{ readonly path: string; readonly bytes: Uint8Array }>
-      >;
-    }
-  | { readonly kind: "denied" | "unknown" };
-
-export interface ReviewInputPreparationConnection {
-  /**
-   * Writes only `request.files` to the Operation-dedicated workspace, closes
-   * input writing, and returns the complete bytes read back from that
-   * workspace together with the collection digest independently obtained by
-   * the registered validator. A target already assigned to another Operation
-   * must return `denied`.
-   */
-  prepare(
-    request: Readonly<ReviewInputPreparationRequest>
-  ): Promise<ReviewInputPreparationOutcome>;
-  /**
-   * Reads the closed Worker input without writing it and returns its current
-   * bindings, complete file set, and independently validated collection
-   * digest.
-   */
-  inspect(
-    request: Readonly<ReviewInputPreparationRequest>
-  ): Promise<ReviewInputPreparationOutcome>;
-}
-
 export type DeploymentMode = "non-production" | "production";
 
 export interface ResourceAdapterIdentity {
   readonly adapterId: string;
   readonly version: string;
-  readonly digest: ArtifactDigest;
+  readonly digest: Sha256Digest;
   readonly intendedUse: DeploymentMode;
 }
 
@@ -859,10 +646,9 @@ export interface ResourceAuthorityRegistration {
   readonly normalizationVersion: string;
   readonly identity: Readonly<ResourceAdapterIdentity>;
   /** Exact bytes of the adapter implementation represented by identity.digest. */
-  readonly registrationArtifact: Uint8Array;
+  readonly implementation: Uint8Array;
   readonly issuer: ResourceProofIssuer;
   readonly adapter: ResourceAdapter;
-  readonly reviewInputPreparation?: ReviewInputPreparationConnection;
 }
 
 export interface PersistedResourceValidation extends Omit<
@@ -970,12 +756,12 @@ export interface RevisionReservation {
   readonly operationId: string;
   readonly targetOperationId: string;
   readonly targetResultId?: string;
-  readonly targetResultDigest?: ArtifactDigest;
+  readonly targetResultDigest?: Sha256Digest;
   readonly retryOfOperationId?: string;
   readonly reason: string;
   readonly requestedBy: string;
   readonly maxAttempts: number;
-  readonly artifactAcceptanceSubjectIds: ReadonlyArray<string>;
+  readonly resultAdoptionSubjectIds: ReadonlyArray<string>;
   readonly task: Readonly<TaskSpec>;
   readonly reservedAt: string;
   readonly retryClearanceId?: string;
@@ -987,7 +773,7 @@ export interface RevisionResultAdoptionRecord {
   readonly revisionNumber: number;
   readonly retryOperationId: string;
   readonly resultId: string;
-  readonly resultDigest: ArtifactDigest;
+  readonly resultDigest: Sha256Digest;
   readonly decidedBy: string;
   readonly decidedAt: string;
 }
@@ -996,7 +782,7 @@ export interface RevisionSeriesSnapshot {
   readonly seriesId: RevisionSeriesId;
   readonly seriesOriginOperationId: string;
   readonly maxAttempts: number;
-  readonly artifactAcceptanceSubjectIds: ReadonlyArray<string>;
+  readonly resultAdoptionSubjectIds: ReadonlyArray<string>;
   readonly reservations: ReadonlyArray<Readonly<RevisionReservation>>;
   readonly retryClearances: ReadonlyArray<Readonly<RetryClearanceEvidence>>;
   readonly adoptions: ReadonlyArray<Readonly<RevisionResultAdoptionRecord>>;
@@ -1006,7 +792,7 @@ interface ReserveRevisionRequestBase {
   readonly requestId: string;
   readonly targetOperationId: string;
   readonly targetResultId: string;
-  readonly targetResultDigest: ArtifactDigest;
+  readonly targetResultDigest: Sha256Digest;
   readonly reason: string;
   readonly task: Readonly<TaskSpec>;
 }
@@ -1048,7 +834,7 @@ export interface AdoptRevisionResultRequest {
   readonly revisionNumber: number;
   readonly retryOperationId: string;
   readonly resultId: string;
-  readonly resultDigest: ArtifactDigest;
+  readonly resultDigest: Sha256Digest;
 }
 
 export type RevisionResultAdoptionOutcome =
@@ -1069,17 +855,17 @@ export type RevisionResultAdoptionOutcome =
         | "result_not_accepted";
     };
 
-export type CurrentArtifactAcceptanceAuthority =
+export type CurrentResultAdoptionAuthority =
   "authorized" | "denied" | "revoked" | "unknown";
 
 export interface AuthenticatedRevisionCoordinator {
   readonly subjectId: string;
-  fixedArtifactAcceptanceSubjectIds(
+  fixedResultAdoptionSubjectIds(
     targetOperationId: string
   ): Promise<ReadonlyArray<string>>;
-  currentArtifactAcceptanceAuthority(
+  currentResultAdoptionAuthority(
     seriesId: string
-  ): Promise<CurrentArtifactAcceptanceAuthority>;
+  ): Promise<CurrentResultAdoptionAuthority>;
 }
 
 export interface RetryClearanceVerifier {
@@ -1184,7 +970,7 @@ export interface ResultChunk {
   readonly body: string;
   readonly startByte: number;
   readonly totalByteCount: number;
-  readonly digest: ArtifactDigest;
+  readonly digest: Sha256Digest;
   readonly nextCursor?: string;
 }
 
@@ -1401,19 +1187,16 @@ export class ResultRetrievalError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: ArtifactFailureReason
+    readonly reason: ResultRetrievalFailureReason
   ) {
     super(`Result retrieval failed for Operation ${operationId}: ${reason}`);
   }
 }
 
-export class ReviewSubjectError extends Error {
-  override readonly name = "ReviewSubjectError";
-
-  constructor(readonly reason: ArtifactFailureReason) {
-    super(`Review subject is unavailable: ${reason}`);
-  }
-}
+export type ResultRetrievalFailureReason =
+  | "result_not_accepted"
+  | "stored_result_corrupt"
+  | "storage_inspection_unavailable";
 
 export interface CancelOptions {
   readonly scope: "subtree";
@@ -1447,163 +1230,7 @@ export interface Runtime {
   close(): Promise<void>;
 }
 
-export type ArtifactDigest = `sha256:${string}`;
-
-export interface ArtifactMetadata {
-  readonly artifactId: string;
-  readonly byteCount: number;
-  readonly digest: ArtifactDigest;
-  readonly formatId: string;
-  readonly normalizationId: string;
-  readonly dependencies: ReadonlyArray<string>;
-}
-
-export interface ReviewSubjectRegistrationEvidence {
-  readonly formatId: "pions.review-subject-registration-evidence.v1";
-  readonly evidenceId: string;
-  readonly issuerId: string;
-  readonly validator: Readonly<{
-    readonly validatorId: string;
-    readonly version: string;
-  }>;
-  readonly root: Readonly<ArtifactMetadata>;
-  readonly files: ReadonlyArray<
-    Readonly<{
-      readonly path: string;
-      readonly artifactId: string;
-      readonly byteCount: number;
-      readonly digest: ArtifactDigest;
-      readonly formatId: string;
-      readonly normalizationId: string;
-    }>
-  >;
-  readonly collectionDigest: ArtifactDigest;
-  readonly digest: ArtifactDigest;
-}
-
-export type ReviewSubjectRegistrationEvidenceOutcome =
-  | {
-      readonly kind: "resolved";
-      readonly evidence: Readonly<ReviewSubjectRegistrationEvidence>;
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason;
-    };
-
-export interface ArtifactRegistrationRequest {
-  readonly registrationId: string;
-  readonly expectedByteCount: number;
-  readonly expectedDigest: ArtifactDigest;
-  readonly formatId: string;
-  readonly normalizationId: string;
-  readonly dependencies: ReadonlyArray<string>;
-  readonly deadline: string;
-  readonly recoveryBudget: number;
-}
-
-export interface ArtifactRegistrationSnapshot {
-  readonly registrationId: string;
-  readonly artifactId: string;
-  readonly state: "receiving" | "prepared";
-  readonly expectedByteCount: number;
-  readonly expectedDigest: ArtifactDigest;
-  readonly formatId: string;
-  readonly normalizationId: string;
-  readonly dependencies: ReadonlyArray<string>;
-}
-
-export type ArtifactFailureReason =
-  | "unauthorized"
-  | "authority_revoked"
-  | "authority_unavailable"
-  | "request_mismatch"
-  | "conflict"
-  | "limit_exceeded"
-  | "deadline_expired"
-  | "transfer_incomplete"
-  | "invalid_format"
-  | "input_integrity_mismatch"
-  | "stored_artifact_corrupt"
-  | "artifact_deletion_pending"
-  | "artifact_deleted"
-  | "gc_unprocessed"
-  | "gc_processing_unavailable"
-  | "storage_inspection_unavailable"
-  | "recovery_budget_exceeded"
-  | "dependency_not_found"
-  | "dependency_cycle"
-  | "registration_evidence_not_found";
-
-export type ArtifactRegistrationOutcome =
-  | {
-      readonly kind: "registered";
-      readonly artifact: Readonly<ArtifactMetadata>;
-    }
-  | {
-      readonly kind: "continuable";
-      readonly reason: "transfer_incomplete";
-      readonly registration: Readonly<ArtifactRegistrationSnapshot>;
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason;
-    };
-
-export type ArtifactMetadataOutcome =
-  | {
-      readonly kind: "resolved";
-      readonly artifact: Readonly<ArtifactMetadata>;
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason;
-    };
-
-export type ArtifactRetrievalOutcome =
-  | {
-      readonly kind: "retrieved";
-      readonly artifact: Readonly<ArtifactMetadata>;
-      readonly bytes: Uint8Array;
-      readonly integrity: "verified";
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason;
-    };
-
-export type ReviewInputClosureOutcome =
-  | {
-      readonly kind: "retrieved";
-      readonly operationId: string;
-      readonly bindingId: string;
-      readonly root: Readonly<ArtifactMetadata>;
-      readonly rootBytes: Uint8Array;
-      readonly registrationEvidenceId: string;
-      readonly registrationEvidenceDigest: ArtifactDigest;
-      readonly collectionDigest: ArtifactDigest;
-      readonly files: ReadonlyArray<Readonly<ReviewInputFile>>;
-      readonly integrity: "verified";
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason;
-    };
-
-export type ArtifactAuthorityDecision =
-  "allowed" | "denied" | "revoked" | "unknown";
-
-/** One Worker final answer offered to the Operation that owns the Result. */
-export interface ResultAcceptanceRequest {
-  readonly operationId: string;
-  readonly acceptanceRequestId: string;
-  readonly bytes: Uint8Array;
-}
+export type Sha256Digest = `sha256:${string}`;
 
 /** The immutable Result an Operation owns after acceptance: exact bytes, count, digest, identifier. */
 export interface AcceptedResult {
@@ -1613,7 +1240,7 @@ export interface AcceptedResult {
   readonly acceptedAt: string;
   readonly eventSequenceNumber: number;
   readonly byteCount: number;
-  readonly digest: ArtifactDigest;
+  readonly digest: Sha256Digest;
 }
 
 export type ResultAcceptanceTransactionFailureReason =
@@ -1640,374 +1267,3 @@ export type ResultAcceptanceTransactionOutcome =
       readonly terminal: true;
       readonly reason: ResultAcceptanceTransactionFailureReason;
     };
-
-export interface ResultAcceptancePreparationRequest {
-  readonly preparationId: string;
-  readonly operationId: string;
-  readonly acceptanceRequestId: string;
-  readonly manifestDigest: ArtifactDigest;
-  readonly requirementsDigest: ArtifactDigest;
-  readonly retentionPolicyDigest: ArtifactDigest;
-  readonly manifest: Readonly<ResultAcceptanceManifest>;
-}
-
-export interface ResultAcceptancePreparationEvidence {
-  readonly formatId: "pions.result-acceptance-preparation.v1";
-  readonly preparationId: string;
-  readonly operationId: string;
-  readonly acceptanceRequestId: string;
-  readonly manifestDigest: ArtifactDigest;
-  readonly requirementsDigest: ArtifactDigest;
-  readonly bodyArtifactId: string;
-  readonly workProducts: ReadonlyArray<
-    Readonly<ResultAcceptanceManifestWorkProduct>
-  >;
-  readonly artifactIds: ReadonlyArray<string>;
-  readonly totalByteCount: number;
-  readonly acceptedArtifactRetentionMs: number;
-  readonly retentionPolicyDigest: ArtifactDigest;
-  readonly digest: ArtifactDigest;
-}
-
-export interface ResultAcceptanceRetentionPolicyEvidence {
-  readonly formatId: "pions.result-acceptance-retention-policy.v1";
-  readonly operationId: string;
-  readonly acceptedArtifactRetentionMs: number;
-  readonly digest: ArtifactDigest;
-}
-
-export interface ResultAcceptanceRetentionPolicySource {
-  read(
-    operationId: string
-  ): Promise<Readonly<ResultAcceptanceRetentionPolicyEvidence> | "unknown">;
-}
-
-export interface ResultAcceptanceRequirementsSource {
-  read(
-    operationId: string
-  ): Promise<Readonly<ResolvedWorkProductRequirements> | "unknown">;
-}
-
-export interface ResultAcceptanceEventEvidence {
-  readonly preparationId: string;
-  readonly operationId: string;
-  readonly acceptanceRequestId: string;
-  readonly manifestDigest: ArtifactDigest;
-  readonly evidenceDigest: ArtifactDigest;
-  readonly state: "accepted" | "not_accepted";
-  readonly observedAt: string;
-  readonly acceptedAt?: string;
-}
-
-export interface ResultAcceptanceEventEvidenceVerifier {
-  verify(
-    evidence: Readonly<ResultAcceptanceEventEvidence>
-  ): Promise<"trusted" | "untrusted" | "unknown">;
-}
-
-export interface ResultAcceptanceEventEvidenceSource {
-  read(
-    operationId: string,
-    preparationId: string
-  ): Promise<Readonly<ResultAcceptanceEventEvidence> | "unknown">;
-}
-
-export interface ResultAcceptancePreparationSnapshot {
-  readonly evidence?: Readonly<ResultAcceptancePreparationEvidence>;
-  readonly state:
-    "preparing" | "prepared" | "accepted" | "aborted" | "unresolved";
-  readonly retentionUntil?: string;
-}
-
-export type PublishedResultAcceptancePreparationSnapshot =
-  ResultAcceptancePreparationSnapshot & {
-    readonly evidence: Readonly<ResultAcceptancePreparationEvidence>;
-  };
-
-export type ResultAcceptancePreparationOutcome =
-  | {
-      readonly kind: "prepared";
-      readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot>;
-    }
-  | {
-      readonly kind: "accepted";
-      readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot>;
-    }
-  | {
-      readonly kind: "aborted";
-      readonly preparation: Readonly<PublishedResultAcceptancePreparationSnapshot>;
-    }
-  | {
-      readonly kind: "continuable";
-      readonly preparation: Readonly<ResultAcceptancePreparationSnapshot>;
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason:
-        ArtifactFailureReason | ResultAcceptanceManifestFailureReason;
-    };
-
-export interface ArtifactUseBindingRequest {
-  readonly bindingId: string;
-  readonly operationId: string;
-  readonly artifactId: string;
-  readonly purpose: "review_subject";
-  readonly decisionId: string;
-  readonly authorityBasis: string;
-}
-
-export interface ArtifactUseBindingSnapshot extends ArtifactUseBindingRequest {
-  readonly subjectId: string;
-  readonly dependencyClosure: ReadonlyArray<string>;
-  readonly retentionUntil: string;
-  readonly state:
-    "preparing" | "available" | "rejected" | "released" | "unresolved";
-}
-
-export type ArtifactUseBindingOutcome =
-  | {
-      readonly kind: "available";
-      readonly binding: Readonly<ArtifactUseBindingSnapshot>;
-    }
-  | {
-      readonly kind: "released";
-      readonly binding: Readonly<ArtifactUseBindingSnapshot>;
-    }
-  | {
-      readonly kind: "continuable";
-      readonly binding: Readonly<ArtifactUseBindingSnapshot>;
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason;
-    };
-
-export interface ArtifactRetentionPinRequest {
-  readonly pinId: string;
-  readonly artifactId: string;
-  readonly ownerId: string;
-  readonly purpose: string;
-  readonly retention: "indefinite";
-}
-
-export interface ArtifactRetentionPinSnapshot extends ArtifactRetentionPinRequest {
-  readonly subjectId: string;
-  readonly dependencyClosure: ReadonlyArray<string>;
-  readonly state: "held" | "released";
-}
-
-export type ArtifactRetentionPinOutcome =
-  | {
-      readonly kind: "held";
-      readonly pin: Readonly<ArtifactRetentionPinSnapshot>;
-    }
-  | {
-      readonly kind: "released";
-      readonly pin: Readonly<ArtifactRetentionPinSnapshot>;
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason;
-    };
-
-export interface ArtifactGarbageCollectionRequest {
-  readonly collectionId: string;
-  readonly scanBudget: number;
-  readonly deletionBudget: number;
-  readonly recoveryBudget: number;
-  readonly afterArtifactId?: string;
-}
-
-export type ArtifactGarbageCollectionOutcome =
-  | {
-      readonly kind: "completed";
-      readonly deletedArtifactIds: ReadonlyArray<string>;
-    }
-  | {
-      readonly kind: "continuable";
-      readonly reason: "gc_unprocessed";
-      readonly deletedArtifactIds: ReadonlyArray<string>;
-      readonly remainingArtifactIds: ReadonlyArray<string>;
-      readonly nextCursor: string;
-    }
-  | {
-      readonly kind: "failed";
-      readonly terminal: boolean;
-      readonly reason: ArtifactFailureReason;
-    };
-
-export interface RuntimeReviewSubjectAuthority {
-  currentUse(
-    operationId: string,
-    artifactId: string
-  ): Promise<ArtifactAuthorityDecision>;
-}
-
-export interface ArtifactPrincipal {
-  readonly subjectId: string;
-  canRegister(
-    request: Readonly<ArtifactRegistrationRequest>
-  ): Promise<ArtifactAuthorityDecision>;
-  canReference(artifactId: string): Promise<ArtifactAuthorityDecision>;
-  canRetrieve(artifactId: string): Promise<ArtifactAuthorityDecision>;
-  canBindArtifactUse(
-    request: Readonly<ArtifactUseBindingRequest>,
-    artifactId: string
-  ): Promise<ArtifactAuthorityDecision>;
-  canPinArtifact(
-    request: Readonly<ArtifactRetentionPinRequest>,
-    artifactId: string
-  ): Promise<ArtifactAuthorityDecision>;
-  canPrepareResultAcceptance(
-    request: Readonly<ResultAcceptancePreparationRequest>,
-    artifactId: string
-  ): Promise<ArtifactAuthorityDecision>;
-  canReconcileResultAcceptance(
-    preparationId: string,
-    evidence: Readonly<ResultAcceptanceEventEvidence>
-  ): Promise<ArtifactAuthorityDecision>;
-  canGarbageCollect(
-    request: Readonly<ArtifactGarbageCollectionRequest>
-  ): Promise<ArtifactAuthorityDecision>;
-}
-
-export interface ArtifactAuthenticator {
-  authenticate(credential: string): Promise<Readonly<ArtifactPrincipal>>;
-  restore(subjectId: string): Promise<Readonly<ArtifactPrincipal>>;
-}
-
-export interface ArtifactStorePolicy {
-  readonly maxArtifactBytes: number;
-  readonly maxConcurrentRegistrations: number;
-  readonly maxTemporaryBytes: number;
-  readonly maxDirectDependencies: number;
-  readonly maxDependencyDepth: number;
-  readonly maxDependencyCount: number;
-  readonly maxRegistrationWindowMs: number;
-  readonly maxRecoveryAttempts: number;
-  readonly unusedArtifactRetentionMs: number;
-  readonly reviewInputRetentionMs: number;
-  readonly maxGarbageCollectionScan: number;
-  readonly maxGarbageCollectionDeletes: number;
-  readonly maxGarbageCollectionRecoveryAttempts: number;
-}
-
-export interface OpenArtifactStoreOptions {
-  readonly rootDirectory: string;
-  readonly policy: Readonly<ArtifactStorePolicy>;
-  readonly authenticator: ArtifactAuthenticator;
-  readonly resultAcceptanceRetentionPolicySource?: ResultAcceptanceRetentionPolicySource;
-  readonly resultAcceptanceRequirementsSource?: ResultAcceptanceRequirementsSource;
-  readonly resultAcceptanceEventEvidenceVerifier?: ResultAcceptanceEventEvidenceVerifier;
-  readonly resultAcceptanceEventEvidenceSource?: ResultAcceptanceEventEvidenceSource;
-  readonly now?: () => Date;
-  readonly idGenerator?: () => string;
-}
-
-export interface ArtifactWriterOwnership {
-  readonly pid: number;
-  readonly processStartToken: string;
-}
-
-export interface ArtifactStore {
-  writerOwnership(): Promise<Readonly<ArtifactWriterOwnership>>;
-  startRegistration(
-    credential: string,
-    request: Readonly<ArtifactRegistrationRequest>
-  ): Promise<ArtifactRegistrationOutcome>;
-  transfer(
-    credential: string,
-    registrationId: string,
-    bytes: Uint8Array | AsyncIterable<Uint8Array>
-  ): Promise<ArtifactRegistrationOutcome>;
-  registrationStatus(
-    credential: string,
-    registrationId: string
-  ): Promise<ArtifactRegistrationOutcome>;
-  resolveMetadata(
-    credential: string,
-    artifactId: string
-  ): Promise<ArtifactMetadataOutcome>;
-  recordReviewSubjectRegistrationEvidence(
-    credential: string,
-    evidence: Readonly<ReviewSubjectRegistrationEvidence>
-  ): Promise<ReviewSubjectRegistrationEvidenceOutcome>;
-  resolveReviewSubjectRegistrationEvidence(
-    credential: string,
-    rootArtifactId: string
-  ): Promise<ReviewSubjectRegistrationEvidenceOutcome>;
-  retrieve(
-    credential: string,
-    artifactId: string
-  ): Promise<ArtifactRetrievalOutcome>;
-  prepareUseBinding(
-    credential: string,
-    request: Readonly<ArtifactUseBindingRequest>
-  ): Promise<ArtifactUseBindingOutcome>;
-  useBindingStatus(
-    credential: string,
-    bindingId: string
-  ): Promise<ArtifactUseBindingOutcome>;
-  retrieveForUseBinding(
-    credential: string,
-    bindingId: string
-  ): Promise<ArtifactRetrievalOutcome>;
-  retrieveReviewInputForUseBinding(
-    credential: string,
-    bindingId: string,
-    registrationEvidenceId: string
-  ): Promise<ReviewInputClosureOutcome>;
-  releaseUseBinding(
-    credential: string,
-    bindingId: string
-  ): Promise<ArtifactUseBindingOutcome>;
-  createRetentionPin(
-    credential: string,
-    request: Readonly<ArtifactRetentionPinRequest>
-  ): Promise<ArtifactRetentionPinOutcome>;
-  releaseRetentionPin(
-    credential: string,
-    pinId: string
-  ): Promise<ArtifactRetentionPinOutcome>;
-  prepareResultAcceptance(
-    credential: string,
-    request: Readonly<ResultAcceptancePreparationRequest>
-  ): Promise<ResultAcceptancePreparationOutcome>;
-  resultAcceptancePreparationStatus(
-    credential: string,
-    preparationId: string
-  ): Promise<ResultAcceptancePreparationOutcome>;
-  finalizeResultAcceptance(
-    credential: string,
-    evidence: Readonly<ResultAcceptanceEventEvidence>
-  ): Promise<ResultAcceptancePreparationOutcome>;
-  abortResultAcceptance(
-    credential: string,
-    evidence: Readonly<ResultAcceptanceEventEvidence>
-  ): Promise<ResultAcceptancePreparationOutcome>;
-  collectGarbage(
-    credential: string,
-    request: Readonly<ArtifactGarbageCollectionRequest>
-  ): Promise<ArtifactGarbageCollectionOutcome>;
-  close(): Promise<void>;
-}
-
-export type ArtifactStoreOpenFailureReason =
-  | "writer_locked"
-  | "invalid_policy"
-  | "unsupported_root"
-  | "storage_inspection_unavailable";
-
-export class ArtifactStoreOpenError extends Error {
-  override readonly name = "ArtifactStoreOpenError";
-
-  constructor(
-    readonly reason: ArtifactStoreOpenFailureReason,
-    message: string
-  ) {
-    super(message);
-  }
-}

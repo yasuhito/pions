@@ -12,7 +12,6 @@ import type {
 import type { Operation, OperationEvent } from "./model.js";
 import { validExternalReviewAllocationBinding } from "../external-review-allocation.js";
 import { revisionSeriesId, revisionSeriesOrigin } from "../revision-series.js";
-import { validReviewInputReadiness } from "../review-input-readiness.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
 import {
   automaticStartScopeDigest,
@@ -74,8 +73,6 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.effectiveConfig.modelPolicy);
   Object.freeze(operation.effectiveConfig.tools);
   Object.freeze(operation.effectiveConfig);
-  deepFreeze(operation.workProductRequirements);
-  deepFreeze(operation.resultRetentionPolicy);
   if (operation.resultFormat !== undefined) deepFreeze(operation.resultFormat);
   if (operation.resultFormatRejection !== undefined)
     deepFreeze(operation.resultFormatRejection);
@@ -203,26 +200,9 @@ function sanitizedStartupReceipt(
     ...(receipt.resourceEvidence === undefined
       ? {}
       : { resourceEvidence: { ...receipt.resourceEvidence } }),
-    ...(receipt.reviewInputReadiness === undefined
+    ...(receipt.reviewSubjectId === undefined
       ? {}
-      : {
-          reviewInputReadiness: structuredClone(receipt.reviewInputReadiness),
-        }),
-    ...(receipt.reviewSubject === undefined
-      ? {}
-      : {
-          reviewSubject: {
-            artifactId: receipt.reviewSubject.artifactId,
-            byteCount: receipt.reviewSubject.byteCount,
-            digest: receipt.reviewSubject.digest,
-            format: receipt.reviewSubject.format,
-            normalization: receipt.reviewSubject.normalization,
-            registrationEvidenceId:
-              receipt.reviewSubject.registrationEvidenceId,
-            registrationEvidenceDigest:
-              receipt.reviewSubject.registrationEvidenceDigest,
-          },
-        }),
+      : { reviewSubjectId: receipt.reviewSubjectId }),
     reviewSubjectVerification: receipt.reviewSubjectVerification,
     configuredAuthorizationPolicy: receipt.configuredAuthorizationPolicy,
     authorizationPolicy: receipt.authorizationPolicy,
@@ -339,23 +319,15 @@ export function reduceOperation(
       (event.startAuthorizationTiming.policy === "required") !==
         (event.startupReceiptPolicy !== undefined) ||
       (event.startupReceiptPolicy?.reviewSubjectVerification === "required" &&
-        event.startupReceiptPolicy.reviewSubject === undefined) ||
-      (event.startupReceiptPolicy?.reviewInputPreparation === "required" &&
-        event.startupReceiptPolicy.reviewSubjectVerification !== "required") ||
-      event.resultRetentionPolicy.operationId !== event.operationId ||
+        event.startupReceiptPolicy.reviewSubjectId === undefined) ||
       (event.externalReviewAllocation !== undefined &&
         (!validExternalReviewAllocationBinding(
           event.externalReviewAllocation
         ) ||
           event.externalReviewAllocation.operationId !== event.operationId ||
           event.externalReviewAllocation.profileId !== event.task.profile ||
-          event.externalReviewAllocation.reviewSubjectArtifactId !==
-            event.startupReceiptPolicy?.reviewSubject?.artifactId ||
-          event.externalReviewAllocation.registrationEvidenceId !==
-            event.startupReceiptPolicy?.reviewSubject?.registrationEvidenceId ||
-          event.externalReviewAllocation.registrationEvidenceDigest !==
-            event.startupReceiptPolicy?.reviewSubject
-              ?.registrationEvidenceDigest)) ||
+          event.externalReviewAllocation.reviewSubjectId !==
+            event.startupReceiptPolicy?.reviewSubjectId)) ||
       (event.revisionMembership !== undefined &&
         (revisionSeriesOrigin(event.revisionMembership.seriesId) ===
           undefined ||
@@ -363,10 +335,8 @@ export function reduceOperation(
           event.revisionMembership.revisionNumber < 1 ||
           !Number.isSafeInteger(event.revisionMembership.attemptNumber) ||
           event.revisionMembership.attemptNumber < 1)) ||
-      !Number.isSafeInteger(
-        event.resultRetentionPolicy.acceptedArtifactRetentionMs
-      ) ||
-      event.resultRetentionPolicy.acceptedArtifactRetentionMs <= 0
+      !Number.isSafeInteger(event.maxResultByteCount) ||
+      event.maxResultByteCount <= 0
     ) {
       throw new TransitionError("illegal_transition");
     }
@@ -411,8 +381,7 @@ export function reduceOperation(
         : {
             startupReceiptPolicy: structuredClone(event.startupReceiptPolicy),
           }),
-      workProductRequirements: structuredClone(event.workProductRequirements),
-      resultRetentionPolicy: structuredClone(event.resultRetentionPolicy),
+      maxResultByteCount: event.maxResultByteCount,
       ...(event.resultFormat === undefined
         ? {}
         : { resultFormat: structuredClone(event.resultFormat) }),
@@ -554,8 +523,8 @@ export function reduceOperation(
               current.startupReceiptPolicy.permissionManifest
             ) ||
             !isDeepStrictEqual(
-              event.receipt.reviewSubject,
-              current.startupReceiptPolicy.reviewSubject
+              event.receipt.reviewSubjectId,
+              current.startupReceiptPolicy.reviewSubjectId
             ) ||
             event.receipt.reviewSubjectVerification !==
               current.startupReceiptPolicy.reviewSubjectVerification)) ||
@@ -566,26 +535,7 @@ export function reduceOperation(
         event.receipt.workspace.baseRevision.length === 0 ||
         event.receipt.permissionManifest.manifestId.length === 0 ||
         (event.receipt.reviewSubjectVerification === "required" &&
-          event.receipt.reviewSubject === undefined) ||
-        (current.startupReceiptPolicy?.reviewInputPreparation === "required" &&
-          event.receipt.reviewInputReadiness === undefined) ||
-        (event.receipt.reviewInputReadiness !== undefined &&
-          (!validReviewInputReadiness(event.receipt.reviewInputReadiness) ||
-            event.receipt.reviewInputReadiness.operationId !==
-              current.operationId ||
-            event.receipt.reviewInputReadiness.workspaceId !==
-              event.receipt.workspace.workspaceId ||
-            event.receipt.reviewInputReadiness.inputPath !==
-              event.receipt.workspace.normalizedPath ||
-            event.receipt.reviewInputReadiness.permissionManifestDigest !==
-              event.receipt.permissionManifest.digest ||
-            event.receipt.reviewInputReadiness.registrationEvidenceId !==
-              event.receipt.reviewSubject?.registrationEvidenceId ||
-            event.receipt.reviewInputReadiness.registrationEvidenceDigest !==
-              event.receipt.reviewSubject?.registrationEvidenceDigest)) ||
-        (event.receipt.reviewSubject !== undefined &&
-          (event.receipt.reviewSubject.artifactId.length === 0 ||
-            event.receipt.reviewSubject.registrationEvidenceId.length === 0)) ||
+          event.receipt.reviewSubjectId === undefined) ||
         event.receipt.workerIdentity.processInstanceId !==
           current.workerIdentity.processInstanceId ||
         !isDeepStrictEqual(
@@ -729,9 +679,6 @@ export function reduceOperation(
         authority === undefined ||
         event.successorDispatcherId === authority.dispatcherId ||
         event.deliveryGeneration !== authority.deliveryGeneration + 1 ||
-        !Number.isSafeInteger(event.writerOwnership.pid) ||
-        event.writerOwnership.pid < 1 ||
-        event.writerOwnership.processStartToken.length === 0 ||
         (pendingHandoff !== undefined &&
           pendingHandoff.workerGenerationConfirmedAt === undefined &&
           !resumesPendingHandoff)
@@ -748,7 +695,6 @@ export function reduceOperation(
             successorDispatcherId: event.successorDispatcherId,
             deliveryGeneration: event.deliveryGeneration,
             authorityRevokedAt: event.timestamp,
-            writerOwnership: { ...event.writerOwnership },
           },
         ],
         stateSeq: event.seq,
@@ -979,9 +925,9 @@ export function reduceOperation(
         reservation.attemptNumber < 1 ||
         !Number.isSafeInteger(reservation.maxAttempts) ||
         reservation.maxAttempts < 1 ||
-        reservation.artifactAcceptanceSubjectIds.length < 1 ||
-        new Set(reservation.artifactAcceptanceSubjectIds).size !==
-          reservation.artifactAcceptanceSubjectIds.length ||
+        reservation.resultAdoptionSubjectIds.length < 1 ||
+        new Set(reservation.resultAdoptionSubjectIds).size !==
+          reservation.resultAdoptionSubjectIds.length ||
         reservation.attemptNumber !== (series?.reservations.length ?? 0) + 1 ||
         reservation.attemptNumber > reservation.maxAttempts ||
         (reservation.kind === "revision" &&
@@ -1002,8 +948,8 @@ export function reduceOperation(
           (series.seriesId !== reservation.seriesId ||
             series.maxAttempts !== reservation.maxAttempts ||
             !isDeepStrictEqual(
-              series.artifactAcceptanceSubjectIds,
-              reservation.artifactAcceptanceSubjectIds
+              series.resultAdoptionSubjectIds,
+              reservation.resultAdoptionSubjectIds
             ) ||
             series.reservations.some(
               ({ requestId }) => requestId === reservation.requestId
@@ -1018,9 +964,7 @@ export function reduceOperation(
         seriesId: reservation.seriesId,
         seriesOriginOperationId: current.operationId,
         maxAttempts: reservation.maxAttempts,
-        artifactAcceptanceSubjectIds: [
-          ...reservation.artifactAcceptanceSubjectIds,
-        ],
+        resultAdoptionSubjectIds: [...reservation.resultAdoptionSubjectIds],
         reservations: [],
         retryClearances: [],
         adoptions: [],
@@ -1043,9 +987,7 @@ export function reduceOperation(
       if (
         series === undefined ||
         event.adoption.seriesId !== series.seriesId ||
-        !series.artifactAcceptanceSubjectIds.includes(
-          event.adoption.decidedBy
-        ) ||
+        !series.resultAdoptionSubjectIds.includes(event.adoption.decidedBy) ||
         !series.reservations.some(
           ({ operationId, revisionNumber }) =>
             operationId === event.adoption.retryOperationId &&
@@ -1245,7 +1187,7 @@ export function reduceOperation(
         event.acceptance.operationId !== current.operationId ||
         !acceptedResultIsConsistent(
           event.acceptance,
-          current.workProductRequirements.body.maxByteCount
+          current.maxResultByteCount
         )
       ) {
         throw new TransitionError("illegal_transition");

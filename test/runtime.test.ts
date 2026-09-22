@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { Effect, ManagedRuntime, TestClock, TestContext } from "effect";
 
-import { BODY_ONLY_WORK_PRODUCT_REQUIREMENTS } from "../src/internal/worker-configuration.js";
+import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "../src/internal/worker-configuration.js";
 import {
   CancellationRejectedError,
   OperationCancelledError,
@@ -360,14 +360,9 @@ class ControlledWorkerAdapter implements WorkerAdapter {
     resume(
       Effect.succeed({
         acceptanceRequestId: "request-1",
-        body: {
-          formatId: "pions.result-body.v1",
-          normalizationId: "identity.v1",
-          expectedByteCount: bytes.byteLength,
-          expectedDigest: digest,
-          bytes,
-        },
-        workProducts: [],
+        body,
+        expectedByteCount: bytes.byteLength,
+        expectedDigest: digest,
       })
     );
   }
@@ -1554,8 +1549,7 @@ test("Runtime rejects a profile requiring an unavailable tool before issuing an 
           tools: ["read", "network"],
           resources: { resourceProofPolicy: "disabled" },
           startAuthorization: { policy: "disabled" },
-          workProductRequirements: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS,
-          acceptedArtifactRetentionMs: 86_400_000,
+          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         },
       },
     },
@@ -1623,21 +1617,7 @@ test("Runtime rejects a contradictory candidate profile without disabling its gu
               reviewSubjectVerification: "disabled",
             },
           },
-          workProductRequirements: {
-            body: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS.body,
-            workProducts: [
-              {
-                key: "patch",
-                formatId: "pions.patch.v1",
-                normalizationId: "identity.v1",
-                minCount: 1,
-                maxCount: 1,
-                maxByteCount: 1_024,
-              },
-            ],
-            maxTotalByteCount: 1_049_600,
-          },
-          acceptedArtifactRetentionMs: 86_400_000,
+          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         },
       },
     },
@@ -1650,55 +1630,6 @@ test("Runtime rejects a contradictory candidate profile without disabling its gu
       idempotencyKey: "candidate",
     }),
     { name: "ResourceProofRejectedError", reason: "permission_contradiction" }
-  );
-});
-
-test("Runtime rejects required work products when the Worker adapter cannot produce them", async () => {
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter(),
-    clock: new FakeClock([]),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store: new InMemoryEventStore(),
-    configuration: {
-      cwd: "/work/project",
-      profiles: {
-        coding: {
-          intendedUse: "reader",
-          modelCandidates: [{ provider: "test", id: "test-model" }],
-          thinkingLevel: "medium",
-          tools: ["read", "bash"],
-          resources: { resourceProofPolicy: "disabled" },
-          startAuthorization: { policy: "disabled" },
-          workProductRequirements: {
-            body: BODY_ONLY_WORK_PRODUCT_REQUIREMENTS.body,
-            workProducts: [
-              {
-                key: "patch",
-                formatId: "pions.patch.v1",
-                normalizationId: "identity.v1",
-                minCount: 1,
-                maxCount: 1,
-                maxByteCount: 1_024,
-              },
-            ],
-            maxTotalByteCount: 1_049_600,
-          },
-          acceptedArtifactRetentionMs: 86_400_000,
-        },
-      },
-    },
-  });
-
-  await assert.rejects(
-    runtime.spawn({
-      promptRef: "prompt",
-      profile: "coding",
-      idempotencyKey: "task",
-    }),
-    (error) =>
-      error instanceof WorkerConfigurationError &&
-      error.reason === "unsupported_capability"
   );
 });
 
