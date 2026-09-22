@@ -28,7 +28,10 @@ import type {
 
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
 import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
-import { DEFAULT_WORKER_PROFILE_POLICY } from "../src/internal/worker-configuration.js";
+import {
+  DEFAULT_MAX_RESULT_BYTE_COUNT,
+  DEFAULT_WORKER_PROFILE_POLICY,
+} from "../src/internal/worker-configuration.js";
 import {
   FakeClock,
   FakeIdGenerator,
@@ -76,6 +79,7 @@ const SNAPSHOT: OperationSnapshot = {
     thinkingLevel: "high",
     tools: ["read"],
     cwd: "/repository",
+    maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     modelPolicy: {
       candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
       attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
@@ -125,6 +129,7 @@ const SNAPSHOT: OperationSnapshot = {
         thinkingLevel: "high",
         tools: ["read"],
         cwd: "/repository",
+        maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
         modelPolicy: {
           candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
           attempted: [{ provider: "anthropic", id: "claude-opus-5" }],

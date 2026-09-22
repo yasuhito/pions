@@ -17,6 +17,7 @@ export const effectiveConfig: EffectiveWorkerConfig = {
   thinkingLevel: "medium",
   tools: ["read", "bash"],
   cwd: "/test/workspace",
+  maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
   modelPolicy: {
     candidates: [{ provider: "test", id: "test-model" }],
     attempted: [{ provider: "test", id: "test-model" }],

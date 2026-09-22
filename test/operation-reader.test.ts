@@ -86,6 +86,7 @@ async function recordWaitingOperation(
         thinkingLevel: "high",
         tools: ["read"],
         cwd: "/work",
+        maxResultByteCount,
         modelPolicy: {
           candidates: [{ provider: "fake", id: "model" }],
           attempted: [{ provider: "fake", id: "model" }],
