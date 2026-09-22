@@ -62,6 +62,7 @@ import type {
   Result,
   ResultChunk,
   Runtime,
+  SpawnOptions,
   TaskSpec,
   WorkerProfilePolicy,
 } from "../src/index.js";
@@ -101,6 +102,7 @@ const ACCEPTANCE_ID = `pions.result-acceptance.v1:${"ef".repeat(32)}` as const;
 
 class FakeRuntime implements Runtime {
   readonly tasks: Array<TaskSpec> = [];
+  readonly spawnOptions: Array<SpawnOptions | undefined> = [];
   spawnCount = 0;
   operationReadCount = 0;
   resultReadCount = 0;
@@ -117,9 +119,10 @@ class FakeRuntime implements Runtime {
     private readonly snapshot: Readonly<OperationSnapshot> = SNAPSHOT
   ) {}
 
-  async spawn(task: TaskSpec): Promise<OperationHandle> {
+  async spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
     this.spawnCount += 1;
     this.tasks.push(task);
+    this.spawnOptions.push(options);
     const outcome = this.outcome;
     return {
       operationId: "operation-1",
@@ -405,6 +408,21 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       context
     );
   };
+  const review = (
+    reviewSubjectId = "subject-1",
+    task = "Review the change"
+  ) => {
+    const reviewTool = tools.get("pions_review");
+    if (reviewTool === undefined)
+      throw new Error("pions_review was not registered");
+    return reviewTool.execute(
+      "review-call-1",
+      { reviewSubjectId, task },
+      undefined,
+      undefined,
+      context
+    );
+  };
   const inspect = (operationId = "operation-1") => {
     const operationTool = tools.get("pions_operation");
     if (operationTool === undefined)
@@ -431,6 +449,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
     inspect,
     registered: tool,
     result,
+    review,
     root,
     setSessionId: (value: string) => {
       sessionId = value;
@@ -479,15 +498,27 @@ test("the delegation-only extension does not register pions_review_decision", as
   assert.equal(value.tools.has("pions_review_decision"), false);
 });
 
-test("trusted formal review configuration exposes only delegation tools", async (context) => {
+test("trusted formal review configuration registers review creation", async (context) => {
   const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.deepEqual([...value.tools.keys()], [
     "pions_result",
     "pions_operation",
+    "pions_review",
     "pions_delegate",
   ]);
+});
+
+test("formal review creation pins the trusted result format", async (context) => {
+  const value = await formalReviewFixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.review();
+
+  assert.deepEqual(
+    value.runtime.spawnOptions[0]?.resultFormat,
+    FORMAL_REVIEW_RESULT_FORMAT
+  );
 });
 
 test("project extension registers pions_operation", async (context) => {

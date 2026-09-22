@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { Cause, Effect, Exit, Schema } from "effect";
 
@@ -46,6 +47,7 @@ import type {
   OperationHandle,
   OperationReader,
   OperationSnapshot as PublicOperationSnapshot,
+  SpawnOptions,
   Result,
   ResultAcceptanceId,
   ResultChunkReadOutcome,
@@ -96,7 +98,12 @@ function terminal(operation: Operation): boolean {
 }
 
 export function makeRuntime(services: RuntimeServices): Runtime {
-  const resultAcceptance = makeResultAcceptance({ store: services.store });
+  const resultAcceptance = makeResultAcceptance({
+    store: services.store,
+    ...(services.formalReviewResultFormats === undefined
+      ? {}
+      : { resultFormats: services.formalReviewResultFormats.registry }),
+  });
   const records = new Map<string, OperationRecord>();
   const spawns = new Map<string, Promise<OperationHandle>>();
   const cancellations = new Map<string, Promise<CancellationResult>>();
@@ -191,6 +198,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ...(operation.failureReason === undefined
         ? {}
         : { failureReason: operation.failureReason }),
+      ...(operation.resultFormat === undefined
+        ? {}
+        : { resultFormat: structuredClone(operation.resultFormat) }),
+      ...(operation.resultFormatRejection === undefined
+        ? {}
+        : {
+            resultFormatRejection: structuredClone(
+              operation.resultFormatRejection
+            ),
+          }),
       ...(operation.workerIdentity === undefined
         ? {}
         : { workerIdentity: structuredClone(operation.workerIdentity) }),
@@ -866,7 +883,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           );
         const reason: OperationFailureReason = outcome.state;
         current = await runEffect(
-          advance(record.operationId, { type: "operation_failed", reason })
+          advance(record.operationId, {
+            type: "operation_failed",
+            reason,
+            ...(outcome.state === "result_format_rejected"
+              ? { resultFormatRejection: outcome.rejection }
+              : {}),
+          })
         );
         await settleTerminal(record, current);
         return;
@@ -909,7 +932,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   };
 
   const createOperation = async (
-    taskInput: TaskSpec
+    taskInput: TaskSpec,
+    options: SpawnOptions | undefined
   ): Promise<OperationRecord> => {
     await runEffect(services.presentation.preflight());
     const decoded = await Effect.runPromise(
@@ -936,10 +960,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         "unsupported_capability",
         "Unknown Worker profile"
       );
-    if (profile.intendedUse !== "general")
+    if (
+      (profile.intendedUse !== "general" &&
+        profile.intendedUse !== "formal_reviewer") ||
+      (profile.intendedUse === "formal_reviewer") !==
+        (options?.resultFormat !== undefined) ||
+      (options?.resultFormat !== undefined &&
+        !isDeepStrictEqual(
+          options.resultFormat,
+          services.formalReviewResultFormats?.resultFormat
+        ))
+    )
       throw new WorkerConfigurationError(
         "unsupported_capability",
-        "Only general-purpose delegation profiles are supported"
+        "Worker profile and Result format do not match trusted configuration"
       );
     const requestedConfig = requestedWorkerConfig(task);
     const effectiveConfig = resolveWorkerConfig({
@@ -964,6 +998,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           requestedConfig,
           effectiveConfig,
           maxResultByteCount: profile.maxResultByteCount,
+          ...(options?.resultFormat === undefined
+            ? {}
+            : { resultFormat: options.resultFormat }),
         })
         .pipe(
           Effect.map((snapshot) => snapshot.operation),
@@ -1208,13 +1245,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await recovery;
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
     },
-    spawn(task: TaskSpec): Promise<OperationHandle> {
+    spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle> {
       if (closing) return Promise.reject(new RuntimeClosedError());
       const existing = spawns.get(task.idempotencyKey);
       if (existing !== undefined) return existing;
       const admitted = (async () => {
         await recovery;
-        const record = await createOperation(task);
+        const record = await createOperation(task, options);
         track(execute(record, false));
         return {
           ...createReader(record.operationId),

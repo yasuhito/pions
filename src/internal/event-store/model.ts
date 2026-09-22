@@ -5,7 +5,9 @@ import type {
   ObservedWorkerConfig,
   OperationFailureReason,
   OperationState,
+  PinnedResultFormat,
   RequestedWorkerConfig,
+  ResultFormatRejectionEvidence,
   StartDeliveryAuthorityEvidence,
   StartDeliveryEntryEvidence,
   StartDeliveryHandoffEvidence,
@@ -45,6 +47,8 @@ export interface Operation {
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly maxResultByteCount: number;
+  readonly resultFormat?: Readonly<PinnedResultFormat>;
+  readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
   readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
   readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
@@ -90,6 +94,7 @@ export type OperationEvent = EventMetadata &
         readonly requestedConfig: Readonly<RequestedWorkerConfig>;
         readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
         readonly maxResultByteCount: number;
+        readonly resultFormat?: Readonly<PinnedResultFormat>;
       }
     | {
         readonly type: "start_delivery_authority_acquired";

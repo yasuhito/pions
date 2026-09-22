@@ -15,10 +15,12 @@ import {
   FakeClock,
   FakeIdGenerator,
   FakePresentation,
+  FakeWorkerAdapter,
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
 import { sha256Digest } from "../src/internal/result-digest.js";
+import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import type { WorkerProfilePolicy } from "../src/public.js";
 
 const profile: WorkerProfilePolicy = {
@@ -58,6 +60,75 @@ test("Runtime exposes only delegation lifecycle operations", () => {
   });
 
   assert.deepEqual(Object.keys(runtime), ["close", "spawn", "operation"]);
+});
+
+test("形式不適合の正式レビューは拒否理由を状態照会へ保存する", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("invalid-result-validator", "utf8"),
+        validate: async () => ({ kind: "invalid", reason: "invalid_verdict" }),
+      },
+    },
+  ]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  const reviewProfile: WorkerProfilePolicy = {
+    ...profile,
+    intendedUse: "formal_reviewer",
+    startAuthorization: {
+      policy: "required",
+      windowMs: 60_000,
+      authorizedSubjectIds: ["reviewer"],
+      receipt: {
+        workspace: {
+          workspaceId: "workspace-1",
+          normalizedPath: "/work",
+          baseRevision: "revision-1",
+          owner: { state: "unknown" },
+          pionsMayDelete: false,
+        },
+        permissionManifest: {
+          manifestId: "manifest-1",
+          digest: `sha256:${"ab".repeat(32)}`,
+        },
+        reviewSubjectVerification: "required",
+      },
+    },
+  };
+  const store = new InMemoryEventStore([], clock());
+  const runtime = makeTestRuntime({
+    ...services(
+      store,
+      new FakeWorkerAdapter({ messages: { body: "invalid" } })
+    ),
+    configuration: {
+      cwd: "/work",
+      profiles: { "formal-review": reviewProfile },
+    },
+    formalReviewResultFormats: { registry: formats, resultFormat },
+    recovery: "disabled",
+  });
+  const handle = await runtime.spawn(
+    {
+      promptRef: "private://review",
+      profile: "formal-review",
+      idempotencyKey: "review-1",
+    },
+    { resultFormat }
+  );
+  await handle.result().catch(() => undefined);
+  const snapshot = await handle.read();
+
+  assert.equal(snapshot.resultFormatRejection?.reason, "invalid_verdict");
 });
 
 async function seed(store: InMemoryEventStore): Promise<void> {

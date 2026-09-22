@@ -177,6 +177,9 @@ export abstract class ValidatedEventStore implements EventStore {
       requestedConfig: request.requestedConfig,
       effectiveConfig: request.effectiveConfig,
       maxResultByteCount: request.maxResultByteCount,
+      ...(request.resultFormat === undefined
+        ? {}
+        : { resultFormat: request.resultFormat }),
     });
   }
 

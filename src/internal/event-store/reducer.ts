@@ -159,6 +159,9 @@ export function reduceOperation(
       requestedConfig: structuredClone(event.requestedConfig),
       effectiveConfig: structuredClone(event.effectiveConfig),
       maxResultByteCount: event.maxResultByteCount,
+      ...(event.resultFormat === undefined
+        ? {}
+        : { resultFormat: structuredClone(event.resultFormat) }),
       startDeliveryHandoffs: [],
       cancellationEpoch: 0,
     });
@@ -462,10 +465,33 @@ export function reduceOperation(
     case "operation_failed":
       if (current.state !== "starting" && current.state !== "running")
         throw new TransitionError("illegal_transition");
+      if (
+        (event.reason === "result_format_rejected") !==
+          (event.resultFormatRejection !== undefined) ||
+        (event.reason === "result_format_rejected" &&
+          (current.state !== "running" || current.result !== undefined)) ||
+        (event.resultFormatRejection !== undefined &&
+          (current.resultFormat === undefined ||
+            event.resultFormatRejection.formatId !==
+              current.resultFormat.formatId ||
+            event.resultFormatRejection.version !== current.resultFormat.version ||
+            !isDeepStrictEqual(
+              event.resultFormatRejection.validator,
+              current.resultFormat.validator
+            )))
+      )
+        throw new TransitionError("illegal_transition");
       return immutable({
         ...current,
         state: "failed",
         failureReason: event.reason,
+        ...(event.resultFormatRejection === undefined
+          ? {}
+          : {
+              resultFormatRejection: structuredClone(
+                event.resultFormatRejection
+              ),
+            }),
         terminalReason: event.reason,
         stateSeq: event.seq,
       });

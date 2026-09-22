@@ -5,13 +5,19 @@ import { Effect } from "effect";
 
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
 import { sha256Digest } from "../src/internal/result-digest.js";
+import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
+import type { ResultFormatRegistry } from "../src/internal/result-format-registry.js";
+import type { PinnedResultFormat } from "../src/public.js";
 import {
   advanceTestOperationToRunning,
   FakeClock,
   InMemoryEventStore,
 } from "../src/internal/testing.js";
 
-async function fixture() {
+async function fixture(
+  resultFormat?: Readonly<PinnedResultFormat>,
+  resultFormats?: ResultFormatRegistry
+) {
   const store = new InMemoryEventStore(
     [],
     new FakeClock(
@@ -45,11 +51,94 @@ async function fixture() {
         },
       },
       maxResultByteCount: 1024,
+      ...(resultFormat === undefined ? {} : { resultFormat }),
     })
   );
   await advanceTestOperationToRunning(store, "operation-1");
-  return { store, acceptance: makeResultAcceptance({ store }) };
+  return {
+    store,
+    acceptance: makeResultAcceptance({
+      store,
+      ...(resultFormats === undefined ? {} : { resultFormats }),
+    }),
+  };
 }
+
+test("形式不適合の結果を受理前に拒否する", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("invalid-verdict-validator", "utf8"),
+        validate: async () => ({ kind: "invalid", reason: "invalid_verdict" }),
+      },
+    },
+  ]);
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  const { acceptance } = await fixture(pinned, formats);
+  const body = "invalid";
+  const bytes = Buffer.from(body, "utf8");
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body,
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
+  );
+
+  assert.deepEqual(
+    outcome.state === "failed" ? outcome.resultFormatRejection : undefined,
+    {
+      formatId: pinned.formatId,
+      version: pinned.version,
+      validator: pinned.validator,
+      reason: "invalid_verdict",
+    }
+  );
+});
+
+test("形式に適合する結果は受理される", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-result-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
+    },
+  ]);
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  const { acceptance } = await fixture(pinned, formats);
+  const body = "valid";
+  const bytes = Buffer.from(body, "utf8");
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body,
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
+  );
+
+  assert.equal(outcome.state, "accepted");
+});
 
 test("正確なUTF-8結果を受理する", async () => {
   const { acceptance } = await fixture();

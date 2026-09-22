@@ -3,6 +3,7 @@ import type { Effect } from "effect";
 import type {
   EffectiveWorkerConfig,
   OperationState,
+  PinnedResultFormat,
   RequestedWorkerConfig,
   ResultAcceptanceTransactionOutcome,
   TaskSpec,
@@ -39,6 +40,7 @@ export interface OperationRequest {
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly maxResultByteCount: number;
+  readonly resultFormat?: Readonly<PinnedResultFormat>;
 }
 
 export interface OperationSnapshot {

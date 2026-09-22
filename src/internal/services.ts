@@ -15,6 +15,7 @@ import type {
   ObservedWorkerConfig,
   OperationPersistenceError,
   ResourceProofRejectedError,
+  ResultFormatRejectionEvidence,
   WorkerProducedResult,
   WorkerProfilePolicy,
 } from "../public.js";
@@ -118,6 +119,10 @@ export type WorkerRunOutcome = (
   | { readonly state: "unsupported_capability" }
   | { readonly state: "tool_policy_violation" }
   | {
+      readonly state: "result_format_rejected";
+      readonly rejection: Readonly<ResultFormatRejectionEvidence>;
+    }
+  | {
       readonly state: "agent_failed";
       readonly evidence: Readonly<AgentRunEvidence>;
     }
@@ -162,6 +167,16 @@ export function acknowledgeResultAcceptance(
   ) => Effect.Effect<void, unknown>
 ): Effect.Effect<WorkerRunOutcome> {
   if (acceptance.state !== "accepted") {
+    if (
+      acceptance.state === "failed" &&
+      acceptance.reason === "result_format_rejected" &&
+      acceptance.resultFormatRejection !== undefined
+    ) {
+      return Effect.succeed({
+        state: "result_format_rejected",
+        rejection: acceptance.resultFormatRejection,
+      } as const);
+    }
     return Effect.succeed({ state: "worker_protocol_failed" } as const);
   }
   const outcome: WorkerRunOutcome = {

@@ -165,6 +165,10 @@ export interface ResultFormatRejectionEvidence {
   readonly reason: ResultFormatRejectionReason;
 }
 
+export interface SpawnOptions {
+  readonly resultFormat?: Readonly<PinnedResultFormat>;
+}
+
 export interface WorkerProducedResult {
   readonly acceptanceRequestId: string;
   readonly body: string;
@@ -690,22 +694,6 @@ export interface VersionedResourceEvidenceSnapshot {
   readonly evidence: Readonly<ResourceEvidenceSnapshot>;
 }
 
-export interface ResourceProofController {
-  prepare(
-    request: Readonly<ResourcePreparationRequest>
-  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
-  revalidate(
-    operationId: string
-  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
-  cleanup(
-    operationId: string,
-    credential: string
-  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
-  read(
-    operationId: string
-  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
-}
-
 export class ResourceProofRejectedError extends Error {
   override readonly name = "ResourceProofRejectedError";
 
@@ -715,168 +703,6 @@ export class ResourceProofRejectedError extends Error {
   ) {
     super(message);
   }
-}
-
-export interface RetryClearanceEvidence {
-  readonly clearanceId: string;
-  readonly failedOperationId: string;
-  readonly affectedResourceIds: ReadonlyArray<string>;
-  readonly workerStoppedOrAccessBlocked: true;
-  readonly noConflict: true;
-  readonly handoffConfirmed: true;
-  readonly verifiedBy: string;
-  readonly verifiedAt: string;
-}
-
-export type RevisionSeriesId = `pions.revision-series.v1:${string}`;
-
-export interface RevisionReservation {
-  readonly requestId: string;
-  readonly kind: "revision" | "retry";
-  readonly seriesId: RevisionSeriesId;
-  readonly seriesOriginOperationId: string;
-  readonly revisionNumber: number;
-  readonly attemptNumber: number;
-  readonly operationId: string;
-  readonly targetOperationId: string;
-  readonly targetResultId?: string;
-  readonly targetResultDigest?: Sha256Digest;
-  readonly retryOfOperationId?: string;
-  readonly reason: string;
-  readonly requestedBy: string;
-  readonly maxAttempts: number;
-  readonly resultAdoptionSubjectIds: ReadonlyArray<string>;
-  readonly task: Readonly<TaskSpec>;
-  readonly reservedAt: string;
-  readonly retryClearanceId?: string;
-}
-
-export interface RevisionResultAdoptionRecord {
-  readonly decisionId: string;
-  readonly seriesId: RevisionSeriesId;
-  readonly revisionNumber: number;
-  readonly retryOperationId: string;
-  readonly resultId: string;
-  readonly resultDigest: Sha256Digest;
-  readonly decidedBy: string;
-  readonly decidedAt: string;
-}
-
-export interface RevisionSeriesSnapshot {
-  readonly seriesId: RevisionSeriesId;
-  readonly seriesOriginOperationId: string;
-  readonly maxAttempts: number;
-  readonly resultAdoptionSubjectIds: ReadonlyArray<string>;
-  readonly reservations: ReadonlyArray<Readonly<RevisionReservation>>;
-  readonly retryClearances: ReadonlyArray<Readonly<RetryClearanceEvidence>>;
-  readonly adoptions: ReadonlyArray<Readonly<RevisionResultAdoptionRecord>>;
-}
-
-interface ReserveRevisionRequestBase {
-  readonly requestId: string;
-  readonly targetOperationId: string;
-  readonly targetResultId: string;
-  readonly targetResultDigest: Sha256Digest;
-  readonly reason: string;
-  readonly task: Readonly<TaskSpec>;
-}
-
-export type ReserveRevisionRequest = ReserveRevisionRequestBase &
-  (
-    | { readonly seriesId?: never; readonly maxAttempts: number }
-    | { readonly seriesId: RevisionSeriesId; readonly maxAttempts?: never }
-  );
-
-export interface ReserveRetryRequest {
-  readonly requestId: string;
-  readonly seriesId: RevisionSeriesId;
-  readonly failedOperationId: string;
-  readonly reason: string;
-  readonly task: Readonly<TaskSpec>;
-  readonly clearance?: Readonly<RetryClearanceEvidence>;
-}
-
-export type RevisionReservationOutcome =
-  | {
-      readonly status: "reserved" | "idempotent";
-      readonly reservation: Readonly<RevisionReservation>;
-    }
-  | {
-      readonly status: "rejected";
-      readonly reason:
-        | "not_found"
-        | "request_conflict"
-        | "invalid_target"
-        | "limit_exceeded"
-        | "retry_clearance_required"
-        | "retry_clearance_invalid";
-    };
-
-export interface AdoptRevisionResultRequest {
-  readonly decisionId: string;
-  readonly seriesId: RevisionSeriesId;
-  readonly revisionNumber: number;
-  readonly retryOperationId: string;
-  readonly resultId: string;
-  readonly resultDigest: Sha256Digest;
-}
-
-export type RevisionResultAdoptionOutcome =
-  | {
-      readonly status: "adopted" | "idempotent";
-      readonly adoption: Readonly<RevisionResultAdoptionRecord>;
-    }
-  | {
-      readonly status: "rejected";
-      readonly reason:
-        | "series_not_found"
-        | "fixed_scope_denied"
-        | "current_authority_denied"
-        | "authority_revoked"
-        | "authority_unknown"
-        | "decision_conflict"
-        | "invalid_successor"
-        | "result_not_accepted";
-    };
-
-export type CurrentResultAdoptionAuthority =
-  "authorized" | "denied" | "revoked" | "unknown";
-
-export interface AuthenticatedRevisionCoordinator {
-  readonly subjectId: string;
-  fixedResultAdoptionSubjectIds(
-    targetOperationId: string
-  ): Promise<ReadonlyArray<string>>;
-  currentResultAdoptionAuthority(
-    seriesId: string
-  ): Promise<CurrentResultAdoptionAuthority>;
-}
-
-export interface RetryClearanceVerifier {
-  verify(evidence: Readonly<RetryClearanceEvidence>): Promise<boolean>;
-}
-
-export interface RevisionAuthenticator {
-  authenticate(
-    credential: string
-  ): Promise<Readonly<AuthenticatedRevisionCoordinator>>;
-}
-
-export class RevisionAuthenticationError extends Error {
-  override readonly name = "RevisionAuthenticationError";
-}
-
-export interface RevisionCoordinator {
-  reserveRevision(
-    request: Readonly<ReserveRevisionRequest>
-  ): Promise<Readonly<RevisionReservationOutcome>>;
-  reserveRetry(
-    request: Readonly<ReserveRetryRequest>
-  ): Promise<Readonly<RevisionReservationOutcome>>;
-  adopt(
-    request: Readonly<AdoptRevisionResultRequest>
-  ): Promise<Readonly<RevisionResultAdoptionOutcome>>;
-  read(seriesId: string): Promise<Readonly<RevisionSeriesSnapshot>>;
 }
 
 export interface WorkerIdentity {
@@ -914,6 +740,8 @@ export interface OperationSnapshot {
   readonly unknownReason?:
     "cancel-unproven" | "start-acceptance-unknown" | "liveness-unproven";
   readonly failureReason?: OperationFailureReason;
+  readonly resultFormat?: Readonly<PinnedResultFormat>;
+  readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
   readonly workerIdentity?: Readonly<WorkerIdentity>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
@@ -979,73 +807,8 @@ export interface OperationReader {
   }): Promise<Readonly<ResultChunkReadOutcome>>;
 }
 
-export interface WaitingStartAuthorization {
-  readonly operationId: string;
-  readonly version: Readonly<OperationVersion>;
-  readonly deadline: string;
-  readonly receipt: Readonly<StartupReceipt>;
-}
-
-export interface StartAuthorizationDecisionRequest {
-  readonly operationId: string;
-  readonly decisionId: string;
-  readonly kind: "authorize" | "reject";
-  readonly receiptDigest: StartupReceipt["digest"];
-}
-
-export type StartAuthorizationDecisionRejectionReason =
-  | "operation_not_found"
-  | "fixed_scope_denied"
-  | "current_authority_denied"
-  | "authority_revoked"
-  | "authority_unknown"
-  | "receipt_mismatch"
-  | "deadline_elapsed"
-  | "decision_id_conflict"
-  | "gate_closed";
-
-export type StartAuthorizationDecisionOutcome =
-  | {
-      readonly status: "accepted" | "idempotent" | "duplicate";
-      readonly decision: Readonly<StartAuthorizationDecisionRecord>;
-      readonly gate: "authorized" | "rejected";
-    }
-  | {
-      readonly status: "rejected";
-      readonly reason: StartAuthorizationDecisionRejectionReason;
-    };
-
-export interface StartAuthorizationInbox {
-  listWaiting(): Promise<ReadonlyArray<Readonly<WaitingStartAuthorization>>>;
-  decide(
-    request: Readonly<StartAuthorizationDecisionRequest>
-  ): Promise<Readonly<StartAuthorizationDecisionOutcome>>;
-}
-
 export type CurrentStartAuthorization =
   "authorized" | "denied" | "revoked" | "unknown";
-
-export interface AuthenticatedStartAuthorizer {
-  readonly subjectId: string;
-  currentAuthorization(operationId: string): Promise<CurrentStartAuthorization>;
-}
-
-export interface StartAuthorizationAuthenticator {
-  authenticate(
-    credential: string
-  ): Promise<Readonly<AuthenticatedStartAuthorizer>>;
-}
-
-export interface StartAuthorizationAuthority {
-  currentAuthorization(
-    subjectId: string,
-    operationId: string
-  ): Promise<CurrentStartAuthorization>;
-}
-
-export class StartAuthorizationAuthenticationError extends Error {
-  override readonly name = "StartAuthorizationAuthenticationError";
-}
 
 export type OperationFailureReason =
   | "worker_start_failed"
@@ -1057,7 +820,8 @@ export type OperationFailureReason =
   | "model_not_found"
   | "model_auth_unavailable"
   | "unsupported_capability"
-  | "tool_policy_violation";
+  | "tool_policy_violation"
+  | "result_format_rejected";
 
 export class HerdrPreconditionError extends Error {
   override readonly name = "HerdrPreconditionError";
@@ -1195,7 +959,7 @@ export interface OperationHandle extends OperationReader {
 }
 
 export interface Runtime {
-  spawn(task: TaskSpec): Promise<OperationHandle>;
+  spawn(task: TaskSpec, options?: SpawnOptions): Promise<OperationHandle>;
   operation(operationId: string): Promise<OperationReader>;
   close(): Promise<void>;
 }

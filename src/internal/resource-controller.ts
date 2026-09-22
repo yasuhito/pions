@@ -9,7 +9,6 @@ import type {
   ResourceCleanupAuthenticator,
   ResourceEvidenceSnapshot,
   ResourcePreparationRequest,
-  ResourceProofController,
   ResourceProofEvidence,
   ResourceProofRejectionReason,
   ResourceValidationEvidence,
@@ -85,7 +84,20 @@ export class InMemoryResourceEvidenceRepository implements ResourceEvidenceRepos
   }
 }
 
-export interface InternalResourceProofController extends ResourceProofController {
+export interface InternalResourceProofController {
+  prepare(
+    request: Readonly<ResourcePreparationRequest>
+  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  revalidate(
+    operationId: string
+  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  cleanup(
+    operationId: string,
+    credential: string
+  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
+  read(
+    operationId: string
+  ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
   automaticCleanup(
     operationId: string
   ): Promise<Readonly<VersionedResourceEvidenceSnapshot>>;
