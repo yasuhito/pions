@@ -19,7 +19,6 @@ export type {
   CancellationRejectionReason,
   CancellationResult,
   CancelOptions,
-  DeploymentMode,
   EffectiveWorkerConfig,
   ModelReference,
   ModelSelectionPolicy,

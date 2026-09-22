@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { makeFormalReviewIntegration } from "./internal/formal-review-integration.js";
-import type { DeploymentMode, ResultFormatValidationFailureReason } from "./public.js";
+import type { ResultFormatValidationFailureReason } from "./public.js";
+
+export type DeploymentMode = "non-production" | "production";
 
 export type FormalReviewResultFormatValidation =
   | { readonly kind: "valid" }

@@ -21,7 +21,7 @@ import {
   resolveWorkerConfig,
 } from "./worker-configuration.js";
 import { StartDeliveryAbortedError } from "./services.js";
-import type { RuntimeServices, Worker } from "./services.js";
+import type { RuntimeServices, Worker, WorkerRunOutcome } from "./services.js";
 import {
   automaticStartScopeDigest,
   startInstructionReference,
@@ -67,6 +67,7 @@ interface OperationRecord {
   readonly resolveTerminal: (completion: Readonly<OperationCompletion>) => void;
   readonly rejectTerminal: (error: unknown) => void;
   worker?: Worker;
+  observedOutcome?: WorkerRunOutcome;
   recoverable?: boolean;
   cancelEvidence?: {
     readonly cancellationEpoch: number;
@@ -653,295 +654,311 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   };
 
-  const execute = async (
+  const runWorker = async (
     record: OperationRecord,
     recovering: boolean
-  ): Promise<void> => {
-    try {
-      let operation = await runEffect(getOperation(record.operationId));
-      if (!recovering) {
-        operation = await runEffect(
-          advance(record.operationId, { type: "operation_starting" })
-        );
-        await runEffect(project(operation));
-      }
-      const worker = record.worker;
-      if (worker === undefined) throw new Error("Worker was not opened");
-      const outcome = await runEffect(
-        worker.run({
-          workerLaunched: () =>
-            recovering
-              ? Effect.void
-              : advanceAndProject(record.operationId, {
-                  type: "worker_launched",
-                }),
-          workerIdentified: (identity) =>
-            recovering
-              ? Effect.tryPromise({
-                  try: async () => {
-                    const current = await runEffect(
-                      getOperation(record.operationId)
-                    );
-                    const existing = current.workerIdentity;
-                    const previous = current.startDeliveryAuthority;
-                    if (
-                      existing === undefined ||
-                      previous === undefined ||
-                      existing.processInstanceId !==
-                        identity.processInstanceId ||
-                      existing.processStartToken !== identity.processStartToken
-                    )
-                      throw new OperationPersistenceError(
-                        record.operationId,
-                        "corrupt_record"
-                      );
-                    const pending = current.startDeliveryHandoffs.at(-1);
-                    const resumes =
-                      pending !== undefined &&
-                      pending.workerGenerationConfirmedAt === undefined &&
-                      pending.deliveryGeneration ===
-                        previous.deliveryGeneration + 1;
-                    const deliveryGeneration = resumes
-                      ? pending.deliveryGeneration
-                      : previous.deliveryGeneration + 1;
-                    return {
-                      dispatcherId: resumes
-                        ? pending.successorDispatcherId
-                        : `${RUNTIME_ACTOR_ID}-recovery-${deliveryGeneration}`,
-                      workerProcessInstanceId: previous.workerProcessInstanceId,
-                      receiptDigest: previous.receiptDigest,
-                      deliveryGeneration,
-                    };
-                  },
-                  catch: (error) =>
-                    error instanceof OperationPersistenceError
-                      ? error
-                      : new OperationPersistenceError(
-                          record.operationId,
-                          "write_failed"
-                        ),
-                })
-              : advance(record.operationId, {
-                  type: "worker_identified",
-                  workerIdentity: {
-                    processId: identity.processId,
-                    processInstanceId: identity.processInstanceId,
-                    processStartToken: identity.processStartToken,
-                    piSessionId: identity.piSessionId,
-                    paneId: operation.presentation?.paneId ?? "",
-                  },
-                  observedConfig: identity.observedConfig,
-                }).pipe(
-                  Effect.tap((identified) => project(identified)),
-                  Effect.flatMap((identified) => {
-                    const instruction = {
-                      dispatcherId: RUNTIME_ACTOR_ID,
-                      workerProcessInstanceId: identity.processInstanceId,
-                      receiptDigest: automaticStartScopeDigest(identified),
-                      deliveryGeneration: 1,
-                    };
-                    return advance(record.operationId, {
-                      type: "start_delivery_authority_acquired",
-                      instruction,
-                    }).pipe(
-                      Effect.tap((started) => project(started)),
-                      Effect.as(instruction)
-                    );
-                  })
-                ),
-          startDeliveryAuthorityRevoked: (
-            successorDispatcherId,
-            deliveryGeneration
-          ) =>
-            advanceAndProject(record.operationId, {
-              type: "start_delivery_authority_revoked",
-              successorDispatcherId,
-              deliveryGeneration,
-            }),
-          deliveryGenerationConfirmed: (confirmation) =>
-            Effect.gen(function* () {
-              yield* advanceAndProject(record.operationId, {
-                type: "start_delivery_generation_confirmed",
-                dispatcherId: confirmation.dispatcherId,
-                deliveryGeneration: confirmation.deliveryGeneration,
-                acceptanceState: confirmation.acceptanceState,
-                ...(confirmation.acceptedInstruction === undefined
-                  ? {}
-                  : {
-                      acceptedInstruction: startInstructionReference(
-                        confirmation.acceptedInstruction
-                      ),
-                    }),
-              });
-              if (confirmation.acceptanceState === "unknown") {
-                const unknown = yield* advance(record.operationId, {
-                  type: "operation_unknown",
-                  reason: "start-acceptance-unknown",
-                });
-                yield* project(unknown);
-                return yield* Effect.fail(
-                  new StartDeliveryAbortedError(
-                    `Start acceptance is unknown for Operation ${record.operationId}`
+  ): Promise<WorkerRunOutcome> => {
+    let operation = await runEffect(getOperation(record.operationId));
+    if (!recovering) {
+      operation = await runEffect(
+        advance(record.operationId, { type: "operation_starting" })
+      );
+      await runEffect(project(operation));
+    }
+    const worker = record.worker;
+    if (worker === undefined) throw new Error("Worker was not opened");
+    return runEffect(
+      worker.run({
+        workerLaunched: () =>
+          recovering
+            ? Effect.void
+            : advanceAndProject(record.operationId, {
+                type: "worker_launched",
+              }),
+        workerIdentified: (identity) =>
+          recovering
+            ? Effect.tryPromise({
+                try: async () => {
+                  const current = await runEffect(
+                    getOperation(record.operationId)
+                  );
+                  const existing = current.workerIdentity;
+                  const previous = current.startDeliveryAuthority;
+                  if (
+                    existing === undefined ||
+                    previous === undefined ||
+                    existing.processInstanceId !==
+                      identity.processInstanceId ||
+                    existing.processStartToken !== identity.processStartToken
                   )
-                );
-              }
-              const current = yield* getOperation(record.operationId);
-              if (confirmation.acceptanceState === "accepted") {
-                const accepted = confirmation.acceptedInstruction;
-                if (accepted === undefined)
-                  return yield* Effect.fail(
-                    new OperationPersistenceError(
+                    throw new OperationPersistenceError(
                       record.operationId,
                       "corrupt_record"
-                    )
+                    );
+                  const pending = current.startDeliveryHandoffs.at(-1);
+                  const resumes =
+                    pending !== undefined &&
+                    pending.workerGenerationConfirmedAt === undefined &&
+                    pending.deliveryGeneration ===
+                      previous.deliveryGeneration + 1;
+                  const deliveryGeneration = resumes
+                    ? pending.deliveryGeneration
+                    : previous.deliveryGeneration + 1;
+                  return {
+                    dispatcherId: resumes
+                      ? pending.successorDispatcherId
+                      : `${RUNTIME_ACTOR_ID}-recovery-${deliveryGeneration}`,
+                    workerProcessInstanceId: previous.workerProcessInstanceId,
+                    receiptDigest: previous.receiptDigest,
+                    deliveryGeneration,
+                  };
+                },
+                catch: (error) =>
+                  error instanceof OperationPersistenceError
+                    ? error
+                    : new OperationPersistenceError(
+                        record.operationId,
+                        "write_failed"
+                      ),
+              })
+            : advance(record.operationId, {
+                type: "worker_identified",
+                workerIdentity: {
+                  processId: identity.processId,
+                  processInstanceId: identity.processInstanceId,
+                  processStartToken: identity.processStartToken,
+                  piSessionId: identity.piSessionId,
+                  paneId: operation.presentation?.paneId ?? "",
+                },
+                observedConfig: identity.observedConfig,
+              }).pipe(
+                Effect.tap((identified) => project(identified)),
+                Effect.flatMap((identified) => {
+                  const instruction = {
+                    dispatcherId: RUNTIME_ACTOR_ID,
+                    workerProcessInstanceId: identity.processInstanceId,
+                    receiptDigest: automaticStartScopeDigest(identified),
+                    deliveryGeneration: 1,
+                  };
+                  return advance(record.operationId, {
+                    type: "start_delivery_authority_acquired",
+                    instruction,
+                  }).pipe(
+                    Effect.tap((started) => project(started)),
+                    Effect.as(instruction)
                   );
-                if (current.startInstructionAcceptance === undefined)
-                  yield* advanceAndProject(record.operationId, {
-                    type: "start_instruction_accepted",
-                    instruction: startInstructionReference(accepted),
-                    proof: "worker-durable-acceptance",
-                  });
-                const acceptedCurrent = yield* getOperation(record.operationId);
-                if (
-                  acceptedCurrent.startInstructionAcknowledgement === undefined
+                })
+              ),
+        startDeliveryAuthorityRevoked: (
+          successorDispatcherId,
+          deliveryGeneration
+        ) =>
+          advanceAndProject(record.operationId, {
+            type: "start_delivery_authority_revoked",
+            successorDispatcherId,
+            deliveryGeneration,
+          }),
+        deliveryGenerationConfirmed: (confirmation) =>
+          Effect.gen(function* () {
+            yield* advanceAndProject(record.operationId, {
+              type: "start_delivery_generation_confirmed",
+              dispatcherId: confirmation.dispatcherId,
+              deliveryGeneration: confirmation.deliveryGeneration,
+              acceptanceState: confirmation.acceptanceState,
+              ...(confirmation.acceptedInstruction === undefined
+                ? {}
+                : {
+                    acceptedInstruction: startInstructionReference(
+                      confirmation.acceptedInstruction
+                    ),
+                  }),
+            });
+            if (confirmation.acceptanceState === "unknown") {
+              const unknown = yield* advance(record.operationId, {
+                type: "operation_unknown",
+                reason: "start-acceptance-unknown",
+              });
+              yield* project(unknown);
+              return yield* Effect.fail(
+                new StartDeliveryAbortedError(
+                  `Start acceptance is unknown for Operation ${record.operationId}`
                 )
-                  yield* advanceAndProject(record.operationId, {
-                    type: "start_instruction_acknowledged",
-                    instruction: startInstructionReference(accepted),
-                    proof: "authenticated-generation-acknowledgement",
-                  });
-                return;
-              }
-              const previous = current.startDeliveryAuthority;
-              if (
-                previous === undefined ||
-                current.workerIdentity === undefined
-              )
+              );
+            }
+            const current = yield* getOperation(record.operationId);
+            if (confirmation.acceptanceState === "accepted") {
+              const accepted = confirmation.acceptedInstruction;
+              if (accepted === undefined)
                 return yield* Effect.fail(
                   new OperationPersistenceError(
                     record.operationId,
                     "corrupt_record"
                   )
                 );
-              yield* advanceAndProject(record.operationId, {
-                type: "start_delivery_authority_acquired",
-                instruction: {
-                  dispatcherId: confirmation.dispatcherId,
-                  workerProcessInstanceId:
-                    current.workerIdentity.processInstanceId,
-                  receiptDigest: previous.receiptDigest,
-                  deliveryGeneration: confirmation.deliveryGeneration,
-                },
-              });
-            }),
-          startDeliveryEntered: (instruction) =>
-            advanceAndProject(record.operationId, {
-              type: "start_delivery_entered",
-              instruction: startInstructionReference(instruction),
-            }),
-          startInstructionDispatched: (instruction) =>
-            advanceAndProject(record.operationId, {
-              type: "start_instruction_dispatched",
-              instruction: startInstructionReference(instruction),
-            }),
-          startInstructionAccepted: (instruction) =>
-            advanceAndProject(record.operationId, {
-              type: "start_instruction_accepted",
-              instruction: startInstructionReference(instruction),
-              proof: "worker-durable-acceptance",
-            }),
-          startInstructionAcknowledged: (instruction) =>
-            advanceAndProject(record.operationId, {
-              type: "start_instruction_acknowledged",
-              instruction: startInstructionReference(instruction),
-              proof: "authenticated-worker-acknowledgement",
-            }),
-          acceptResult: (result) =>
-            resultAcceptance.accept(record.operationId, result),
-        })
-      );
+              if (current.startInstructionAcceptance === undefined)
+                yield* advanceAndProject(record.operationId, {
+                  type: "start_instruction_accepted",
+                  instruction: startInstructionReference(accepted),
+                  proof: "worker-durable-acceptance",
+                });
+              const acceptedCurrent = yield* getOperation(record.operationId);
+              if (
+                acceptedCurrent.startInstructionAcknowledgement === undefined
+              )
+                yield* advanceAndProject(record.operationId, {
+                  type: "start_instruction_acknowledged",
+                  instruction: startInstructionReference(accepted),
+                  proof: "authenticated-generation-acknowledgement",
+                });
+              return;
+            }
+            const previous = current.startDeliveryAuthority;
+            if (
+              previous === undefined ||
+              current.workerIdentity === undefined
+            )
+              return yield* Effect.fail(
+                new OperationPersistenceError(
+                  record.operationId,
+                  "corrupt_record"
+                )
+              );
+            yield* advanceAndProject(record.operationId, {
+              type: "start_delivery_authority_acquired",
+              instruction: {
+                dispatcherId: confirmation.dispatcherId,
+                workerProcessInstanceId:
+                  current.workerIdentity.processInstanceId,
+                receiptDigest: previous.receiptDigest,
+                deliveryGeneration: confirmation.deliveryGeneration,
+              },
+            });
+          }),
+        startDeliveryEntered: (instruction) =>
+          advanceAndProject(record.operationId, {
+            type: "start_delivery_entered",
+            instruction: startInstructionReference(instruction),
+          }),
+        startInstructionDispatched: (instruction) =>
+          advanceAndProject(record.operationId, {
+            type: "start_instruction_dispatched",
+            instruction: startInstructionReference(instruction),
+          }),
+        startInstructionAccepted: (instruction) =>
+          advanceAndProject(record.operationId, {
+            type: "start_instruction_accepted",
+            instruction: startInstructionReference(instruction),
+            proof: "worker-durable-acceptance",
+          }),
+        startInstructionAcknowledged: (instruction) =>
+          advanceAndProject(record.operationId, {
+            type: "start_instruction_acknowledged",
+            instruction: startInstructionReference(instruction),
+            proof: "authenticated-worker-acknowledgement",
+          }),
+        acceptResult: (result) =>
+          resultAcceptance.accept(record.operationId, result),
+      })
+    );
+  };
 
-      if (outcome.successfulExitConfirmed === true) {
-        const current = await runEffect(getOperation(record.operationId));
-        if (!terminal(current) && current.state !== "cancelling" && current.workerStopConfirmedAt === undefined)
-          await runEffect(
-            advanceAndProject(record.operationId, {
-              type: "worker_stop_confirmed",
-              proof: "worker-stop",
-            })
-          );
-      }
-
-      let current = await runEffect(getOperation(record.operationId));
-      if (terminal(current) || current.state === "cancelling") return;
-      if (current.result !== undefined && current.workerStopConfirmedAt !== undefined) {
-        if (outcome.state === "result_acknowledged" && current.agentRunEvidence === undefined)
-          await runEffect(
-            advanceAndProject(record.operationId, {
-              type: "agent_settled",
-              evidence: outcome.evidence,
-            })
-          );
-        current = await runEffect(
-          advance(record.operationId, { type: "operation_completed" })
-        );
-        await settleTerminal(record, current);
-        return;
-      }
-      if (outcome.state === "validator_unavailable")
-        return "validator_unavailable" as const;
-      if (outcome.state === "liveness-unproven") {
-        current = await runEffect(
-          advance(record.operationId, {
-            type: "operation_unknown",
-            reason: "liveness-unproven",
+  const settleObserved = async (
+    record: OperationRecord,
+    outcome: WorkerRunOutcome
+  ): Promise<void | "validator_unavailable"> => {
+    if (outcome.successfulExitConfirmed === true) {
+      const current = await runEffect(getOperation(record.operationId));
+      if (!terminal(current) && current.state !== "cancelling" && current.workerStopConfirmedAt === undefined)
+        await runEffect(
+          advanceAndProject(record.operationId, {
+            type: "worker_stop_confirmed",
+            proof: "worker-stop",
           })
         );
-        await settleTerminal(record, current);
-        return;
-      }
-      if (outcome.state !== "result_acknowledged") {
-        if (outcome.state === "agent_failed")
-          await runEffect(
-            advanceAndProject(record.operationId, {
-              type: "agent_settled",
-              evidence: outcome.evidence,
-            })
-          );
-        const reason: OperationFailureReason = outcome.state;
-        current = await runEffect(
-          advance(record.operationId, {
-            type: "operation_failed",
-            reason,
-            ...(outcome.state === "result_format_rejected"
-              ? { resultFormatRejection: outcome.rejection }
-              : {}),
-          })
-        );
-        await settleTerminal(record, current);
-        return;
-      }
-      if (current.agentRunEvidence === undefined)
+    }
+
+    let current = await runEffect(getOperation(record.operationId));
+    if (terminal(current) || current.state === "cancelling") return;
+    if (current.result !== undefined && current.workerStopConfirmedAt !== undefined) {
+      if (outcome.state === "result_acknowledged" && current.agentRunEvidence === undefined)
         await runEffect(
           advanceAndProject(record.operationId, {
             type: "agent_settled",
             evidence: outcome.evidence,
           })
         );
-      current = await runEffect(getOperation(record.operationId));
-      if (current.workerStopConfirmedAt === undefined) {
-        current = await runEffect(
-          advance(record.operationId, {
-            type: "operation_unknown",
-            reason: "liveness-unproven",
+      current = await runEffect(
+        advance(record.operationId, { type: "operation_completed" })
+      );
+      await settleTerminal(record, current);
+      return;
+    }
+    if (outcome.state === "validator_unavailable")
+      return "validator_unavailable" as const;
+    if (outcome.state === "liveness-unproven") {
+      current = await runEffect(
+        advance(record.operationId, {
+          type: "operation_unknown",
+          reason: "liveness-unproven",
+        })
+      );
+      await settleTerminal(record, current);
+      return;
+    }
+    if (outcome.state !== "result_acknowledged") {
+      if (outcome.state === "agent_failed" && current.agentRunEvidence === undefined)
+        await runEffect(
+          advanceAndProject(record.operationId, {
+            type: "agent_settled",
+            evidence: outcome.evidence,
           })
         );
-      } else {
-        current = await runEffect(
-          advance(record.operationId, { type: "operation_completed" })
-        );
-      }
+      const reason: OperationFailureReason = outcome.state;
+      current = await runEffect(
+        advance(record.operationId, {
+          type: "operation_failed",
+          reason,
+          ...(outcome.state === "result_format_rejected"
+            ? { resultFormatRejection: outcome.rejection }
+            : {}),
+        })
+      );
       await settleTerminal(record, current);
+      return;
+    }
+    if (current.agentRunEvidence === undefined)
+      await runEffect(
+        advanceAndProject(record.operationId, {
+          type: "agent_settled",
+          evidence: outcome.evidence,
+        })
+      );
+    current = await runEffect(getOperation(record.operationId));
+    if (current.workerStopConfirmedAt === undefined) {
+      current = await runEffect(
+        advance(record.operationId, {
+          type: "operation_unknown",
+          reason: "liveness-unproven",
+        })
+      );
+    } else {
+      current = await runEffect(
+        advance(record.operationId, { type: "operation_completed" })
+      );
+    }
+    await settleTerminal(record, current);
+  };
+
+  const execute = async (
+    record: OperationRecord,
+    recovering: boolean
+  ): Promise<void | "validator_unavailable"> => {
+    try {
+      const outcome =
+        record.observedOutcome ?? (await runWorker(record, recovering));
+      if (outcome.state === "validator_unavailable") delete record.observedOutcome;
+      else record.observedOutcome = outcome;
+      return await settleObserved(record, outcome);
     } catch (error) {
       const current = await runEffect(getOperation(record.operationId)).catch(
         () => undefined
@@ -1288,6 +1305,24 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           workersRecovered = false;
           scheduleRecovery();
         };
+        const settle = (work: Promise<void | "validator_unavailable">): void =>
+          track(
+            work
+              .then((outcome) => {
+                if (outcome === "validator_unavailable" && !closing) resume();
+              })
+              .catch((error) => {
+                recoveredRecord.rejectTerminal(error);
+                resume();
+              })
+          );
+        if (
+          operation.state !== "cancelling" &&
+          record.observedOutcome !== undefined
+        ) {
+          settle(execute(record, true));
+          continue;
+        }
         const retainedCancellationWorker =
           operation.state === "cancelling" && record.worker !== undefined;
         if (
@@ -1328,18 +1363,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             continue;
           }
         }
-        track(
-          (operation.state === "cancelling"
+        settle(
+          operation.state === "cancelling"
             ? recoverCancellation(record, operation)
             : execute(record, true)
-          )
-            .then((outcome) => {
-              if (outcome === "validator_unavailable") resume();
-            })
-            .catch((error) => {
-              recoveredRecord.rejectTerminal(error);
-              resume();
-            })
         );
       } catch (error) {
         record.recoverable = true;

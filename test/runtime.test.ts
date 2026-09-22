@@ -7,6 +7,7 @@ import type {
   Operation,
   OperationIntent,
 } from "../src/internal/event-store/index.js";
+import { acknowledgeResultAcceptance } from "../src/internal/services.js";
 import type {
   Worker,
   WorkerAdapter,
@@ -720,6 +721,210 @@ test("通常実行の停止確認保存失敗を所有Runtimeで再処理する"
   assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
 });
 
+class FailingOnceIntentStore extends InMemoryEventStore {
+  private fail = true;
+
+  constructor(
+    private readonly failedIntent: OperationIntent["type"],
+    timestamps: FakeClock
+  ) {
+    super([], timestamps);
+  }
+
+  override advance(operationId: string, intent: OperationIntent) {
+    if (this.fail && intent.type === this.failedIntent) {
+      this.fail = false;
+      return Effect.fail({
+        _tag: "StoreError" as const,
+        code: "write_failed" as const,
+        message: "temporary failure",
+      });
+    }
+    return super.advance(operationId, intent);
+  }
+}
+
+function reopenRefusingServices(
+  store: InMemoryEventStore,
+  worker: FakeWorkerAdapter
+) {
+  return {
+    ...services(store, {
+      open: (operation) => worker.open(operation),
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    }),
+    recovery: "disabled" as const,
+  };
+}
+
+test("汎用ワーカー失敗の記録保存失敗後も観測した失敗理由を保つ", async () => {
+  const store = new FailingOnceIntentStore("agent_settled", clock());
+  const runtime = makeTestRuntime(
+    reopenRefusingServices(store, new FakeWorkerAdapter({ failure: "agent_failed" }))
+  );
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.failureReason,
+    "agent_failed"
+  );
+});
+
+test("汎用ワーカー失敗の記録保存失敗後も観測した実行証跡を保つ", async () => {
+  const store = new FailingOnceIntentStore("agent_settled", clock());
+  const runtime = makeTestRuntime(
+    reopenRefusingServices(store, new FakeWorkerAdapter({ failure: "agent_failed" }))
+  );
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.agentRunEvidence
+      ?.toolUses[0]?.isError,
+    true
+  );
+});
+
+test("失敗保存の一時的な失敗後にワーカーを再開しない", async () => {
+  const store = new FailingOnceIntentStore("operation_failed", clock());
+  const worker = new FakeWorkerAdapter({ failure: "agent_failed" });
+  const runtime = makeTestRuntime(reopenRefusingServices(store, worker));
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(worker.startCount, 1);
+});
+
+class FormatRejectedWorker implements WorkerAdapter {
+  recoverCount = 0;
+
+  open(): Worker {
+    throw new Error("not used");
+  }
+
+  recover(operation: Operation): Worker {
+    this.recoverCount += 1;
+    return {
+      run: (hooks) =>
+        Effect.gen(function* () {
+          const identity = operation.workerIdentity!;
+          const instruction = yield* hooks.workerIdentified({
+            processId: identity.processId,
+            processInstanceId: identity.processInstanceId,
+            processStartToken: identity.processStartToken,
+            piSessionId: identity.piSessionId,
+            observedConfig: operation.observedConfig!,
+          });
+          yield* hooks.startDeliveryAuthorityRevoked(
+            instruction.dispatcherId,
+            instruction.deliveryGeneration
+          );
+          yield* hooks.deliveryGenerationConfirmed({
+            dispatcherId: instruction.dispatcherId,
+            deliveryGeneration: instruction.deliveryGeneration,
+            acceptanceState: "accepted",
+            acceptedInstruction: operation.startInstructionAcceptance!,
+          });
+          const body = "not a review";
+          const bytes = Buffer.from(body, "utf8");
+          const accepted = yield* hooks.acceptResult({
+            acceptanceRequestId: "request-rejected",
+            body,
+            expectedByteCount: bytes.byteLength,
+            expectedDigest: sha256Digest(bytes),
+          });
+          return yield* acknowledgeResultAcceptance(
+            accepted,
+            {
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cost: 0,
+              },
+              toolUses: [],
+            },
+            () => Effect.void
+          );
+        }),
+      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+    };
+  }
+}
+
+async function seedFormatRejection(store: InMemoryEventStore) {
+  const formats = makeResultFormatRegistry([{
+    formatId: "review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    validator: {
+      validatorId: "review-validator",
+      validatorVersion: "1",
+      implementation: Buffer.from("rejecting-review-validator", "utf8"),
+      validate: async () => ({ kind: "invalid", reason: "invalid_json" }),
+    },
+  }]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  return { registry: formats, resultFormat };
+}
+
+test("結果形式拒否の保存失敗後も観測した拒否理由を保つ", async () => {
+  const store = new FailingOnceIntentStore("operation_failed", clock());
+  const formalReviewResultFormats = await seedFormatRejection(store);
+  const runtime = makeTestRuntime({
+    ...services(store, new FormatRejectedWorker()),
+    formalReviewResultFormats,
+  });
+  await waitForState(store, "failed");
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .resultFormatRejection?.reason,
+    "invalid_json"
+  );
+});
+
+test("結果形式拒否の保存失敗後にワーカーを再開しない", async () => {
+  const store = new FailingOnceIntentStore("operation_failed", clock());
+  const formalReviewResultFormats = await seedFormatRejection(store);
+  const worker = new FormatRejectedWorker();
+  const runtime = makeTestRuntime({
+    ...services(store, worker),
+    formalReviewResultFormats,
+  });
+  await waitForState(store, "failed");
+  await runtime.close();
+
+  assert.equal(worker.recoverCount, 1);
+});
+
 test("停止未確認の親キャンセルを状態不明として永続化する", async () => {
   const store = new InMemoryEventStore([], clock());
   const runtime = makeTestRuntime({
@@ -1098,15 +1303,6 @@ for (const failedEvent of [
 test("復旧時に未着手の表示終了処理を開始する", async () => {
   const store = new InMemoryEventStore([], clock());
   await seed(store);
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "presentation_owned",
-    presentation: {
-      kind: "herdr_workspace",
-      workspaceId: "fake-workspace:operation-1",
-      paneId: "fake-pane:operation-1",
-      ownedByPions: true,
-    },
-  }));
   await advanceTestOperationToRunning(store, "operation-1");
   await Effect.runPromise(store.acceptResult({
     operationId: "operation-1",
