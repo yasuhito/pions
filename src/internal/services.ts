@@ -218,7 +218,7 @@ export interface RuntimeServices {
   readonly presentation: Presentation;
   readonly store: EventStore;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
-  readonly recovery?: "enabled" | "disabled";
+  readonly recovery?: "disabled";
   readonly configuration?: Readonly<{
     readonly cwd: string;
     readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;

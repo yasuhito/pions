@@ -23,7 +23,7 @@ export interface VisibleRuntimeOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly extensionEntryPath?: string;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
-  readonly recovery?: "enabled" | "disabled";
+  readonly recovery?: "disabled";
 }
 
 const systemClock: RuntimeClock = {

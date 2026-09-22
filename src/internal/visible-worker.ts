@@ -569,6 +569,14 @@ export class VisibleWorker implements WorkerAdapter {
                 error instanceof Error ? error : new Error(String(error)),
             })
         );
+        if (acknowledged.state === "result_format_rejected") {
+          const stopped = yield* Effect.promise(() =>
+            this.cancelSession(operation, 1_000)
+          );
+          return stopped === undefined
+            ? ({ state: "liveness-unproven" } as const)
+            : ({ ...acknowledged, successfulExitConfirmed: true } as const);
+        }
         if (acknowledged.state !== "result_acknowledged") return acknowledged;
         const stopped = yield* Effect.promise(() =>
           this.confirmSuccessfulExit(session!)

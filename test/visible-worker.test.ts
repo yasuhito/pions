@@ -292,6 +292,7 @@ async function fixture(
     ) => Effect.Effect<void>;
     readonly startInstructionAccepted?: WorkerRunHooks["startInstructionAccepted"];
     readonly startInstructionAcknowledged?: WorkerRunHooks["startInstructionAcknowledged"];
+    readonly acceptResult?: WorkerRunHooks["acceptResult"];
     readonly operationModel?: Readonly<{
       readonly provider: string;
       readonly id: string;
@@ -358,14 +359,14 @@ async function fixture(
       options.startInstructionAccepted ?? (() => Effect.void),
     startInstructionAcknowledged:
       options.startInstructionAcknowledged ?? (() => Effect.void),
-    acceptResult: (received) =>
+    acceptResult: options.acceptResult ?? ((received) =>
       Effect.sync(() => {
         deliveries.push(received);
         return {
           state: "accepted",
           proof: resultAcceptanceProof(current.operationId),
         } as const;
-      }),
+      })),
   };
   const worker = adapter.open(current);
   // Fixture servers/clients are unref'd; a real run is kept alive by the child
@@ -1342,6 +1343,35 @@ test("successful Worker reports confirmed exit after process stop", async (conte
       : undefined,
     true
   );
+});
+
+test("結果形式の拒否後にWorker停止を確認する", async (context) => {
+  const value = await fixture({
+    processControl: new FakeProcessControl("stopped"),
+    acceptResult: () => Effect.succeed({
+      state: "failed",
+      terminal: true,
+      reason: "result_format_rejected",
+      resultFormatRejection: {
+        formatId: "review-result",
+        version: "1",
+        validator: { validatorId: "review-validator", version: "1", digest: `sha256:${"a".repeat(64)}` as const },
+        reason: "invalid_json",
+      },
+    }),
+  });
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
+  const client = await socket(value.config.socketPath);
+  await sendResultDelivery(client, {
+    capability: value.capability,
+    operationId: value.current.operationId,
+    body: "invalid review",
+  });
+
+  assert.equal((await value.outcome).successfulExitConfirmed, true);
 });
 
 async function cancelDuringExitConfirmation(context: TestContext) {

@@ -850,7 +850,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
       if (outcome.successfulExitConfirmed === true) {
         const current = await runEffect(getOperation(record.operationId));
-        if (!terminal(current) && current.state !== "cancelling")
+        if (!terminal(current) && current.state !== "cancelling" && current.workerStopConfirmedAt === undefined)
           await runEffect(
             advanceAndProject(record.operationId, {
               type: "worker_stop_confirmed",
@@ -861,6 +861,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
       let current = await runEffect(getOperation(record.operationId));
       if (terminal(current) || current.state === "cancelling") return;
+      if (current.result !== undefined && current.workerStopConfirmedAt !== undefined) {
+        if (outcome.state === "result_acknowledged" && current.agentRunEvidence === undefined)
+          await runEffect(
+            advanceAndProject(record.operationId, {
+              type: "agent_settled",
+              evidence: outcome.evidence,
+            })
+          );
+        current = await runEffect(
+          advance(record.operationId, { type: "operation_completed" })
+        );
+        await settleTerminal(record, current);
+        return;
+      }
       if (outcome.state === "validator_unavailable") return;
       if (outcome.state === "liveness-unproven") {
         current = await runEffect(
@@ -893,12 +907,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         await settleTerminal(record, current);
         return;
       }
-      await runEffect(
-        advanceAndProject(record.operationId, {
-          type: "agent_settled",
-          evidence: outcome.evidence,
-        })
-      );
+      if (current.agentRunEvidence === undefined)
+        await runEffect(
+          advanceAndProject(record.operationId, {
+            type: "agent_settled",
+            evidence: outcome.evidence,
+          })
+        );
       current = await runEffect(getOperation(record.operationId));
       if (current.workerStopConfirmedAt === undefined) {
         current = await runEffect(
@@ -1155,6 +1170,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         rejectTerminal: deferred.reject,
       };
       records.set(operation.operationId, record);
+      if (operation.state === "cancelling" && operation.workerStopConfirmedAt !== undefined) {
+        const cancelled = await runEffect(
+          advance(operation.operationId, {
+            type: "operation_cancelled",
+            cancellationEpoch: operation.cancellationEpoch,
+          })
+        );
+        await settleTerminal(record, cancelled);
+        continue;
+      }
+      if (operation.state === "running" && operation.result !== undefined && operation.workerStopConfirmedAt !== undefined) {
+        const completed = await runEffect(
+          advance(operation.operationId, { type: "operation_completed" })
+        );
+        await settleTerminal(record, completed);
+        continue;
+      }
       if (
         operation.workerIdentity === undefined ||
         operation.startDeliveryAuthority === undefined
@@ -1213,7 +1245,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await performCleanup(operation, false);
   };
 
-  const recovery = Promise.allSettled([recoverWorkers(), recoverCleanups()]);
+  const recovery = Promise.all([recoverWorkers(), recoverCleanups()]);
+  void recovery.catch(() => undefined);
 
   const createReader = (operationId: string): OperationReader => ({
     operationId,
@@ -1228,8 +1261,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     },
     async close(): Promise<void> {
       closing = true;
-      await recovery;
+      await Promise.allSettled([...spawns.values()]);
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+      await recovery;
     },
     spawn(task: TaskSpec): Promise<OperationHandle> {
       if (closing) return Promise.reject(new RuntimeClosedError());
