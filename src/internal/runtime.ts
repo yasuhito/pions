@@ -1097,6 +1097,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       return { cancellationEpoch: epoch, state: "cancelled" as const };
     })();
     cancellations.set(key, cancellation);
+    track(cancellation.then(() => undefined));
     return cancellation;
   };
 

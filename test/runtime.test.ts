@@ -381,6 +381,51 @@ test("停止確認済みの親キャンセルを永続化する", async () => {
   assert.equal(result.state, "cancelled");
 });
 
+test("Runtime終了は進行中の親キャンセルを待つ", async () => {
+  let stopRequested!: () => void;
+  let releaseStop!: () => void;
+  const requested = new Promise<void>((resolve) => { stopRequested = resolve; });
+  const held = new Promise<void>((resolve) => { releaseStop = resolve; });
+  const worker = new CancellableWorker(true);
+  const adapter: WorkerAdapter = {
+    open: (operation) => {
+      const opened = worker.open(operation);
+      return {
+        run: (hooks) => opened.run(hooks),
+        cancel: (epoch, timeoutMs) => Effect.promise(async () => {
+          const evidence = await Effect.runPromise(opened.cancel(epoch, timeoutMs));
+          stopRequested();
+          await held;
+          return evidence;
+        }),
+      };
+    },
+    recover: (operation) => worker.open(operation),
+  };
+  const store = new InMemoryEventStore([], clock());
+  const runtime = makeTestRuntime({
+    ...services(store, adapter),
+    recovery: "disabled",
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await waitForState(store, "running");
+  const cancellation = handle.cancel({});
+  await requested;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  let closed = false;
+  const closing = runtime.close().then(() => { closed = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const closedBeforeStop = closed;
+  releaseStop();
+  await cancellation;
+  await closing;
+  assert.equal(closedBeforeStop, false);
+});
+
 test("停止未確認の親キャンセルを状態不明として永続化する", async () => {
   const store = new InMemoryEventStore([], clock());
   const runtime = makeTestRuntime({
