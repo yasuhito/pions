@@ -35,13 +35,12 @@ Losing the original handle does not lose the operation. A reopened runtime can r
 
 ### Results are immutable, verified byte sequences
 
-A worker answer is not merely a string returned by a tool call. Pions stores it as an immutable UTF-8 artifact and records its byte length and SHA-256 digest.
+A worker answer is not merely a string returned by a tool call. Its `Operation` directly owns the immutable UTF-8 bytes together with their byte length, SHA-256 digest, and result-acceptance identifier; the result does not pass through the generic artifact contract.
 
-Retrieval verifies the complete stored artifact before returning any content. It distinguishes:
+Retrieval verifies the complete stored result before returning any content. It distinguishes:
 
 - a result that has not been accepted;
 - corrupted storage;
-- policy-driven deletion;
 - revoked retrieval authority; and
 - storage that cannot currently be inspected.
 
@@ -61,16 +60,11 @@ A missing process or workspace is not proof that a worker stopped safely.
 
 Pions identifies worker process instances with start tokens and records stop evidence. If cancellation or liveness cannot be proven, the operation remains `unknown` instead of being guessed into success or cancellation.
 
-### Acceptance, adoption, and retention are separate
+### Acceptance and correctness are separate
 
-Pions separates several facts that are easy to conflate:
+Result acceptance means that the exact worker answer has been verified and durably stored. It does not claim that the answer is correct or suitable for use.
 
-- **Result acceptance**: the exact bytes were verified and durably accepted.
-- **Artifact acceptance**: a coordinator chose to adopt the artifact.
-- **Retention**: the bytes must remain protected from deletion.
-- **Revision**: a new operation was requested against an accepted result.
-
-Persisting a result does not claim that the result is correct. Revising it does not rewrite the original operation or result.
+An accepted result is never automatically deleted. It remains available until the user explicitly removes Pions' state storage.
 
 ### Workers are visible, but the UI is not authoritative
 
@@ -143,7 +137,7 @@ Pions is not a drop-in replacement for `pi-subagents`. They prioritize different
 | ---------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------- |
 | Primary goal           | Durable, verifiable delegation                             | Flexible, feature-rich orchestration                             |
 | Worker UI              | Real Pi TUI in a dedicated Herdr workspace                 | Foreground views, FleetView, and inspectors                      |
-| Result model           | Integrity-verified immutable artifact                      | Run results, notifications, replay records, and output archives  |
+| Result model           | Operation-owned, integrity-verified immutable UTF-8 text   | Run results, notifications, replay records, and output archives  |
 | Completion model       | Separates worker settlement from operation-tree completion | Supports foreground, detached, background, and nested async runs |
 | Agent definitions      | One general-purpose worker profile                         | Built-in and custom agents                                       |
 | Parallelism and chains | Composed through Pi tool calls                             | Built into the extension                                         |
