@@ -444,6 +444,39 @@ test("復旧したキャンセルの保存失敗を追加のreadyなしで再処
   );
 });
 
+test("終了処理は復旧キャンセルの保留中の再試行を実行する", async () => {
+  let failureObserved!: () => void;
+  const failed = new Promise<void>((resolve) => { failureObserved = resolve; });
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "cancel_dispatched") {
+        this.fail = false;
+        failureObserved();
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(store.advance("operation-1", {
+    type: "cancellation_requested",
+    cancellationEpoch: 1,
+  }));
+  const runtime = makeTestRuntime(services(store, new RecoveryWorker("accepted", false)));
+  await failed;
+  await runtime.close();
+
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "cancelled");
+});
+
 test("保存済み正式レビューは検証器復元後に結果受理を再開する", async () => {
   const formats = makeResultFormatRegistry([{
     formatId: "review-result",
@@ -796,7 +829,7 @@ test("復旧一覧の一時的な失敗をreadyが通知する", async () => {
   const runtime = makeTestRuntime(services(new FailingStore(), new RecoveryWorker("accepted", true)));
 
   await assert.rejects(runtime.ready(), { name: "OperationPersistenceError" });
-  await runtime.close();
+  await runtime.close().catch(() => undefined);
 });
 
 test("復旧一覧の一時的な失敗を自動で再試行する", async () => {
@@ -824,6 +857,76 @@ test("復旧一覧の一時的な失敗を自動で再試行する", async () =>
   assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
 });
 
+test("終了処理は待機中の復旧一覧再試行を実行する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override listRecoverableOperations() {
+      if (this.fail) {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listRecoverableOperations();
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
+  await runtime.ready().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+});
+
+test("終了時の復旧再試行失敗を呼び出し元へ返す", async () => {
+  class FailingStore extends InMemoryEventStore {
+    override listRecoverableOperations() {
+      return Effect.fail({
+        _tag: "StoreError" as const,
+        code: "write_failed" as const,
+        message: "temporary failure",
+      });
+    }
+  }
+  const runtime = makeTestRuntime(services(new FailingStore(), new FakeWorkerAdapter()));
+  await runtime.ready().catch(() => undefined);
+
+  await assert.rejects(runtime.close(), { name: "OperationPersistenceError" });
+});
+
+test("終了時の復旧再試行失敗後に別のRuntimeで再開する", async () => {
+  class FailingTwiceStore extends InMemoryEventStore {
+    private failures = 2;
+
+    override listRecoverableOperations() {
+      if (this.failures > 0) {
+        this.failures -= 1;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listRecoverableOperations();
+    }
+  }
+  const store = new FailingTwiceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const first = makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
+  await first.ready().catch(() => undefined);
+  await first.close().catch(() => undefined);
+  makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
+  await waitForState(store, "completed");
+
+  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+});
+
 test("表示終了処理一覧の一時的な失敗を自動で再試行する", async () => {
   class FailingOnceStore extends InMemoryEventStore {
     calls = 0;
@@ -844,6 +947,30 @@ test("表示終了処理一覧の一時的な失敗を自動で再試行する",
   makeTestRuntime(services(store, new FakeWorkerAdapter()));
   for (let index = 0; index < 100 && store.calls < 2; index += 1)
     await new Promise<void>((resolve) => setTimeout(resolve, 1));
+
+  assert.equal(store.calls, 2);
+});
+
+test("終了処理は待機中の表示終了処理一覧再試行を実行する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    calls = 0;
+
+    override listPendingPresentationCleanups() {
+      this.calls += 1;
+      if (this.calls === 1) {
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listPendingPresentationCleanups();
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  const runtime = makeTestRuntime(services(store, new FakeWorkerAdapter()));
+  await runtime.ready().catch(() => undefined);
+  await runtime.close();
 
   assert.equal(store.calls, 2);
 });

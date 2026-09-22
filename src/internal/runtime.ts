@@ -1290,10 +1290,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }, 20);
     recoveryTimer.unref();
   };
-  const recover = (): Promise<void> => {
+  const recover = (duringClose = false): Promise<void> => {
     if (recovery !== undefined) return recovery;
     if (workersRecovered && cleanupsRecovered) return Promise.resolve();
-    if (closing) return Promise.reject(new RuntimeClosedError());
+    if (closing && !duringClose) return Promise.reject(new RuntimeClosedError());
     const started = (async () => {
       if (!workersRecovered) {
         workersRecovered = true;
@@ -1344,6 +1344,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         ...(recovery === undefined ? [] : [recovery]),
       ]);
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+      if (!workersRecovered || !cleanupsRecovered) {
+        const [attempt] = await Promise.allSettled([recover(true)]);
+        while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+        if (attempt.status === "rejected") throw attempt.reason;
+        if (!workersRecovered || !cleanupsRecovered)
+          throw new OperationPersistenceError("runtime-recovery", "write_failed");
+      }
     },
     spawn(task: TaskSpec): Promise<OperationHandle> {
       if (closing) return Promise.reject(new RuntimeClosedError());
