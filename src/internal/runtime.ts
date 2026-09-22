@@ -931,7 +931,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   };
 
   const createOperation = async (taskInput: TaskSpec): Promise<OperationRecord> => {
-    await runEffect(services.presentation.preflight());
     const decoded = await Effect.runPromise(
       Schema.decodeUnknown(TaskSpecSchema)(taskInput)
     );
@@ -946,6 +945,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ...(decoded.tools === undefined ? {} : { tools: decoded.tools }),
       ...(decoded.cwd === undefined ? {} : { cwd: decoded.cwd }),
     };
+    if (task.profile === "formal-review")
+      throw new WorkerConfigurationError(
+        "unsupported_capability",
+        "Formal review creation is paused"
+      );
+    await runEffect(services.presentation.preflight());
     const configuration = services.configuration ?? {
       cwd: "/test/workspace",
       profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
@@ -1218,6 +1223,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   });
 
   return {
+    async ready(): Promise<void> {
+      await recovery;
+    },
     async close(): Promise<void> {
       closing = true;
       await recovery;

@@ -56,7 +56,28 @@ test("Runtime exposes only delegation lifecycle operations", () => {
     recovery: "disabled",
   });
 
-  assert.deepEqual(Object.keys(runtime), ["close", "spawn", "operation"]);
+  assert.deepEqual(Object.keys(runtime), ["ready", "close", "spawn", "operation"]);
+});
+
+test("new formal review operations are refused", async () => {
+  const profileForReview = { ...profile };
+  const runtime = makeTestRuntime({
+    ...services(new InMemoryEventStore(), new FakeWorkerAdapter()),
+    recovery: "disabled",
+    configuration: {
+      cwd: "/work",
+      profiles: { "formal-review": profileForReview },
+    },
+  });
+
+  await assert.rejects(
+    runtime.spawn({
+      promptRef: "private://review",
+      profile: "formal-review",
+      idempotencyKey: "review-1",
+    }),
+    { name: "WorkerConfigurationError", reason: "unsupported_capability" }
+  );
 });
 
 async function seed(

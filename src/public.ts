@@ -460,6 +460,7 @@ export interface OperationHandle extends OperationReader {
 }
 
 export interface Runtime {
+  ready(): Promise<void>;
   spawn(task: TaskSpec): Promise<OperationHandle>;
   operation(operationId: string): Promise<OperationReader>;
   close(): Promise<void>;

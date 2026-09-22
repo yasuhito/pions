@@ -465,6 +465,35 @@ export function installPionsExtension(
     }
   }
 
+  pi.on("session_start", async (_event, context) => {
+    if (!context.isProjectTrusted()) return;
+    const { normalizedRoot, repositoryState } =
+      await resolveRepositoryContext(context);
+    let runtime = options.runtime ?? runtimesByRepository.get(normalizedRoot);
+    if (runtime === undefined) {
+      const workerCwd = await realpath(context.cwd);
+      const runtimeStateDirectory = join(repositoryState, "runtime");
+      await options.formalReview?.resultFormats.registry.register(
+        runtimeStateDirectory
+      );
+      runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
+        cwd: workerCwd,
+        stateDirectory: runtimeStateDirectory,
+        profiles: {},
+        environment: options.environment ?? process.env,
+        ...(options.extensionEntryPath === undefined
+          ? {}
+          : { extensionEntryPath: options.extensionEntryPath }),
+        ...(options.formalReview === undefined
+          ? {}
+          : { formalReviewResultFormats: options.formalReview.resultFormats }),
+      });
+      runtimesByRepository.set(normalizedRoot, runtime);
+    }
+    knownRuntimes.add(runtime);
+    await runtime.ready();
+  });
+
   async function prepareWorkerCall(
     toolCallId: string,
     prompt: string,
@@ -482,6 +511,7 @@ export function installPionsExtension(
     const inheritedThinkingLevel = selectedThinkingLevel(context);
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
+    await runtimesByRepository.get(normalizedRoot)?.ready();
     const workerCwd = await realpath(context.cwd);
     const configured = await projectConfig(normalizedRoot);
     const workerModel =
@@ -537,6 +567,9 @@ export function installPionsExtension(
           profiles: { [WORKER_PROFILE]: workerProfile },
           environment: options.environment ?? process.env,
           extensionEntryPath,
+          ...(runtimesByRepository.has(normalizedRoot)
+            ? { recovery: "disabled" as const }
+            : {}),
           ...(options.formalReview === undefined
             ? {}
             : { formalReviewResultFormats: options.formalReview.resultFormats }),

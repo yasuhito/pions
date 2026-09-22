@@ -23,6 +23,7 @@ export interface VisibleRuntimeOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly extensionEntryPath?: string;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
+  readonly recovery?: "enabled" | "disabled";
 }
 
 const systemClock: RuntimeClock = {
@@ -80,6 +81,7 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     ...(options.formalReviewResultFormats === undefined
       ? {}
       : { formalReviewResultFormats: options.formalReviewResultFormats }),
+    ...(options.recovery === undefined ? {} : { recovery: options.recovery }),
     configuration: { cwd: options.cwd, profiles: options.profiles },
   });
 }

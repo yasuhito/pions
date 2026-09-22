@@ -16,6 +16,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { Effect } from "effect";
+
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -27,6 +29,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
+import type { Operation } from "../src/internal/event-store/index.js";
 import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import {
   DEFAULT_MAX_RESULT_BYTE_COUNT,
@@ -37,8 +40,13 @@ import {
   FakeIdGenerator,
   FakePresentation,
   FakeWorkerAdapter,
+  advanceTestOperationToRunning,
   makeTestRuntime,
 } from "../src/internal/testing.js";
+import type {
+  WorkerAdapter,
+  WorkerRunHooks,
+} from "../src/internal/services.js";
 import {
   installPionsExtension,
   type PionsDelegateDetails,
@@ -104,6 +112,7 @@ class FakeRuntime implements Runtime {
   operationReadCount = 0;
   resultReadCount = 0;
   closeCount = 0;
+  readyCount = 0;
   constructor(
     private readonly outcome: Result | Error = {
       body: "review complete",
@@ -179,6 +188,10 @@ class FakeRuntime implements Runtime {
   async close(): Promise<void> {
     this.closeCount += 1;
   }
+
+  async ready(): Promise<void> {
+    this.readyCount += 1;
+  }
 }
 
 function deferred<Value>() {
@@ -208,6 +221,10 @@ class PendingRuntime implements Runtime {
     state: "cancelled",
   });
   private nextId = 1;
+
+  ready(): Promise<void> {
+    return Promise.resolve();
+  }
 
   async spawn(): Promise<OperationHandle> {
     const operationId = `operation-${this.nextId}`;
@@ -392,12 +409,19 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       handler({ type: "session_shutdown", reason }, context)
     );
   };
+  const start = () => {
+    const handler = handlers.get("session_start");
+    if (handler === undefined)
+      throw new Error("session_start was not registered");
+    return Promise.resolve(handler({ type: "session_start" }, context));
+  };
   return {
     context,
     execute,
     inspect,
     registered: tool,
     result,
+    start,
     root,
     setSessionId: (value: string) => {
       sessionId = value;
@@ -453,6 +477,20 @@ test("trusted formal review configuration pauses new review creation", async (co
   assert.equal(value.tools.has("pions_review"), false);
 });
 
+test("trusted formal review configuration cannot create a review profile", async (context) => {
+  let profiles: VisibleRuntimeOptions["profiles"] | undefined;
+  const value = await formalReviewFixture(undefined, {
+    runtimeFactory: (options) => {
+      profiles = options.profiles;
+      return new FakeRuntime();
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute();
+
+  assert.deepEqual(Object.keys(profiles ?? {}), ["worker"]);
+});
+
 test("trusted formal review configuration supplies recovery validators", async (context) => {
   let configured: VisibleRuntimeOptions["formalReviewResultFormats"];
   const value = await formalReviewFixture(undefined, {
@@ -465,6 +503,161 @@ test("trusted formal review configuration supplies recovery validators", async (
   await value.execute();
 
   assert.deepEqual(configured?.resultFormat, FORMAL_REVIEW_RESULT_FORMAT);
+});
+
+test("delegation after cold recovery does not recover the same Workers twice", async (context) => {
+  const recoveryModes: Array<VisibleRuntimeOptions["recovery"]> = [];
+  const value = await fixture(undefined, {
+    runtimeFactory: (options) => {
+      recoveryModes.push(options.recovery);
+      return new FakeRuntime();
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.start();
+  await value.execute();
+
+  assert.deepEqual(recoveryModes, [undefined, "disabled"]);
+});
+
+test("cold session resumes format-pinned Result acceptance", async (context) => {
+  const repository = await realpath(
+    await mkdtemp(join(tmpdir(), "pions-cold-repository-"))
+  );
+  const stateBase = await mkdtemp(join(tmpdir(), "pions-cold-state-"));
+  context.after(() => rm(repository, { recursive: true, force: true }));
+  context.after(() => rm(stateBase, { recursive: true, force: true }));
+  const repositoryKey = createHash("sha256")
+    .update(repository, "utf8")
+    .digest("hex");
+  const stateDirectory = join(
+    stateBase,
+    "pions",
+    "repositories",
+    repositoryKey,
+    "runtime"
+  );
+  const clock = new FakeClock(
+    Array.from(
+      { length: 80 },
+      (_, index) => `2026-09-23T04:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
+  const store = new PrivateFileEventStore(stateDirectory, clock);
+  await Effect.runPromise(
+    store.create({
+      operationId: "operation-1",
+      task: {
+        promptRef: "private://review",
+        profile: "formal-review",
+        idempotencyKey: "review-1",
+      },
+      requestedConfig: {},
+      effectiveConfig: {
+        model: { provider: "anthropic", id: "claude-opus-5" },
+        thinkingLevel: "high",
+        tools: ["read"],
+        cwd: repository,
+        maxResultByteCount: 1024,
+        modelPolicy: {
+          candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
+          attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
+          maxAttempts: 1,
+          fallback: "forbidden",
+          aliases: [],
+        },
+      },
+      maxResultByteCount: 1024,
+      resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
+    })
+  );
+  await advanceTestOperationToRunning(store, "operation-1");
+  const worker: WorkerAdapter = {
+    open: () => {
+      throw new Error("new Worker was not requested");
+    },
+    recover: (operation: Operation) => ({
+      run: (hooks: Readonly<WorkerRunHooks>) =>
+        Effect.gen(function* () {
+          const identity = operation.workerIdentity!;
+          const instruction = yield* hooks.workerIdentified({
+            processId: identity.processId,
+            processInstanceId: identity.processInstanceId,
+            processStartToken: identity.processStartToken,
+            piSessionId: identity.piSessionId,
+            observedConfig: operation.observedConfig!,
+          });
+          yield* hooks.startDeliveryAuthorityRevoked(
+            instruction.dispatcherId,
+            instruction.deliveryGeneration
+          );
+          yield* hooks.deliveryGenerationConfirmed({
+            dispatcherId: instruction.dispatcherId,
+            deliveryGeneration: instruction.deliveryGeneration,
+            acceptanceState: "accepted",
+            acceptedInstruction: operation.startInstructionAcceptance!,
+          });
+          const body = "recovered review";
+          const bytes = Buffer.from(body, "utf8");
+          const acceptance = yield* hooks.acceptResult({
+            acceptanceRequestId: "review-result-1",
+            body,
+            expectedByteCount: bytes.byteLength,
+            expectedDigest: `sha256:${createHash("sha256")
+              .update(bytes)
+              .digest("hex")}`,
+          });
+          if (acceptance.state !== "accepted")
+            return { state: "worker_protocol_failed" as const };
+          return {
+            state: "result_acknowledged" as const,
+            successfulExitConfirmed: true as const,
+            evidence: {
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cost: 0,
+              },
+              toolUses: [],
+            },
+          };
+        }),
+      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+    }),
+  };
+  const value = await formalReviewFixture(undefined, {
+    repositoryRoot: repository,
+    stateBaseDirectory: stateBase,
+    runtimeFactory: (options) =>
+      makeTestRuntime({
+        worker,
+        clock,
+        ids: new FakeIdGenerator([]),
+        presentation: new FakePresentation(),
+        store: new PrivateFileEventStore(options.stateDirectory, clock),
+        configuration: { cwd: options.cwd, profiles: options.profiles },
+        ...(options.recovery === undefined
+          ? {}
+          : { recovery: options.recovery }),
+        ...(options.formalReviewResultFormats === undefined
+          ? {}
+          : { formalReviewResultFormats: options.formalReviewResultFormats }),
+      }),
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  value.setWorkingDirectory(repository);
+  await value.start();
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const snapshot = await Effect.runPromise(store.read("operation-1"));
+    if (snapshot.operation.state === "completed") break;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+
+  const snapshot = (await value.inspect()).details as OperationSnapshot;
+  assert.equal(snapshot.state, "completed");
 });
 
 test("project extension registers pions_operation", async (context) => {
