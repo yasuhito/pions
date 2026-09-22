@@ -67,6 +67,11 @@ interface OperationRecord {
   readonly resolveTerminal: (completion: Readonly<OperationCompletion>) => void;
   readonly rejectTerminal: (error: unknown) => void;
   worker?: Worker;
+  recoverable?: boolean;
+  cancelEvidence?: {
+    readonly cancellationEpoch: number;
+    readonly proof: "worker-stop";
+  };
 }
 
 function deferredResult(): {
@@ -499,6 +504,23 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     const presentation = initial.presentation;
     let operation = initial;
     let cleanup = operation.presentationCleanup;
+    const persistenceFailed = (
+      error: unknown,
+      reason?: CleanupDiagnosticCode
+    ): void => {
+      if (!directResponseAvailable) throw error;
+      noteVolatileDiagnostic(
+        operation.operationId,
+        "cleanup_record_unavailable"
+      );
+      if (reason !== undefined)
+        noteVolatileDiagnostic(operation.operationId, reason);
+      const record = records.get(operation.operationId);
+      if (record !== undefined) record.recoverable = true;
+      cleanupsRecovered = false;
+      workersRecovered = false;
+      scheduleRecovery();
+    };
     if (cleanup === undefined) {
       try {
         operation = await runEffect(
@@ -509,12 +531,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           })
         );
         cleanup = operation.presentationCleanup;
-      } catch {
-        if (directResponseAvailable)
-          noteVolatileDiagnostic(
-            operation.operationId,
-            "cleanup_record_unavailable"
-          );
+      } catch (error) {
+        persistenceFailed(error);
         return;
       }
     }
@@ -529,14 +547,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
             reason: code,
           })
         );
-      } catch {
-        if (directResponseAvailable) {
-          noteVolatileDiagnostic(
-            operation.operationId,
-            "cleanup_record_unavailable"
-          );
-          noteVolatileDiagnostic(operation.operationId, code);
-        }
+      } catch (error) {
+        persistenceFailed(error, code);
       }
     };
     let identity: "matching" | "missing";
@@ -566,12 +578,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           workspaceId: cleanup.workspaceId,
         })
       );
-    } catch {
-      if (directResponseAvailable)
-        noteVolatileDiagnostic(
-          operation.operationId,
-          "cleanup_record_unavailable"
-        );
+    } catch (error) {
+      persistenceFailed(error);
     }
   };
 
@@ -939,7 +947,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         () => undefined
       );
       if (current !== undefined && terminal(current)) {
-        await settleTerminal(record, current);
+        try {
+          await settleTerminal(record, current);
+        } catch (settlementError) {
+          if (recovering) throw settlementError;
+          record.recoverable = true;
+          workersRecovered = false;
+          scheduleRecovery();
+        }
         return;
       }
       const failure =
@@ -948,6 +963,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           : new OperationPersistenceError(record.operationId, "write_failed");
       if (recovering) throw failure;
       record.rejectTerminal(failure);
+      if (current?.state !== "cancelling") {
+        record.recoverable = true;
+        workersRecovered = false;
+        scheduleRecovery();
+      }
     }
   };
 
@@ -1085,6 +1105,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           reason: "cancel-unproven" as const,
         };
       }
+      record.cancelEvidence = {
+        cancellationEpoch: epoch,
+        proof: evidence.proof,
+      };
       operation = await runEffect(
         advance(record.operationId, {
           type: "cancel_acknowledged",
@@ -1101,7 +1125,20 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       );
       await settleTerminal(record, operation);
       return { cancellationEpoch: epoch, state: "cancelled" as const };
-    })();
+    })().catch(async (error) => {
+      const current = await runEffect(getOperation(record.operationId)).catch(
+        () => undefined
+      );
+      if (
+        current?.state === "cancelling" ||
+        (current !== undefined && terminal(current))
+      ) {
+        record.recoverable = true;
+        workersRecovered = false;
+        scheduleRecovery();
+      }
+      throw error;
+    });
     cancellations.set(key, cancellation);
     track(cancellation.then(() => undefined));
     return cancellation;
@@ -1112,6 +1149,27 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     operation: Operation
   ): Promise<void> => {
     const worker = record.worker;
+    const acceptedStop = record.cancelEvidence;
+    if (
+      acceptedStop !== undefined &&
+      acceptedStop.cancellationEpoch === operation.cancellationEpoch
+    ) {
+      await runEffect(
+        advanceAndProject(record.operationId, {
+          type: "cancel_acknowledged",
+          cancellationEpoch: operation.cancellationEpoch,
+          proof: acceptedStop.proof,
+        })
+      );
+      const cancelled = await runEffect(
+        advance(record.operationId, {
+          type: "operation_cancelled",
+          cancellationEpoch: operation.cancellationEpoch,
+        })
+      );
+      await settleTerminal(record, cancelled);
+      return;
+    }
     const dispatched = await runEffect(
       advance(record.operationId, {
         type: "cancel_dispatched",
@@ -1136,6 +1194,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await settleTerminal(record, unknown);
       return;
     }
+    record.cancelEvidence = {
+      cancellationEpoch: operation.cancellationEpoch,
+      proof: evidence.proof,
+    };
     await runEffect(
       advanceAndProject(record.operationId, {
         type: "cancel_acknowledged",
@@ -1154,27 +1216,49 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
   let workersRecovered = false;
   const recoverWorkers = async (): Promise<void> => {
-    if (services.recovery === "disabled") return;
-    const snapshots = await runEffect(
-      services.store
-        .listRecoverableOperations()
-        .pipe(
-          Effect.mapError((error) =>
-            persistenceError("runtime-recovery", error)
-          )
-        )
+    const persisted =
+      services.recovery === "disabled"
+        ? []
+        : await runEffect(
+            services.store.listRecoverableOperations().pipe(
+              Effect.mapError((error) =>
+                persistenceError("runtime-recovery", error)
+              )
+            )
+          );
+    const local = await Promise.all(
+      [...records.values()]
+        .filter((record) => record.recoverable)
+        .map((record) => storedSnapshot(record.operationId))
     );
+    const snapshots = [
+      ...new Map(
+        [...persisted, ...local].map((snapshot) => [
+          snapshot.operation.operationId,
+          snapshot,
+        ] as const)
+      ).values(),
+    ];
     for (const { operation } of snapshots) {
-      if (records.has(operation.operationId)) continue;
-      const deferred = deferredResult();
-      const record: OperationRecord = {
-        operationId: operation.operationId,
-        terminalPromise: deferred.promise,
-        resolveTerminal: deferred.resolve,
-        rejectTerminal: deferred.reject,
-      };
-      records.set(operation.operationId, record);
+      let record = records.get(operation.operationId);
+      if (record !== undefined && !record.recoverable) continue;
+      if (record === undefined) {
+        const deferred = deferredResult();
+        record = {
+          operationId: operation.operationId,
+          terminalPromise: deferred.promise,
+          resolveTerminal: deferred.resolve,
+          rejectTerminal: deferred.reject,
+        };
+        records.set(operation.operationId, record);
+      }
+      record.recoverable = false;
+      const recoveredRecord = record;
       try {
+        if (terminal(operation)) {
+          await settleTerminal(record, operation);
+          continue;
+        }
         if (
           operation.state === "cancelling" &&
           operation.workerStopConfirmedAt !== undefined
@@ -1199,9 +1283,17 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await settleTerminal(record, completed);
           continue;
         }
+        const resume = (): void => {
+          recoveredRecord.recoverable = true;
+          workersRecovered = false;
+          scheduleRecovery();
+        };
+        const retainedCancellationWorker =
+          operation.state === "cancelling" && record.worker !== undefined;
         if (
-          operation.workerIdentity === undefined ||
-          operation.startDeliveryAuthority === undefined
+          !retainedCancellationWorker &&
+          (operation.workerIdentity === undefined ||
+            operation.startDeliveryAuthority === undefined)
         ) {
           const unknown = await runEffect(
             advance(operation.operationId, {
@@ -1217,28 +1309,25 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await settleTerminal(record, unknown);
           continue;
         }
-        try {
-          record.worker = services.worker.recover(operation);
-        } catch {
-          const unknown = await runEffect(
-            advance(operation.operationId, {
-              type: "operation_unknown",
-              ...(operation.state === "cancelling"
-                ? {
-                    reason: "cancel-unproven" as const,
-                    cancellationEpoch: operation.cancellationEpoch,
-                  }
-                : { reason: "liveness-unproven" as const }),
-            })
-          );
-          await settleTerminal(record, unknown);
-          continue;
+        if (!retainedCancellationWorker) {
+          try {
+            record.worker = services.worker.recover(operation);
+          } catch {
+            const unknown = await runEffect(
+              advance(operation.operationId, {
+                type: "operation_unknown",
+                ...(operation.state === "cancelling"
+                  ? {
+                      reason: "cancel-unproven" as const,
+                      cancellationEpoch: operation.cancellationEpoch,
+                    }
+                  : { reason: "liveness-unproven" as const }),
+              })
+            );
+            await settleTerminal(record, unknown);
+            continue;
+          }
         }
-        const resume = (): void => {
-          records.delete(operation.operationId);
-          workersRecovered = false;
-          scheduleRecovery();
-        };
         track(
           (operation.state === "cancelling"
             ? recoverCancellation(record, operation)
@@ -1248,12 +1337,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               if (outcome === "validator_unavailable") resume();
             })
             .catch((error) => {
-              record.rejectTerminal(error);
+              recoveredRecord.rejectTerminal(error);
               resume();
             })
         );
       } catch (error) {
-        records.delete(operation.operationId);
+        record.recoverable = true;
         throw error;
       }
     }
@@ -1262,16 +1351,17 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const recoverCleanups = async (): Promise<void> => {
     if (services.recovery === "disabled") return;
     const snapshots = await runEffect(
-      services.store
-        .listPendingPresentationCleanups()
-        .pipe(
-          Effect.mapError((error) =>
-            persistenceError("presentation-cleanup-recovery", error)
-          )
+      services.store.listPendingPresentationCleanups().pipe(
+        Effect.mapError((error) =>
+          persistenceError("presentation-cleanup-recovery", error)
         )
+      )
     );
-    for (const { operation } of snapshots)
+    for (const { operation } of snapshots) {
+      const record = records.get(operation.operationId);
+      if (record !== undefined && !record.recoverable) continue;
       await performCleanup(operation, false);
+    }
   };
 
   let cleanupsRecovered = false;
@@ -1343,13 +1433,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         ...spawns.values(),
         ...(recovery === undefined ? [] : [recovery]),
       ]);
-      while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
-      if (!workersRecovered || !cleanupsRecovered) {
-        const [attempt] = await Promise.allSettled([recover(true)]);
-        while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
-        if (attempt.status === "rejected") throw attempt.reason;
-        if (!workersRecovered || !cleanupsRecovered)
-          throw new OperationPersistenceError("runtime-recovery", "write_failed");
+      let attemptedRecovery = false;
+      while (inFlight.size > 0 || !workersRecovered || !cleanupsRecovered) {
+        if (!workersRecovered || !cleanupsRecovered) {
+          if (attemptedRecovery)
+            throw new OperationPersistenceError("runtime-recovery", "write_failed");
+          attemptedRecovery = true;
+          await recover(true);
+          continue;
+        }
+        await Promise.race([...inFlight]);
       }
     },
     spawn(task: TaskSpec): Promise<OperationHandle> {

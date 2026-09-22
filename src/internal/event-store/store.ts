@@ -7,6 +7,7 @@ import {
 } from "./model.js";
 import type { EventInput, Operation, OperationEvent } from "./model.js";
 import {
+  presentationCleanupEligible,
   reduceOperation,
   replayOperation,
   TransitionError,
@@ -308,8 +309,11 @@ export abstract class ValidatedEventStore implements EventStore {
     ReadonlyArray<OperationSnapshot>,
     StoreError
   > {
-    return this.listMatching(
-      ({ operation }) => operation.presentationCleanup?.state === "pending"
+    return this.listMatching(({ operation }) =>
+      operation.presentationCleanup?.state === "pending" ||
+      (presentationCleanupEligible(operation) &&
+        operation.presentation?.ownedByPions === true &&
+        operation.presentationCleanup === undefined)
     );
   }
 
