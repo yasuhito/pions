@@ -132,64 +132,14 @@ const ResultAcceptanceRetentionPolicy = Schema.Struct({
   acceptedArtifactRetentionMs: NonNegativeSafeInteger,
   digest: Digest,
 });
-const ResultAcceptanceManifestWorkProduct = Schema.Struct({
-  key: Schema.String,
-  artifactIds: Schema.Array(Schema.String),
-});
-const ResultAcceptanceManifest = Schema.Struct({
-  formatId: Schema.Literal("pions.result-acceptance-manifest.v1"),
-  normalizationId: Schema.Literal("pions.canonical-json.v1"),
-  bodyArtifactId: Schema.String,
-  requirementSetId: Schema.String,
-  requirementSetDigest: Digest,
-  workProducts: Schema.Array(ResultAcceptanceManifestWorkProduct),
-});
-const ResultAcceptanceReservation = Schema.Struct({
-  preparationId: Schema.String,
-  operationId: Schema.String,
-  acceptanceRequestId: Schema.String,
-  manifest: ResultAcceptanceManifest,
-  manifestCanonicalJson: Schema.String,
-  manifestDigest: Digest,
-  requirementSetId: Schema.String,
-  requirementsDigest: Digest,
-  artifactIds: Schema.Array(Schema.String),
-  totalByteCount: NonNegativeSafeInteger,
-  preparedAt: Schema.String,
-});
-const ResultAcceptancePreparationEvidence = Schema.Struct({
-  formatId: Schema.Literal("pions.result-acceptance-preparation.v1"),
-  preparationId: Schema.String,
-  operationId: Schema.String,
-  acceptanceRequestId: Schema.String,
-  manifestDigest: Digest,
-  requirementsDigest: Digest,
-  bodyArtifactId: Schema.String,
-  workProducts: Schema.Array(ResultAcceptanceManifestWorkProduct),
-  artifactIds: Schema.Array(Schema.String),
-  totalByteCount: NonNegativeSafeInteger,
-  acceptedArtifactRetentionMs: NonNegativeSafeInteger,
-  retentionPolicyDigest: Digest,
-  digest: Digest,
-});
 const AcceptedResult = Schema.Struct({
   acceptanceId: Schema.String,
-  preparationId: Schema.String,
   operationId: Schema.String,
   acceptanceRequestId: Schema.String,
   acceptedAt: Schema.String,
   eventSequenceNumber: SafeInteger,
-  manifestFormatId: Schema.Literal("pions.result-acceptance-manifest.v1"),
-  manifestNormalizationId: Schema.Literal("pions.canonical-json.v1"),
-  manifestDigest: Digest,
-  requirementSetId: Schema.String,
-  requirementsDigest: Digest,
-  bodyArtifactId: Schema.String,
-  workProducts: Schema.Array(ResultAcceptanceManifestWorkProduct),
-  artifactIds: Schema.Array(Schema.String),
-  preparationEvidence: ResultAcceptancePreparationEvidence,
-  acceptedArtifactRetentionMs: NonNegativeSafeInteger,
-  retentionPolicyDigest: Digest,
+  byteCount: NonNegativeSafeInteger,
+  digest: Digest,
 });
 const StartAuthorizationTiming = Schema.Struct({
   createdAt: Schema.String,
@@ -747,14 +697,8 @@ const OperationEventSchema = Schema.Union(
   }),
   Schema.Struct({
     ...EventMetadataFields,
-    type: Schema.Literal("result_acceptance_prepared"),
-    reservation: ResultAcceptanceReservation,
-  }),
-  Schema.Struct({
-    ...EventMetadataFields,
     type: Schema.Literal("result_accepted"),
     acceptance: AcceptedResult,
-    preparationEvidence: ResultAcceptancePreparationEvidence,
   }),
   Schema.Struct({
     ...EventMetadataFields,

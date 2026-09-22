@@ -28,10 +28,7 @@ import type {
 } from "./index.js";
 import type {
   AcceptedResult,
-  ResultAcceptanceEventEvidence,
-  ResultAcceptancePreparationEvidence,
-  ResultAcceptanceReservation,
-  ResultAcceptanceReservationRequest,
+  ResultAcceptanceRequest,
   ResultAcceptanceTransactionOutcome,
   RevisionReservation,
   RevisionReservationOutcome,
@@ -41,10 +38,8 @@ import type {
 } from "../../public.js";
 import { startupReceiptDigest } from "../startup-receipt.js";
 import { revisionSeriesId, revisionSeriesOrigin } from "../revision-series.js";
-import {
-  preparationEvidenceMatchesReservation,
-  resultAcceptanceIdentifier,
-} from "../result-acceptance-transaction.js";
+import { resultAcceptanceIdentifier } from "../result-acceptance-transaction.js";
+import { sha256Digest } from "../result-digest.js";
 
 export type { StoredOperationRecord } from "./codec.js";
 
@@ -91,17 +86,16 @@ function terminalResultAcceptanceFailure(
 function acceptedResultOutcome(
   acceptance: Readonly<AcceptedResult>
 ): ResultAcceptanceTransactionOutcome {
-  const eventEvidence: ResultAcceptanceEventEvidence = {
-    preparationId: acceptance.preparationId,
-    operationId: acceptance.operationId,
-    acceptanceRequestId: acceptance.acceptanceRequestId,
-    manifestDigest: acceptance.manifestDigest,
-    evidenceDigest: acceptance.preparationEvidence.digest,
-    state: "accepted",
-    observedAt: acceptance.acceptedAt,
-    acceptedAt: acceptance.acceptedAt,
-  };
-  return { kind: "accepted", acceptance, eventEvidence };
+  return { kind: "accepted", acceptance };
+}
+
+function isValidUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function resultAcceptanceFailure(
@@ -131,6 +125,14 @@ export abstract class ValidatedEventStore implements EventStore {
     record: StoredOperationRecord
   ): Promise<void>;
   protected abstract listOperationIds(): Promise<ReadonlyArray<string>>;
+  /** Persists the exact Result bytes owned by the Operation before its acceptance event. */
+  protected abstract writeResultBody(
+    operationId: string,
+    bytes: Uint8Array
+  ): Promise<void>;
+  protected abstract readResultBytes(
+    operationId: string
+  ): Promise<Uint8Array | undefined>;
   protected willAppend(_event: OperationEvent): void {}
   protected didAppend(_event: OperationEvent): void {}
 
@@ -368,8 +370,8 @@ export abstract class ValidatedEventStore implements EventStore {
     return this.appendEvent(operationId, intent);
   }
 
-  prepareResultAcceptance(
-    request: Readonly<ResultAcceptanceReservationRequest>
+  acceptResult(
+    request: Readonly<ResultAcceptanceRequest>
   ): Effect.Effect<ResultAcceptanceTransactionOutcome> {
     return Effect.promise(() =>
       this.serialize(request.operationId, async () => {
@@ -377,36 +379,30 @@ export abstract class ValidatedEventStore implements EventStore {
           const loaded = await this.load(request.operationId, true);
           if (loaded === undefined)
             return terminalResultAcceptanceFailure("operation_not_found");
-          if (
-            !IDENTIFIER.test(request.preparationId) ||
-            !IDENTIFIER.test(request.acceptanceRequestId) ||
-            request.manifest.value.requirementSetId !==
-              request.requirements.requirementSetId ||
-            request.manifest.value.requirementSetDigest !==
-              request.requirements.digest
-          ) {
+          if (!IDENTIFIER.test(request.acceptanceRequestId)) {
             return terminalResultAcceptanceFailure("request_mismatch");
           }
-          if (
-            request.requirements.requirementSetId !==
-              loaded.operation.workProductRequirements.requirementSetId ||
-            request.requirements.digest !==
-              loaded.operation.workProductRequirements.digest
-          ) {
-            return terminalResultAcceptanceFailure("request_mismatch");
-          }
-          const existing = loaded.operation.resultAcceptanceReservation;
+          const bytes = Uint8Array.from(request.bytes);
+          const byteCount = bytes.byteLength;
+          const digest = sha256Digest(bytes);
+          const existing = loaded.operation.result;
           if (existing !== undefined) {
-            if (existing.manifestDigest !== request.manifest.digest) {
-              return terminalResultAcceptanceFailure(
-                existing.acceptanceRequestId === request.acceptanceRequestId
-                  ? "request_mismatch"
-                  : "manifest_conflict"
-              );
-            }
-            return loaded.operation.result === undefined
-              ? { kind: "prepared", reservation: existing }
-              : acceptedResultOutcome(loaded.operation.result);
+            if (existing.digest === digest && existing.byteCount === byteCount)
+              return acceptedResultOutcome(existing);
+            return terminalResultAcceptanceFailure(
+              existing.acceptanceRequestId === request.acceptanceRequestId
+                ? "request_mismatch"
+                : "result_conflict"
+            );
+          }
+          if (
+            byteCount >
+            loaded.operation.workProductRequirements.body.maxByteCount
+          ) {
+            return terminalResultAcceptanceFailure("limit_exceeded");
+          }
+          if (!isValidUtf8(bytes)) {
+            return terminalResultAcceptanceFailure("invalid_utf8");
           }
           if (
             loaded.operation.state !== "running" &&
@@ -414,28 +410,24 @@ export abstract class ValidatedEventStore implements EventStore {
           ) {
             return terminalResultAcceptanceFailure("invalid_operation_state");
           }
-          const timestamp = await Effect.runPromise(this.clock.now());
-          const reservation: ResultAcceptanceReservation = {
-            preparationId: request.preparationId,
+          const acceptedAt = await Effect.runPromise(this.clock.now());
+          const unidentified = {
             operationId: request.operationId,
             acceptanceRequestId: request.acceptanceRequestId,
-            manifest: structuredClone(request.manifest.value),
-            manifestCanonicalJson: request.manifest.json,
-            manifestDigest: request.manifest.digest,
-            requirementSetId: request.requirements.requirementSetId,
-            requirementsDigest: request.requirements.digest,
-            artifactIds: [...request.manifest.artifactIds],
-            totalByteCount: request.manifest.totalByteCount,
-            preparedAt: timestamp,
+            acceptedAt,
+            eventSequenceNumber: loaded.operation.stateSeq + 1,
+            byteCount,
+            digest,
+          };
+          const acceptance: AcceptedResult = {
+            acceptanceId: resultAcceptanceIdentifier(unidentified),
+            ...unidentified,
           };
           const event = this.makeEvent(
             request.operationId,
             loaded.operation.stateSeq,
-            {
-              type: "result_acceptance_prepared",
-              reservation,
-            },
-            timestamp
+            { type: "result_accepted", acceptance },
+            acceptedAt
           );
           const record = decodeRecord(
             {
@@ -448,21 +440,18 @@ export abstract class ValidatedEventStore implements EventStore {
           if (persistedEvent === undefined) {
             return terminalResultAcceptanceFailure("corrupt_record");
           }
-          const operation = reduceOperation(loaded.operation, persistedEvent);
+          reduceOperation(loaded.operation, persistedEvent);
+          // The body must be durable before the acceptance event publishes it,
+          // so an interruption between the two leaves the Result unaccepted.
           try {
             this.willAppend(persistedEvent);
+            await this.writeResultBody(request.operationId, bytes);
             await this.writeRecord(request.operationId, record);
           } catch {
             return { kind: "continuable", reason: "write_failed" };
           }
           this.didAppend(persistedEvent);
-          if (operation.resultAcceptanceReservation === undefined) {
-            return terminalResultAcceptanceFailure("corrupt_record");
-          }
-          return {
-            kind: "prepared",
-            reservation: operation.resultAcceptanceReservation,
-          };
+          return acceptedResultOutcome(acceptance);
         } catch (error) {
           return resultAcceptanceFailure(error);
         }
@@ -470,104 +459,13 @@ export abstract class ValidatedEventStore implements EventStore {
     );
   }
 
-  publishResultAcceptance(
-    evidence: Readonly<ResultAcceptancePreparationEvidence>
-  ): Effect.Effect<ResultAcceptanceTransactionOutcome> {
-    return Effect.promise(() =>
-      this.serialize(evidence.operationId, async () => {
-        try {
-          const loaded = await this.load(evidence.operationId, true);
-          if (loaded === undefined)
-            return terminalResultAcceptanceFailure("operation_not_found");
-          const reservation = loaded.operation.resultAcceptanceReservation;
-          if (reservation === undefined) {
-            return terminalResultAcceptanceFailure("preparation_mismatch");
-          }
-          if (loaded.operation.result !== undefined) {
-            const accepted = loaded.operation.result;
-            if (evidence.manifestDigest !== accepted.manifestDigest) {
-              return terminalResultAcceptanceFailure(
-                evidence.acceptanceRequestId === accepted.acceptanceRequestId
-                  ? "request_mismatch"
-                  : "manifest_conflict"
-              );
-            }
-            if (
-              evidence.acceptanceRequestId === accepted.acceptanceRequestId &&
-              !preparationEvidenceMatchesReservation(evidence, reservation)
-            ) {
-              return terminalResultAcceptanceFailure("preparation_mismatch");
-            }
-            return acceptedResultOutcome(accepted);
-          }
-          if (!preparationEvidenceMatchesReservation(evidence, reservation)) {
-            return terminalResultAcceptanceFailure("preparation_mismatch");
-          }
-          if (
-            loaded.operation.state !== "running" &&
-            loaded.operation.state !== "blocked"
-          ) {
-            return terminalResultAcceptanceFailure("invalid_operation_state");
-          }
-          const acceptedAt = await Effect.runPromise(this.clock.now());
-          const acceptance: AcceptedResult = {
-            acceptanceId: resultAcceptanceIdentifier(reservation),
-            preparationId: reservation.preparationId,
-            operationId: reservation.operationId,
-            acceptanceRequestId: reservation.acceptanceRequestId,
-            acceptedAt,
-            eventSequenceNumber: loaded.operation.stateSeq + 1,
-            manifestFormatId: reservation.manifest.formatId,
-            manifestNormalizationId: reservation.manifest.normalizationId,
-            manifestDigest: reservation.manifestDigest,
-            requirementSetId: reservation.requirementSetId,
-            requirementsDigest: reservation.requirementsDigest,
-            bodyArtifactId: reservation.manifest.bodyArtifactId,
-            workProducts: structuredClone(reservation.manifest.workProducts),
-            artifactIds: [...reservation.artifactIds],
-            preparationEvidence: structuredClone(evidence),
-            acceptedArtifactRetentionMs: evidence.acceptedArtifactRetentionMs,
-            retentionPolicyDigest: evidence.retentionPolicyDigest,
-          };
-          const event = this.makeEvent(
-            evidence.operationId,
-            loaded.operation.stateSeq,
-            {
-              type: "result_accepted",
-              acceptance,
-              preparationEvidence: structuredClone(evidence),
-            },
-            acceptedAt
-          );
-          const record = decodeRecord(
-            {
-              ...loaded.record,
-              events: [...loaded.record.events, event],
-            },
-            evidence.operationId
-          );
-          const persistedEvent = record.events.at(-1);
-          if (persistedEvent === undefined) {
-            return terminalResultAcceptanceFailure("corrupt_record");
-          }
-          reduceOperation(loaded.operation, persistedEvent);
-          try {
-            this.willAppend(persistedEvent);
-            await this.writeRecord(evidence.operationId, record);
-          } catch {
-            return { kind: "continuable", reason: "write_failed", reservation };
-          }
-          this.didAppend(persistedEvent);
-          const persisted = await this.load(evidence.operationId, true);
-          if (persisted?.operation.result === undefined) {
-            return terminalResultAcceptanceFailure("corrupt_record");
-          }
-          return acceptedResultOutcome(persisted.operation.result);
-        } catch (error) {
-          return resultAcceptanceFailure(error);
-        }
-      })
-    );
+  readResultBody(
+    operationId: string
+  ): Effect.Effect<Uint8Array | undefined, StoreError> {
+    return Effect.tryPromise({
+      try: () => this.readResultBytes(operationId),
+      catch: (error) => asStoreError(error, "corrupt_record"),
+    });
   }
 
   private makeEvent(
@@ -710,7 +608,7 @@ export abstract class ValidatedEventStore implements EventStore {
               command.retryOfOperationId !== undefined ||
               command.clearance !== undefined ||
               expected.acceptanceId !== command.targetResultId ||
-              expected.manifestDigest !== command.targetResultDigest ||
+              expected.digest !== command.targetResultDigest ||
               series?.reservations.some(
                 (reservation) =>
                   reservation.kind === "revision" &&
@@ -895,7 +793,7 @@ export abstract class ValidatedEventStore implements EventStore {
           if (
             result === undefined ||
             result.acceptanceId !== command.resultId ||
-            result.manifestDigest !== command.resultDigest
+            result.digest !== command.resultDigest
           ) {
             return {
               status: "rejected",

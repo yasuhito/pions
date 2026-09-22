@@ -76,7 +76,7 @@ export function resultAcceptanceProof(
   return {
     operationId,
     acceptanceId: `pions.result-acceptance.v1:${"a".repeat(64)}`,
-    manifestDigest: resultDigest("manifest"),
+    digest: resultDigest("finished"),
     eventSequenceNumber,
   } as unknown as ResultAcceptanceProof;
 }

@@ -600,7 +600,8 @@ export type ResultAcceptanceId = `pions.result-acceptance.v1:${string}`;
 export interface ResultAcceptanceEvidence {
   readonly acceptedAt: string;
   readonly acceptanceId: ResultAcceptanceId;
-  readonly manifestDigest: ArtifactDigest;
+  readonly byteCount: number;
+  readonly digest: ArtifactDigest;
   readonly eventSequenceNumber: number;
 }
 
@@ -1597,73 +1598,42 @@ export type ReviewInputClosureOutcome =
 export type ArtifactAuthorityDecision =
   "allowed" | "denied" | "revoked" | "unknown";
 
-export interface ResultAcceptanceReservationRequest {
-  readonly preparationId: string;
+/** One Worker final answer offered to the Operation that owns the Result. */
+export interface ResultAcceptanceRequest {
   readonly operationId: string;
   readonly acceptanceRequestId: string;
-  readonly manifest: Readonly<ValidatedResultAcceptanceManifest>;
-  readonly requirements: Readonly<ResolvedWorkProductRequirements>;
+  readonly bytes: Uint8Array;
 }
 
-export interface ResultAcceptanceReservation {
-  readonly preparationId: string;
-  readonly operationId: string;
-  readonly acceptanceRequestId: string;
-  readonly manifest: Readonly<ResultAcceptanceManifest>;
-  readonly manifestCanonicalJson: string;
-  readonly manifestDigest: ArtifactDigest;
-  readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
-  readonly requirementsDigest: ArtifactDigest;
-  readonly artifactIds: ReadonlyArray<string>;
-  readonly totalByteCount: number;
-  readonly preparedAt: string;
-}
-
+/** The immutable Result an Operation owns after acceptance: exact bytes, count, digest, identifier. */
 export interface AcceptedResult {
   readonly acceptanceId: ResultAcceptanceId;
-  readonly preparationId: string;
   readonly operationId: string;
   readonly acceptanceRequestId: string;
   readonly acceptedAt: string;
   readonly eventSequenceNumber: number;
-  readonly manifestFormatId: ResultAcceptanceManifest["formatId"];
-  readonly manifestNormalizationId: ResultAcceptanceManifest["normalizationId"];
-  readonly manifestDigest: ArtifactDigest;
-  readonly requirementSetId: ResolvedWorkProductRequirements["requirementSetId"];
-  readonly requirementsDigest: ArtifactDigest;
-  readonly bodyArtifactId: string;
-  readonly workProducts: ReadonlyArray<
-    Readonly<ResultAcceptanceManifestWorkProduct>
-  >;
-  readonly artifactIds: ReadonlyArray<string>;
-  readonly preparationEvidence: Readonly<ResultAcceptancePreparationEvidence>;
-  readonly acceptedArtifactRetentionMs: number;
-  readonly retentionPolicyDigest: ArtifactDigest;
+  readonly byteCount: number;
+  readonly digest: ArtifactDigest;
 }
 
 export type ResultAcceptanceTransactionFailureReason =
   | "operation_not_found"
   | "request_mismatch"
-  | "manifest_conflict"
-  | "preparation_mismatch"
+  | "result_conflict"
   | "invalid_operation_state"
+  | "invalid_utf8"
+  | "limit_exceeded"
   | "corrupt_record"
   | "unsupported_schema";
 
 export type ResultAcceptanceTransactionOutcome =
   | {
-      readonly kind: "prepared";
-      readonly reservation: Readonly<ResultAcceptanceReservation>;
-    }
-  | {
       readonly kind: "accepted";
       readonly acceptance: Readonly<AcceptedResult>;
-      readonly eventEvidence: Readonly<ResultAcceptanceEventEvidence>;
     }
   | {
       readonly kind: "continuable";
       readonly reason: "write_failed";
-      readonly reservation?: Readonly<ResultAcceptanceReservation>;
     }
   | {
       readonly kind: "failed";

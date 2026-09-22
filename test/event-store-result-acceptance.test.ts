@@ -7,10 +7,7 @@ import { test, type TestContext } from "node:test";
 
 import { Effect } from "effect";
 
-import type {
-  ResultAcceptancePreparationEvidence,
-  ResultAcceptanceReservationRequest,
-} from "../src/public.js";
+import type { ResultAcceptanceRequest } from "../src/public.js";
 import type { EventStore } from "../src/internal/event-store/index.js";
 import {
   operationDirectoryKey,
@@ -29,8 +26,8 @@ import {
   workProductRequirements,
 } from "./worker-protocol-fixtures.js";
 
-const digest = (value: string) =>
-  `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}` as const;
+const digest = (bytes: Uint8Array) =>
+  `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
 
 function clock(): FakeClock {
   return new FakeClock(
@@ -41,63 +38,18 @@ function clock(): FakeClock {
   );
 }
 
-function reservation(
-  overrides: Partial<ResultAcceptanceReservationRequest> = {}
-): ResultAcceptanceReservationRequest {
-  const manifestValue = {
-    formatId: "pions.result-acceptance-manifest.v1" as const,
-    normalizationId: "pions.canonical-json.v1" as const,
-    bodyArtifactId: "body-1",
-    requirementSetId: workProductRequirements.requirementSetId,
-    requirementSetDigest: workProductRequirements.digest,
-    workProducts: [],
-  };
-  const manifestJson = JSON.stringify(manifestValue);
+function request(
+  body: string | Uint8Array = "finished",
+  acceptanceRequestId = "request-1"
+): ResultAcceptanceRequest {
   return {
-    preparationId: "preparation-1",
     operationId: "operation-1",
-    acceptanceRequestId: "request-1",
-    manifest: {
-      json: manifestJson,
-      bytes: Buffer.from(manifestJson, "utf8"),
-      byteCount: Buffer.byteLength(manifestJson, "utf8"),
-      digest: digest(manifestJson),
-      value: manifestValue,
-      totalByteCount: 8,
-      artifactIds: ["body-1", "dependency-1"],
-    },
-    requirements: workProductRequirements,
-    ...overrides,
+    acceptanceRequestId,
+    bytes: typeof body === "string" ? Buffer.from(body, "utf8") : body,
   };
 }
 
-function evidence(
-  request = reservation(),
-  overrides: Partial<ResultAcceptancePreparationEvidence> = {}
-): ResultAcceptancePreparationEvidence {
-  const { digest: evidenceDigest, ...evidenceOverrides } = overrides;
-  const unsigned = {
-    formatId: "pions.result-acceptance-preparation.v1" as const,
-    preparationId: request.preparationId,
-    operationId: request.operationId,
-    acceptanceRequestId: request.acceptanceRequestId,
-    manifestDigest: request.manifest.digest,
-    requirementsDigest: request.requirements.digest,
-    bodyArtifactId: request.manifest.value.bodyArtifactId,
-    workProducts: request.manifest.value.workProducts,
-    artifactIds: request.manifest.artifactIds,
-    totalByteCount: request.manifest.totalByteCount,
-    acceptedArtifactRetentionMs: 60_000,
-    retentionPolicyDigest: digest("retention"),
-    ...evidenceOverrides,
-  };
-  return {
-    ...unsigned,
-    digest: evidenceDigest ?? digest(JSON.stringify(unsigned)),
-  };
-}
-
-async function makeRunning(store: EventStore): Promise<void> {
+async function createOperation(store: EventStore): Promise<void> {
   await Effect.runPromise(
     store.create({
       operationId: "operation-1",
@@ -119,6 +71,10 @@ async function makeRunning(store: EventStore): Promise<void> {
       },
     })
   );
+}
+
+async function makeRunning(store: EventStore): Promise<void> {
+  await createOperation(store);
   await advanceTestOperationToRunning(store, "operation-1");
 }
 
@@ -146,15 +102,15 @@ async function storeFailure(
   return Effect.runPromise(Effect.flip(effect));
 }
 
+async function acceptedResult(store: EventStore) {
+  return (await Effect.runPromise(store.read("operation-1"))).operation.result;
+}
+
 class FaultInjectedEventStore extends InMemoryEventStore {
-  fault: "before_prepared" | "before_accepted" | "after_accepted" | undefined;
+  fault: "before_accepted" | "after_accepted" | undefined;
 
   protected override willAppend(event: OperationEvent): void {
-    if (
-      (this.fault === "before_prepared" &&
-        event.type === "result_acceptance_prepared") ||
-      (this.fault === "before_accepted" && event.type === "result_accepted")
-    )
+    if (this.fault === "before_accepted" && event.type === "result_accepted")
       throw new Error("injected interruption");
   }
 
@@ -166,57 +122,94 @@ class FaultInjectedEventStore extends InMemoryEventStore {
   }
 }
 
-test("a prepared Result acceptance reserves the Operation without publishing a Result", async () => {
+test("accepting a Worker final answer publishes the Result acceptance on the Operation", async () => {
   const store = await runningStore();
 
-  await Effect.runPromise(store.prepareResultAcceptance(reservation()));
+  await Effect.runPromise(store.acceptResult(request()));
+
+  assert.equal((await acceptedResult(store))?.acceptanceRequestId, "request-1");
+});
+
+test("the accepted Result records the exact byte count of the body", async () => {
+  const store = await runningStore();
+
+  await Effect.runPromise(store.acceptResult(request("先頭🌱末尾")));
 
   assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result,
+    (await acceptedResult(store))?.byteCount,
+    Buffer.byteLength("先頭🌱末尾", "utf8")
+  );
+});
+
+test("the accepted Result records the SHA-256 digest of the exact bytes", async () => {
+  const store = await runningStore();
+  const bytes = Buffer.from("finished\n", "utf8");
+
+  await Effect.runPromise(store.acceptResult(request(bytes)));
+
+  assert.equal((await acceptedResult(store))?.digest, digest(bytes));
+});
+
+test("the accepted Result identifier is derived from the request and the accepted bytes", async () => {
+  const store = await runningStore();
+
+  await Effect.runPromise(store.acceptResult(request()));
+
+  assert.match(
+    (await acceptedResult(store))?.acceptanceId ?? "",
+    /^pions\.result-acceptance\.v1:[0-9a-f]{64}$/u
+  );
+});
+
+test("the accepted Result bytes are read back verbatim", async () => {
+  const store = await runningStore();
+  await Effect.runPromise(store.acceptResult(request("line one\r\nline two")));
+
+  const body = await Effect.runPromise(store.readResultBody("operation-1"));
+
+  assert.equal(
+    Buffer.from(body ?? []).toString("utf8"),
+    "line one\r\nline two"
+  );
+});
+
+test("an Operation without an accepted Result has no persisted body", async () => {
+  const store = await runningStore();
+
+  assert.equal(
+    await Effect.runPromise(store.readResultBody("operation-1")),
     undefined
   );
 });
 
-test("publishing matching Artifact Store evidence creates the accepted Result projection", async () => {
+test("a resent request with the same bytes returns the same acceptance", async () => {
   const store = await runningStore();
-  const request = reservation();
-  await Effect.runPromise(store.prepareResultAcceptance(request));
+  const first = await Effect.runPromise(store.acceptResult(request()));
 
-  await Effect.runPromise(store.publishResultAcceptance(evidence(request)));
+  const resent = await Effect.runPromise(store.acceptResult(request()));
+
+  assert.deepEqual(resent, first);
+});
+
+test("a resent request with the same bytes appends no second acceptance event", async () => {
+  const trace: Array<string> = [];
+  const store = await runningStore(trace);
+  await Effect.runPromise(store.acceptResult(request()));
+
+  await Effect.runPromise(store.acceptResult(request()));
 
   assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result
-      ?.acceptanceRequestId,
-    "request-1"
+    trace.filter((entry) => entry.includes('"type":"result_accepted"')).length,
+    1
   );
 });
 
-test("the same request and manifest returns the existing reservation", async () => {
+test("the same request with different bytes is a request mismatch", async () => {
   const store = await runningStore();
-  const first = await Effect.runPromise(
-    store.prepareResultAcceptance(reservation())
-  );
-
-  const retried = await Effect.runPromise(
-    store.prepareResultAcceptance(reservation())
-  );
-
-  assert.deepEqual(retried, first);
-});
-
-test("the same request with another manifest is a request mismatch", async () => {
-  const store = await runningStore();
-  await Effect.runPromise(store.prepareResultAcceptance(reservation()));
+  await Effect.runPromise(store.acceptResult(request("first")));
 
   const outcome = await Effect.runPromise(
-    store.prepareResultAcceptance(
-      reservation({
-        manifest: {
-          ...reservation().manifest,
-          digest: digest("other-manifest"),
-        },
-      })
-    )
+    store.acceptResult(request("second"))
   );
 
   assert.equal(
@@ -225,152 +218,231 @@ test("the same request with another manifest is a request mismatch", async () =>
   );
 });
 
-test("another request with the same manifest joins the existing reservation", async () => {
+test("the same request with different bytes does not replace the accepted Result", async () => {
   const store = await runningStore();
-  await Effect.runPromise(store.prepareResultAcceptance(reservation()));
+  await Effect.runPromise(store.acceptResult(request("first")));
 
-  const outcome = await Effect.runPromise(
-    store.prepareResultAcceptance(
-      reservation({
-        preparationId: "preparation-2",
-        acceptanceRequestId: "request-2",
-      })
-    )
-  );
+  await Effect.runPromise(store.acceptResult(request("second")));
 
   assert.equal(
-    outcome.kind === "prepared" ? outcome.reservation.preparationId : undefined,
-    "preparation-1"
+    (await acceptedResult(store))?.digest,
+    digest(Buffer.from("first", "utf8"))
   );
 });
 
-test("another request with another manifest conflicts", async () => {
+test("another request with the same bytes joins the accepted Result", async () => {
   const store = await runningStore();
-  await Effect.runPromise(store.prepareResultAcceptance(reservation()));
-
-  const outcome = await Effect.runPromise(
-    store.prepareResultAcceptance(
-      reservation({
-        preparationId: "preparation-2",
-        acceptanceRequestId: "request-2",
-        manifest: {
-          ...reservation().manifest,
-          digest: digest("other-manifest"),
-        },
-      })
-    )
-  );
-
-  assert.equal(
-    outcome.kind === "failed" ? outcome.reason : undefined,
-    "manifest_conflict"
-  );
-});
-
-test("mismatched Artifact Store evidence does not publish Result acceptance", async () => {
-  const store = await runningStore();
-  const request = reservation();
-  await Effect.runPromise(store.prepareResultAcceptance(request));
-
-  const outcome = await Effect.runPromise(
-    store.publishResultAcceptance(
-      evidence(request, {
-        artifactIds: ["body-1"],
-      })
-    )
-  );
-
-  assert.equal(
-    outcome.kind === "failed" ? outcome.reason : undefined,
-    "preparation_mismatch"
-  );
-});
-
-test("successful publication returns ACK evidence reconstructed from the accepted event", async () => {
-  const store = await runningStore();
-  const request = reservation();
-  await Effect.runPromise(store.prepareResultAcceptance(request));
-
-  const outcome = await Effect.runPromise(
-    store.publishResultAcceptance(evidence(request))
-  );
-
-  assert.equal(
-    outcome.kind === "accepted" ? outcome.eventEvidence.acceptedAt : undefined,
-    (await Effect.runPromise(store.read("operation-1"))).operation.result
-      ?.acceptedAt
-  );
-});
-
-test("a retry after publication returns the persisted acceptance identifier", async () => {
-  const store = await runningStore();
-  const request = reservation();
-  await Effect.runPromise(store.prepareResultAcceptance(request));
   const first = await Effect.runPromise(
-    store.publishResultAcceptance(evidence(request))
+    store.acceptResult(request("same", "request-1"))
   );
 
-  const retried = await Effect.runPromise(
-    store.publishResultAcceptance(evidence(request))
+  const joined = await Effect.runPromise(
+    store.acceptResult(request("same", "request-2"))
   );
-
-  assert.deepEqual(retried, first);
-});
-
-test("a prepared reservation remains unpublished after restart", async (context) => {
-  const root = await privateRoot(context);
-  const store = new PrivateFileEventStore(root, clock());
-  await makeRunning(store);
-  await Effect.runPromise(store.prepareResultAcceptance(reservation()));
-
-  const reopened = new PrivateFileEventStore(root, clock());
 
   assert.equal(
-    (await Effect.runPromise(reopened.read("operation-1"))).operation.result,
+    joined.kind === "accepted" ? joined.acceptance.acceptanceId : undefined,
+    first.kind === "accepted" ? first.acceptance.acceptanceId : undefined
+  );
+});
+
+test("another request with different bytes is a Result conflict", async () => {
+  const store = await runningStore();
+  await Effect.runPromise(store.acceptResult(request("first", "request-1")));
+
+  const outcome = await Effect.runPromise(
+    store.acceptResult(request("second", "request-2"))
+  );
+
+  assert.equal(
+    outcome.kind === "failed" ? outcome.reason : undefined,
+    "result_conflict"
+  );
+});
+
+test("a body over the Operation body limit is rejected", async () => {
+  const store = await runningStore();
+  const bytes = Buffer.alloc(
+    workProductRequirements.body.maxByteCount + 1,
+    "a"
+  );
+
+  const outcome = await Effect.runPromise(store.acceptResult(request(bytes)));
+
+  assert.equal(
+    outcome.kind === "failed" ? outcome.reason : undefined,
+    "limit_exceeded"
+  );
+});
+
+test("a body at the Operation body limit is accepted", async () => {
+  const store = await runningStore();
+  const bytes = Buffer.alloc(workProductRequirements.body.maxByteCount, "a");
+
+  const outcome = await Effect.runPromise(store.acceptResult(request(bytes)));
+
+  assert.equal(outcome.kind, "accepted");
+});
+
+test("a body with invalid UTF-8 is rejected", async () => {
+  const store = await runningStore();
+
+  const outcome = await Effect.runPromise(
+    store.acceptResult(request(Uint8Array.from([0x61, 0xff, 0x62])))
+  );
+
+  assert.equal(
+    outcome.kind === "failed" ? outcome.reason : undefined,
+    "invalid_utf8"
+  );
+});
+
+test("a rejected body leaves no persisted Result bytes", async () => {
+  const store = await runningStore();
+
+  await Effect.runPromise(
+    store.acceptResult(request(Uint8Array.from([0x61, 0xff, 0x62])))
+  );
+
+  assert.equal(
+    await Effect.runPromise(store.readResultBody("operation-1")),
     undefined
   );
+});
+
+test("an acceptance request identifier outside the identifier grammar is a request mismatch", async () => {
+  const store = await runningStore();
+
+  const outcome = await Effect.runPromise(
+    store.acceptResult(request("finished", "request 1"))
+  );
+
+  assert.equal(
+    outcome.kind === "failed" ? outcome.reason : undefined,
+    "request_mismatch"
+  );
+});
+
+test("an Operation that is not running cannot accept a Result", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await createOperation(store);
+
+  const outcome = await Effect.runPromise(store.acceptResult(request()));
+
+  assert.equal(
+    outcome.kind === "failed" ? outcome.reason : undefined,
+    "invalid_operation_state"
+  );
+});
+
+test("an unknown Operation cannot accept a Result", async () => {
+  const store = await runningStore();
+
+  const outcome = await Effect.runPromise(
+    store.acceptResult({ ...request(), operationId: "operation-9" })
+  );
+
+  assert.equal(
+    outcome.kind === "failed" ? outcome.reason : undefined,
+    "operation_not_found"
+  );
+});
+
+test("an interruption before acceptance persistence leaves the Result unaccepted", async () => {
+  const store = new FaultInjectedEventStore([], clock());
+  await makeRunning(store);
+  store.fault = "before_accepted";
+
+  await Effect.runPromise(store.acceptResult(request()));
+
+  assert.equal(await acceptedResult(store), undefined);
+});
+
+test("an interruption before acceptance persistence is reported as continuable", async () => {
+  const store = new FaultInjectedEventStore([], clock());
+  await makeRunning(store);
+  store.fault = "before_accepted";
+
+  const outcome = await Effect.runPromise(store.acceptResult(request()));
+
+  assert.equal(
+    outcome.kind === "continuable" ? outcome.reason : undefined,
+    "write_failed"
+  );
+});
+
+test("a retry after response loss returns the persisted acceptance", async () => {
+  const store = new FaultInjectedEventStore([], clock());
+  await makeRunning(store);
+  store.fault = "after_accepted";
+  await Effect.runPromise(store.acceptResult(request()));
+  store.fault = undefined;
+
+  const retried = await Effect.runPromise(store.acceptResult(request()));
+
+  assert.equal(retried.kind, "accepted");
 });
 
 test("a published acceptance keeps its identifier after restart", async (context) => {
   const root = await privateRoot(context);
   const store = new PrivateFileEventStore(root, clock());
   await makeRunning(store);
-  const request = reservation();
-  await Effect.runPromise(store.prepareResultAcceptance(request));
-  const accepted = await Effect.runPromise(
-    store.publishResultAcceptance(evidence(request))
-  );
+  const accepted = await Effect.runPromise(store.acceptResult(request()));
 
   const reopened = new PrivateFileEventStore(root, clock());
 
   assert.equal(
-    (await Effect.runPromise(reopened.read("operation-1"))).operation.result
-      ?.acceptanceId,
+    (await acceptedResult(reopened))?.acceptanceId,
     accepted.kind === "accepted" ? accepted.acceptance.acceptanceId : undefined
   );
 });
 
-test("a corrupt prepared reservation is not reconstructed as unaccepted", async (context) => {
+test("the accepted Result bytes are read back after restart", async (context) => {
   const root = await privateRoot(context);
   const store = new PrivateFileEventStore(root, clock());
   await makeRunning(store);
-  await Effect.runPromise(store.prepareResultAcceptance(reservation()));
+  await Effect.runPromise(store.acceptResult(request("durable 🌱")));
+
+  const reopened = new PrivateFileEventStore(root, clock());
+
+  assert.equal(
+    Buffer.from(
+      (await Effect.runPromise(reopened.readResultBody("operation-1"))) ?? []
+    ).toString("utf8"),
+    "durable 🌱"
+  );
+});
+
+test("the accepted Result bytes live in the Operation's private record directory", async (context) => {
+  const root = await privateRoot(context);
+  const store = new PrivateFileEventStore(root, clock());
+  await makeRunning(store);
+  await Effect.runPromise(store.acceptResult(request("finished")));
+
+  const stored = await readFile(
+    join(root, operationDirectoryKey("operation-1"), "result.v1.utf8")
+  );
+
+  assert.equal(stored.toString("utf8"), "finished");
+});
+
+test("a rewritten acceptance record is rejected as corrupt", async (context) => {
+  const root = await privateRoot(context);
+  const store = new PrivateFileEventStore(root, clock());
+  await makeRunning(store);
+  await Effect.runPromise(store.acceptResult(request()));
   const path = join(
     root,
     operationDirectoryKey("operation-1"),
-    "events.v19.json"
+    "events.v20.json"
   );
   const record = JSON.parse(await readFile(path, "utf8")) as {
-    events: Array<{
-      type: string;
-      reservation?: { manifestCanonicalJson: string };
-    }>;
+    events: Array<{ type: string; acceptance?: { byteCount: number } }>;
   };
-  const prepared = record.events.find(
-    (event) => event.type === "result_acceptance_prepared"
+  const accepted = record.events.find(
+    (event) => event.type === "result_accepted"
   );
-  if (prepared?.reservation !== undefined)
-    prepared.reservation.manifestCanonicalJson = "{}";
+  if (accepted?.acceptance !== undefined) accepted.acceptance.byteCount += 1;
   await writeFile(path, JSON.stringify(record));
 
   const failure = await storeFailure(
@@ -386,7 +458,7 @@ test("an old Event Store root is rejected instead of initialized as the current 
   await makeRunning(store);
   const directory = join(root, operationDirectoryKey("operation-1"));
   await rename(
-    join(directory, "events.v19.json"),
+    join(directory, "events.v20.json"),
     join(directory, "events.v10.json")
   );
 
@@ -397,76 +469,18 @@ test("an old Event Store root is rejected instead of initialized as the current 
   assert.equal(failure.code, "unsupported_schema");
 });
 
-test("an interruption before reservation persistence leaves no reserved slot", async () => {
-  const store = new FaultInjectedEventStore([], clock());
-  await makeRunning(store);
-  store.fault = "before_prepared";
-
-  await Effect.runPromise(store.prepareResultAcceptance(reservation()));
-
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation
-      .resultAcceptanceReservation,
-    undefined
-  );
-});
-
-test("an interruption before acceptance persistence leaves the public projection empty", async () => {
-  const store = new FaultInjectedEventStore([], clock());
-  await makeRunning(store);
-  const request = reservation();
-  await Effect.runPromise(store.prepareResultAcceptance(request));
-  store.fault = "before_accepted";
-
-  await Effect.runPromise(store.publishResultAcceptance(evidence(request)));
-
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result,
-    undefined
-  );
-});
-
-test("a retry after response loss returns the persisted acceptance", async () => {
-  const store = new FaultInjectedEventStore([], clock());
-  await makeRunning(store);
-  const request = reservation();
-  await Effect.runPromise(store.prepareResultAcceptance(request));
-  store.fault = "after_accepted";
-  await Effect.runPromise(store.publishResultAcceptance(evidence(request)));
-  store.fault = undefined;
-
-  const retried = await Effect.runPromise(
-    store.publishResultAcceptance(evidence(request))
-  );
-
-  assert.equal(retried.kind, "accepted");
-});
-
-test("parallel conflicting reservations append only one preparation event", async () => {
+test("parallel conflicting acceptances append only one acceptance event", async () => {
   const trace: Array<string> = [];
   const store = await runningStore(trace);
   trace.length = 0;
 
   await Promise.all([
-    Effect.runPromise(store.prepareResultAcceptance(reservation())),
-    Effect.runPromise(
-      store.prepareResultAcceptance(
-        reservation({
-          preparationId: "preparation-2",
-          acceptanceRequestId: "request-2",
-          manifest: {
-            ...reservation().manifest,
-            digest: digest("other-manifest"),
-          },
-        })
-      )
-    ),
+    Effect.runPromise(store.acceptResult(request("first", "request-1"))),
+    Effect.runPromise(store.acceptResult(request("second", "request-2"))),
   ]);
 
   assert.equal(
-    trace.filter((entry) =>
-      entry.includes('"type":"result_acceptance_prepared"')
-    ).length,
+    trace.filter((entry) => entry.includes('"type":"result_accepted"')).length,
     1
   );
 });

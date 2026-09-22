@@ -18,10 +18,7 @@ import {
   automaticStartScopeDigest,
   startInstructionReference,
 } from "../start-instruction.js";
-import {
-  manifestReservationIsConsistent,
-  preparationEvidenceMatchesReservation,
-} from "../result-acceptance-transaction.js";
+import { acceptedResultIsConsistent } from "../result-acceptance-transaction.js";
 
 export type TransitionErrorCode =
   | "operation_required"
@@ -134,9 +131,6 @@ function immutable(operation: Operation): Operation {
   Object.freeze(operation.childOperationIds);
   Object.freeze(operation.settledChildOperationIds);
   if (operation.result !== undefined) deepFreeze(operation.result);
-  if (operation.resultAcceptanceReservation !== undefined) {
-    deepFreeze(operation.resultAcceptanceReservation);
-  }
   return Object.freeze(operation);
 }
 
@@ -1242,61 +1236,17 @@ export function reduceOperation(
       }
       return immutable({ ...current, state: "running", stateSeq: event.seq });
 
-    case "result_acceptance_prepared":
+    case "result_accepted":
       if (
         (current.state !== "running" && current.state !== "blocked") ||
-        current.resultAcceptanceReservation !== undefined ||
-        current.result !== undefined ||
-        event.reservation.operationId !== current.operationId ||
-        event.reservation.preparedAt !== event.timestamp ||
-        event.reservation.preparationId.length === 0 ||
-        event.reservation.acceptanceRequestId.length === 0 ||
-        !manifestReservationIsConsistent(event.reservation)
-      ) {
-        throw new TransitionError("illegal_transition");
-      }
-      return immutable({
-        ...current,
-        resultAcceptanceReservation: structuredClone(event.reservation),
-        stateSeq: event.seq,
-      });
-
-    case "result_accepted": {
-      const reservation = current.resultAcceptanceReservation;
-      const evidence = event.preparationEvidence;
-      if (
-        (current.state !== "running" && current.state !== "blocked") ||
-        reservation === undefined ||
         current.result !== undefined ||
         event.acceptance.acceptedAt !== event.timestamp ||
         event.acceptance.eventSequenceNumber !== event.seq ||
         event.acceptance.operationId !== current.operationId ||
-        event.acceptance.preparationId !== reservation.preparationId ||
-        event.acceptance.acceptanceRequestId !==
-          reservation.acceptanceRequestId ||
-        event.acceptance.manifestFormatId !== reservation.manifest.formatId ||
-        event.acceptance.manifestNormalizationId !==
-          reservation.manifest.normalizationId ||
-        event.acceptance.manifestDigest !== reservation.manifestDigest ||
-        event.acceptance.requirementSetId !== reservation.requirementSetId ||
-        event.acceptance.requirementsDigest !==
-          reservation.requirementsDigest ||
-        event.acceptance.bodyArtifactId !==
-          reservation.manifest.bodyArtifactId ||
-        !isDeepStrictEqual(
-          event.acceptance.workProducts,
-          reservation.manifest.workProducts
-        ) ||
-        !isDeepStrictEqual(
-          event.acceptance.artifactIds,
-          reservation.artifactIds
-        ) ||
-        !isDeepStrictEqual(event.acceptance.preparationEvidence, evidence) ||
-        event.acceptance.acceptedArtifactRetentionMs !==
-          evidence.acceptedArtifactRetentionMs ||
-        event.acceptance.retentionPolicyDigest !==
-          evidence.retentionPolicyDigest ||
-        !preparationEvidenceMatchesReservation(evidence, reservation)
+        !acceptedResultIsConsistent(
+          event.acceptance,
+          current.workProductRequirements.body.maxByteCount
+        )
       ) {
         throw new TransitionError("illegal_transition");
       }
@@ -1306,7 +1256,6 @@ export function reduceOperation(
         resultAcceptedAt: event.timestamp,
         stateSeq: event.seq,
       });
-    }
 
     case "self_settled":
       if (

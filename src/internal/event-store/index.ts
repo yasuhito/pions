@@ -7,8 +7,7 @@ import type {
   PinnedResultFormat,
   RequestedWorkerConfig,
   ResolvedWorkProductRequirements,
-  ResultAcceptancePreparationEvidence,
-  ResultAcceptanceReservationRequest,
+  ResultAcceptanceRequest,
   ResultAcceptanceRetentionPolicyEvidence,
   ResultAcceptanceTransactionOutcome,
   RetryClearanceEvidence,
@@ -113,12 +112,14 @@ export interface EventStore {
     operationId: string,
     intent: OperationIntent
   ): Effect.Effect<OperationSnapshot, StoreError>;
-  prepareResultAcceptance(
-    request: Readonly<ResultAcceptanceReservationRequest>
+  /** Persists one Worker final answer as the Operation-owned Result and publishes its acceptance. */
+  acceptResult(
+    request: Readonly<ResultAcceptanceRequest>
   ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
-  publishResultAcceptance(
-    evidence: Readonly<ResultAcceptancePreparationEvidence>
-  ): Effect.Effect<ResultAcceptanceTransactionOutcome>;
+  /** Returns the exact persisted Result bytes, or undefined when none were persisted. */
+  readResultBody(
+    operationId: string
+  ): Effect.Effect<Uint8Array | undefined, StoreError>;
   reserveRevision(
     command: Readonly<RevisionReservationCommand>
   ): Effect.Effect<RevisionReservationOutcome, StoreError>;

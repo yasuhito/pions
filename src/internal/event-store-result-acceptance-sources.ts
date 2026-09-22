@@ -42,38 +42,17 @@ export function eventStoreResultAcceptanceSources(store: EventStore): {
           : operation.resultRetentionPolicy;
       },
     },
+    // The Event Store publishes Result acceptance as Operation-owned UTF-8
+    // text, so it never issues Artifact-backed preparation evidence.
     eventEvidenceSource: {
-      read: async (operationId, preparationId) => {
-        const operation = await readOperation(store, operationId);
-        const result = operation === "unknown" ? undefined : operation.result;
-        if (result === undefined || result.preparationId !== preparationId)
-          return "unknown";
-        return {
-          preparationId: result.preparationId,
-          operationId: result.operationId,
-          acceptanceRequestId: result.acceptanceRequestId,
-          manifestDigest: result.manifestDigest,
-          evidenceDigest: result.preparationEvidence.digest,
-          state: "accepted",
-          observedAt: result.acceptedAt,
-          acceptedAt: result.acceptedAt,
-        };
-      },
+      read: async () => "unknown",
     },
     eventEvidence: {
       verify: async (evidence: Readonly<ResultAcceptanceEventEvidence>) => {
         const operation = await readOperation(store, evidence.operationId);
         if (operation === "unknown") return "unknown";
-        const result = operation.result;
-        if (result === undefined) {
-          return evidence.state === "not_accepted" ? "trusted" : "untrusted";
-        }
-        return evidence.state === "accepted" &&
-          evidence.preparationId === result.preparationId &&
-          evidence.acceptanceRequestId === result.acceptanceRequestId &&
-          evidence.manifestDigest === result.manifestDigest &&
-          evidence.evidenceDigest === result.preparationEvidence.digest &&
-          evidence.acceptedAt === result.acceptedAt
+        return operation.result === undefined &&
+          evidence.state === "not_accepted"
           ? "trusted"
           : "untrusted";
       },

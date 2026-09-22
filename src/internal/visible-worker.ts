@@ -546,7 +546,7 @@ export class VisibleWorker implements WorkerAdapter {
                 Effect.succeed({
                   state: "failed",
                   terminal: true,
-                  reason: "conflict",
+                  reason: "cancelled",
                 })
               )
             );
