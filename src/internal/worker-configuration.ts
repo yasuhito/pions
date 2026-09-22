@@ -44,6 +44,7 @@ export const EffectiveWorkerConfigSchema = Schema.Struct({
   thinkingLevel: ThinkingLevelSchema,
   tools: Schema.Array(Schema.NonEmptyString),
   cwd: Schema.NonEmptyString,
+  maxResultByteCount: Schema.Number,
   modelPolicy: Schema.Struct({
     candidates: Schema.Array(ModelReferenceSchema),
     attempted: Schema.Array(ModelReferenceSchema),
@@ -447,6 +448,7 @@ export function resolveWorkerConfig(options: {
     thinkingLevel,
     tools,
     cwd: options.runtimeCwd,
+    maxResultByteCount: profile.maxResultByteCount,
     modelPolicy: Object.freeze({
       candidates: Object.freeze([Object.freeze({ ...candidate })]),
       attempted: Object.freeze([Object.freeze({ ...model })]),

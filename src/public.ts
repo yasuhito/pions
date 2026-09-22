@@ -26,6 +26,7 @@ export interface EffectiveWorkerConfig {
   readonly thinkingLevel: ThinkingLevel;
   readonly tools: ReadonlyArray<string>;
   readonly cwd: string;
+  readonly maxResultByteCount: number;
   readonly modelPolicy: Readonly<ModelSelectionPolicy>;
 }
 
