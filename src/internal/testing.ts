@@ -25,7 +25,11 @@ import type {
   WorkerRunOutcome,
   WorkerAdapter,
 } from "./services.js";
-import type { OperationPersistenceError, Result, Runtime } from "../public.js";
+import type {
+  OperationPersistenceError,
+  Result,
+  OperationRuntime,
+} from "./types.js";
 import { sha256Digest } from "./result-digest.js";
 import {
   automaticStartScopeDigest,
@@ -127,7 +131,9 @@ export async function advanceTestOperationToRunning(
   );
 }
 
-export function makeTestRuntime(services: TestRuntimeServices): Runtime {
+export function makeTestRuntime(
+  services: TestRuntimeServices
+): OperationRuntime {
   return makeRuntime(services);
 }
 

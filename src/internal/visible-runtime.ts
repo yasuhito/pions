@@ -9,12 +9,11 @@ import {
   NodeCommandExecutor,
 } from "./herdr-presentation.js";
 import { PrivateFileEventStore } from "./event-store/index.js";
-import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import { makeRuntime } from "./runtime.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
-import type { Runtime, WorkerProfilePolicy } from "../public.js";
+import type { OperationRuntime, WorkerProfilePolicy } from "./types.js";
 
 export interface VisibleRuntimeOptions {
   readonly cwd: string;
@@ -22,7 +21,6 @@ export interface VisibleRuntimeOptions {
   readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly extensionEntryPath?: string;
-  readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
   readonly recovery?: "disabled";
 }
 
@@ -37,7 +35,9 @@ const systemClock: RuntimeClock = {
 };
 
 /** Construct the caller-facing Runtime for one visible Herdr worker per Operation. */
-export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
+export function makeVisibleRuntime(
+  options: VisibleRuntimeOptions
+): OperationRuntime {
   const executor = new NodeCommandExecutor();
   const environment = options.environment ?? process.env;
   const runtimeDirectory = environment.XDG_RUNTIME_DIR;
@@ -78,9 +78,6 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     ids: { nextOperationId: () => Effect.sync(() => randomUUID()) },
     presentation,
     store,
-    ...(options.formalReviewResultFormats === undefined
-      ? {}
-      : { formalReviewResultFormats: options.formalReviewResultFormats }),
     ...(options.recovery === undefined ? {} : { recovery: options.recovery }),
     configuration: { cwd: options.cwd, profiles: options.profiles },
   });

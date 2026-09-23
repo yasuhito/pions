@@ -1,13 +1,11 @@
 # Feature: Build and Extension Readiness
 
-Pions is a TypeScript ESM library. Before using the Pi extension, you must build the project to generate `dist/`, which includes the internal worker extension loaded by visible workers.
+Pions is a TypeScript ESM runtime used through its Pi extension. Before using the extension, you must build the project to generate `dist/`, which includes the internal worker extension loaded by visible workers.
 
 ## Sub-features
 
 1. **TypeScript compilation** (`tsc -p tsconfig.build.json`)
-2. **Main entry point** (`dist/src/index.js`)
-3. **Formal-review entry point** (`dist/src/formal-review.js`)
-4. **Worker extension** (`dist/src/worker-extension.js`)
+2. **Worker extension** (`dist/src/worker-extension.js`)
 
 ## How to get to it (user perspective)
 
@@ -43,20 +41,16 @@ tsc -p tsconfig.build.json
 
 - Exit code: 0
 - `dist/` directory created (if it didn't exist)
-- `dist/src/index.js` exists
-- `dist/src/formal-review.js` exists
 - `dist/src/worker-extension.js` exists
 - All `.ts` files in `src/` have corresponding `.js` files in `dist/src/`
 
 ### Verification
 
 ```bash
-ls -la dist/src/index.js
-ls -la dist/src/formal-review.js
 ls -la dist/src/worker-extension.js
 ```
 
-All three should exist.
+The worker extension should exist.
 
 ### Evidence capture
 
@@ -94,11 +88,11 @@ rm -rf dist/ && npm run build
 
 Both are important. `typecheck` catches type errors; `build` generates runnable code.
 
-### Extension vs library
+### Extension and runtime
 
 Pions has two TypeScript configs:
 
-1. `tsconfig.build.json` — Compiles the library (main entry + formal-review entry + worker extension)
+1. `tsconfig.build.json` — Compiles the internal runtime and worker extension
 2. `tsconfig.extension.json` — Type-checks the Pi extension setup (not built separately, imported directly by Pi)
 
 The `npm run build` command uses `tsconfig.build.json`.

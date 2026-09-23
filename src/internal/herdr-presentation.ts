@@ -4,7 +4,7 @@ import { Effect } from "effect";
 
 import type { CreatedPresentation, Operation } from "./event-store/index.js";
 import type { Presentation } from "./services.js";
-import { HerdrPreconditionError } from "../public.js";
+import { HerdrPreconditionError } from "./types.js";
 
 export interface CommandInvocation {
   readonly executable: string;

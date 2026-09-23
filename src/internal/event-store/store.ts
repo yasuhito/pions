@@ -27,7 +27,7 @@ import type {
 import type {
   AcceptedResult,
   ResultAcceptanceTransactionOutcome,
-} from "../../public.js";
+} from "../types.js";
 import { resultAcceptanceIdentifier } from "../result-acceptance-transaction.js";
 import { sha256Digest } from "../result-digest.js";
 
@@ -178,9 +178,6 @@ export abstract class ValidatedEventStore implements EventStore {
       requestedConfig: request.requestedConfig,
       effectiveConfig: request.effectiveConfig,
       maxResultByteCount: request.maxResultByteCount,
-      ...(request.resultFormat === undefined
-        ? {}
-        : { resultFormat: request.resultFormat }),
     });
   }
 

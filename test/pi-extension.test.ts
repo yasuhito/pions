@@ -16,8 +16,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { Effect } from "effect";
-
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -29,8 +27,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
-import type { Operation } from "../src/internal/event-store/index.js";
-import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import {
   DEFAULT_MAX_RESULT_BYTE_COUNT,
   DEFAULT_WORKER_PROFILE_POLICY,
@@ -40,13 +36,8 @@ import {
   FakeIdGenerator,
   FakePresentation,
   FakeWorkerAdapter,
-  advanceTestOperationToRunning,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import type {
-  WorkerAdapter,
-  WorkerRunHooks,
-} from "../src/internal/services.js";
 import {
   installPionsExtension,
   type PionsDelegateDetails,
@@ -60,7 +51,7 @@ import {
   OperationUnknownError,
   ProjectConfigurationError,
   WorkerConfigurationError,
-} from "../src/index.js";
+} from "../src/internal/types.js";
 import type {
   CancellationResult,
   CleanupDiagnostic,
@@ -69,9 +60,9 @@ import type {
   OperationSnapshot,
   Result,
   ResultChunk,
-  Runtime,
+  OperationRuntime,
   TaskSpec,
-} from "../src/index.js";
+} from "../src/internal/types.js";
 
 const SNAPSHOT: OperationSnapshot = {
   operationId: "operation-1",
@@ -106,7 +97,7 @@ const SNAPSHOT: OperationSnapshot = {
 
 const ACCEPTANCE_ID = `pions.result-acceptance.v1:${"ef".repeat(32)}` as const;
 
-class FakeRuntime implements Runtime {
+class FakeRuntime implements OperationRuntime {
   readonly tasks: Array<TaskSpec> = [];
   spawnCount = 0;
   operationReadCount = 0;
@@ -212,7 +203,7 @@ async function waitForOperation(
   while (!runtime.results.has(operationId)) await new Promise(setImmediate);
 }
 
-class PendingRuntime implements Runtime {
+class PendingRuntime implements OperationRuntime {
   readonly cancellations: Array<{ readonly operationId: string }> = [];
   readonly results = new Map<string, ReturnType<typeof deferred<Result>>>();
   closeCount = 0;
@@ -284,37 +275,13 @@ interface RegisteredTool {
   }>;
 }
 
-const FORMAL_REVIEW_RESULT_FORMATS = makeResultFormatRegistry([
-  {
-    formatId: "test.formal-review-result",
-    version: "1",
-    normalizationId: "identity.v1",
-    validator: {
-      validatorId: "test.formal-review-result-validator",
-      validatorVersion: "1",
-      implementation: Buffer.from("test validator v1", "utf8"),
-      validate: async () => ({ kind: "valid" }),
-    },
-  },
-]);
-const FORMAL_REVIEW_RESULT_FORMAT = FORMAL_REVIEW_RESULT_FORMATS.pin({
-  formatId: "test.formal-review-result",
-  version: "1",
-  expectations: { axis: "standards" },
-});
-const CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS = {
-  registry: FORMAL_REVIEW_RESULT_FORMATS,
-  resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
-};
-
-async function fixture<TRuntime extends Runtime = FakeRuntime>(
+async function fixture<TRuntime extends OperationRuntime = FakeRuntime>(
   runtime: TRuntime = new FakeRuntime() as unknown as TRuntime,
   options: Omit<PionsExtensionOptions, "runtime" | "stateBaseDirectory"> & {
     readonly stateBaseDirectory?: string;
   } = {},
   useDefaultStateDirectory = false,
   fixtureOptions: {
-    readonly enableFormalReview?: boolean;
     readonly registeredProviderIds?: ReadonlyArray<string>;
   } = {}
 ) {
@@ -342,13 +309,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   } as unknown as ExtensionAPI;
   installPionsExtension(pi, {
     ...(options.runtimeFactory === undefined ? { runtime } : {}),
-    ...(fixtureOptions.enableFormalReview === true
-      ? {
-          formalReview: {
-            resultFormats: CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS,
-          },
-        }
-      : {}),
     repositoryRoot: root,
     ...(useDefaultStateDirectory
       ? {}
@@ -435,17 +395,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   };
 }
 
-function formalReviewFixture<TRuntime extends Runtime = FakeRuntime>(
-  runtime?: TRuntime,
-  options: Parameters<typeof fixture>[1] = {},
-  fixtureOptions: Parameters<typeof fixture>[3] = {}
-) {
-  return fixture(runtime, options, false, {
-    enableFormalReview: true,
-    ...fixtureOptions,
-  });
-}
-
 test("the delegation-only extension registers exactly the three delegation tools", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -454,55 +403,6 @@ test("the delegation-only extension registers exactly the three delegation tools
     [...value.tools.keys()],
     ["pions_result", "pions_operation", "pions_delegate"]
   );
-});
-
-test("the delegation-only extension does not register pions_review", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(value.tools.has("pions_review"), false);
-});
-
-test("the delegation-only extension does not register pions_review_decision", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(value.tools.has("pions_review_decision"), false);
-});
-
-test("trusted formal review configuration pauses new review creation", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(value.tools.has("pions_review"), false);
-});
-
-test("trusted formal review configuration cannot create a review profile", async (context) => {
-  let profiles: VisibleRuntimeOptions["profiles"] | undefined;
-  const value = await formalReviewFixture(undefined, {
-    runtimeFactory: (options) => {
-      profiles = options.profiles;
-      return new FakeRuntime();
-    },
-  });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.execute();
-
-  assert.deepEqual(Object.keys(profiles ?? {}), ["worker"]);
-});
-
-test("trusted formal review configuration supplies recovery validators", async (context) => {
-  let configured: VisibleRuntimeOptions["formalReviewResultFormats"];
-  const value = await formalReviewFixture(undefined, {
-    runtimeFactory: (options) => {
-      configured = options.formalReviewResultFormats;
-      return new FakeRuntime();
-    },
-  });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.execute();
-
-  assert.deepEqual(configured?.resultFormat, FORMAL_REVIEW_RESULT_FORMAT);
 });
 
 test("delegation after cold recovery does not recover the same Workers twice", async (context) => {
@@ -545,146 +445,6 @@ test("一時的な復旧失敗後も同じRuntimeが回収を続ける", async (
   await value.execute();
 
   assert.deepEqual(recoveryModes, [undefined, "disabled"]);
-});
-
-test("cold session resumes format-pinned Result acceptance", async (context) => {
-  const repository = await realpath(
-    await mkdtemp(join(tmpdir(), "pions-cold-repository-"))
-  );
-  const stateBase = await mkdtemp(join(tmpdir(), "pions-cold-state-"));
-  context.after(() => rm(repository, { recursive: true, force: true }));
-  context.after(() => rm(stateBase, { recursive: true, force: true }));
-  const repositoryKey = createHash("sha256")
-    .update(repository, "utf8")
-    .digest("hex");
-  const stateDirectory = join(
-    stateBase,
-    "pions",
-    "repositories",
-    repositoryKey,
-    "runtime"
-  );
-  const clock = new FakeClock(
-    Array.from(
-      { length: 80 },
-      (_, index) => `2026-09-23T04:00:${String(index).padStart(2, "0")}.000Z`
-    )
-  );
-  const store = new PrivateFileEventStore(stateDirectory, clock);
-  await Effect.runPromise(
-    store.create({
-      operationId: "operation-1",
-      task: {
-        promptRef: "private://review",
-        profile: "formal-review",
-        idempotencyKey: "review-1",
-      },
-      requestedConfig: {},
-      effectiveConfig: {
-        model: { provider: "anthropic", id: "claude-opus-5" },
-        thinkingLevel: "high",
-        tools: ["read"],
-        cwd: repository,
-        maxResultByteCount: 1024,
-        modelPolicy: {
-          candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
-          attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
-          maxAttempts: 1,
-          fallback: "forbidden",
-          aliases: [],
-        },
-      },
-      maxResultByteCount: 1024,
-      resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
-    })
-  );
-  await advanceTestOperationToRunning(store, "operation-1");
-  const worker: WorkerAdapter = {
-    open: () => {
-      throw new Error("new Worker was not requested");
-    },
-    recover: (operation: Operation) => ({
-      run: (hooks: Readonly<WorkerRunHooks>) =>
-        Effect.gen(function* () {
-          const identity = operation.workerIdentity!;
-          const instruction = yield* hooks.workerIdentified({
-            processId: identity.processId,
-            processInstanceId: identity.processInstanceId,
-            processStartToken: identity.processStartToken,
-            piSessionId: identity.piSessionId,
-            observedConfig: operation.observedConfig!,
-          });
-          yield* hooks.startDeliveryAuthorityRevoked(
-            instruction.dispatcherId,
-            instruction.deliveryGeneration
-          );
-          yield* hooks.deliveryGenerationConfirmed({
-            dispatcherId: instruction.dispatcherId,
-            deliveryGeneration: instruction.deliveryGeneration,
-            acceptanceState: "accepted",
-            acceptedInstruction: operation.startInstructionAcceptance!,
-          });
-          const body = "recovered review";
-          const bytes = Buffer.from(body, "utf8");
-          const acceptance = yield* hooks.acceptResult({
-            acceptanceRequestId: "review-result-1",
-            body,
-            expectedByteCount: bytes.byteLength,
-            expectedDigest: `sha256:${createHash("sha256")
-              .update(bytes)
-              .digest("hex")}`,
-          });
-          if (acceptance.state !== "accepted")
-            return { state: "worker_protocol_failed" as const };
-          return {
-            state: "result_acknowledged" as const,
-            successfulExitConfirmed: true as const,
-            evidence: {
-              usage: {
-                input: 1,
-                output: 1,
-                cacheRead: 0,
-                cacheWrite: 0,
-                totalTokens: 2,
-                cost: 0,
-              },
-              toolUses: [],
-            },
-          };
-        }),
-      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
-    }),
-  };
-  const value = await formalReviewFixture(undefined, {
-    repositoryRoot: repository,
-    stateBaseDirectory: stateBase,
-    runtimeFactory: (options) =>
-      makeTestRuntime({
-        worker,
-        clock,
-        ids: new FakeIdGenerator([]),
-        presentation: new FakePresentation(),
-        store: new PrivateFileEventStore(options.stateDirectory, clock),
-        configuration: { cwd: options.cwd, profiles: options.profiles },
-        ...(options.recovery === undefined
-          ? {}
-          : { recovery: options.recovery }),
-        ...(options.formalReviewResultFormats === undefined
-          ? {}
-          : { formalReviewResultFormats: options.formalReviewResultFormats }),
-      }),
-  });
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  value.setWorkingDirectory(repository);
-  await value.start();
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const snapshot = await Effect.runPromise(store.read("operation-1"));
-    if (snapshot.operation.state === "completed") break;
-    await new Promise<void>((resolve) => setTimeout(resolve, 1));
-  }
-
-  const snapshot = (await value.inspect()).details as OperationSnapshot;
-  assert.equal(snapshot.state, "completed");
 });
 
 test("project extension registers pions_operation", async (context) => {
@@ -1108,60 +868,6 @@ test("unknown project configuration keys are rejected", async (context) => {
   );
 });
 
-test("the legacy review project configuration form is rejected", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(
-    join(value.root, ".pions.json"),
-    JSON.stringify({
-      review: {
-        model: { provider: "anthropic", id: "claude-opus-5" },
-        thinkingLevel: "high",
-      },
-    })
-  );
-
-  await assert.rejects(
-    value.execute(),
-    (error) =>
-      error instanceof ProjectConfigurationError &&
-      error.reason === "unknown_key"
-  );
-});
-
-test("the legacy review project configuration form does not spawn a Worker", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(
-    join(value.root, ".pions.json"),
-    JSON.stringify({ review: { thinkingLevel: "high" } })
-  );
-  await value.execute().catch(() => undefined);
-
-  assert.equal(value.runtime.spawnCount, 0);
-});
-
-test("project configuration cannot select formal review authority or enablement", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await writeFile(
-    join(value.root, ".pions.json"),
-    JSON.stringify({
-      formalReview: {
-        adapterPath: "./untrusted-adapter.js",
-        credential: "secret",
-        profile: { tools: ["bash"] },
-        enabled: true,
-      },
-    })
-  );
-
-  await assert.rejects(value.execute(), {
-    name: "ProjectConfigurationError",
-    reason: "unknown_key",
-  });
-});
-
 test("invalid Worker model providers are rejected", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -1560,18 +1266,6 @@ test("Worker prompt begins with a general-purpose role without naming review", a
     ),
     true
   );
-});
-
-test("Worker prompt instructions do not assign a review role", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.execute();
-  const promptRef = value.runtime.tasks[0]?.promptRef;
-  if (promptRef === undefined) throw new Error("promptRef missing");
-  const instructions =
-    (await readFile(promptRef, "utf8")).split("\n\nTask:\n", 1)[0] ?? "";
-
-  assert.doesNotMatch(instructions, /\breview(?:er)?\b/i);
 });
 
 test("Worker prompt names the general Worker tools", async (context) => {

@@ -7,7 +7,7 @@ import type {
   RequestedWorkerConfig,
   Result,
   WorkerProfilePolicy,
-} from "../src/public.js";
+} from "../src/internal/types.js";
 import type { AgentRunEvidence } from "../src/internal/services.js";
 import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "../src/internal/worker-configuration.js";
 

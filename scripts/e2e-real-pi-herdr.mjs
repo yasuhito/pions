@@ -134,7 +134,7 @@ async function preflight() {
       "PIONS_E2E_HERDR_COMMAND requires PIONS_E2E_HERDR_SESSION naming the session that command is scoped to"
     );
   }
-  await requireCommand("herdr");
+  if (EXTERNAL_HERDR_COMMAND === undefined) await requireCommand("herdr");
   await requireCommand("pi");
 
   log("building pions (npm run build)...");
@@ -665,36 +665,6 @@ async function main() {
       rejectionPromptPath,
       'Use the pions_delegate tool exactly once with task "Respond with OK". Do not do anything else.\n'
     );
-    await writeFile(
-      projectConfigPath,
-      JSON.stringify({ review: { thinkingLevel: "high" } })
-    );
-    const beforeLegacy = await workspaceIds();
-    const legacyWorkspace = await createWorkspace("pions-e2e-legacy-config", {
-      XDG_STATE_HOME: stateDir,
-    });
-    createdWorkspaceIds.push(legacyWorkspace.workspaceId);
-    const legacyTranscript = await runPiInPane(
-      runDir,
-      legacyWorkspace.paneId,
-      rejectionPromptPath,
-      "legacy-config"
-    );
-    const legacyResult = await extractToolResult(
-      legacyTranscript,
-      "pions_delegate"
-    );
-    if (!legacyResult.isError)
-      throw new Error("legacy review configuration was accepted");
-    const beforeLegacyWithoutParent = new Set(beforeLegacy);
-    beforeLegacyWithoutParent.add(legacyWorkspace.workspaceId);
-    await assertNoNewWorkspace(
-      beforeLegacyWithoutParent,
-      "legacy review rejection"
-    );
-    log("legacy review configuration was rejected before Worker creation.");
-    await writeFile(projectConfigPath, originalProjectConfig);
-
     const providerExtensionPath = join(runDir, "unavailable-provider.ts");
     await writeFile(
       providerExtensionPath,

@@ -9,7 +9,7 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import type { WorkerProfilePolicy } from "../src/public.js";
+import type { WorkerProfilePolicy } from "../src/internal/types.js";
 
 const profile: WorkerProfilePolicy = {
   modelCandidates: [{ provider: "test", id: "model" }],
@@ -56,10 +56,4 @@ test("状態取得は縮小後の結果受理診断を返す", async () => {
   const { value, handle } = await completedRuntime();
   const snapshot = await (await value.operation(handle.operationId)).read();
   assert.equal(snapshot.resultAcceptance?.byteCount, 8);
-});
-
-test("状態取得は着手許可状態を返さない", async () => {
-  const { value, handle } = await completedRuntime();
-  const snapshot = await (await value.operation(handle.operationId)).read();
-  assert.equal("startAuthorization" in snapshot, false);
 });

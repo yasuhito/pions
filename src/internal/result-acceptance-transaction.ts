@@ -1,4 +1,4 @@
-import type { AcceptedResult } from "../public.js";
+import type { AcceptedResult } from "./types.js";
 import { sha256Digest } from "./result-digest.js";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;

@@ -3,11 +3,10 @@ import type { Effect } from "effect";
 import type {
   EffectiveWorkerConfig,
   OperationState,
-  PinnedResultFormat,
   RequestedWorkerConfig,
   ResultAcceptanceTransactionOutcome,
   TaskSpec,
-} from "../../public.js";
+} from "../types.js";
 import type { Operation } from "./model.js";
 import type { OperationIntent } from "./intent.js";
 
@@ -16,7 +15,7 @@ export type {
   OperationIntent,
   PresentationOwnership,
 } from "./intent.js";
-export type { WorkerIdentity } from "../../public.js";
+export type { WorkerIdentity } from "../types.js";
 export type { Operation, OperationEvent } from "./model.js";
 export { RUNTIME_ACTOR_ID } from "./model.js";
 export { presentationCleanupEligible } from "./reducer.js";
@@ -40,7 +39,6 @@ export interface OperationRequest {
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly maxResultByteCount: number;
-  readonly resultFormat?: Readonly<PinnedResultFormat>;
 }
 
 export interface OperationSnapshot {
