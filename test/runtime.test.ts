@@ -619,6 +619,81 @@ test("検証器が不在の間は復旧の再試行間隔を延ばす", async ()
   assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
 });
 
+test("無関係な委譲の完了は待機中の復旧の再試行間隔を戻さない", async () => {
+  const formats = makeResultFormatRegistry([{
+    formatId: "review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    validator: {
+      validatorId: "review-validator",
+      validatorVersion: "1",
+      implementation: Buffer.from("valid-review-validator", "utf8"),
+      validate: async () => ({ kind: "valid" }),
+    },
+  }]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  let available = false;
+  let attempts = 0;
+  let firstAttempt!: () => void;
+  let fourthAttempt!: () => void;
+  const attemptedOnce = new Promise<void>((resolve) => {
+    firstAttempt = resolve;
+  });
+  const attemptedFourTimes = new Promise<void>((resolve) => {
+    fourthAttempt = resolve;
+  });
+  const registry: ResultFormatRegistry = {
+    ...formats,
+    validate: async (pinned, bytes) => {
+      if (available) return formats.validate(pinned, bytes);
+      attempts += 1;
+      if (attempts === 1) firstAttempt();
+      if (attempts === 4) fourthAttempt();
+      return { kind: "invalid", reason: "validator_unavailable" };
+    },
+  };
+  const store = new InMemoryEventStore(
+    [],
+    new FakeClock(
+      Array.from(
+        { length: 400 },
+        (_, index) => `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
+      )
+    )
+  );
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const recoveryWorker = new RecoveryWorker("accepted", true);
+  const spawnedWorker = new FakeWorkerAdapter({ successfulExitConfirmed: true });
+  const runtime = makeTestRuntime({
+    ...services(store, {
+      open: (operation) => spawnedWorker.open(operation),
+      recover: (operation) => recoveryWorker.recover(operation),
+    }),
+    ids: new FakeIdGenerator(["operation-2"]),
+    formalReviewResultFormats: { registry, resultFormat },
+  });
+  const startedAt = performance.now();
+  await runtime.ready();
+  await attemptedOnce;
+  const unrelated = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-2",
+  });
+  await unrelated.result();
+  await attemptedFourTimes;
+  const elapsedMs = performance.now() - startedAt;
+  available = true;
+  await runtime.close();
+
+  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
+});
+
 test("停止確認済みの親キャンセルを永続化する", async () => {
   const store = new InMemoryEventStore([], clock());
   const runtime = makeTestRuntime({

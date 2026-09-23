@@ -593,7 +593,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   ): Promise<void> => {
     try {
       await runEffect(project(operation));
-      recoveryDelayMs = INITIAL_RECOVERY_DELAY_MS;
       if (operation.state === "completed") {
         await performCleanup(operation, true);
         const outcome = await readResult(record.operationId);
@@ -1313,7 +1312,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           track(
             work
               .then((outcome) => {
-                if (outcome === "validator_unavailable" && !closing) resume();
+                if (outcome !== "validator_unavailable")
+                  recoveryDelayMs = INITIAL_RECOVERY_DELAY_MS;
+                else if (!closing) resume();
               })
               .catch((error) => {
                 recoveredRecord.rejectTerminal(error);
