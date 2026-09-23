@@ -634,6 +634,10 @@ async function main() {
     );
     const snapshot =
       operationResult.details?.operation ?? operationResult.details ?? {};
+    if (JSON.stringify(snapshot).includes(knownString)) {
+      throw new Error("pions_operation exposed the accepted Result body");
+    }
+    log("pions_operation exposed persisted diagnostics without the Result body.");
     const cleanup = snapshot.presentationCleanup;
     if (
       cleanup?.state !== "completed" ||
