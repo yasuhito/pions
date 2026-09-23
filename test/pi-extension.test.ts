@@ -1479,7 +1479,15 @@ test("the Worker profile allows only built-in tools", async (context) => {
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
 
-  assert.deepEqual(profiles?.worker?.tools, ["read", "write", "edit", "bash", "grep", "find", "ls"]);
+  assert.deepEqual(profiles?.worker?.tools, [
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+  ]);
 });
 
 test("the Worker runs in the delegating working directory", async (context) => {
@@ -1717,9 +1725,7 @@ test("Pi interruption requests subtree cancellation once", async (context) => {
   controller.abort();
   await execution.catch(() => undefined);
 
-  assert.deepEqual(runtime.cancellations, [
-    { operationId: "operation-1" },
-  ]);
+  assert.deepEqual(runtime.cancellations, [{ operationId: "operation-1" }]);
 });
 
 test("an Operation completed before interruption is not cancelled", async (context) => {
@@ -1795,9 +1801,7 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
     await waitForOperation(runtime);
     await value.shutdown(reason);
 
-    assert.deepEqual(runtime.cancellations, [
-      { operationId: "operation-1" },
-    ]);
+    assert.deepEqual(runtime.cancellations, [{ operationId: "operation-1" }]);
   });
 }
 

@@ -86,7 +86,7 @@ The worker protocol and private files do not provide an OS sandbox.
 
 The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`. It registers no formal-review tools.
 
-Recovery reads only records in the current event format. Creation of new formal-review operations is paused.
+Recovery reads only records in the current event format; older records are rejected. Formal-review operations are unavailable.
 
 ### `pions_delegate`
 
@@ -137,17 +137,17 @@ Pions bundles no model provider and loads none automatically. Installing and aut
 
 Pions is not a drop-in replacement for `pi-subagents`. They prioritize different jobs.
 
-|                        | Pions                                                      | `pi-subagents`                                                   |
-| ---------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------- |
-| Primary goal           | Durable, verifiable delegation                             | Flexible, feature-rich orchestration                             |
-| Worker UI              | Real Pi TUI in a dedicated Herdr workspace                 | Foreground views, FleetView, and inspectors                      |
-| Result model           | Operation-owned, integrity-verified immutable UTF-8 text   | Run results, notifications, replay records, and output archives  |
-| Completion model       | Requires result acceptance and confirmed worker stop       | Supports foreground, detached, background, and nested async runs |
-| Agent definitions      | One general-purpose worker profile                         | Built-in and custom agents                                       |
-| Parallelism and chains | Composed through Pi tool calls                             | Built into the extension                                         |
-| Background execution   | Not supported                                              | Supported                                                        |
-| Steering               | Not supported                                              | Supported                                                        |
-| Herdr                  | Required                                                   | Optional                                                         |
+|                        | Pions                                                    | `pi-subagents`                                                   |
+| ---------------------- | -------------------------------------------------------- | ---------------------------------------------------------------- |
+| Primary goal           | Durable, verifiable delegation                           | Flexible, feature-rich orchestration                             |
+| Worker UI              | Real Pi TUI in a dedicated Herdr workspace               | Foreground views, FleetView, and inspectors                      |
+| Result model           | Operation-owned, integrity-verified immutable UTF-8 text | Run results, notifications, replay records, and output archives  |
+| Completion model       | Requires result acceptance and confirmed worker stop     | Supports foreground, detached, background, and nested async runs |
+| Agent definitions      | One general-purpose worker profile                       | Built-in and custom agents                                       |
+| Parallelism and chains | Composed through Pi tool calls                           | Built into the extension                                         |
+| Background execution   | Not supported                                            | Supported                                                        |
+| Steering               | Not supported                                            | Supported                                                        |
+| Herdr                  | Required                                                 | Optional                                                         |
 
 Choose `pi-subagents` when you want broad orchestration, configurable roles, background work, chains, steering, or packaged workflows.
 

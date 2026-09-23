@@ -309,11 +309,12 @@ export abstract class ValidatedEventStore implements EventStore {
     ReadonlyArray<OperationSnapshot>,
     StoreError
   > {
-    return this.listMatching(({ operation }) =>
-      operation.presentationCleanup?.state === "pending" ||
-      (presentationCleanupEligible(operation) &&
-        operation.presentation?.ownedByPions === true &&
-        operation.presentationCleanup === undefined)
+    return this.listMatching(
+      ({ operation }) =>
+        operation.presentationCleanup?.state === "pending" ||
+        (presentationCleanupEligible(operation) &&
+          operation.presentation?.ownedByPions === true &&
+          operation.presentationCleanup === undefined)
     );
   }
 

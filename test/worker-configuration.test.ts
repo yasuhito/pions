@@ -30,25 +30,28 @@ test("observed thinking different from effective thinking is rejected", () => {
 
 test("the Worker profile provides editing tools", () => {
   assert.deepEqual(
-    resolveWorkerConfig({ requested: {}, profile, runtimeCwd: "/workspace" }).tools,
+    resolveWorkerConfig({ requested: {}, profile, runtimeCwd: "/workspace" })
+      .tools,
     ["read", "write", "edit", "bash", "grep", "find", "ls"]
   );
 });
 
 test("a profile cannot provide a tool outside the Pi built-in set", () => {
   assert.throws(
-    () => resolveWorkerConfig({
-      requested: {},
-      profile: { ...profile, tools: ["read", "pions_delegate"] },
-      runtimeCwd: "/workspace",
-    }),
+    () =>
+      resolveWorkerConfig({
+        requested: {},
+        profile: { ...profile, tools: ["read", "pions_delegate"] },
+        runtimeCwd: "/workspace",
+      }),
     { name: "WorkerConfigurationError", reason: "tool_policy_violation" }
   );
 });
 
 test("the Worker profile runs in the Runtime working directory", () => {
   assert.equal(
-    resolveWorkerConfig({ requested: {}, profile, runtimeCwd: "/workspace" }).cwd,
+    resolveWorkerConfig({ requested: {}, profile, runtimeCwd: "/workspace" })
+      .cwd,
     "/workspace"
   );
 });

@@ -573,7 +573,9 @@ export function installPionsExtension(
             : {}),
           ...(options.formalReview === undefined
             ? {}
-            : { formalReviewResultFormats: options.formalReview.resultFormats }),
+            : {
+                formalReviewResultFormats: options.formalReview.resultFormats,
+              }),
         });
         runtimesByConfig.set(configKey, runtime);
         runtimesByRepository.set(normalizedRoot, runtime);

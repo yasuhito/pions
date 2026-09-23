@@ -697,8 +697,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                   if (
                     existing === undefined ||
                     previous === undefined ||
-                    existing.processInstanceId !==
-                      identity.processInstanceId ||
+                    existing.processInstanceId !== identity.processInstanceId ||
                     existing.processStartToken !== identity.processStartToken
                   )
                     throw new OperationPersistenceError(
@@ -812,9 +811,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
                   proof: "worker-durable-acceptance",
                 });
               const acceptedCurrent = yield* getOperation(record.operationId);
-              if (
-                acceptedCurrent.startInstructionAcknowledgement === undefined
-              )
+              if (acceptedCurrent.startInstructionAcknowledgement === undefined)
                 yield* advanceAndProject(record.operationId, {
                   type: "start_instruction_acknowledged",
                   instruction: startInstructionReference(accepted),
@@ -823,10 +820,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
               return;
             }
             const previous = current.startDeliveryAuthority;
-            if (
-              previous === undefined ||
-              current.workerIdentity === undefined
-            )
+            if (previous === undefined || current.workerIdentity === undefined)
               return yield* Effect.fail(
                 new OperationPersistenceError(
                   record.operationId,
@@ -878,7 +872,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   ): Promise<void | "validator_unavailable"> => {
     if (outcome.successfulExitConfirmed === true) {
       const current = await runEffect(getOperation(record.operationId));
-      if (!terminal(current) && current.state !== "cancelling" && current.workerStopConfirmedAt === undefined)
+      if (
+        !terminal(current) &&
+        current.state !== "cancelling" &&
+        current.workerStopConfirmedAt === undefined
+      )
         await runEffect(
           advanceAndProject(record.operationId, {
             type: "worker_stop_confirmed",
@@ -889,8 +887,14 @@ export function makeRuntime(services: RuntimeServices): Runtime {
 
     let current = await runEffect(getOperation(record.operationId));
     if (terminal(current) || current.state === "cancelling") return;
-    if (current.result !== undefined && current.workerStopConfirmedAt !== undefined) {
-      if (outcome.state === "result_acknowledged" && current.agentRunEvidence === undefined)
+    if (
+      current.result !== undefined &&
+      current.workerStopConfirmedAt !== undefined
+    ) {
+      if (
+        outcome.state === "result_acknowledged" &&
+        current.agentRunEvidence === undefined
+      )
         await runEffect(
           advanceAndProject(record.operationId, {
             type: "agent_settled",
@@ -916,7 +920,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       return;
     }
     if (outcome.state !== "result_acknowledged") {
-      if (outcome.state === "agent_failed" && current.agentRunEvidence === undefined)
+      if (
+        outcome.state === "agent_failed" &&
+        current.agentRunEvidence === undefined
+      )
         await runEffect(
           advanceAndProject(record.operationId, {
             type: "agent_settled",
@@ -966,7 +973,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     try {
       const outcome =
         record.observedOutcome ?? (await runWorker(record, recovering));
-      if (outcome.state === "validator_unavailable") delete record.observedOutcome;
+      if (outcome.state === "validator_unavailable")
+        delete record.observedOutcome;
       else record.observedOutcome = outcome;
       return await settleObserved(record, outcome);
     } catch (error) {
@@ -992,7 +1000,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     }
   };
 
-  const createOperation = async (taskInput: TaskSpec): Promise<OperationRecord> => {
+  const createOperation = async (
+    taskInput: TaskSpec
+  ): Promise<OperationRecord> => {
     const decoded = await Effect.runPromise(
       Schema.decodeUnknown(TaskSpecSchema)(taskInput)
     );
@@ -1260,11 +1270,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       services.recovery === "disabled"
         ? []
         : await runEffect(
-            services.store.listRecoverableOperations().pipe(
-              Effect.mapError((error) =>
-                persistenceError("runtime-recovery", error)
+            services.store
+              .listRecoverableOperations()
+              .pipe(
+                Effect.mapError((error) =>
+                  persistenceError("runtime-recovery", error)
+                )
               )
-            )
           );
     const local = await Promise.all(
       [...records.values()]
@@ -1273,10 +1285,9 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     );
     const snapshots = [
       ...new Map(
-        [...persisted, ...local].map((snapshot) => [
-          snapshot.operation.operationId,
-          snapshot,
-        ] as const)
+        [...persisted, ...local].map(
+          (snapshot) => [snapshot.operation.operationId, snapshot] as const
+        )
       ).values(),
     ];
     const now = Date.now();
@@ -1403,11 +1414,13 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const recoverCleanups = async (): Promise<void> => {
     if (services.recovery === "disabled") return;
     const snapshots = await runEffect(
-      services.store.listPendingPresentationCleanups().pipe(
-        Effect.mapError((error) =>
-          persistenceError("presentation-cleanup-recovery", error)
+      services.store
+        .listPendingPresentationCleanups()
+        .pipe(
+          Effect.mapError((error) =>
+            persistenceError("presentation-cleanup-recovery", error)
+          )
         )
-      )
     );
     const now = Date.now();
     let earliestRetry: number | undefined;
@@ -1461,7 +1474,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const recover = (duringClose = false): Promise<void> => {
     if (recovery !== undefined) return recovery;
     if (workersRecovered && cleanupsRecovered) return Promise.resolve();
-    if (closing && !duringClose) return Promise.reject(new RuntimeClosedError());
+    if (closing && !duringClose)
+      return Promise.reject(new RuntimeClosedError());
     const started = (async () => {
       if (!workersRecovered) {
         workersRecovered = true;
@@ -1522,7 +1536,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       while (inFlight.size > 0 || !workersRecovered || !cleanupsRecovered) {
         if (!workersRecovered || !cleanupsRecovered) {
           if (attemptedRecovery)
-            throw new OperationPersistenceError("runtime-recovery", "write_failed");
+            throw new OperationPersistenceError(
+              "runtime-recovery",
+              "write_failed"
+            );
           attemptedRecovery = true;
           await recover(true);
           continue;

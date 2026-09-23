@@ -206,17 +206,26 @@ test("形式検証器がない場合は結果を保留する", async () => {
       },
     },
   ]);
-  const pinned = formats.pin({ formatId: "review-result", version: "1", expectations: {} });
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
   const { acceptance } = await fixture(pinned);
   const bytes = Buffer.from("valid", "utf8");
-  const outcome = await Effect.runPromise(acceptance.accept("operation-1", {
-    acceptanceRequestId: "request-1",
-    body: "valid",
-    expectedByteCount: bytes.byteLength,
-    expectedDigest: sha256Digest(bytes),
-  }));
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body: "valid",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
+  );
 
-  assert.deepEqual(outcome, { state: "continuable", reason: "validator_unavailable" });
+  assert.deepEqual(outcome, {
+    state: "continuable",
+    reason: "validator_unavailable",
+  });
 });
 
 test("形式検証器を復元すると保留した結果を受理できる", async () => {
@@ -233,7 +242,11 @@ test("形式検証器を復元すると保留した結果を受理できる", as
       },
     },
   ]);
-  const pinned = formats.pin({ formatId: "review-result", version: "1", expectations: {} });
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
   const { store, acceptance } = await fixture(pinned);
   const bytes = Buffer.from("valid", "utf8");
   const produced = {
@@ -244,7 +257,9 @@ test("形式検証器を復元すると保留した結果を受理できる", as
   };
   await Effect.runPromise(acceptance.accept("operation-1", produced));
   const recovered = makeResultAcceptance({ store, resultFormats: formats });
-  const outcome = await Effect.runPromise(recovered.accept("operation-1", produced));
+  const outcome = await Effect.runPromise(
+    recovered.accept("operation-1", produced)
+  );
 
   assert.equal(outcome.state, "accepted");
 });
@@ -259,19 +274,30 @@ test("登録済み検証器が利用できない場合も結果を保留する",
         validatorId: "review-validator",
         validatorVersion: "1",
         implementation: Buffer.from("unavailable-validator", "utf8"),
-        validate: async () => { throw new Error("validator unavailable"); },
+        validate: async () => {
+          throw new Error("validator unavailable");
+        },
       },
     },
   ]);
-  const pinned = formats.pin({ formatId: "review-result", version: "1", expectations: {} });
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
   const { acceptance } = await fixture(pinned, formats);
   const bytes = Buffer.from("valid", "utf8");
-  const outcome = await Effect.runPromise(acceptance.accept("operation-1", {
-    acceptanceRequestId: "request-1",
-    body: "valid",
-    expectedByteCount: bytes.byteLength,
-    expectedDigest: sha256Digest(bytes),
-  }));
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body: "valid",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
+  );
 
-  assert.deepEqual(outcome, { state: "continuable", reason: "validator_unavailable" });
+  assert.deepEqual(outcome, {
+    state: "continuable",
+    reason: "validator_unavailable",
+  });
 });

@@ -63,7 +63,12 @@ test("Runtime exposes only delegation lifecycle operations", () => {
     recovery: "disabled",
   });
 
-  assert.deepEqual(Object.keys(runtime), ["ready", "close", "spawn", "operation"]);
+  assert.deepEqual(Object.keys(runtime), [
+    "ready",
+    "close",
+    "spawn",
+    "operation",
+  ]);
 });
 
 test("new formal review operations are refused", async () => {
@@ -397,7 +402,9 @@ test("復旧中の完了保存失敗を受理済み結果から再処理する",
   await advanceTestOperationToRunning(store, "operation-1");
   const runtime = makeTestRuntime(
     services(store, {
-      open: () => { throw new Error("worker reopened"); },
+      open: () => {
+        throw new Error("worker reopened");
+      },
       recover: (operation) => {
         recoveries += 1;
         return worker.recover(operation);
@@ -449,7 +456,9 @@ test("復旧したキャンセルの保存失敗を追加のreadyなしで再処
 
 test("終了処理は復旧キャンセルの保留中の再試行を実行する", async () => {
   let failureObserved!: () => void;
-  const failed = new Promise<void>((resolve) => { failureObserved = resolve; });
+  const failed = new Promise<void>((resolve) => {
+    failureObserved = resolve;
+  });
   class FailingOnceStore extends InMemoryEventStore {
     private fail = true;
 
@@ -469,29 +478,38 @@ test("終了処理は復旧キャンセルの保留中の再試行を実行す�
   const store = new FailingOnceStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "cancellation_requested",
-    cancellationEpoch: 1,
-  }));
-  const runtime = makeTestRuntime(services(store, new RecoveryWorker("accepted", false)));
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  const runtime = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", false))
+  );
   await failed;
   await runtime.close();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "cancelled");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "cancelled"
+  );
 });
 
 test("保存済み正式レビューは検証器復元後に結果受理を再開する", async () => {
-  const formats = makeResultFormatRegistry([{
-    formatId: "review-result",
-    version: "1",
-    normalizationId: "identity.v1",
-    validator: {
-      validatorId: "review-validator",
-      validatorVersion: "1",
-      implementation: Buffer.from("valid-review-validator", "utf8"),
-      validate: async () => ({ kind: "valid" }),
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-review-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
     },
-  }]);
+  ]);
   const resultFormat = formats.pin({
     formatId: "review-result",
     version: "1",
@@ -515,17 +533,19 @@ test("保存済み正式レビューは検証器復元後に結果受理を再�
 });
 
 test("検証器の一時的な不在から追加のreadyなしで結果受理を再開する", async () => {
-  const formats = makeResultFormatRegistry([{
-    formatId: "review-result",
-    version: "1",
-    normalizationId: "identity.v1",
-    validator: {
-      validatorId: "review-validator",
-      validatorVersion: "1",
-      implementation: Buffer.from("valid-review-validator", "utf8"),
-      validate: async () => ({ kind: "valid" }),
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-review-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
     },
-  }]);
+  ]);
   const resultFormat = formats.pin({
     formatId: "review-result",
     version: "1",
@@ -565,17 +585,19 @@ test("検証器の一時的な不在から追加のreadyなしで結果受理を
 });
 
 test("検証器が不在の間は復旧の再試行間隔を延ばす", async () => {
-  const formats = makeResultFormatRegistry([{
-    formatId: "review-result",
-    version: "1",
-    normalizationId: "identity.v1",
-    validator: {
-      validatorId: "review-validator",
-      validatorVersion: "1",
-      implementation: Buffer.from("valid-review-validator", "utf8"),
-      validate: async () => ({ kind: "valid" }),
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-review-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
     },
-  }]);
+  ]);
   const resultFormat = formats.pin({
     formatId: "review-result",
     version: "1",
@@ -601,7 +623,8 @@ test("検証器が不在の間は復旧の再試行間隔を延ばす", async ()
     new FakeClock(
       Array.from(
         { length: 400 },
-        (_, index) => `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
+        (_, index) =>
+          `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
       )
     )
   );
@@ -622,17 +645,19 @@ test("検証器が不在の間は復旧の再試行間隔を延ばす", async ()
 });
 
 test("別の復旧対象の解決は待機中の復旧の再試行間隔を戻さない", async () => {
-  const formats = makeResultFormatRegistry([{
-    formatId: "review-result",
-    version: "1",
-    normalizationId: "identity.v1",
-    validator: {
-      validatorId: "review-validator",
-      validatorVersion: "1",
-      implementation: Buffer.from("valid-review-validator", "utf8"),
-      validate: async () => ({ kind: "valid" }),
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-review-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
     },
-  }]);
+  ]);
   const resultFormat = formats.pin({
     formatId: "review-result",
     version: "1",
@@ -663,7 +688,8 @@ test("別の復旧対象の解決は待機中の復旧の再試行間隔を戻�
     new FakeClock(
       Array.from(
         { length: 400 },
-        (_, index) => `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
+        (_, index) =>
+          `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
       )
     )
   );
@@ -732,7 +758,10 @@ test("表示終了処理の保存失敗が続く間は復旧の再試行間隔�
   }
   const store = new FailingStore([], clock());
   const runtime = makeTestRuntime({
-    ...services(store, new FakeWorkerAdapter({ successfulExitConfirmed: true })),
+    ...services(
+      store,
+      new FakeWorkerAdapter({ successfulExitConfirmed: true })
+    ),
     recovery: "disabled",
   });
   const startedAt = performance.now();
@@ -802,20 +831,27 @@ test("停止確認済みの親キャンセルを永続化する", async () => {
 test("Runtime終了は進行中の親キャンセルを待つ", async () => {
   let stopRequested!: () => void;
   let releaseStop!: () => void;
-  const requested = new Promise<void>((resolve) => { stopRequested = resolve; });
-  const held = new Promise<void>((resolve) => { releaseStop = resolve; });
+  const requested = new Promise<void>((resolve) => {
+    stopRequested = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
   const worker = new CancellableWorker(true);
   const adapter: WorkerAdapter = {
     open: (operation) => {
       const opened = worker.open(operation);
       return {
         run: (hooks) => opened.run(hooks),
-        cancel: (epoch, timeoutMs) => Effect.promise(async () => {
-          const evidence = await Effect.runPromise(opened.cancel(epoch, timeoutMs));
-          stopRequested();
-          await held;
-          return evidence;
-        }),
+        cancel: (epoch, timeoutMs) =>
+          Effect.promise(async () => {
+            const evidence = await Effect.runPromise(
+              opened.cancel(epoch, timeoutMs)
+            );
+            stopRequested();
+            await held;
+            return evidence;
+          }),
       };
     },
     recover: (operation) => worker.open(operation),
@@ -835,7 +871,9 @@ test("Runtime終了は進行中の親キャンセルを待つ", async () => {
   await requested;
   await new Promise<void>((resolve) => setImmediate(resolve));
   let closed = false;
-  const closing = runtime.close().then(() => { closed = true; });
+  const closing = runtime.close().then(() => {
+    closed = true;
+  });
   await new Promise<void>((resolve) => setImmediate(resolve));
   const closedBeforeStop = closed;
   releaseStop();
@@ -881,7 +919,9 @@ for (const failedEvent of [
           },
         };
       },
-      recover: () => { throw new Error("worker reopened"); },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
     };
     const runtime = makeTestRuntime({
       ...services(store, adapter),
@@ -896,7 +936,10 @@ for (const failedEvent of [
     await handle.cancel({}).catch(() => undefined);
     await runtime.close();
 
-    assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "cancelled");
+    assert.equal(
+      (await Effect.runPromise(store.read("operation-1"))).operation.state,
+      "cancelled"
+    );
   });
 }
 
@@ -922,10 +965,11 @@ test("通常実行の停止確認保存失敗を所有Runtimeで再処理する"
     ...services(store, {
       open: (operation) => worker.open(operation),
       recover: () => ({
-        run: () => Effect.succeed({
-          state: "liveness-unproven" as const,
-          successfulExitConfirmed: true as const,
-        }),
+        run: () =>
+          Effect.succeed({
+            state: "liveness-unproven" as const,
+            successfulExitConfirmed: true as const,
+          }),
         cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
       }),
     }),
@@ -939,7 +983,10 @@ test("通常実行の停止確認保存失敗を所有Runtimeで再処理する"
   await handle.result().catch(() => undefined);
   await runtime.close();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
 });
 
 class FailingOnceIntentStore extends InMemoryEventStore {
@@ -992,7 +1039,9 @@ test("汎用ワーカー失敗の記録保存失敗後も観測した失敗理�
   const runtime = makeTestRuntime(
     reopenRefusingServices(
       store,
-      new ReopenRefusingAdapter(new FakeWorkerAdapter({ failure: "agent_failed" }))
+      new ReopenRefusingAdapter(
+        new FakeWorkerAdapter({ failure: "agent_failed" })
+      )
     )
   );
   const handle = await runtime.spawn({
@@ -1004,7 +1053,8 @@ test("汎用ワーカー失敗の記録保存失敗後も観測した失敗理�
   await runtime.close();
 
   assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.failureReason,
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .failureReason,
     "agent_failed"
   );
 });
@@ -1014,7 +1064,9 @@ test("汎用ワーカー失敗の記録保存失敗後も観測した実行証�
   const runtime = makeTestRuntime(
     reopenRefusingServices(
       store,
-      new ReopenRefusingAdapter(new FakeWorkerAdapter({ failure: "agent_failed" }))
+      new ReopenRefusingAdapter(
+        new FakeWorkerAdapter({ failure: "agent_failed" })
+      )
     )
   );
   const handle = await runtime.spawn({
@@ -1026,8 +1078,8 @@ test("汎用ワーカー失敗の記録保存失敗後も観測した実行証�
   await runtime.close();
 
   assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.agentRunEvidence
-      ?.toolUses[0]?.isError,
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .agentRunEvidence?.toolUses[0]?.isError,
     true
   );
 });
@@ -1109,17 +1161,19 @@ class FormatRejectedWorker implements WorkerAdapter {
 }
 
 async function seedFormatRejection(store: InMemoryEventStore) {
-  const formats = makeResultFormatRegistry([{
-    formatId: "review-result",
-    version: "1",
-    normalizationId: "identity.v1",
-    validator: {
-      validatorId: "review-validator",
-      validatorVersion: "1",
-      implementation: Buffer.from("rejecting-review-validator", "utf8"),
-      validate: async () => ({ kind: "invalid", reason: "invalid_json" }),
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("rejecting-review-validator", "utf8"),
+        validate: async () => ({ kind: "invalid", reason: "invalid_json" }),
+      },
     },
-  }]);
+  ]);
   const resultFormat = formats.pin({
     formatId: "review-result",
     version: "1",
@@ -1214,22 +1268,35 @@ test("停止確認と受理済み結果からWorkerを再起動せず完了す�
   const store = new InMemoryEventStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  await Effect.runPromise(store.acceptResult({
-    operationId: "operation-1",
-    acceptanceRequestId: "request-1",
-    bytes: Buffer.from("accepted result", "utf8"),
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "worker_stop_confirmed",
-    proof: "worker-stop",
-  }));
-  const runtime = makeTestRuntime(services(store, {
-    open: () => { throw new Error("worker reopened"); },
-    recover: () => { throw new Error("worker reopened"); },
-  }));
+  await Effect.runPromise(
+    store.acceptResult({
+      operationId: "operation-1",
+      acceptanceRequestId: "request-1",
+      bytes: Buffer.from("accepted result", "utf8"),
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "worker_stop_confirmed",
+      proof: "worker-stop",
+    })
+  );
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    })
+  );
   await runtime.ready();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
 });
 
 test("停止確認後の完了保存失敗を自動で再処理する", async () => {
@@ -1251,44 +1318,70 @@ test("停止確認後の完了保存失敗を自動で再処理する", async ()
   const store = new FailingOnceStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  await Effect.runPromise(store.acceptResult({
-    operationId: "operation-1",
-    acceptanceRequestId: "request-1",
-    bytes: Buffer.from("accepted result", "utf8"),
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "worker_stop_confirmed",
-    proof: "worker-stop",
-  }));
-  makeTestRuntime(services(store, {
-    open: () => { throw new Error("worker reopened"); },
-    recover: () => { throw new Error("worker reopened"); },
-  }));
+  await Effect.runPromise(
+    store.acceptResult({
+      operationId: "operation-1",
+      acceptanceRequestId: "request-1",
+      bytes: Buffer.from("accepted result", "utf8"),
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "worker_stop_confirmed",
+      proof: "worker-stop",
+    })
+  );
+  makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    })
+  );
   await waitForState(store, "completed");
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
 });
 
 test("停止確認済みのキャンセルをWorkerに再要求せず完了する", async () => {
   const store = new InMemoryEventStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "cancellation_requested",
-    cancellationEpoch: 1,
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "cancel_acknowledged",
-    cancellationEpoch: 1,
-    proof: "worker-stop",
-  }));
-  const runtime = makeTestRuntime(services(store, {
-    open: () => { throw new Error("worker reopened"); },
-    recover: () => { throw new Error("worker reopened"); },
-  }));
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancel_acknowledged",
+      cancellationEpoch: 1,
+      proof: "worker-stop",
+    })
+  );
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    })
+  );
   await runtime.ready();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "cancelled");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "cancelled"
+  );
 });
 
 test("停止確認後のキャンセル保存失敗を自動で再処理する", async () => {
@@ -1310,22 +1403,35 @@ test("停止確認後のキャンセル保存失敗を自動で再処理する",
   const store = new FailingOnceStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "cancellation_requested",
-    cancellationEpoch: 1,
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "cancel_acknowledged",
-    cancellationEpoch: 1,
-    proof: "worker-stop",
-  }));
-  makeTestRuntime(services(store, {
-    open: () => { throw new Error("worker reopened"); },
-    recover: () => { throw new Error("worker reopened"); },
-  }));
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancel_acknowledged",
+      cancellationEpoch: 1,
+      proof: "worker-stop",
+    })
+  );
+  makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    })
+  );
   await waitForState(store, "cancelled");
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "cancelled");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "cancelled"
+  );
 });
 
 test("状態不明の保存失敗を自動で再処理する", async () => {
@@ -1346,13 +1452,22 @@ test("状態不明の保存失敗を自動で再処理する", async () => {
   }
   const store = new FailingOnceStore([], clock());
   await seed(store);
-  makeTestRuntime(services(store, {
-    open: () => { throw new Error("worker opened"); },
-    recover: () => { throw new Error("worker recovered"); },
-  }));
+  makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker opened");
+      },
+      recover: () => {
+        throw new Error("worker recovered");
+      },
+    })
+  );
   await waitForState(store, "unknown");
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "unknown");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "unknown"
+  );
 });
 
 test("復旧一覧の一時的な失敗をreadyが通知する", async () => {
@@ -1365,7 +1480,9 @@ test("復旧一覧の一時的な失敗をreadyが通知する", async () => {
       });
     }
   }
-  const runtime = makeTestRuntime(services(new FailingStore(), new RecoveryWorker("accepted", true)));
+  const runtime = makeTestRuntime(
+    services(new FailingStore(), new RecoveryWorker("accepted", true))
+  );
 
   await assert.rejects(runtime.ready(), { name: "OperationPersistenceError" });
   await runtime.close().catch(() => undefined);
@@ -1393,7 +1510,10 @@ test("復旧一覧の一時的な失敗を自動で再試行する", async () =>
   makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
   await waitForState(store, "completed");
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
 });
 
 test("終了処理は待機中の復旧一覧再試行を実行する", async () => {
@@ -1415,11 +1535,16 @@ test("終了処理は待機中の復旧一覧再試行を実行する", async ()
   const store = new FailingOnceStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  const runtime = makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
+  const runtime = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", true))
+  );
   await runtime.ready().catch(() => undefined);
   await runtime.close();
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
 });
 
 test("終了時の復旧再試行失敗を呼び出し元へ返す", async () => {
@@ -1432,7 +1557,9 @@ test("終了時の復旧再試行失敗を呼び出し元へ返す", async () =>
       });
     }
   }
-  const runtime = makeTestRuntime(services(new FailingStore(), new FakeWorkerAdapter()));
+  const runtime = makeTestRuntime(
+    services(new FailingStore(), new FakeWorkerAdapter())
+  );
   await runtime.ready().catch(() => undefined);
 
   await assert.rejects(runtime.close(), { name: "OperationPersistenceError" });
@@ -1457,13 +1584,18 @@ test("終了時の復旧再試行失敗後に別のRuntimeで再開する", asyn
   const store = new FailingTwiceStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  const first = makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
+  const first = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", true))
+  );
   await first.ready().catch(() => undefined);
   await first.close().catch(() => undefined);
   makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
   await waitForState(store, "completed");
 
-  assert.equal((await Effect.runPromise(store.read("operation-1"))).operation.state, "completed");
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
 });
 
 test("表示終了処理一覧の一時的な失敗を自動で再試行する", async () => {
@@ -1513,11 +1645,15 @@ for (const failedEvent of [
     }
     const store = new FailingOnceStore([], clock());
     const runtime = makeTestRuntime({
-      ...services(store, new FakeWorkerAdapter({ successfulExitConfirmed: true })),
+      ...services(
+        store,
+        new FakeWorkerAdapter({ successfulExitConfirmed: true })
+      ),
       presentation: new FakePresentation({
-        workspaceInspection: failedEvent === "presentation_cleanup_unconfirmed"
-          ? "missing"
-          : "matching",
+        workspaceInspection:
+          failedEvent === "presentation_cleanup_unconfirmed"
+            ? "missing"
+            : "matching",
       }),
       recovery: "disabled",
     });
@@ -1530,8 +1666,11 @@ for (const failedEvent of [
     await runtime.close();
 
     assert.equal(
-      (await Effect.runPromise(store.read("operation-1"))).operation.presentationCleanup?.state,
-      failedEvent === "presentation_cleanup_unconfirmed" ? "unconfirmed" : "completed"
+      (await Effect.runPromise(store.read("operation-1"))).operation
+        .presentationCleanup?.state,
+      failedEvent === "presentation_cleanup_unconfirmed"
+        ? "unconfirmed"
+        : "completed"
     );
   });
 }
@@ -1540,21 +1679,28 @@ test("復旧時に未着手の表示終了処理を開始する", async () => {
   const store = new InMemoryEventStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  await Effect.runPromise(store.acceptResult({
-    operationId: "operation-1",
-    acceptanceRequestId: "request-1",
-    bytes: Buffer.from("accepted result", "utf8"),
-  }));
-  await Effect.runPromise(store.advance("operation-1", {
-    type: "worker_stop_confirmed",
-    proof: "worker-stop",
-  }));
-  await Effect.runPromise(store.advance("operation-1", { type: "operation_completed" }));
+  await Effect.runPromise(
+    store.acceptResult({
+      operationId: "operation-1",
+      acceptanceRequestId: "request-1",
+      bytes: Buffer.from("accepted result", "utf8"),
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "worker_stop_confirmed",
+      proof: "worker-stop",
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", { type: "operation_completed" })
+  );
   const runtime = makeTestRuntime(services(store, new FakeWorkerAdapter()));
   await runtime.ready();
 
   assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.presentationCleanup?.state,
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .presentationCleanup?.state,
     "completed"
   );
 });
@@ -1604,19 +1750,25 @@ test("表示終了処理の復旧失敗後も起動済みWorkerを二重に回�
   await advanceTestOperationToRunning(store, "operation-1");
   let recoverCount = 0;
   let release!: () => void;
-  const workerFinished = new Promise<{ readonly state: "liveness-unproven" }>((resolve) => {
-    release = () => resolve({ state: "liveness-unproven" });
-  });
-  const runtime = makeTestRuntime(services(store, {
-    open: () => { throw new Error("not used"); },
-    recover: () => {
-      recoverCount += 1;
-      return {
-        run: () => Effect.promise(() => workerFinished),
-        cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
-      };
-    },
-  }));
+  const workerFinished = new Promise<{ readonly state: "liveness-unproven" }>(
+    (resolve) => {
+      release = () => resolve({ state: "liveness-unproven" });
+    }
+  );
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("not used");
+      },
+      recover: () => {
+        recoverCount += 1;
+        return {
+          run: () => Effect.promise(() => workerFinished),
+          cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+        };
+      },
+    })
+  );
   await runtime.ready().catch(() => undefined);
   await runtime.ready();
   assert.equal(recoverCount, 1);
@@ -1629,12 +1781,20 @@ test("終了処理は一覧取得後に回収されたWorkerも待つ", async ()
   let enterListing!: () => void;
   let releaseWorker!: () => void;
   let enterWorker!: () => void;
-  const listed = new Promise<void>((resolve) => { enterListing = resolve; });
-  const listingHeld = new Promise<void>((resolve) => { releaseListing = resolve; });
-  const workerStarted = new Promise<void>((resolve) => { enterWorker = resolve; });
-  const workerFinished = new Promise<{ readonly state: "liveness-unproven" }>((resolve) => {
-    releaseWorker = () => resolve({ state: "liveness-unproven" });
+  const listed = new Promise<void>((resolve) => {
+    enterListing = resolve;
   });
+  const listingHeld = new Promise<void>((resolve) => {
+    releaseListing = resolve;
+  });
+  const workerStarted = new Promise<void>((resolve) => {
+    enterWorker = resolve;
+  });
+  const workerFinished = new Promise<{ readonly state: "liveness-unproven" }>(
+    (resolve) => {
+      releaseWorker = () => resolve({ state: "liveness-unproven" });
+    }
+  );
   class HeldListingStore extends InMemoryEventStore {
     override listRecoverableOperations() {
       return Effect.promise(async () => {
@@ -1647,19 +1807,26 @@ test("終了処理は一覧取得後に回収されたWorkerも待つ", async ()
   const store = new HeldListingStore([], clock());
   await seed(store);
   await advanceTestOperationToRunning(store, "operation-1");
-  const runtime = makeTestRuntime(services(store, {
-    open: () => { throw new Error("not used"); },
-    recover: () => ({
-      run: () => Effect.promise(() => {
-        enterWorker();
-        return workerFinished;
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("not used");
+      },
+      recover: () => ({
+        run: () =>
+          Effect.promise(() => {
+            enterWorker();
+            return workerFinished;
+          }),
+        cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
       }),
-      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
-    }),
-  }));
+    })
+  );
   await listed;
   let closed = false;
-  const closing = runtime.close().then(() => { closed = true; });
+  const closing = runtime.close().then(() => {
+    closed = true;
+  });
   releaseListing();
   await workerStarted;
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1671,8 +1838,12 @@ test("終了処理は一覧取得後に回収されたWorkerも待つ", async ()
 test("終了処理は作成中の委譲を待つ", async () => {
   let enterPreflight!: () => void;
   let leavePreflight!: () => void;
-  const entered = new Promise<void>((resolve) => { enterPreflight = resolve; });
-  const held = new Promise<void>((resolve) => { leavePreflight = resolve; });
+  const entered = new Promise<void>((resolve) => {
+    enterPreflight = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    leavePreflight = resolve;
+  });
   class HeldPresentation extends FakePresentation {
     override preflight() {
       return Effect.promise(async () => {
@@ -1694,7 +1865,9 @@ test("終了処理は作成中の委譲を待つ", async () => {
   });
   await entered;
   let closed = false;
-  const closing = runtime.close().then(() => { closed = true; });
+  const closing = runtime.close().then(() => {
+    closed = true;
+  });
   await Promise.resolve();
   assert.equal(closed, false);
   leavePreflight();

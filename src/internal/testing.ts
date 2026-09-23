@@ -25,11 +25,7 @@ import type {
   WorkerRunOutcome,
   WorkerAdapter,
 } from "./services.js";
-import type {
-  OperationPersistenceError,
-  Result,
-  Runtime,
-} from "../public.js";
+import type { OperationPersistenceError, Result, Runtime } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
 import {
   automaticStartScopeDigest,
@@ -191,10 +187,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
   protected run(
     operation: Operation,
     hooks: Readonly<WorkerRunHooks>
-  ): Effect.Effect<
-    WorkerRunOutcome,
-    OperationPersistenceError
-  > {
+  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError> {
     return Effect.gen(this, function* () {
       this.startCount += 1;
       this.trace.push("worker:start");

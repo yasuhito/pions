@@ -73,8 +73,7 @@ export type ResultFormatValidationFailureReason =
   | "expectation_mismatch";
 
 export type ResultFormatRejectionReason =
-  | ResultFormatValidationFailureReason
-  | "validator_identity_mismatch";
+  ResultFormatValidationFailureReason | "validator_identity_mismatch";
 
 export interface ResultFormatRejectionEvidence {
   readonly formatId: string;

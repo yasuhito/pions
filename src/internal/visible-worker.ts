@@ -350,10 +350,7 @@ export class VisibleWorker implements WorkerAdapter {
     hooks: Readonly<WorkerRunHooks>,
     cancellation: WorkerCancellation,
     recovering: boolean
-  ): Effect.Effect<
-    WorkerRunOutcome,
-    OperationPersistenceError
-  > {
+  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError> {
     let session: Session | undefined;
     let startDeliveryEntered = false;
     return Effect.gen(this, function* () {
@@ -589,10 +586,7 @@ export class VisibleWorker implements WorkerAdapter {
         Effect.catchAll(
           (
             error
-          ): Effect.Effect<
-            WorkerRunOutcome,
-            OperationPersistenceError
-          > => {
+          ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError> => {
             if (error instanceof OperationPersistenceError) {
               if (recovering && !startDeliveryEntered) {
                 return Effect.promise(() =>

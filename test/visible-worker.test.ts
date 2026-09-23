@@ -359,14 +359,16 @@ async function fixture(
       options.startInstructionAccepted ?? (() => Effect.void),
     startInstructionAcknowledged:
       options.startInstructionAcknowledged ?? (() => Effect.void),
-    acceptResult: options.acceptResult ?? ((received) =>
-      Effect.sync(() => {
-        deliveries.push(received);
-        return {
-          state: "accepted",
-          proof: resultAcceptanceProof(current.operationId),
-        } as const;
-      })),
+    acceptResult:
+      options.acceptResult ??
+      ((received) =>
+        Effect.sync(() => {
+          deliveries.push(received);
+          return {
+            state: "accepted",
+            proof: resultAcceptanceProof(current.operationId),
+          } as const;
+        })),
   };
   const worker = adapter.open(current);
   // Fixture servers/clients are unref'd; a real run is kept alive by the child
@@ -1348,17 +1350,22 @@ test("successful Worker reports confirmed exit after process stop", async (conte
 test("結果形式の拒否後にWorker停止を確認する", async (context) => {
   const value = await fixture({
     processControl: new FakeProcessControl("stopped"),
-    acceptResult: () => Effect.succeed({
-      state: "failed",
-      terminal: true,
-      reason: "result_format_rejected",
-      resultFormatRejection: {
-        formatId: "review-result",
-        version: "1",
-        validator: { validatorId: "review-validator", version: "1", digest: `sha256:${"a".repeat(64)}` as const },
-        reason: "invalid_json",
-      },
-    }),
+    acceptResult: () =>
+      Effect.succeed({
+        state: "failed",
+        terminal: true,
+        reason: "result_format_rejected",
+        resultFormatRejection: {
+          formatId: "review-result",
+          version: "1",
+          validator: {
+            validatorId: "review-validator",
+            version: "1",
+            digest: `sha256:${"a".repeat(64)}` as const,
+          },
+          reason: "invalid_json",
+        },
+      }),
   });
   context.after(() => {
     value.release();

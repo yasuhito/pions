@@ -120,7 +120,10 @@ export type WorkerRunOutcome = (
 export interface Worker {
   run(
     hooks: Readonly<WorkerRunHooks>
-  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError | StartDeliveryAbortedError>;
+  ): Effect.Effect<
+    WorkerRunOutcome,
+    OperationPersistenceError | StartDeliveryAbortedError
+  >;
   cancel(
     cancellationEpoch: number,
     timeoutMs: number

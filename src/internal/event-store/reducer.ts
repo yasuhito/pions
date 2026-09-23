@@ -473,7 +473,8 @@ export function reduceOperation(
           (current.resultFormat === undefined ||
             event.resultFormatRejection.formatId !==
               current.resultFormat.formatId ||
-            event.resultFormatRejection.version !== current.resultFormat.version ||
+            event.resultFormatRejection.version !==
+              current.resultFormat.version ||
             !isDeepStrictEqual(
               event.resultFormatRejection.validator,
               current.resultFormat.validator
