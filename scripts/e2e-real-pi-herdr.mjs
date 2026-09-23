@@ -448,12 +448,7 @@ async function listPanes() {
 // Observes Worker workspaces that appear while the parent Pi runs: their
 // label and focus state, plus whether the parent kept focus, are only visible
 // while the Worker is alive because a successful Worker closes its workspace.
-function observeWorkerWorkspaces(
-  before,
-  parentWorkspaceId,
-  parentPaneId,
-  ownedWorkspaceIds
-) {
+function observeWorkerWorkspaces(before, parentWorkspaceId, parentPaneId) {
   const observed = new Map();
   let parentLostFocus = false;
   let parentPaneChanged = false;
@@ -467,7 +462,6 @@ function observeWorkerWorkspaces(
           label: workspace.label,
           focused: workspace.focused,
         });
-        ownedWorkspaceIds.push(workspace.workspace_id);
         const parent = workspaces.find(
           (w) => w.workspace_id === parentWorkspaceId
         );
@@ -624,8 +618,7 @@ async function main() {
     const workerObserver = observeWorkerWorkspaces(
       beforeDelegate,
       workspace1.workspaceId,
-      workspace1.paneId,
-      createdWorkspaceIds
+      workspace1.paneId
     );
     let delegateTranscript;
     let workerWorkspaces;
@@ -694,6 +687,7 @@ async function main() {
         `Worker workspace label mismatch: expected ${JSON.stringify(expectedWorkerLabel)}, got ${JSON.stringify(workerWorkspace.label)}`
       );
     }
+    createdWorkspaceIds.push(workerWorkspaceId);
     if (workerWorkspace.focused === true || workerWorkspaces.parentLostFocus) {
       throw new Error(
         `Worker workspace ${workerWorkspaceId} took focus away from the parent workspace`
@@ -916,6 +910,7 @@ async function main() {
       `Use pions_delegate exactly once with this task:\n\n${cancellationTask}\n\nDo not do anything else.\n`
     );
     const cancellationEventPath = join(runDir, "cancellation-tool-result.json");
+    const cancellationSignalPath = join(runDir, "cancel-worker.signal");
     const cancellationObserverExtension = join(
       runDir,
       "observe-cancellation.ts"
@@ -923,16 +918,17 @@ async function main() {
     await writeFile(
       cancellationObserverExtension,
       [
-        'import { writeFileSync } from "node:fs";',
+        'import { existsSync, writeFileSync } from "node:fs";',
         "export default function observeCancellation(pi) {",
+        "  let signalPoll;",
         '  pi.on("tool_execution_start", (event, context) => {',
         '    if (event.toolName === "pions_delegate") {',
-        "      // Abort the one-shot Pi operation without terminating its process.",
-        "      setTimeout(() => context.abort(), 15000);",
+        `      signalPoll = setInterval(() => { if (existsSync(${JSON.stringify(cancellationSignalPath)})) { clearInterval(signalPoll); context.abort(); } }, 250);`,
         "    }",
         "  });",
         '  pi.on("tool_result", (event) => {',
         '    if (event.toolName === "pions_delegate") {',
+        "      clearInterval(signalPoll);",
         `      writeFileSync(${JSON.stringify(cancellationEventPath)}, JSON.stringify(event));`,
         "    }",
         "  });",
@@ -947,8 +943,7 @@ async function main() {
     const cancellationObserver = observeWorkerWorkspaces(
       beforeCancellation,
       cancellationParent.workspaceId,
-      cancellationParent.paneId,
-      createdWorkspaceIds
+      cancellationParent.paneId
     );
     let cancelledWorkerWorkspaces;
     const cancellationExecution = await startPiInPane(
@@ -964,6 +959,8 @@ async function main() {
         DELEGATE_TIMEOUT_MS,
         "the cancellable Worker workspace to appear"
       );
+      await delay(15_000);
+      await writeFile(cancellationSignalPath, "");
       await waitFor(
         () => fileExists(cancellationEventPath),
         RESULT_TIMEOUT_MS,
@@ -1006,6 +1003,15 @@ async function main() {
       );
     }
     const [cancelledWorkspaceId] = cancelledWorkspaces[0];
+    if (
+      cancelledWorkspaces[0][1].label !==
+      `Pions ${cancelledOperationId.slice(0, 8)}`
+    ) {
+      throw new Error(
+        "cancelled Worker workspace label did not match its Operation"
+      );
+    }
+    createdWorkspaceIds.push(cancelledWorkspaceId);
     if ((await workspaceIds()).has(cancelledWorkspaceId)) {
       throw new Error(
         "a stop-confirmed cancelled Worker workspace remained open"
@@ -1085,8 +1091,7 @@ async function main() {
     const failureObserver = observeWorkerWorkspaces(
       beforeWorkerFailure,
       failureParent.workspaceId,
-      failureParent.paneId,
-      createdWorkspaceIds
+      failureParent.paneId
     );
     let failureTranscript;
     let failedWorkerWorkspaces;
@@ -1125,6 +1130,7 @@ async function main() {
         "failed Worker workspace label did not match its Operation"
       );
     }
+    createdWorkspaceIds.push(failedWorkspaceId);
     if (!(await workspaceIds()).has(failedWorkspaceId)) {
       throw new Error(
         "failed or unknown Worker workspace was closed unexpectedly"
