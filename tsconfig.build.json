@@ -6,6 +6,6 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["test", "src/internal/testing.ts"]
+  "files": ["src/extension.ts", "src/worker-extension.ts"],
+  "include": []
 }

@@ -90,11 +90,13 @@ Install the fixed package version in a Pi project:
 pi install npm:@yasuhito/pions@0.1.0
 ```
 
-The package manifest registers only the Pions extension. To test a local package tarball with Pi's normal package manager, build and pack it, then install the resulting archive:
+The package manifest registers only the Pions extension. To use a fixed local tarball in another Pi project, pack it here, then install the archive as an npm dependency in that project and register the installed package with Pi:
 
 ```sh
 npm pack
-pi install ./yasuhito-pions-0.1.0.tgz
+cd /path/to/pi-project
+npm install --save-exact /path/to/pions/yasuhito-pions-0.1.0.tgz
+pi install --local ./node_modules/@yasuhito/pions
 ```
 
 In the trusted repository root, create a flat `.pions.json` containing the worker model and thinking level:

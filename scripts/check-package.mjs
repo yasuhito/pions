@@ -24,21 +24,46 @@ const [pack] = JSON.parse(
     encoding: "utf8",
   })
 );
-const paths = pack.files.map(({ path }) => path);
-const forbidden = paths.filter(
-  (path) =>
-    !["README.md", "package.json"].includes(path) &&
-    (!path.startsWith("dist/src/") ||
-      /(?:^|\/)(?:test|review|testing)(?:\/|\.|$)/i.test(path) ||
-      path.endsWith(".map") ||
-      path.endsWith(".d.ts"))
-);
-if (forbidden.length > 0)
-  throw new Error(`Unexpected tarball files: ${forbidden.join(", ")}`);
-if (
-  !paths.includes("dist/src/extension.js") ||
-  !paths.includes("dist/src/worker-extension.js")
-) {
-  throw new Error("Tarball is missing an extension entry point");
+const paths = new Set(pack.files.map(({ path }) => path));
+const expected = new Set([
+  "README.md",
+  "package.json",
+  "dist/src/extension.js",
+  "dist/src/worker-extension.js",
+  ...[
+    "event-store/codec",
+    "event-store/file-storage",
+    "event-store/index",
+    "event-store/intent",
+    "event-store/model",
+    "event-store/reducer",
+    "event-store/store",
+    "has-code",
+    "herdr-presentation",
+    "pi-extension",
+    "repository-state",
+    "result-acceptance-transaction",
+    "result-acceptance",
+    "result-digest",
+    "result-runtime",
+    "runtime",
+    "services",
+    "start-instruction",
+    "sync-directory",
+    "types",
+    "visible-runtime",
+    "visible-worker",
+    "worker-configuration",
+    "worker-extension-entry",
+    "worker-process-control",
+    "worker-protocol",
+  ].map((name) => `dist/src/internal/${name}.js`),
+]);
+const unexpected = [...paths].filter((path) => !expected.has(path));
+const missing = [...expected].filter((path) => !paths.has(path));
+if (unexpected.length || missing.length) {
+  throw new Error(
+    `Unexpected tarball files: ${unexpected.join(", ")}; missing: ${missing.join(", ")}`
+  );
 }
-console.log(`Package contents verified (${paths.length} files)`);
+console.error(`Package contents verified (${paths.size} files)`);
