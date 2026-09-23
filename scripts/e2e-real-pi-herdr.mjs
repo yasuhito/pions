@@ -1219,9 +1219,7 @@ async function main() {
       );
     }
     if (failedSnapshot.presentationCleanup?.state === "completed") {
-      throw new Error(
-        "a failed Operation completed presentation cleanup"
-      );
+      throw new Error("a failed Operation completed presentation cleanup");
     }
     if (!(await workspaceIds()).has(failedWorkspaceId)) {
       throw new Error("failed Worker workspace disappeared during inspection");
@@ -1286,9 +1284,9 @@ async function main() {
       unknownRecord = (await ownedWorkerRecords(stateDir)).get(
         unknownWorkspaceId
       );
-      const identity = unknownRecord?.events
-        .findLast((event) => event.type === "worker_identified")
-        ?.workerIdentity;
+      const identity = unknownRecord?.events.findLast(
+        (event) => event.type === "worker_identified"
+      )?.workerIdentity;
       if (
         !Number.isSafeInteger(identity?.processId) ||
         identity.processId <= 0 ||

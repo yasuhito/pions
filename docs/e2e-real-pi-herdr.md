@@ -18,7 +18,7 @@ npm run test:e2e
 - `~/.pi/agent/auth.json`にPiのLLM認証情報があること
 - `.pions.json`の`model`が指すプロバイダー・モデルが認証済みであること(`pi auth check --provider <provider> --model <id>`で確認できる)
 
-いずれかが満たされない場合、スクリプトは検証を始める前に理由を示して失敗する。
+`npm`、`pi`、通常実行時の`herdr`が使えない場合や、`.pions.json`に指定したモデルの認証確認が失敗した場合は、検証を始める前に理由を示して失敗する。認証ファイルが空または存在しない場合は警告を出し、実際のPi呼び出しで認証可否が判定される。
 
 ## 何を検証するか
 
@@ -37,7 +37,7 @@ npm run test:e2e
 
 ## 隔離の仕組み
 
-- 通常実行ではHerdrセッションを`pions-e2e-<pid>-<random>`という名前で毎回新規生成し、`default`セッションには触れない。監督側から`PIONS_E2E_HERDR_SESSION`と`PIONS_E2E_HERDR_COMMAND`が渡された場合はその非defaultセッションだけを使い、サーバーやセッションの起動・停止・削除を行わない。
+- 通常実行ではHerdrセッションを`pions-e2e-<pid>-<random>`という名前で毎回新規生成し、`default`セッションには触れない。
 - Herdrのライフサイクルを自分で管理する監督側は、起動済みの`default`以外のセッション名を`PIONS_E2E_HERDR_SESSION`で、そのセッションへ全呼び出しを限定するラッパー実行ファイルを`PIONS_E2E_HERDR_COMMAND`で渡せる。この場合スクリプトはHerdrサーバーの起動とセッションの停止・削除を行わず、供給されたセッション内で自分のワークスペースを作成・終了するだけになる。`PIONS_E2E_HERDR_COMMAND`は`PIONS_E2E_HERDR_SESSION`と同時に指定する。
 - npm利用先を一時ディレクトリ内に作り、`.pions.json`とGitルートをそこだけに用意する。親と結果取得用のワークスペースはすべて利用先内から起動する。npmキャッシュと`XDG_STATE_HOME`も一時ディレクトリに限定し、`Operation`の永続状態や依存パッケージが利用者の状態・キャッシュと混ざらない。
 
