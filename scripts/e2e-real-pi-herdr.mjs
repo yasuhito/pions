@@ -539,16 +539,6 @@ function observeWorkerWorkspaces(before, parentWorkspaceId, parentPaneId) {
   };
 }
 
-async function assertNoNewWorkspace(before, description) {
-  const after = await workspaceIds();
-  const added = [...after].filter((id) => !before.has(id));
-  if (added.length !== 0) {
-    throw new Error(
-      `${description} created Worker workspaces: ${added.join(", ")}`
-    );
-  }
-}
-
 function toolResultText(message) {
   const textPart = message.content?.find?.((part) => part.type === "text");
   return textPart?.text ?? "";
@@ -914,7 +904,7 @@ async function main() {
         model: { provider: "e2e-extension-provider", id: "e2e-model" },
       })
     );
-    const beforeProvider = await workspaceIds();
+    const beforeProvider = await ownedWorkerWorkspaceIds(stateDir);
     const providerWorkspace = await createWorkspace(
       "pions-e2e-provider-config",
       { XDG_STATE_HOME: stateDir }
@@ -934,12 +924,15 @@ async function main() {
     if (!providerResult.isError) {
       throw new Error("extension-derived Worker provider was accepted");
     }
-    const beforeProviderWithoutParent = new Set(beforeProvider);
-    beforeProviderWithoutParent.add(providerWorkspace.workspaceId);
-    await assertNoNewWorkspace(
-      beforeProviderWithoutParent,
-      "extension-derived provider rejection"
+    const providerOwned = await ownedWorkerWorkspaceIds(stateDir);
+    const newProviderOwned = [...providerOwned].filter(
+      (id) => !beforeProvider.has(id)
     );
+    if (newProviderOwned.length !== 0) {
+      throw new Error(
+        `extension-derived provider rejection created Worker workspaces: ${newProviderOwned.join(", ")}`
+      );
+    }
     const failedDelegationCount = await countToolResults(
       providerTranscript,
       "pions_delegate"
