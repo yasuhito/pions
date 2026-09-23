@@ -48,7 +48,7 @@ Retrieval verifies the complete stored result before returning any content. It d
 
 Large results can be retrieved in UTF-8-safe chunks using an opaque cursor. The same accepted bytes remain retrievable after the Pi session or runtime restarts.
 
-By contrast, `pi-subagents` documents its async completion replay records as best-effort temporary state rather than a permanent run ledger. Pions makes retrieval of the accepted byte sequence part of the public runtime contract.
+By contrast, `pi-subagents` documents its async completion replay records as best-effort temporary state rather than a permanent run ledger. Pions makes retrieval of the accepted byte sequence available through its public Pi tools.
 
 ### Completion requires result acceptance and worker stop
 

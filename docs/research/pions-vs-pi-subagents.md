@@ -51,7 +51,7 @@ Pionsは、プロセスやワークスペースが見えないことだけから
 
 ここは比較時に注意が必要である。現在の`pi-subagents`も、背景ランナーについてプロセス終端証拠を`observed`または`unknown`として表し、結果ファイルやPID消失から終了を推論しない設計を持つ。[`docs/observability.md`の「Process-terminal proof」](https://github.com/nicobailon/pi-subagents/blob/v0.67.0/docs/observability.md#process-terminal-proof)
 
-そのため「Pionsだけが停止を検証する」とは書けない。Pions固有の訴求点は、停止確認をオペレーションの終端条件と再試行安全性へ一貫して結び付けていることである。
+そのため「Pionsだけが停止を検証する」とは書けない。Pions固有の訴求点は、停止を確認できない場合を状態不明として永続記録に残し、終端完了と区別することである。
 
 ### 3. 実行中のワーカーを、実際のPi TUIとして観測できる
 

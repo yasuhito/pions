@@ -10,4 +10,4 @@ Pions のワーカーラッパーは、`@earendil-works/pi-coding-agent` 0.85.1 
 
 `agent_end` は `willRetry` が真になり得るため確定には使用しない。`prompt()` が解決し、かつ同じ購読で `agent_settled` を観測した場合だけ、最後のアシスタントメッセージを評価し、成功した内容を結果としてワーカープロトコルへ渡す。ターミナル出力と Herdr の画面状態は表示専用であり、この判定には使用しない。
 
-公開する実行経路は、既存の `Runtime.spawn()` と `OperationHandle.result()` による1回の起動から結果取得までに限定する。Pi SDK のセッション置換、キュー、並列実行、入れ子実行の API は公開しない。
+現行の公開経路は[ADR-0013](0013-use-pi-tools-as-the-result-retrieval-boundary.md)を参照する。
