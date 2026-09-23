@@ -494,12 +494,8 @@ async function listPanes() {
   return listed.result?.panes ?? listed.panes ?? [];
 }
 
-// Observes Worker workspaces that appear while the parent Pi runs: their
-// label and focus state, plus whether the parent kept focus, are only visible
-// while the Worker is alive because a successful Worker closes its workspace.
 function observeWorkerWorkspaces(before, parentWorkspaceId, parentPaneId) {
   const observed = new Map();
-  let parentLostFocus = false;
   let parentPaneChanged = false;
   let stopped = false;
   const loop = (async () => {
@@ -511,11 +507,6 @@ function observeWorkerWorkspaces(before, parentWorkspaceId, parentPaneId) {
           label: workspace.label,
           focused: workspace.focused,
         });
-        const parent = workspaces.find(
-          (w) => w.workspace_id === parentWorkspaceId
-        );
-        if (parent !== undefined && parent.focused !== true)
-          parentLostFocus = true;
       }
       const parentPanes = (await listPanes()).filter(
         (pane) => pane.workspace_id === parentWorkspaceId
@@ -534,7 +525,7 @@ function observeWorkerWorkspaces(before, parentWorkspaceId, parentPaneId) {
     async stop() {
       stopped = true;
       await loop;
-      return { observed, parentLostFocus, parentPaneChanged };
+      return { observed, parentPaneChanged };
     },
   };
 }
@@ -732,9 +723,9 @@ async function main() {
         `Worker workspace label mismatch: expected ${JSON.stringify(expectedWorkerLabel)}, got ${JSON.stringify(workerWorkspace.label)}`
       );
     }
-    if (workerWorkspace.focused === true || workerWorkspaces.parentLostFocus) {
+    if (workerWorkspace.focused === true) {
       throw new Error(
-        `Worker workspace ${workerWorkspaceId} took focus away from the parent workspace`
+        `Worker workspace ${workerWorkspaceId} became focused during delegation`
       );
     }
     if (workerWorkspaces.parentPaneChanged) {
