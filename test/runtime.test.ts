@@ -89,15 +89,16 @@ test("new formal review operations are refused", async () => {
 
 async function seed(
   store: InMemoryEventStore,
-  resultFormat?: Readonly<PinnedResultFormat>
+  resultFormat?: Readonly<PinnedResultFormat>,
+  operationId = "operation-1"
 ): Promise<void> {
   await Effect.runPromise(
     store.create({
-      operationId: "operation-1",
+      operationId,
       task: {
         promptRef: "private://prompt",
         profile: "coding",
-        idempotencyKey: "task-1",
+        idempotencyKey: `task-${operationId}`,
       },
       requestedConfig: {},
       effectiveConfig: {
@@ -247,10 +248,11 @@ class CancellableWorker implements WorkerAdapter {
 
 async function waitForState(
   store: InMemoryEventStore,
-  expected: string
+  expected: string,
+  operationId = "operation-1"
 ): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const state = (await Effect.runPromise(store.read("operation-1"))).operation
+    const state = (await Effect.runPromise(store.read(operationId))).operation
       .state;
     if (state === expected) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 1));
@@ -619,7 +621,7 @@ test("検証器が不在の間は復旧の再試行間隔を延ばす", async ()
   assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
 });
 
-test("無関係な委譲の完了は待機中の復旧の再試行間隔を戻さない", async () => {
+test("別の復旧対象の解決は待機中の復旧の再試行間隔を戻さない", async () => {
   const formats = makeResultFormatRegistry([{
     formatId: "review-result",
     version: "1",
@@ -667,25 +669,37 @@ test("無関係な委譲の完了は待機中の復旧の再試行間隔を戻�
   );
   await seed(store, resultFormat);
   await advanceTestOperationToRunning(store, "operation-1");
+  await seed(store, undefined, "operation-2");
+  await advanceTestOperationToRunning(store, "operation-2");
+  let releaseOther!: () => void;
+  const otherReleased = new Promise<void>((resolve) => {
+    releaseOther = resolve;
+  });
   const recoveryWorker = new RecoveryWorker("accepted", true);
-  const spawnedWorker = new FakeWorkerAdapter({ successfulExitConfirmed: true });
   const runtime = makeTestRuntime({
     ...services(store, {
-      open: (operation) => spawnedWorker.open(operation),
-      recover: (operation) => recoveryWorker.recover(operation),
+      open: () => {
+        throw new Error("not used");
+      },
+      recover: (operation) => {
+        const worker = recoveryWorker.recover(operation);
+        if (operation.operationId !== "operation-2") return worker;
+        return {
+          run: (hooks) =>
+            Effect.promise(() => otherReleased).pipe(
+              Effect.flatMap(() => worker.run(hooks))
+            ),
+          cancel: worker.cancel,
+        };
+      },
     }),
-    ids: new FakeIdGenerator(["operation-2"]),
     formalReviewResultFormats: { registry, resultFormat },
   });
   const startedAt = performance.now();
   await runtime.ready();
   await attemptedOnce;
-  const unrelated = await runtime.spawn({
-    promptRef: "private://prompt",
-    profile: "coding",
-    idempotencyKey: "task-2",
-  });
-  await unrelated.result();
+  releaseOther();
+  await waitForState(store, "completed", "operation-2");
   await attemptedFourTimes;
   const elapsedMs = performance.now() - startedAt;
   available = true;

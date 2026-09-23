@@ -72,6 +72,8 @@ interface OperationRecord {
   worker?: Worker;
   observedOutcome?: WorkerRunOutcome;
   recoverable?: boolean;
+  retryDelayMs?: number;
+  retryAfter?: number;
   cancelEvidence?: {
     readonly cancellationEpoch: number;
     readonly proof: "worker-stop";
@@ -1259,9 +1261,19 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         ] as const)
       ).values(),
     ];
+    const now = Date.now();
+    let earliestRetry: number | undefined;
     for (const { operation } of snapshots) {
       let record = records.get(operation.operationId);
       if (record !== undefined && !record.recoverable) continue;
+      if (
+        !closing &&
+        record?.retryAfter !== undefined &&
+        record.retryAfter > now
+      ) {
+        earliestRetry = Math.min(earliestRetry ?? Infinity, record.retryAfter);
+        continue;
+      }
       if (record === undefined) {
         const deferred = deferredResult();
         record = {
@@ -1273,6 +1285,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         records.set(operation.operationId, record);
       }
       record.recoverable = false;
+      delete record.retryAfter;
       const recoveredRecord = record;
       try {
         if (terminal(operation)) {
@@ -1303,18 +1316,28 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await settleTerminal(record, completed);
           continue;
         }
-        const resume = (): void => {
+        const resume = (delayMs = INITIAL_RECOVERY_DELAY_MS): void => {
           recoveredRecord.recoverable = true;
           workersRecovered = false;
-          scheduleRecovery();
+          scheduleRecovery(delayMs);
         };
         const settle = (work: Promise<void | "validator_unavailable">): void =>
           track(
             work
               .then((outcome) => {
-                if (outcome !== "validator_unavailable")
-                  recoveryDelayMs = INITIAL_RECOVERY_DELAY_MS;
-                else if (!closing) resume();
+                if (outcome !== "validator_unavailable") {
+                  delete recoveredRecord.retryDelayMs;
+                  return;
+                }
+                if (closing) return;
+                const delayMs =
+                  recoveredRecord.retryDelayMs ?? INITIAL_RECOVERY_DELAY_MS;
+                recoveredRecord.retryDelayMs = Math.min(
+                  delayMs * 2,
+                  MAX_RECOVERY_DELAY_MS
+                );
+                recoveredRecord.retryAfter = Date.now() + delayMs;
+                resume(delayMs);
               })
               .catch((error) => {
                 recoveredRecord.rejectTerminal(error);
@@ -1378,6 +1401,10 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         throw error;
       }
     }
+    if (earliestRetry !== undefined) {
+      workersRecovered = false;
+      scheduleRecovery(Math.max(0, earliestRetry - Date.now()));
+    }
   };
 
   const recoverCleanups = async (): Promise<void> => {
@@ -1399,11 +1426,15 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   let cleanupsRecovered = false;
   let recovery: Promise<void> | undefined;
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
-  let recoveryDelayMs = INITIAL_RECOVERY_DELAY_MS;
-  const scheduleRecovery = (): void => {
-    if (closing || recoveryTimer !== undefined) return;
-    const delayMs = recoveryDelayMs;
-    recoveryDelayMs = Math.min(delayMs * 2, MAX_RECOVERY_DELAY_MS);
+  let recoveryDue = 0;
+  const scheduleRecovery = (delayMs = INITIAL_RECOVERY_DELAY_MS): void => {
+    if (closing) return;
+    const due = Date.now() + delayMs;
+    if (recoveryTimer !== undefined) {
+      if (recoveryDue <= due) return;
+      clearTimeout(recoveryTimer);
+    }
+    recoveryDue = due;
     recoveryTimer = setTimeout(() => {
       recoveryTimer = undefined;
       void Promise.resolve(recovery)
