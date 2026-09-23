@@ -1,7 +1,7 @@
 // Drives a real Pi + Herdr delegation end to end in an isolated, disposable
 // Herdr session. See docs/e2e-real-pi-herdr.md for prerequisites and how to
 // read a failure's diagnostics.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   access,
   cp,
@@ -9,6 +9,8 @@ import {
   mkdtemp,
   open,
   readFile,
+  readdir,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -440,6 +442,53 @@ async function workspaceIds() {
   return new Set((await listWorkspaces()).map((w) => w.workspace_id));
 }
 
+async function ownedWorkerWorkspaceIds(stateDir) {
+  if (CONSUMER_DIR === undefined || !(await fileExists(CONSUMER_DIR)))
+    return new Set();
+  const repositoryKey = createHash("sha256")
+    .update(await realpath(CONSUMER_DIR), "utf8")
+    .digest("hex");
+  const runtimeDir = join(
+    stateDir,
+    "pions",
+    "repositories",
+    repositoryKey,
+    "runtime"
+  );
+  if (!(await fileExists(runtimeDir))) return new Set();
+  const owned = new Set();
+  for (const entry of await readdir(runtimeDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const recordPath = join(runtimeDir, entry.name, "events.v27.json");
+    if (!(await fileExists(recordPath))) continue;
+    const record = JSON.parse(await readFile(recordPath, "utf8"));
+    if (
+      typeof record.operationId !== "string" ||
+      createHash("sha256").update(record.operationId, "utf8").digest("hex") !==
+        entry.name
+    ) {
+      throw new Error(`invalid isolated Operation record: ${recordPath}`);
+    }
+    for (const event of record.events) {
+      if (
+        event.type === "presentation_owned" &&
+        event.operationId === record.operationId &&
+        event.presentation?.ownedByPions === true &&
+        typeof event.presentation.workspaceId === "string" &&
+        event.presentation.workspaceId !== ""
+      ) {
+        owned.add(event.presentation.workspaceId);
+      }
+    }
+  }
+  return owned;
+}
+
+async function observedOwnedWorkspaces(observer, stateDir) {
+  const owned = await ownedWorkerWorkspaceIds(stateDir);
+  return [...observer.observed.entries()].filter(([id]) => owned.has(id));
+}
+
 async function listPanes() {
   const listed = await herdrJson(["pane", "list"]);
   return listed.result?.panes ?? listed.panes ?? [];
@@ -538,8 +587,11 @@ async function captureDiagnostics(runDir) {
   }
 }
 
-async function cleanupHerdr(workspaceIds) {
-  for (const workspaceId of workspaceIds) {
+async function cleanupHerdr(parentWorkspaceIds, stateDir) {
+  for (const workspaceId of parentWorkspaceIds) {
+    await herdr(["workspace", "close", workspaceId]).catch(() => undefined);
+  }
+  for (const workspaceId of await ownedWorkerWorkspaceIds(stateDir)) {
     await herdr(["workspace", "close", workspaceId]).catch(() => undefined);
   }
   if (EXTERNAL_SESSION !== undefined) return;
@@ -554,7 +606,7 @@ async function main() {
   const runDir = await mkdtemp(join(tmpdir(), "pions-e2e-run-"));
   const stateDir = join(runDir, "state");
   await mkdir(stateDir, { recursive: true });
-  const createdWorkspaceIds = [];
+  const parentWorkspaceIds = [];
   let workerWriteName;
   let originalProjectConfig;
   let workerExtensionPath;
@@ -613,7 +665,7 @@ async function main() {
       { XDG_STATE_HOME: stateDir },
       nestedCwd
     );
-    createdWorkspaceIds.push(workspace1.workspaceId);
+    parentWorkspaceIds.push(workspace1.workspaceId);
     const beforeDelegate = await workspaceIds();
     const workerObserver = observeWorkerWorkspaces(
       beforeDelegate,
@@ -674,7 +726,10 @@ async function main() {
     const originalDigest = delegateResult.details.digest;
     log(`delegated Operation ${operationId} returned the known UTF-8 answer.`);
 
-    const observedWorkerWorkspaces = [...workerWorkspaces.observed.entries()];
+    const observedWorkerWorkspaces = await observedOwnedWorkspaces(
+      workerWorkspaces,
+      stateDir
+    );
     if (observedWorkerWorkspaces.length !== 1) {
       throw new Error(
         `expected exactly one Worker workspace during delegation, observed ${JSON.stringify(observedWorkerWorkspaces)}`
@@ -687,7 +742,6 @@ async function main() {
         `Worker workspace label mismatch: expected ${JSON.stringify(expectedWorkerLabel)}, got ${JSON.stringify(workerWorkspace.label)}`
       );
     }
-    createdWorkspaceIds.push(workerWorkspaceId);
     if (workerWorkspace.focused === true || workerWorkspaces.parentLostFocus) {
       throw new Error(
         `Worker workspace ${workerWorkspaceId} took focus away from the parent workspace`
@@ -728,7 +782,7 @@ async function main() {
     const workspace2 = await createWorkspace("pions-e2e-result", {
       XDG_STATE_HOME: stateDir,
     });
-    createdWorkspaceIds.push(workspace2.workspaceId);
+    parentWorkspaceIds.push(workspace2.workspaceId);
     const resultTranscript = await runPiInPane(
       runDir,
       workspace2.paneId,
@@ -764,7 +818,7 @@ async function main() {
     const workspace3 = await createWorkspace("pions-e2e-operation", {
       XDG_STATE_HOME: stateDir,
     });
-    createdWorkspaceIds.push(workspace3.workspaceId);
+    parentWorkspaceIds.push(workspace3.workspaceId);
     const operationTranscript = await runPiInPane(
       runDir,
       workspace3.paneId,
@@ -865,7 +919,7 @@ async function main() {
       "pions-e2e-provider-config",
       { XDG_STATE_HOME: stateDir }
     );
-    createdWorkspaceIds.push(providerWorkspace.workspaceId);
+    parentWorkspaceIds.push(providerWorkspace.workspaceId);
     const providerTranscript = await runPiInPane(
       runDir,
       providerWorkspace.paneId,
@@ -938,7 +992,7 @@ async function main() {
     const cancellationParent = await createWorkspace("pions-e2e-cancellation", {
       XDG_STATE_HOME: stateDir,
     });
-    createdWorkspaceIds.push(cancellationParent.workspaceId);
+    parentWorkspaceIds.push(cancellationParent.workspaceId);
     const beforeCancellation = await workspaceIds();
     const cancellationObserver = observeWorkerWorkspaces(
       beforeCancellation,
@@ -955,7 +1009,9 @@ async function main() {
     );
     try {
       await waitFor(
-        () => cancellationObserver.observed.size === 1,
+        async () =>
+          (await observedOwnedWorkspaces(cancellationObserver, stateDir))
+            .length === 1,
         DELEGATE_TIMEOUT_MS,
         "the cancellable Worker workspace to appear"
       );
@@ -994,9 +1050,10 @@ async function main() {
       );
     }
     const cancelledOperationId = operationIdFromError(cancellationResult);
-    const cancelledWorkspaces = [
-      ...cancelledWorkerWorkspaces.observed.entries(),
-    ];
+    const cancelledWorkspaces = await observedOwnedWorkspaces(
+      cancelledWorkerWorkspaces,
+      stateDir
+    );
     if (cancelledWorkspaces.length !== 1) {
       throw new Error(
         `expected one Worker workspace during cancellation, observed ${JSON.stringify(cancelledWorkspaces)}`
@@ -1011,7 +1068,6 @@ async function main() {
         "cancelled Worker workspace label did not match its Operation"
       );
     }
-    createdWorkspaceIds.push(cancelledWorkspaceId);
     if ((await workspaceIds()).has(cancelledWorkspaceId)) {
       throw new Error(
         "a stop-confirmed cancelled Worker workspace remained open"
@@ -1029,7 +1085,7 @@ async function main() {
       "pions-e2e-cancelled-operation",
       { XDG_STATE_HOME: stateDir }
     );
-    createdWorkspaceIds.push(cancellationInspectionWorkspace.workspaceId);
+    parentWorkspaceIds.push(cancellationInspectionWorkspace.workspaceId);
     const cancellationInspectionTranscript = await runPiInPane(
       runDir,
       cancellationInspectionWorkspace.paneId,
@@ -1086,7 +1142,7 @@ async function main() {
     const failureParent = await createWorkspace("pions-e2e-worker-failure", {
       XDG_STATE_HOME: stateDir,
     });
-    createdWorkspaceIds.push(failureParent.workspaceId);
+    parentWorkspaceIds.push(failureParent.workspaceId);
     const beforeWorkerFailure = await workspaceIds();
     const failureObserver = observeWorkerWorkspaces(
       beforeWorkerFailure,
@@ -1118,7 +1174,10 @@ async function main() {
       throw new Error("a failed delegation was executed more than once");
     }
     const failedOperationId = operationIdFromError(workerFailure);
-    const failedWorkspaces = [...failedWorkerWorkspaces.observed.entries()];
+    const failedWorkspaces = await observedOwnedWorkspaces(
+      failedWorkerWorkspaces,
+      stateDir
+    );
     if (failedWorkspaces.length !== 1) {
       throw new Error(
         `expected one Worker workspace during failed startup, observed ${JSON.stringify(failedWorkspaces)}`
@@ -1130,7 +1189,6 @@ async function main() {
         "failed Worker workspace label did not match its Operation"
       );
     }
-    createdWorkspaceIds.push(failedWorkspaceId);
     if (!(await workspaceIds()).has(failedWorkspaceId)) {
       throw new Error(
         "failed or unknown Worker workspace was closed unexpectedly"
@@ -1145,7 +1203,7 @@ async function main() {
       "pions-e2e-failed-operation",
       { XDG_STATE_HOME: stateDir }
     );
-    createdWorkspaceIds.push(failureInspectionWorkspace.workspaceId);
+    parentWorkspaceIds.push(failureInspectionWorkspace.workspaceId);
     const failureInspectionTranscript = await runPiInPane(
       runDir,
       failureInspectionWorkspace.paneId,
@@ -1203,7 +1261,7 @@ async function main() {
         () => undefined
       );
     }
-    await cleanupHerdr(createdWorkspaceIds);
+    await cleanupHerdr(parentWorkspaceIds, stateDir);
     if (failed && EVIDENCE_DIR !== undefined) {
       log(`diagnostics preserved at ${EVIDENCE_DIR}`);
     }
