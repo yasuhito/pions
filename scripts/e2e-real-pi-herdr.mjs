@@ -505,7 +505,9 @@ function observeWorkerWorkspaces(before, parentWorkspaceId, parentPaneId) {
         if (before.has(workspace.workspace_id)) continue;
         observed.set(workspace.workspace_id, {
           label: workspace.label,
-          focused: workspace.focused,
+          focused:
+            observed.get(workspace.workspace_id)?.focused === true ||
+            workspace.focused === true,
         });
       }
       const parentPanes = (await listPanes()).filter(
@@ -810,9 +812,7 @@ async function main() {
       operationTranscript,
       "pions_operation"
     );
-    const effective =
-      operationResult.details?.operation?.effectiveConfig ??
-      operationResult.details?.effectiveConfig;
+    const effective = operationResult.details?.effectiveConfig;
     const expectedWorkerTools = [
       "read",
       "write",
@@ -837,8 +837,7 @@ async function main() {
     log(
       "the persisted live Operation has the exact seven-tool Worker surface and nested cwd."
     );
-    const snapshot =
-      operationResult.details?.operation ?? operationResult.details ?? {};
+    const snapshot = operationResult.details ?? {};
     if (JSON.stringify(snapshot).includes(knownString)) {
       throw new Error("pions_operation exposed the accepted Result body");
     }
@@ -939,8 +938,12 @@ async function main() {
     await writeFile(projectConfigPath, originalProjectConfig);
 
     const cancellationPromptPath = join(runDir, "cancellation-prompt.txt");
+    const cancellationWorkerStartedPath = join(
+      runDir,
+      "cancellation-worker-started.marker"
+    );
     const cancellationTask = [
-      "Use bash to execute exactly `sleep 90` as your first action.",
+      `Use bash to execute exactly this command as your first action: printf 'started' > ${shellQuote(cancellationWorkerStartedPath)}; sleep 90`,
       "After the command completes, respond with only `CANCEL_TEST_FINISHED`.",
     ].join("\n");
     await writeFile(
@@ -999,7 +1002,11 @@ async function main() {
         DELEGATE_TIMEOUT_MS,
         "the cancellable Worker workspace to appear"
       );
-      await delay(15_000);
+      await waitFor(
+        () => fileExists(cancellationWorkerStartedPath),
+        DELEGATE_TIMEOUT_MS,
+        "the cancellable Worker to start executing its command"
+      );
       await writeFile(cancellationSignalPath, "");
       await waitFor(
         () => fileExists(cancellationEventPath),
@@ -1085,10 +1092,7 @@ async function main() {
         `cancelled Operation could not be inspected: ${JSON.stringify(cancellationInspection)}`
       );
     }
-    const cancelledSnapshot =
-      cancellationInspection.details?.operation ??
-      cancellationInspection.details ??
-      {};
+    const cancelledSnapshot = cancellationInspection.details ?? {};
     if (cancelledSnapshot.state !== "cancelled") {
       throw new Error(
         `expected a cancelled Operation, got ${cancelledSnapshot.state}`
@@ -1203,8 +1207,7 @@ async function main() {
         `failed Operation could not be inspected: ${JSON.stringify(failureInspection)}`
       );
     }
-    const failedSnapshot =
-      failureInspection.details?.operation ?? failureInspection.details ?? {};
+    const failedSnapshot = failureInspection.details ?? {};
     if (!["failed", "unknown"].includes(failedSnapshot.state)) {
       throw new Error(
         `expected a failed or unknown Operation, got ${failedSnapshot.state}`
