@@ -708,6 +708,81 @@ test("別の復旧対象の解決は待機中の復旧の再試行間隔を戻�
   assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
 });
 
+test("表示終了処理の保存失敗が続く間は復旧の再試行間隔を延ばす", async () => {
+  let fourthAttempt!: () => void;
+  const attemptedFourTimes = new Promise<void>((resolve) => {
+    fourthAttempt = resolve;
+  });
+  class FailingStore extends InMemoryEventStore {
+    attempts = 0;
+    fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "presentation_cleanup_started") {
+        this.attempts += 1;
+        if (this.attempts === 4) fourthAttempt();
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingStore([], clock());
+  const runtime = makeTestRuntime({
+    ...services(store, new FakeWorkerAdapter({ successfulExitConfirmed: true })),
+    recovery: "disabled",
+  });
+  const startedAt = performance.now();
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  await attemptedFourTimes;
+  const elapsedMs = performance.now() - startedAt;
+  store.fail = false;
+  await runtime.close();
+
+  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
+});
+
+test("表示終了処理一覧の取得失敗が続く間は復旧の再試行間隔を延ばす", async () => {
+  let fourthAttempt!: () => void;
+  const attemptedFourTimes = new Promise<void>((resolve) => {
+    fourthAttempt = resolve;
+  });
+  class FailingStore extends InMemoryEventStore {
+    calls = 0;
+    fail = true;
+
+    override listPendingPresentationCleanups() {
+      if (this.fail) {
+        this.calls += 1;
+        if (this.calls === 4) fourthAttempt();
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listPendingPresentationCleanups();
+    }
+  }
+  const store = new FailingStore([], clock());
+  const startedAt = performance.now();
+  const runtime = makeTestRuntime(services(store, new FakeWorkerAdapter()));
+  await attemptedFourTimes;
+  const elapsedMs = performance.now() - startedAt;
+  store.fail = false;
+  await runtime.close();
+
+  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
+});
+
 test("停止確認済みの親キャンセルを永続化する", async () => {
   const store = new InMemoryEventStore([], clock());
   const runtime = makeTestRuntime({

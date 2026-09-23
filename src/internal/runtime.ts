@@ -521,11 +521,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       );
       if (reason !== undefined)
         noteVolatileDiagnostic(operation.operationId, reason);
-      const record = records.get(operation.operationId);
-      if (record !== undefined) record.recoverable = true;
       cleanupsRecovered = false;
-      workersRecovered = false;
-      scheduleRecovery();
+      deferRecovery(recordFor(operation.operationId));
     };
     if (cleanup === undefined) {
       try {
@@ -594,69 +591,77 @@ export function makeRuntime(services: RuntimeServices): Runtime {
     operation: Operation
   ): Promise<void> => {
     try {
-      await runEffect(project(operation));
-      if (operation.state === "completed") {
-        await performCleanup(operation, true);
-        const outcome = await readResult(record.operationId);
-        if (outcome.kind !== "retrieved")
-          throw new OperationPersistenceError(
-            record.operationId,
-            "incomplete_record"
-          );
-        const snapshot = await readPublicSnapshot(record.operationId);
-        const volatile = [
-          ...(volatileCleanupDiagnostics.get(record.operationId) ?? []),
-        ]
-          .filter(
-            (code) =>
-              !snapshot.cleanupDiagnostics.some(
-                (diagnostic) => diagnostic.code === code
-              )
-          )
-          .map((code) => Object.freeze({ code }));
-        volatileCleanupDiagnostics.delete(record.operationId);
-        record.resolveTerminal(
-          Object.freeze({
-            result: outcome.result,
-            ...(snapshot.presentationCleanup === undefined
-              ? {}
-              : { presentationCleanup: snapshot.presentationCleanup }),
-            cleanupDiagnostics: Object.freeze([
-              ...snapshot.cleanupDiagnostics,
-              ...volatile,
-            ]),
-          })
-        );
-        return;
-      }
-      if (operation.state === "cancelled") {
-        await performCleanup(operation, false);
-        record.rejectTerminal(new OperationCancelledError(record.operationId));
-        return;
-      }
-      if (operation.state === "unknown") {
-        record.rejectTerminal(
-          new OperationUnknownError(
-            record.operationId,
-            operation.terminalReason === "cancel-unproven"
-              ? "cancel-unproven"
-              : operation.terminalReason === "start-acceptance-unknown"
-                ? "start-acceptance-unknown"
-                : "liveness-unproven"
-          )
-        );
-        return;
-      }
-      record.rejectTerminal(
-        new OperationFailedError(
-          record.operationId,
-          operation.failureReason ?? "worker_protocol_failed"
-        )
-      );
+      await settleTerminalOnce(record, operation);
+      if (record.retryAfter === undefined) delete record.retryDelayMs;
     } catch (error) {
       record.rejectTerminal(error);
       throw error;
     }
+  };
+
+  const settleTerminalOnce = async (
+    record: OperationRecord,
+    operation: Operation
+  ): Promise<void> => {
+    await runEffect(project(operation));
+    if (operation.state === "completed") {
+      await performCleanup(operation, true);
+      const outcome = await readResult(record.operationId);
+      if (outcome.kind !== "retrieved")
+        throw new OperationPersistenceError(
+          record.operationId,
+          "incomplete_record"
+        );
+      const snapshot = await readPublicSnapshot(record.operationId);
+      const volatile = [
+        ...(volatileCleanupDiagnostics.get(record.operationId) ?? []),
+      ]
+        .filter(
+          (code) =>
+            !snapshot.cleanupDiagnostics.some(
+              (diagnostic) => diagnostic.code === code
+            )
+        )
+        .map((code) => Object.freeze({ code }));
+      volatileCleanupDiagnostics.delete(record.operationId);
+      record.resolveTerminal(
+        Object.freeze({
+          result: outcome.result,
+          ...(snapshot.presentationCleanup === undefined
+            ? {}
+            : { presentationCleanup: snapshot.presentationCleanup }),
+          cleanupDiagnostics: Object.freeze([
+            ...snapshot.cleanupDiagnostics,
+            ...volatile,
+          ]),
+        })
+      );
+      return;
+    }
+    if (operation.state === "cancelled") {
+      await performCleanup(operation, false);
+      record.rejectTerminal(new OperationCancelledError(record.operationId));
+      return;
+    }
+    if (operation.state === "unknown") {
+      record.rejectTerminal(
+        new OperationUnknownError(
+          record.operationId,
+          operation.terminalReason === "cancel-unproven"
+            ? "cancel-unproven"
+            : operation.terminalReason === "start-acceptance-unknown"
+              ? "start-acceptance-unknown"
+              : "liveness-unproven"
+        )
+      );
+      return;
+    }
+    record.rejectTerminal(
+      new OperationFailedError(
+        record.operationId,
+        operation.failureReason ?? "worker_protocol_failed"
+      )
+    );
   };
 
   const runWorker = async (
@@ -973,9 +978,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await settleTerminal(record, current);
         } catch (settlementError) {
           if (recovering) throw settlementError;
-          record.recoverable = true;
-          workersRecovered = false;
-          scheduleRecovery();
+          deferRecovery(record);
         }
         return;
       }
@@ -985,11 +988,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           : new OperationPersistenceError(record.operationId, "write_failed");
       if (recovering) throw failure;
       record.rejectTerminal(failure);
-      if (current?.state !== "cancelling") {
-        record.recoverable = true;
-        workersRecovered = false;
-        scheduleRecovery();
-      }
+      if (current?.state !== "cancelling") deferRecovery(record);
     }
   };
 
@@ -1154,11 +1153,8 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       if (
         current?.state === "cancelling" ||
         (current !== undefined && terminal(current))
-      ) {
-        record.recoverable = true;
-        workersRecovered = false;
-        scheduleRecovery();
-      }
+      )
+        deferRecovery(record);
       throw error;
     });
     cancellations.set(key, cancellation);
@@ -1237,6 +1233,28 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   };
 
   let workersRecovered = false;
+  let listingDelayMs = INITIAL_RECOVERY_DELAY_MS;
+  const recordFor = (operationId: string): OperationRecord => {
+    const existing = records.get(operationId);
+    if (existing !== undefined) return existing;
+    const deferred = deferredResult();
+    const record: OperationRecord = {
+      operationId,
+      terminalPromise: deferred.promise,
+      resolveTerminal: deferred.resolve,
+      rejectTerminal: deferred.reject,
+    };
+    records.set(operationId, record);
+    return record;
+  };
+  const deferRecovery = (record: OperationRecord): void => {
+    const delayMs = record.retryDelayMs ?? INITIAL_RECOVERY_DELAY_MS;
+    record.retryDelayMs = Math.min(delayMs * 2, MAX_RECOVERY_DELAY_MS);
+    record.retryAfter = Date.now() + delayMs;
+    record.recoverable = true;
+    workersRecovered = false;
+    scheduleRecovery(delayMs);
+  };
   const recoverWorkers = async (): Promise<void> => {
     const persisted =
       services.recovery === "disabled"
@@ -1274,16 +1292,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         earliestRetry = Math.min(earliestRetry ?? Infinity, record.retryAfter);
         continue;
       }
-      if (record === undefined) {
-        const deferred = deferredResult();
-        record = {
-          operationId: operation.operationId,
-          terminalPromise: deferred.promise,
-          resolveTerminal: deferred.resolve,
-          rejectTerminal: deferred.reject,
-        };
-        records.set(operation.operationId, record);
-      }
+      if (record === undefined) record = recordFor(operation.operationId);
       record.recoverable = false;
       delete record.retryAfter;
       const recoveredRecord = record;
@@ -1316,32 +1325,16 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await settleTerminal(record, completed);
           continue;
         }
-        const resume = (delayMs = INITIAL_RECOVERY_DELAY_MS): void => {
-          recoveredRecord.recoverable = true;
-          workersRecovered = false;
-          scheduleRecovery(delayMs);
-        };
         const settle = (work: Promise<void | "validator_unavailable">): void =>
           track(
             work
               .then((outcome) => {
-                if (outcome !== "validator_unavailable") {
-                  delete recoveredRecord.retryDelayMs;
-                  return;
-                }
-                if (closing) return;
-                const delayMs =
-                  recoveredRecord.retryDelayMs ?? INITIAL_RECOVERY_DELAY_MS;
-                recoveredRecord.retryDelayMs = Math.min(
-                  delayMs * 2,
-                  MAX_RECOVERY_DELAY_MS
-                );
-                recoveredRecord.retryAfter = Date.now() + delayMs;
-                resume(delayMs);
+                if (outcome === "validator_unavailable" && !closing)
+                  deferRecovery(recoveredRecord);
               })
               .catch((error) => {
                 recoveredRecord.rejectTerminal(error);
-                resume();
+                deferRecovery(recoveredRecord);
               })
           );
         if (
@@ -1416,10 +1409,29 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         )
       )
     );
+    const now = Date.now();
+    let earliestRetry: number | undefined;
     for (const { operation } of snapshots) {
       const record = records.get(operation.operationId);
       if (record !== undefined && !record.recoverable) continue;
-      await performCleanup(operation, false);
+      if (
+        !closing &&
+        record?.retryAfter !== undefined &&
+        record.retryAfter > now
+      ) {
+        earliestRetry = Math.min(earliestRetry ?? Infinity, record.retryAfter);
+        continue;
+      }
+      try {
+        await performCleanup(operation, false);
+        if (record !== undefined) delete record.retryDelayMs;
+      } catch {
+        deferRecovery(recordFor(operation.operationId));
+      }
+    }
+    if (earliestRetry !== undefined) {
+      cleanupsRecovered = false;
+      scheduleRecovery(Math.max(0, earliestRetry - Date.now()));
     }
   };
 
@@ -1427,7 +1439,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   let recovery: Promise<void> | undefined;
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
   let recoveryDue = 0;
-  const scheduleRecovery = (delayMs = INITIAL_RECOVERY_DELAY_MS): void => {
+  const scheduleRecovery = (delayMs: number): void => {
     if (closing) return;
     const due = Date.now() + delayMs;
     if (recoveryTimer !== undefined) {
@@ -1461,11 +1473,18 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         }
       }
       if (!cleanupsRecovered) {
-        await recoverCleanups();
         cleanupsRecovered = true;
+        try {
+          await recoverCleanups();
+        } catch (error) {
+          cleanupsRecovered = false;
+          throw error;
+        }
       }
+      listingDelayMs = INITIAL_RECOVERY_DELAY_MS;
     })().catch((error) => {
-      scheduleRecovery();
+      scheduleRecovery(listingDelayMs);
+      listingDelayMs = Math.min(listingDelayMs * 2, MAX_RECOVERY_DELAY_MS);
       throw error;
     });
     recovery = started;
