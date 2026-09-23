@@ -1,6 +1,6 @@
 # Pi拡張から作業を委譲する
 
-信頼済みのPionsプロジェクトでは、プロジェクトローカルのPi拡張が`pions_delegate`、`pions_result`、`pions_operation`の3つのツールだけを登録する。利用前に`npm run build`を実行し、可視ワーカー用の内部拡張を生成しておく。特にワーカープロトコル版の変更後にビルドしないと、ホストと内部拡張の版がずれて`Worker configuration version does not match`になるため、同じコマンドで`dist`を更新してから再実行する。
+信頼済みのPionsプロジェクトでは、Pi拡張が`pions_delegate`、`pions_result`、`pions_operation`の3つのツールだけを登録する。パッケージの導入手順は[README](../README.md#installation)を参照する。ソースから拡張を利用する開発時は、先に`npm run build`で可視ワーカー用の内部拡張を生成する。特にワーカープロトコル版の変更後にビルドしないと、ホストと内部拡張の版がずれて`Worker configuration version does not match`になるため、同じコマンドで`dist`を更新してから再実行する。
 
 `pions_delegate`は、独立したコンテキストへ渡す自己完結した`task`だけを受け取る。モデル、思考レベル、ツール、作業ディレクトリ、状態保存先はツール入力では変更できない。1回の呼び出しは1つのルート`Operation`に対応し、複数の独立した作業はPiの並列ツール実行によって構成する。
 

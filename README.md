@@ -84,7 +84,7 @@ The worker protocol and private files do not provide an OS sandbox.
 
 ## Installation
 
-Install the fixed package version in a Pi project:
+Once version `0.1.0` is published to npm, install it in a Pi project:
 
 ```sh
 pi install npm:@yasuhito/pions@0.1.0
