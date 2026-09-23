@@ -744,25 +744,35 @@ class FailingOnceIntentStore extends InMemoryEventStore {
   }
 }
 
+class ReopenRefusingAdapter implements WorkerAdapter {
+  recoverCount = 0;
+
+  constructor(private readonly worker: FakeWorkerAdapter) {}
+
+  open(operation: Operation): Worker {
+    return this.worker.open(operation);
+  }
+
+  recover(): Worker {
+    this.recoverCount += 1;
+    throw new Error("worker reopened");
+  }
+}
+
 function reopenRefusingServices(
   store: InMemoryEventStore,
-  worker: FakeWorkerAdapter
+  worker: ReopenRefusingAdapter
 ) {
-  return {
-    ...services(store, {
-      open: (operation) => worker.open(operation),
-      recover: () => {
-        throw new Error("worker reopened");
-      },
-    }),
-    recovery: "disabled" as const,
-  };
+  return { ...services(store, worker), recovery: "disabled" as const };
 }
 
 test("汎用ワーカー失敗の記録保存失敗後も観測した失敗理由を保つ", async () => {
   const store = new FailingOnceIntentStore("agent_settled", clock());
   const runtime = makeTestRuntime(
-    reopenRefusingServices(store, new FakeWorkerAdapter({ failure: "agent_failed" }))
+    reopenRefusingServices(
+      store,
+      new ReopenRefusingAdapter(new FakeWorkerAdapter({ failure: "agent_failed" }))
+    )
   );
   const handle = await runtime.spawn({
     promptRef: "private://prompt",
@@ -781,7 +791,10 @@ test("汎用ワーカー失敗の記録保存失敗後も観測した失敗理�
 test("汎用ワーカー失敗の記録保存失敗後も観測した実行証跡を保つ", async () => {
   const store = new FailingOnceIntentStore("agent_settled", clock());
   const runtime = makeTestRuntime(
-    reopenRefusingServices(store, new FakeWorkerAdapter({ failure: "agent_failed" }))
+    reopenRefusingServices(
+      store,
+      new ReopenRefusingAdapter(new FakeWorkerAdapter({ failure: "agent_failed" }))
+    )
   );
   const handle = await runtime.spawn({
     promptRef: "private://prompt",
@@ -798,9 +811,11 @@ test("汎用ワーカー失敗の記録保存失敗後も観測した実行証�
   );
 });
 
-test("失敗保存の一時的な失敗後にワーカーを再開しない", async () => {
+test("失敗保存の一時的な失敗後にワーカーの再開を要求しない", async () => {
   const store = new FailingOnceIntentStore("operation_failed", clock());
-  const worker = new FakeWorkerAdapter({ failure: "agent_failed" });
+  const worker = new ReopenRefusingAdapter(
+    new FakeWorkerAdapter({ failure: "agent_failed" })
+  );
   const runtime = makeTestRuntime(reopenRefusingServices(store, worker));
   const handle = await runtime.spawn({
     promptRef: "private://prompt",
@@ -810,7 +825,7 @@ test("失敗保存の一時的な失敗後にワーカーを再開しない", as
   await handle.result().catch(() => undefined);
   await runtime.close();
 
-  assert.equal(worker.startCount, 1);
+  assert.equal(worker.recoverCount, 0);
 });
 
 class FormatRejectedWorker implements WorkerAdapter {
