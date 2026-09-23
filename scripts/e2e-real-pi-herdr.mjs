@@ -135,6 +135,7 @@ async function preflight() {
   if (EXTERNAL_HERDR_COMMAND === undefined) await requireCommand("herdr");
   await requireCommand("npm");
   await requireCommand("pi");
+  await requireCommand("python3");
 
   const authPath = join(homedir(), ".pi", "agent", "auth.json");
   if (!(await hasContent(authPath))) {
@@ -1296,18 +1297,32 @@ async function main() {
       ) {
         throw new Error("unknown-state Worker has no valid process identity");
       }
-      const processStat = await readFile(
-        `/proc/${identity.processId}/stat`,
-        "utf8"
+      const repositoryKey = createHash("sha256")
+        .update(await realpath(CONSUMER_DIR), "utf8")
+        .digest("hex");
+      const operationKey = createHash("sha256")
+        .update(unknownRecord.operationId, "utf8")
+        .digest("hex");
+      const configPath = join(
+        stateDir,
+        "pions",
+        "repositories",
+        repositoryKey,
+        "runtime",
+        operationKey,
+        "worker.v15.json"
       );
-      const currentStartToken = processStat
-        .slice(processStat.lastIndexOf(")") + 1)
-        .trim()
-        .split(/\s+/u)[19];
-      if (currentStartToken !== identity.processStartToken) {
-        throw new Error("unknown-state Worker process identity changed");
+      const stopped = await run("python3", [
+        join(ROOT_DIR, "scripts", "stop-owned-worker.py"),
+        String(identity.processId),
+        identity.processStartToken,
+        configPath,
+      ]);
+      if (stopped.code !== 0) {
+        throw new Error(
+          `unknown-state Worker could not be stopped safely: ${stopped.stderr.trim()}`
+        );
       }
-      process.kill(identity.processId, "SIGKILL");
       unknownTranscript = await finishPiInPane(
         unknownExecution,
         unknownParent.paneId,
