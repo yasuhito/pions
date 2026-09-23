@@ -10,7 +10,7 @@ import type {
   StartInstructionReference,
   WorkerConfigurationFailureReason,
   WorkerProducedResult,
-} from "../public.js";
+} from "./types.js";
 import { sha256Digest } from "./result-digest.js";
 import type { AgentRunEvidence } from "./services.js";
 import {

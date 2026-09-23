@@ -42,12 +42,6 @@ fi
 
 echo ""
 echo "Checking build artifacts..."
-if [ -f dist/src/index.js ]; then
-  echo "✓ dist/src/index.js exists"
-else
-  echo "✗ dist/src/index.js MISSING — run 'npm run build'"
-fi
-
 if [ -f dist/src/worker-extension.js ]; then
   echo "✓ dist/src/worker-extension.js exists"
 else

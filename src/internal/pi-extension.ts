@@ -15,7 +15,6 @@ import type {
 import { Type } from "typebox";
 
 import { makeResultRetrievalRuntime } from "./result-runtime.js";
-import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import {
   opaqueDigest,
   resolveRepositoryState,
@@ -29,17 +28,17 @@ import {
   OperationUnknownError,
   ProjectConfigurationError,
   WorkerConfigurationError,
-} from "../public.js";
+} from "./types.js";
 import type {
   CancellationResult,
   CleanupDiagnostic,
   ModelReference,
   OperationCompletion,
   OperationHandle,
-  Runtime,
+  OperationRuntime,
   ThinkingLevel,
   WorkerProfilePolicy,
-} from "../public.js";
+} from "./types.js";
 
 const WORKER_PROFILE = "worker";
 const WORKER_TOOLS = Object.freeze([
@@ -105,12 +104,9 @@ export interface PionsDelegateDetails {
 }
 
 export interface PionsExtensionOptions {
-  readonly runtime?: Runtime;
+  readonly runtime?: OperationRuntime;
   readonly runtimeFactory?: typeof makeVisibleRuntime;
   readonly resultRuntimeFactory?: typeof makeResultRetrievalRuntime;
-  readonly formalReview?: Readonly<{
-    readonly resultFormats: Readonly<ConfiguredResultFormats>;
-  }>;
   readonly repositoryRoot?: string;
   readonly stateBaseDirectory?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -415,10 +411,10 @@ export function installPionsExtension(
   pi: ExtensionAPI,
   options: PionsExtensionOptions = {}
 ): void {
-  const runtimesByConfig = new Map<string, Runtime>();
-  const runtimesByRepository = new Map<string, Runtime>();
-  const runtimesByCall = new Map<string, Runtime>();
-  const knownRuntimes = new Set<Runtime>();
+  const runtimesByConfig = new Map<string, OperationRuntime>();
+  const runtimesByRepository = new Map<string, OperationRuntime>();
+  const runtimesByCall = new Map<string, OperationRuntime>();
+  const knownRuntimes = new Set<OperationRuntime>();
   const operationLifetime = new OperationLifetime();
   let shuttingDown = false;
 
@@ -443,7 +439,7 @@ export function installPionsExtension(
 
   async function useRepositoryRuntime<Value>(
     context: ExtensionContext,
-    use: (runtime: Runtime) => Promise<Value>
+    use: (runtime: OperationRuntime) => Promise<Value>
   ): Promise<Value> {
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
@@ -473,9 +469,6 @@ export function installPionsExtension(
     if (runtime === undefined) {
       const workerCwd = await realpath(context.cwd);
       const runtimeStateDirectory = join(repositoryState, "runtime");
-      await options.formalReview?.resultFormats.registry.register(
-        runtimeStateDirectory
-      );
       runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
         cwd: workerCwd,
         stateDirectory: runtimeStateDirectory,
@@ -484,9 +477,6 @@ export function installPionsExtension(
         ...(options.extensionEntryPath === undefined
           ? {}
           : { extensionEntryPath: options.extensionEntryPath }),
-        ...(options.formalReview === undefined
-          ? {}
-          : { formalReviewResultFormats: options.formalReview.resultFormats }),
       });
       runtimesByRepository.set(normalizedRoot, runtime);
     }
@@ -505,7 +495,7 @@ export function installPionsExtension(
     readonly workerCwd: string;
     readonly workerModel: Readonly<ModelReference>;
     readonly workerThinkingLevel: ThinkingLevel;
-    readonly runtime: Runtime;
+    readonly runtime: OperationRuntime;
   }> {
     const inheritedModel = selectedModel(context);
     const inheritedThinkingLevel = selectedThinkingLevel(context);
@@ -536,20 +526,7 @@ export function installPionsExtension(
       maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     };
     const runtimeStateDirectory = join(repositoryState, "runtime");
-    await options.formalReview?.resultFormats.registry.register(
-      runtimeStateDirectory
-    );
-    const resultFormatDigest =
-      options.formalReview === undefined
-        ? "disabled"
-        : opaqueDigest(
-            JSON.stringify({
-              resultFormat: options.formalReview.resultFormats.resultFormat,
-              registryDigest:
-                options.formalReview.resultFormats.registry.digest,
-            })
-          );
-    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${resultFormatDigest}`;
+    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}`;
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
     let runtime = options.runtime;
     if (runtime === undefined) {
@@ -571,11 +548,6 @@ export function installPionsExtension(
           ...(runtimesByRepository.has(normalizedRoot)
             ? { recovery: "disabled" as const }
             : {}),
-          ...(options.formalReview === undefined
-            ? {}
-            : {
-                formalReviewResultFormats: options.formalReview.resultFormats,
-              }),
         });
         runtimesByConfig.set(configKey, runtime);
         runtimesByRepository.set(normalizedRoot, runtime);

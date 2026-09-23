@@ -48,7 +48,7 @@ Retrieval verifies the complete stored result before returning any content. It d
 
 Large results can be retrieved in UTF-8-safe chunks using an opaque cursor. The same accepted bytes remain retrievable after the Pi session or runtime restarts.
 
-By contrast, `pi-subagents` documents its async completion replay records as best-effort temporary state rather than a permanent run ledger. Pions makes retrieval of the accepted byte sequence part of the public runtime contract.
+By contrast, `pi-subagents` documents its async completion replay records as best-effort temporary state rather than a permanent run ledger. Pions makes retrieval of the accepted byte sequence available through its public Pi tools.
 
 ### Completion requires result acceptance and worker stop
 
@@ -84,9 +84,9 @@ The worker protocol and private files do not provide an OS sandbox.
 
 ## Pi tools
 
-The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`. It registers no formal-review tools.
+The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`.
 
-Recovery reads only records in the current event format; older records are rejected. Formal-review operations are unavailable.
+Recovery reads only records in the current event format; older records are rejected.
 
 ### `pions_delegate`
 
@@ -185,6 +185,6 @@ Start with:
 - [Use the Pi CLI for visible workers](docs/adr/0005-use-pi-cli-for-visible-workers.md)
 - [Store results as Operation-owned UTF-8 text](docs/adr/0027-store-results-as-operation-owned-utf8-text.md)
 - [Remove generic artifact management](docs/adr/0028-remove-generic-artifact-management.md)
-- [Use the runtime as the result retrieval boundary](docs/adr/0013-use-runtime-as-the-result-retrieval-boundary.md)
+- [Use Pi tools as the result retrieval boundary](docs/adr/0013-use-pi-tools-as-the-result-retrieval-boundary.md)
 
 The source comparison behind this README is documented in [`docs/research/pions-vs-pi-subagents.md`](docs/research/pions-vs-pi-subagents.md).

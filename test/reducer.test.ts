@@ -58,22 +58,6 @@ test("作成したオペレーションは待機状態になる", async () => {
   assert.equal(snapshot.operation.state, "queued");
 });
 
-test("永続状態に旧ライフサイクル領域を持たない", async () => {
-  const store = new InMemoryEventStore([], clock());
-  await create(store);
-  const snapshot = await Effect.runPromise(store.read("operation-1"));
-  const oldKeys = [
-    "lineage",
-    "revisionSeries",
-    "resourceEvidenceRecord",
-    "externalReviewAllocation",
-    "startAuthorizationTiming",
-    "startupReceipt",
-    "childOperationIds",
-  ].filter((key) => key in snapshot.operation);
-  assert.deepEqual(oldKeys, []);
-});
-
 test("開始確認応答を保存すると実行中になる", async () => {
   const store = new InMemoryEventStore([], clock());
   await create(store);

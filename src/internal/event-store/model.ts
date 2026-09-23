@@ -5,9 +5,7 @@ import type {
   ObservedWorkerConfig,
   OperationFailureReason,
   OperationState,
-  PinnedResultFormat,
   RequestedWorkerConfig,
-  ResultFormatRejectionEvidence,
   StartDeliveryAuthorityEvidence,
   StartDeliveryEntryEvidence,
   StartDeliveryHandoffEvidence,
@@ -17,7 +15,7 @@ import type {
   StartInstructionReference,
   TaskSpec,
   WorkerIdentity,
-} from "../../public.js";
+} from "../types.js";
 import type { AgentRunEvidence } from "../services.js";
 import type {
   PersistableOperationIntent,
@@ -25,7 +23,7 @@ import type {
 } from "./intent.js";
 
 export type { CreatedPresentation, PresentationOwnership } from "./intent.js";
-export type { WorkerIdentity } from "../../public.js";
+export type { WorkerIdentity } from "../types.js";
 
 export interface PresentationCleanupRecord {
   readonly cleanupId: string;
@@ -47,8 +45,6 @@ export interface Operation {
   readonly requestedConfig: Readonly<RequestedWorkerConfig>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly maxResultByteCount: number;
-  readonly resultFormat?: Readonly<PinnedResultFormat>;
-  readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
   readonly startDeliveryAuthority?: Readonly<StartDeliveryAuthorityEvidence>;
   readonly startDeliveryEntry?: Readonly<StartDeliveryEntryEvidence>;
   readonly startInstructionDelivery?: Readonly<StartInstructionDeliveryEvidence>;
@@ -72,7 +68,7 @@ export interface Operation {
     | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 27 as const;
+export const EVENT_SCHEMA_VERSION = 28 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 
@@ -94,7 +90,6 @@ export type OperationEvent = EventMetadata &
         readonly requestedConfig: Readonly<RequestedWorkerConfig>;
         readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
         readonly maxResultByteCount: number;
-        readonly resultFormat?: Readonly<PinnedResultFormat>;
       }
     | {
         readonly type: "start_delivery_authority_acquired";

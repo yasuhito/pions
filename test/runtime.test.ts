@@ -7,7 +7,6 @@ import type {
   Operation,
   OperationIntent,
 } from "../src/internal/event-store/index.js";
-import { acknowledgeResultAcceptance } from "../src/internal/services.js";
 import type {
   Worker,
   WorkerAdapter,
@@ -24,11 +23,7 @@ import {
   makeTestRuntime,
 } from "../src/internal/testing.js";
 import { sha256Digest } from "../src/internal/result-digest.js";
-import {
-  makeResultFormatRegistry,
-  type ResultFormatRegistry,
-} from "../src/internal/result-format-registry.js";
-import type { PinnedResultFormat, WorkerProfilePolicy } from "../src/public.js";
+import type { WorkerProfilePolicy } from "../src/internal/types.js";
 
 const profile: WorkerProfilePolicy = {
   modelCandidates: [{ provider: "test", id: "model" }],
@@ -71,30 +66,8 @@ test("Runtime exposes only delegation lifecycle operations", () => {
   ]);
 });
 
-test("new formal review operations are refused", async () => {
-  const profileForReview = { ...profile };
-  const runtime = makeTestRuntime({
-    ...services(new InMemoryEventStore(), new FakeWorkerAdapter()),
-    recovery: "disabled",
-    configuration: {
-      cwd: "/work",
-      profiles: { "formal-review": profileForReview },
-    },
-  });
-
-  await assert.rejects(
-    runtime.spawn({
-      promptRef: "private://review",
-      profile: "formal-review",
-      idempotencyKey: "review-1",
-    }),
-    { name: "WorkerConfigurationError", reason: "unsupported_capability" }
-  );
-});
-
 async function seed(
   store: InMemoryEventStore,
-  resultFormat?: Readonly<PinnedResultFormat>,
   operationId = "operation-1"
 ): Promise<void> {
   await Effect.runPromise(
@@ -121,7 +94,6 @@ async function seed(
         },
       },
       maxResultByteCount: 1024,
-      ...(resultFormat === undefined ? {} : { resultFormat }),
     })
   );
 }
@@ -174,11 +146,6 @@ class RecoveryWorker implements WorkerAdapter {
         expectedByteCount: bytes.byteLength,
         expectedDigest: sha256Digest(bytes),
       });
-      if (
-        accepted.state === "continuable" &&
-        accepted.reason === "validator_unavailable"
-      )
-        return { state: "validator_unavailable" as const };
       if (accepted.state !== "accepted")
         return { state: "worker_protocol_failed" as const };
       return {
@@ -494,244 +461,6 @@ test("終了処理は復旧キャンセルの保留中の再試行を実行す�
     (await Effect.runPromise(store.read("operation-1"))).operation.state,
     "cancelled"
   );
-});
-
-test("保存済み正式レビューは検証器復元後に結果受理を再開する", async () => {
-  const formats = makeResultFormatRegistry([
-    {
-      formatId: "review-result",
-      version: "1",
-      normalizationId: "identity.v1",
-      validator: {
-        validatorId: "review-validator",
-        validatorVersion: "1",
-        implementation: Buffer.from("valid-review-validator", "utf8"),
-        validate: async () => ({ kind: "valid" }),
-      },
-    },
-  ]);
-  const resultFormat = formats.pin({
-    formatId: "review-result",
-    version: "1",
-    expectations: {},
-  });
-  const store = new InMemoryEventStore([], clock());
-  await seed(store, resultFormat);
-  await advanceTestOperationToRunning(store, "operation-1");
-  const unavailable = makeTestRuntime({
-    ...services(store, new RecoveryWorker("accepted", true)),
-  });
-  await unavailable.close();
-  const restored = makeTestRuntime({
-    ...services(store, new RecoveryWorker("accepted", true)),
-    formalReviewResultFormats: { registry: formats, resultFormat },
-  });
-  await waitForState(store, "completed");
-  const snapshot = await (await restored.operation("operation-1")).read();
-
-  assert.deepEqual(snapshot.resultFormat, resultFormat);
-});
-
-test("検証器の一時的な不在から追加のreadyなしで結果受理を再開する", async () => {
-  const formats = makeResultFormatRegistry([
-    {
-      formatId: "review-result",
-      version: "1",
-      normalizationId: "identity.v1",
-      validator: {
-        validatorId: "review-validator",
-        validatorVersion: "1",
-        implementation: Buffer.from("valid-review-validator", "utf8"),
-        validate: async () => ({ kind: "valid" }),
-      },
-    },
-  ]);
-  const resultFormat = formats.pin({
-    formatId: "review-result",
-    version: "1",
-    expectations: {},
-  });
-  let available = false;
-  let firstValidation!: () => void;
-  const attempted = new Promise<void>((resolve) => {
-    firstValidation = resolve;
-  });
-  const registry: ResultFormatRegistry = {
-    ...formats,
-    validate: async (pinned, bytes) => {
-      if (!available) {
-        firstValidation();
-        return { kind: "invalid", reason: "validator_unavailable" };
-      }
-      return formats.validate(pinned, bytes);
-    },
-  };
-  const store = new InMemoryEventStore([], clock());
-  await seed(store, resultFormat);
-  await advanceTestOperationToRunning(store, "operation-1");
-  const runtime = makeTestRuntime({
-    ...services(store, new RecoveryWorker("accepted", true)),
-    formalReviewResultFormats: { registry, resultFormat },
-  });
-  await runtime.ready();
-  await attempted;
-  available = true;
-  await waitForState(store, "completed");
-
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.state,
-    "completed"
-  );
-});
-
-test("検証器が不在の間は復旧の再試行間隔を延ばす", async () => {
-  const formats = makeResultFormatRegistry([
-    {
-      formatId: "review-result",
-      version: "1",
-      normalizationId: "identity.v1",
-      validator: {
-        validatorId: "review-validator",
-        validatorVersion: "1",
-        implementation: Buffer.from("valid-review-validator", "utf8"),
-        validate: async () => ({ kind: "valid" }),
-      },
-    },
-  ]);
-  const resultFormat = formats.pin({
-    formatId: "review-result",
-    version: "1",
-    expectations: {},
-  });
-  let available = false;
-  let attempts = 0;
-  let fourthAttempt!: () => void;
-  const attempted = new Promise<void>((resolve) => {
-    fourthAttempt = resolve;
-  });
-  const registry: ResultFormatRegistry = {
-    ...formats,
-    validate: async (pinned, bytes) => {
-      if (available) return formats.validate(pinned, bytes);
-      attempts += 1;
-      if (attempts === 4) fourthAttempt();
-      return { kind: "invalid", reason: "validator_unavailable" };
-    },
-  };
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(
-      Array.from(
-        { length: 400 },
-        (_, index) =>
-          `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
-      )
-    )
-  );
-  await seed(store, resultFormat);
-  await advanceTestOperationToRunning(store, "operation-1");
-  const runtime = makeTestRuntime({
-    ...services(store, new RecoveryWorker("accepted", true)),
-    formalReviewResultFormats: { registry, resultFormat },
-  });
-  const startedAt = performance.now();
-  await runtime.ready();
-  await attempted;
-  const elapsedMs = performance.now() - startedAt;
-  available = true;
-  await runtime.close();
-
-  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
-});
-
-test("別の復旧対象の解決は待機中の復旧の再試行間隔を戻さない", async () => {
-  const formats = makeResultFormatRegistry([
-    {
-      formatId: "review-result",
-      version: "1",
-      normalizationId: "identity.v1",
-      validator: {
-        validatorId: "review-validator",
-        validatorVersion: "1",
-        implementation: Buffer.from("valid-review-validator", "utf8"),
-        validate: async () => ({ kind: "valid" }),
-      },
-    },
-  ]);
-  const resultFormat = formats.pin({
-    formatId: "review-result",
-    version: "1",
-    expectations: {},
-  });
-  let available = false;
-  let attempts = 0;
-  let firstAttempt!: () => void;
-  let fourthAttempt!: () => void;
-  const attemptedOnce = new Promise<void>((resolve) => {
-    firstAttempt = resolve;
-  });
-  const attemptedFourTimes = new Promise<void>((resolve) => {
-    fourthAttempt = resolve;
-  });
-  const registry: ResultFormatRegistry = {
-    ...formats,
-    validate: async (pinned, bytes) => {
-      if (available) return formats.validate(pinned, bytes);
-      attempts += 1;
-      if (attempts === 1) firstAttempt();
-      if (attempts === 4) fourthAttempt();
-      return { kind: "invalid", reason: "validator_unavailable" };
-    },
-  };
-  const store = new InMemoryEventStore(
-    [],
-    new FakeClock(
-      Array.from(
-        { length: 400 },
-        (_, index) =>
-          `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
-      )
-    )
-  );
-  await seed(store, resultFormat);
-  await advanceTestOperationToRunning(store, "operation-1");
-  await seed(store, undefined, "operation-2");
-  await advanceTestOperationToRunning(store, "operation-2");
-  let releaseOther!: () => void;
-  const otherReleased = new Promise<void>((resolve) => {
-    releaseOther = resolve;
-  });
-  const recoveryWorker = new RecoveryWorker("accepted", true);
-  const runtime = makeTestRuntime({
-    ...services(store, {
-      open: () => {
-        throw new Error("not used");
-      },
-      recover: (operation) => {
-        const worker = recoveryWorker.recover(operation);
-        if (operation.operationId !== "operation-2") return worker;
-        return {
-          run: (hooks) =>
-            Effect.promise(() => otherReleased).pipe(
-              Effect.flatMap(() => worker.run(hooks))
-            ),
-          cancel: worker.cancel,
-        };
-      },
-    }),
-    formalReviewResultFormats: { registry, resultFormat },
-  });
-  const startedAt = performance.now();
-  await runtime.ready();
-  await attemptedOnce;
-  releaseOther();
-  await waitForState(store, "completed", "operation-2");
-  await attemptedFourTimes;
-  const elapsedMs = performance.now() - startedAt;
-  available = true;
-  await runtime.close();
-
-  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
 });
 
 test("表示終了処理の保存失敗が続く間は復旧の再試行間隔を延ばす", async () => {
@@ -1099,120 +828,6 @@ test("失敗保存の一時的な失敗後にワーカーの再開を要求し�
   await runtime.close();
 
   assert.equal(worker.recoverCount, 0);
-});
-
-class FormatRejectedWorker implements WorkerAdapter {
-  recoverCount = 0;
-
-  open(): Worker {
-    throw new Error("not used");
-  }
-
-  recover(operation: Operation): Worker {
-    this.recoverCount += 1;
-    return {
-      run: (hooks) =>
-        Effect.gen(function* () {
-          const identity = operation.workerIdentity!;
-          const instruction = yield* hooks.workerIdentified({
-            processId: identity.processId,
-            processInstanceId: identity.processInstanceId,
-            processStartToken: identity.processStartToken,
-            piSessionId: identity.piSessionId,
-            observedConfig: operation.observedConfig!,
-          });
-          yield* hooks.startDeliveryAuthorityRevoked(
-            instruction.dispatcherId,
-            instruction.deliveryGeneration
-          );
-          yield* hooks.deliveryGenerationConfirmed({
-            dispatcherId: instruction.dispatcherId,
-            deliveryGeneration: instruction.deliveryGeneration,
-            acceptanceState: "accepted",
-            acceptedInstruction: operation.startInstructionAcceptance!,
-          });
-          const body = "not a review";
-          const bytes = Buffer.from(body, "utf8");
-          const accepted = yield* hooks.acceptResult({
-            acceptanceRequestId: "request-rejected",
-            body,
-            expectedByteCount: bytes.byteLength,
-            expectedDigest: sha256Digest(bytes),
-          });
-          return yield* acknowledgeResultAcceptance(
-            accepted,
-            {
-              usage: {
-                input: 1,
-                output: 1,
-                cacheRead: 0,
-                cacheWrite: 0,
-                totalTokens: 2,
-                cost: 0,
-              },
-              toolUses: [],
-            },
-            () => Effect.void
-          );
-        }),
-      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
-    };
-  }
-}
-
-async function seedFormatRejection(store: InMemoryEventStore) {
-  const formats = makeResultFormatRegistry([
-    {
-      formatId: "review-result",
-      version: "1",
-      normalizationId: "identity.v1",
-      validator: {
-        validatorId: "review-validator",
-        validatorVersion: "1",
-        implementation: Buffer.from("rejecting-review-validator", "utf8"),
-        validate: async () => ({ kind: "invalid", reason: "invalid_json" }),
-      },
-    },
-  ]);
-  const resultFormat = formats.pin({
-    formatId: "review-result",
-    version: "1",
-    expectations: {},
-  });
-  await seed(store, resultFormat);
-  await advanceTestOperationToRunning(store, "operation-1");
-  return { registry: formats, resultFormat };
-}
-
-test("結果形式拒否の保存失敗後も観測した拒否理由を保つ", async () => {
-  const store = new FailingOnceIntentStore("operation_failed", clock());
-  const formalReviewResultFormats = await seedFormatRejection(store);
-  const runtime = makeTestRuntime({
-    ...services(store, new FormatRejectedWorker()),
-    formalReviewResultFormats,
-  });
-  await waitForState(store, "failed");
-  await runtime.close();
-
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation
-      .resultFormatRejection?.reason,
-    "invalid_json"
-  );
-});
-
-test("結果形式拒否の保存失敗後にワーカーを再開しない", async () => {
-  const store = new FailingOnceIntentStore("operation_failed", clock());
-  const formalReviewResultFormats = await seedFormatRejection(store);
-  const worker = new FormatRejectedWorker();
-  const runtime = makeTestRuntime({
-    ...services(store, worker),
-    formalReviewResultFormats,
-  });
-  await waitForState(store, "failed");
-  await runtime.close();
-
-  assert.equal(worker.recoverCount, 1);
 });
 
 test("停止未確認の親キャンセルを状態不明として永続化する", async () => {

@@ -3,7 +3,7 @@ import type {
   StartInstructionReference,
   Sha256Digest,
   TaskSpec,
-} from "../public.js";
+} from "./types.js";
 import { sha256Digest } from "./result-digest.js";
 
 export function startInstructionReference(

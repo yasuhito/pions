@@ -6,7 +6,6 @@ import type {
   Operation,
 } from "./event-store/index.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
-import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import type {
   ResultAcceptanceProof,
   StartInstruction,
@@ -14,10 +13,9 @@ import type {
 import type {
   ObservedWorkerConfig,
   OperationPersistenceError,
-  ResultFormatRejectionEvidence,
   WorkerProducedResult,
   WorkerProfilePolicy,
-} from "../public.js";
+} from "./types.js";
 
 export interface WorkerProcessIdentity {
   readonly processId: number;
@@ -100,17 +98,12 @@ export type WorkerRunOutcome = (
   | { readonly state: "worker_protocol_failed" }
   | { readonly state: "process-exited-without-result" }
   | { readonly state: "liveness-unproven" }
-  | { readonly state: "validator_unavailable" }
   | { readonly state: "model_mismatch" }
   | { readonly state: "thinking_level_mismatch" }
   | { readonly state: "model_not_found" }
   | { readonly state: "model_auth_unavailable" }
   | { readonly state: "unsupported_capability" }
   | { readonly state: "tool_policy_violation" }
-  | {
-      readonly state: "result_format_rejected";
-      readonly rejection: Readonly<ResultFormatRejectionEvidence>;
-    }
   | {
       readonly state: "agent_failed";
       readonly evidence: Readonly<AgentRunEvidence>;
@@ -154,22 +147,6 @@ export function acknowledgeResultAcceptance(
   ) => Effect.Effect<void, unknown>
 ): Effect.Effect<WorkerRunOutcome> {
   if (acceptance.state !== "accepted") {
-    if (
-      acceptance.state === "continuable" &&
-      acceptance.reason === "validator_unavailable"
-    ) {
-      return Effect.succeed({ state: "validator_unavailable" } as const);
-    }
-    if (
-      acceptance.state === "failed" &&
-      acceptance.reason === "result_format_rejected" &&
-      acceptance.resultFormatRejection !== undefined
-    ) {
-      return Effect.succeed({
-        state: "result_format_rejected",
-        rejection: acceptance.resultFormatRejection,
-      } as const);
-    }
     return Effect.succeed({ state: "worker_protocol_failed" } as const);
   }
   const outcome: WorkerRunOutcome = {
@@ -220,7 +197,6 @@ export interface RuntimeServices {
   readonly ids: IdGenerator;
   readonly presentation: Presentation;
   readonly store: EventStore;
-  readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
   readonly recovery?: "disabled";
   readonly configuration?: Readonly<{
     readonly cwd: string;

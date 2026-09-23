@@ -7,7 +7,7 @@ description: Verify Pions (durable Pi worker runtime and extension) by launching
 
 This skill helps a cold agent verify Pions, a durable Pi worker runtime and extension for delegating tasks to visible, persistent operations.
 
-**What Pions is:** TypeScript ESM library + Pi coding-agent extension that installs delegation tools (`pions_delegate`, `pions_result`, `pions_operation`) in trusted projects. Workers run as real Pi CLI sessions, each in its own Herdr workspace labelled `Pions <short operation id>`. Lifecycle truth comes from persisted Operation/Result protocol, not UI state.
+**What Pions is:** TypeScript runtime + Pi coding-agent extension that installs delegation tools (`pions_delegate`, `pions_result`, `pions_operation`) in trusted projects. Workers run as real Pi CLI sessions, each in its own Herdr workspace labelled `Pions <short operation id>`. Lifecycle truth comes from persisted Operation/Result protocol, not UI state.
 
 **When to use this skill:** When you need to verify changes to Pions, run smoke tests, or prove that the project builds and passes automated checks.
 
@@ -37,7 +37,7 @@ Get Pions ready to verify:
    ls -la dist/src/
    ```
 
-   You should see `.js` files including `index.js`, `formal-review.js`, and `worker-extension.js`.
+   You should see the internal runtime modules and `worker-extension.js`.
 
 ## Doctor
 
@@ -238,7 +238,6 @@ ls -la dist/src/worker-extension.js
 **Expected outcome**:
 
 - `dist/src/worker-extension.js` exists
-- `dist/src/index.js` and `dist/src/formal-review.js` exist
 
 **Gotchas**:
 
@@ -260,22 +259,6 @@ npm run typecheck
 **What it proves**: Both main source (`tsconfig.json`) and extension source (`tsconfig.extension.json`) type-check cleanly.
 
 **Expected outcome**: Exit code 0, no TypeScript errors.
-
-### Feature 5: Exactly three public tools (behavior proof)
-
-**Harness**: Check that the Pi extension registers only the three delegation tools
-
-**How to verify**:
-The public Pi extension registers exactly `pions_delegate`, `pions_result`, and `pions_operation`. Formal-review tools are absent from its tool list, and `.pions.json` cannot enable them.
-
-This is verified by:
-
-1. Running the Pi extension tests that assert the exact three-tool registration
-2. Checking that the former `review` configuration and unknown keys are rejected
-
-**What it proves**: The user-facing delegation path cannot reach formal review.
-
-**Expected outcome**: Only three tools registered; `pions_review` absent from the tool list.
 
 ## Evidence
 
@@ -399,12 +382,6 @@ fi
 
 echo ""
 echo "Checking build artifacts..."
-if [ -f dist/src/index.js ]; then
-  echo "✓ dist/src/index.js exists"
-else
-  echo "✗ dist/src/index.js MISSING — run 'npm run build'"
-fi
-
 if [ -f dist/src/worker-extension.js ]; then
   echo "✓ dist/src/worker-extension.js exists"
 else

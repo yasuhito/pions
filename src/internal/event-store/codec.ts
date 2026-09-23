@@ -98,34 +98,6 @@ const AcceptedResult = Schema.Struct({
   byteCount: NonNegativeSafeInteger,
   digest: Digest,
 });
-const ResultFormatValidatorIdentity = Schema.Struct({
-  validatorId: Schema.NonEmptyString,
-  version: Schema.NonEmptyString,
-  digest: Digest,
-});
-const PinnedResultFormat = Schema.Struct({
-  formatId: Schema.NonEmptyString,
-  version: Schema.NonEmptyString,
-  normalizationId: Schema.NonEmptyString,
-  expectations: Schema.Record({ key: Schema.String, value: Schema.String }),
-  validator: ResultFormatValidatorIdentity,
-});
-const ResultFormatRejectionEvidence = Schema.Struct({
-  formatId: Schema.NonEmptyString,
-  version: Schema.NonEmptyString,
-  validator: ResultFormatValidatorIdentity,
-  reason: Schema.Literal(
-    "invalid_encoding",
-    "invalid_json",
-    "duplicate_key",
-    "unknown_key",
-    "missing_key",
-    "invalid_verdict",
-    "invalid_finding",
-    "expectation_mismatch",
-    "validator_identity_mismatch"
-  ),
-});
 const FailureReason = Schema.Literal(
   "worker_start_failed",
   "worker_protocol_failed",
@@ -136,8 +108,7 @@ const FailureReason = Schema.Literal(
   "model_not_found",
   "model_auth_unavailable",
   "unsupported_capability",
-  "tool_policy_violation",
-  "result_format_rejected"
+  "tool_policy_violation"
 );
 const CleanupDiagnostic = Schema.Literal(
   "workspace_close_failed",
@@ -154,7 +125,6 @@ const OperationEventSchema = Schema.Union(
     requestedConfig: RequestedWorkerConfigSchema,
     effectiveConfig: EffectiveWorkerConfigSchema,
     maxResultByteCount: NonNegativeSafeInteger,
-    resultFormat: Schema.optional(PinnedResultFormat),
   }),
   Schema.Struct({
     ...Metadata,
@@ -233,7 +203,6 @@ const OperationEventSchema = Schema.Union(
     ...Metadata,
     type: Schema.Literal("operation_failed"),
     reason: FailureReason,
-    resultFormatRejection: Schema.optional(ResultFormatRejectionEvidence),
   }),
   Schema.Struct({
     ...Metadata,

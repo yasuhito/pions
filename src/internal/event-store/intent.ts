@@ -2,10 +2,9 @@ import type {
   CleanupDiagnosticCode,
   ObservedWorkerConfig,
   OperationFailureReason,
-  ResultFormatRejectionEvidence,
   StartInstructionReference,
   WorkerIdentity,
-} from "../../public.js";
+} from "../types.js";
 import type { AgentRunEvidence } from "../services.js";
 
 export interface CreatedPresentation {
@@ -91,7 +90,6 @@ export type OperationIntent =
   | {
       readonly type: "operation_failed";
       readonly reason: OperationFailureReason;
-      readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
     }
   | {
       readonly type: "cancellation_requested";

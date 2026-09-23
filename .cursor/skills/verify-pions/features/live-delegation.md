@@ -6,7 +6,7 @@
 
 1. **Worker launch in a dedicated Herdr workspace** (labelled `Pions <short operation id>`, created without stealing focus or splitting the caller's pane)
 2. **Task execution with Pi TUI** (visible, observable Pi "regular" TUI)
-3. **Result acceptance and verification** (immutable UTF-8 artifact with SHA-256 digest)
+3. **Result acceptance and verification** (immutable UTF-8 result with SHA-256 digest)
 4. **Workspace auto-close on success** (Pions-owned workspaces only; stop-confirmed cancellations also close, failures and unknown states stay open)
 5. **Operation persistence and retrieval** (persisted Operation records under `$XDG_STATE_HOME/pions/repositories/<digest>/`, default `~/.local/state/pions/repositories/<digest>/`)
 
@@ -281,18 +281,6 @@ Expected: ready / authenticated for that provider+model. If `pi auth check` retu
 - Temporarily point a **local uncommitted** `.pions.json` at a provider/model that `pi auth check` reports ready (e.g. `openai-codex` / `gpt-5.6-sol` when that OAuth is ready on the box)
 
 **Do NOT** fall back to gmktec to work around `model_auth_unavailable`.
-
-### Artifact store writer lock is exclusive per repository
-
-The artifact store writer lock is `$XDG_STATE_HOME/pions/repositories/<digest>/artifacts.writer-lock` (default `~/.local/state/pions/repositories/<digest>/artifacts.writer-lock`) — a **sibling** of the `artifacts/` directory under the repository state root, **not** under `runtime/`. (Store root is `join(stateDirectory, "artifacts")` in `src/internal/runtime-artifacts.ts`; lock path is `` `${rootDirectory}.writer-lock` `` in `src/internal/artifact-store.ts`.) The lock is **exclusive per repository state root**. Only one live Pi process that has opened the artifact store can hold it.
-
-A second Pi in another workspace on the same checkout will fail `pions_delegate` with `ArtifactStoreOpenError` / `writer_locked` (`Artifact storage root already has a writer`). This is a harness implication for daily smoke/maintain — not a product bug to work around by ignoring the error.
-
-**For daily smoke/maintain:**
-
-- Prefer a freshly created workspace **only if** no other verify-pions Pi already holds the lock.
-- If a prior verify-pions Pi is still idle and holds the lock, either (a) drive the proof on that existing pane, or (b) close that leftover verify-pions workspace/pane (prior maintain leftovers in session `verify-pions` only — never touch gmktec / Yasuhito default), then create a new workspace.
-- Do **not** paper over as “ignore the error”; capture evidence of Operation ID on success.
 
 ### Never use gmktec, Yasuhito default, or firstmate session for daily smoke
 

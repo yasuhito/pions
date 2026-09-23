@@ -2,20 +2,16 @@ import { Effect } from "effect";
 
 import type { EventStore } from "./event-store/index.js";
 import { sha256Digest } from "./result-digest.js";
-import type { ResultFormatRegistry } from "./result-format-registry.js";
 import type { ResultAcceptanceProof } from "./worker-protocol.js";
 import type {
   AcceptedResult,
-  PinnedResultFormat,
   ResultAcceptanceTransactionFailureReason,
-  ResultFormatRejectionEvidence,
   WorkerProducedResult,
-} from "../public.js";
+} from "./types.js";
 
 export type ResultAcceptanceFailureReason =
   | ResultAcceptanceTransactionFailureReason
   | "input_integrity_mismatch"
-  | "result_format_rejected"
   | "cancelled";
 
 export type ResultAcceptanceOutcome =
@@ -25,13 +21,12 @@ export type ResultAcceptanceOutcome =
     }
   | {
       readonly state: "continuable";
-      readonly reason: "write_failed" | "validator_unavailable";
+      readonly reason: "write_failed";
     }
   | {
       readonly state: "failed";
       readonly terminal: true;
       readonly reason: ResultAcceptanceFailureReason;
-      readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
     };
 
 export interface ResultAcceptance {
@@ -43,7 +38,6 @@ export interface ResultAcceptance {
 
 interface ResultAcceptanceDependencies {
   readonly store: EventStore;
-  readonly resultFormats?: ResultFormatRegistry;
 }
 
 function failed(
@@ -77,34 +71,6 @@ function materializeBody(
   return bytes;
 }
 
-async function validateResultFormat(
-  dependencies: ResultAcceptanceDependencies,
-  resultFormat: Readonly<PinnedResultFormat>,
-  bytes: Buffer
-): Promise<ResultAcceptanceOutcome | undefined> {
-  const validation =
-    dependencies.resultFormats === undefined
-      ? ({ kind: "invalid", reason: "validator_unavailable" } as const)
-      : await dependencies.resultFormats.validate(
-          resultFormat,
-          Uint8Array.from(bytes)
-        );
-  if (validation.kind !== "invalid") return undefined;
-  if (validation.reason === "validator_unavailable")
-    return { state: "continuable", reason: "validator_unavailable" };
-  return {
-    state: "failed",
-    terminal: true,
-    reason: "result_format_rejected",
-    resultFormatRejection: {
-      formatId: resultFormat.formatId,
-      version: resultFormat.version,
-      validator: structuredClone(resultFormat.validator),
-      reason: validation.reason,
-    },
-  };
-}
-
 export function makeResultAcceptance(
   dependencies: ResultAcceptanceDependencies
 ): ResultAcceptance {
@@ -125,18 +91,6 @@ export function makeResultAcceptance(
         }
         const bytes = materializeBody(produced);
         if (bytes === undefined) return failed("input_integrity_mismatch");
-        const operation = stored.right.operation;
-        if (
-          operation.result === undefined &&
-          operation.resultFormat !== undefined
-        ) {
-          const rejection = await validateResultFormat(
-            dependencies,
-            operation.resultFormat,
-            bytes
-          );
-          if (rejection !== undefined) return rejection;
-        }
         const outcome = await Effect.runPromise(
           dependencies.store.acceptResult({
             operationId,

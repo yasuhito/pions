@@ -20,7 +20,7 @@ import {
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import { HerdrPreconditionError } from "../src/index.js";
+import { HerdrPreconditionError } from "../src/internal/types.js";
 import {
   effectiveConfig,
   requestedConfig,

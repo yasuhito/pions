@@ -1,10 +1,10 @@
 # Feature: Type Checking
 
-Pions is fully type-checked with TypeScript. The `npm run typecheck` command validates both the library source and the Pi extension setup without emitting JavaScript.
+Pions is fully type-checked with TypeScript. The `npm run typecheck` command validates both the runtime source and the Pi extension setup without emitting JavaScript.
 
 ## Sub-features
 
-1. **Main library types** (`tsconfig.json` — the default config)
+1. **Main runtime types** (`tsconfig.json` — the default config)
 2. **Extension types** (`tsconfig.extension.json` — Pi extension setup)
 
 ## How to get to it (user perspective)
@@ -63,7 +63,7 @@ Exit code should be 0.
 
 Pions uses two TypeScript configs:
 
-- `tsconfig.json` — Main library, tests, and scripts (`src/**/*.ts`, `test/**/*.ts`, `scripts/**/*.ts`)
+- `tsconfig.json` — Main runtime, tests, and scripts (`src/**/*.ts`, `test/**/*.ts`, `scripts/**/*.ts`)
 - `tsconfig.extension.json` — Pi extension setup (`.pi/extensions/**/*.ts`)
 
 Both must pass. If one fails, the entire `npm run typecheck` fails.

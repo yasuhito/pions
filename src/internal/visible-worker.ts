@@ -31,12 +31,12 @@ import type {
   WorkerRunHooks,
   WorkerRunOutcome,
 } from "./services.js";
-import { OperationPersistenceError } from "../public.js";
+import { OperationPersistenceError } from "./types.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
 import type {
   WorkerConfigurationFailureReason,
   WorkerProducedResult,
-} from "../public.js";
+} from "./types.js";
 import { configurationMismatch } from "./worker-configuration.js";
 import type { CommandExecutor } from "./herdr-presentation.js";
 import {
@@ -566,14 +566,6 @@ export class VisibleWorker implements WorkerAdapter {
                 error instanceof Error ? error : new Error(String(error)),
             })
         );
-        if (acknowledged.state === "result_format_rejected") {
-          const stopped = yield* Effect.promise(() =>
-            this.cancelSession(operation, 1_000)
-          );
-          return stopped === undefined
-            ? ({ state: "liveness-unproven" } as const)
-            : ({ ...acknowledged, successfulExitConfirmed: true } as const);
-        }
         if (acknowledged.state !== "result_acknowledged") return acknowledged;
         const stopped = yield* Effect.promise(() =>
           this.confirmSuccessfulExit(session!)

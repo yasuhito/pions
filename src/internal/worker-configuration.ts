@@ -8,8 +8,8 @@ import type {
   ThinkingLevel,
   WorkerConfigurationFailureReason,
   WorkerProfilePolicy,
-} from "../public.js";
-import { WorkerConfigurationError } from "../public.js";
+} from "./types.js";
+import { WorkerConfigurationError } from "./types.js";
 
 export const ModelReferenceSchema = Schema.Struct({
   provider: Schema.NonEmptyString,

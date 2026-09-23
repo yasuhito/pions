@@ -48,40 +48,6 @@ export interface WorkerProfilePolicy {
   readonly maxResultByteCount: number;
 }
 
-export interface ResultFormatValidatorIdentity {
-  readonly validatorId: string;
-  readonly version: string;
-  readonly digest: Sha256Digest;
-}
-
-export interface PinnedResultFormat {
-  readonly formatId: string;
-  readonly version: string;
-  readonly normalizationId: string;
-  readonly expectations: Readonly<Record<string, string>>;
-  readonly validator: Readonly<ResultFormatValidatorIdentity>;
-}
-
-export type ResultFormatValidationFailureReason =
-  | "invalid_encoding"
-  | "invalid_json"
-  | "duplicate_key"
-  | "unknown_key"
-  | "missing_key"
-  | "invalid_verdict"
-  | "invalid_finding"
-  | "expectation_mismatch";
-
-export type ResultFormatRejectionReason =
-  ResultFormatValidationFailureReason | "validator_identity_mismatch";
-
-export interface ResultFormatRejectionEvidence {
-  readonly formatId: string;
-  readonly version: string;
-  readonly validator: Readonly<ResultFormatValidatorIdentity>;
-  readonly reason: ResultFormatRejectionReason;
-}
-
 export interface WorkerProducedResult {
   readonly acceptanceRequestId: string;
   readonly body: string;
@@ -263,8 +229,6 @@ export interface OperationSnapshot {
   readonly unknownReason?:
     "cancel-unproven" | "start-acceptance-unknown" | "liveness-unproven";
   readonly failureReason?: OperationFailureReason;
-  readonly resultFormat?: Readonly<PinnedResultFormat>;
-  readonly resultFormatRejection?: Readonly<ResultFormatRejectionEvidence>;
   readonly workerIdentity?: Readonly<WorkerIdentity>;
   readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   readonly observedConfig?: Readonly<ObservedWorkerConfig>;
@@ -340,8 +304,7 @@ export type OperationFailureReason =
   | "model_not_found"
   | "model_auth_unavailable"
   | "unsupported_capability"
-  | "tool_policy_violation"
-  | "result_format_rejected";
+  | "tool_policy_violation";
 
 export class HerdrPreconditionError extends Error {
   override readonly name = "HerdrPreconditionError";
@@ -458,7 +421,7 @@ export interface OperationHandle extends OperationReader {
   cancel(options: CancelOptions): Promise<CancellationResult>;
 }
 
-export interface Runtime {
+export interface OperationRuntime {
   ready(): Promise<void>;
   spawn(task: TaskSpec): Promise<OperationHandle>;
   operation(operationId: string): Promise<OperationReader>;

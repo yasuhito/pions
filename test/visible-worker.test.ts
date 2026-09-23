@@ -42,7 +42,7 @@ import {
   WorkerProtocolPeer,
   encodeWorkerConfig,
 } from "../src/internal/worker-protocol.js";
-import type { WorkerProducedResult } from "../src/public.js";
+import type { WorkerProducedResult } from "../src/internal/types.js";
 import {
   agentRunEvidence,
   effectiveConfig,
@@ -54,7 +54,8 @@ import {
   resultDigest,
   maxResultByteCount,
 } from "./worker-protocol-fixtures.js";
-import { HerdrPreconditionError, makeVisibleRuntime } from "../src/index.js";
+import { HerdrPreconditionError } from "../src/internal/types.js";
+import { makeVisibleRuntime } from "../src/internal/visible-runtime.js";
 
 class FakeProcessControl implements WorkerProcessControl {
   readonly terminations: Array<Readonly<WorkerProcessIdentity>> = [];
@@ -1345,40 +1346,6 @@ test("successful Worker reports confirmed exit after process stop", async (conte
       : undefined,
     true
   );
-});
-
-test("結果形式の拒否後にWorker停止を確認する", async (context) => {
-  const value = await fixture({
-    processControl: new FakeProcessControl("stopped"),
-    acceptResult: () =>
-      Effect.succeed({
-        state: "failed",
-        terminal: true,
-        reason: "result_format_rejected",
-        resultFormatRejection: {
-          formatId: "review-result",
-          version: "1",
-          validator: {
-            validatorId: "review-validator",
-            version: "1",
-            digest: `sha256:${"a".repeat(64)}` as const,
-          },
-          reason: "invalid_json",
-        },
-      }),
-  });
-  context.after(() => {
-    value.release();
-    return rm(value.root, { recursive: true, force: true });
-  });
-  const client = await socket(value.config.socketPath);
-  await sendResultDelivery(client, {
-    capability: value.capability,
-    operationId: value.current.operationId,
-    body: "invalid review",
-  });
-
-  assert.equal((await value.outcome).successfulExitConfirmed, true);
 });
 
 async function cancelDuringExitConfirmation(context: TestContext) {

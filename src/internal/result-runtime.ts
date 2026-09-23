@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { PrivateFileEventStore } from "./event-store/index.js";
 import { makeRuntime } from "./runtime.js";
 import type { Presentation, RuntimeClock, WorkerAdapter } from "./services.js";
-import type { Runtime } from "../public.js";
+import type { OperationRuntime } from "./types.js";
 
 const clock: RuntimeClock = {
   now: () => Effect.sync(() => new Date().toISOString()),
@@ -38,7 +38,7 @@ const unavailablePresentation: Presentation = {
 export function makeResultRetrievalRuntime(options: {
   readonly cwd: string;
   readonly stateDirectory: string;
-}): Runtime {
+}): OperationRuntime {
   const store = new PrivateFileEventStore(options.stateDirectory, clock);
   return makeRuntime({
     worker: unavailableWorker,

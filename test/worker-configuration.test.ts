@@ -6,7 +6,7 @@ import {
   configurationMismatch,
   resolveWorkerConfig,
 } from "../src/internal/worker-configuration.js";
-import type { WorkerProfilePolicy } from "../src/public.js";
+import type { WorkerProfilePolicy } from "../src/internal/types.js";
 import { effectiveConfig, observedConfig } from "./worker-protocol-fixtures.js";
 
 const profile: WorkerProfilePolicy = {

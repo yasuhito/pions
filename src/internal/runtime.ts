@@ -36,7 +36,7 @@ import {
   ResultRetrievalError,
   RuntimeClosedError,
   WorkerConfigurationError,
-} from "../public.js";
+} from "./types.js";
 import type {
   CancellationResult,
   CancelOptions,
@@ -50,9 +50,9 @@ import type {
   ResultAcceptanceId,
   ResultChunkReadOutcome,
   ResultReadOutcome,
-  Runtime,
+  OperationRuntime,
   TaskSpec,
-} from "../public.js";
+} from "./types.js";
 
 const INITIAL_RECOVERY_DELAY_MS = 20;
 const MAX_RECOVERY_DELAY_MS = 5_000;
@@ -106,13 +106,8 @@ function terminal(operation: Operation): boolean {
   );
 }
 
-export function makeRuntime(services: RuntimeServices): Runtime {
-  const resultAcceptance = makeResultAcceptance({
-    store: services.store,
-    ...(services.formalReviewResultFormats === undefined
-      ? {}
-      : { resultFormats: services.formalReviewResultFormats.registry }),
-  });
+export function makeRuntime(services: RuntimeServices): OperationRuntime {
+  const resultAcceptance = makeResultAcceptance({ store: services.store });
   const records = new Map<string, OperationRecord>();
   const spawns = new Map<string, Promise<OperationHandle>>();
   const cancellations = new Map<string, Promise<CancellationResult>>();
@@ -207,16 +202,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ...(operation.failureReason === undefined
         ? {}
         : { failureReason: operation.failureReason }),
-      ...(operation.resultFormat === undefined
-        ? {}
-        : { resultFormat: structuredClone(operation.resultFormat) }),
-      ...(operation.resultFormatRejection === undefined
-        ? {}
-        : {
-            resultFormatRejection: structuredClone(
-              operation.resultFormatRejection
-            ),
-          }),
       ...(operation.workerIdentity === undefined
         ? {}
         : { workerIdentity: structuredClone(operation.workerIdentity) }),
@@ -869,7 +854,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const settleObserved = async (
     record: OperationRecord,
     outcome: WorkerRunOutcome
-  ): Promise<void | "validator_unavailable"> => {
+  ): Promise<void> => {
     if (outcome.successfulExitConfirmed === true) {
       const current = await runEffect(getOperation(record.operationId));
       if (
@@ -907,8 +892,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       await settleTerminal(record, current);
       return;
     }
-    if (outcome.state === "validator_unavailable")
-      return "validator_unavailable" as const;
     if (outcome.state === "liveness-unproven") {
       current = await runEffect(
         advance(record.operationId, {
@@ -935,9 +918,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
         advance(record.operationId, {
           type: "operation_failed",
           reason,
-          ...(outcome.state === "result_format_rejected"
-            ? { resultFormatRejection: outcome.rejection }
-            : {}),
         })
       );
       await settleTerminal(record, current);
@@ -969,14 +949,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   const execute = async (
     record: OperationRecord,
     recovering: boolean
-  ): Promise<void | "validator_unavailable"> => {
+  ): Promise<void> => {
     try {
       const outcome =
         record.observedOutcome ?? (await runWorker(record, recovering));
-      if (outcome.state === "validator_unavailable")
-        delete record.observedOutcome;
-      else record.observedOutcome = outcome;
-      return await settleObserved(record, outcome);
+      record.observedOutcome = outcome;
+      await settleObserved(record, outcome);
     } catch (error) {
       const current = await runEffect(getOperation(record.operationId)).catch(
         () => undefined
@@ -1017,11 +995,6 @@ export function makeRuntime(services: RuntimeServices): Runtime {
       ...(decoded.tools === undefined ? {} : { tools: decoded.tools }),
       ...(decoded.cwd === undefined ? {} : { cwd: decoded.cwd }),
     };
-    if (task.profile === "formal-review")
-      throw new WorkerConfigurationError(
-        "unsupported_capability",
-        "Formal review creation is paused"
-      );
     await runEffect(services.presentation.preflight());
     const configuration = services.configuration ?? {
       cwd: "/test/workspace",
@@ -1336,17 +1309,12 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           await settleTerminal(record, completed);
           continue;
         }
-        const settle = (work: Promise<void | "validator_unavailable">): void =>
+        const settle = (work: Promise<void>): void =>
           track(
-            work
-              .then((outcome) => {
-                if (outcome === "validator_unavailable" && !closing)
-                  deferRecovery(recoveredRecord);
-              })
-              .catch((error) => {
-                recoveredRecord.rejectTerminal(error);
-                deferRecovery(recoveredRecord);
-              })
+            work.catch((error) => {
+              recoveredRecord.rejectTerminal(error);
+              deferRecovery(recoveredRecord);
+            })
           );
         if (
           operation.state !== "cancelling" &&

@@ -14,10 +14,6 @@ This directory contains detailed verification guides for Pions features. Each fi
 3. **[build-and-extension.md](build-and-extension.md)** — Build artifacts and worker extension readiness
 4. **[type-checking.md](type-checking.md)** — TypeScript compilation and type safety
 
-### BEHAVIOR PROOF (no Herdr required)
-
-5. **[formal-review-fail-closed.md](formal-review-fail-closed.md)** — Formal-review tools reject calls when unconfigured
-
 ### Tools without a dedicated guide yet
 
 - `pions_result` / `pions_operation` are installed with the extension (`src/internal/pi-extension.ts`) but have no dedicated feature guide here yet. Live-delegation still covers Result retrieval via `pions_result` at a high level.
@@ -54,7 +50,6 @@ Each feature file includes:
 - All CLI: `herdr --session verify-pions …`; start server with `herdr server --session verify-pions` if needed
 - **gmktec:** do not use for daily smoke (Yasuhito default Herdr is forbidden)
 - Automated checks (Features 2–4) serve as additional regression gates
-- Formal-review-fail-closed (Feature 5) proves configuration rejection
 
 ### Without Herdr (e.g. most cloud VMs)
 
@@ -70,6 +65,5 @@ Each feature file includes:
 - **Run automated-test-suite** as regression gate (always, any environment)
 - **Verify build-and-extension** to confirm worker extension exists (prerequisite for live delegation)
 - **Run type-checking** to catch TypeScript errors early (part of automated-test-suite)
-- **Confirm formal-review-fail-closed** to prove tools reject without configuration (behavior check)
 
 Remember: **Automated checks do NOT substitute for live-delegation proof.**
