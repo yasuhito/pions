@@ -99,16 +99,7 @@ npm install --save-exact /path/to/pions/yasuhito-pions-0.1.0.tgz
 pi install --local ./node_modules/@yasuhito/pions
 ```
 
-In the trusted repository root, create a flat `.pions.json` containing the worker model and thinking level:
-
-```json
-{
-  "model": { "provider": "anthropic", "id": "claude-opus-5" },
-  "thinkingLevel": "high"
-}
-```
-
-Only these top-level settings are accepted. Install and authenticate the configured model provider in the Pi environment; Pions does not bundle a provider or fall back to another model.
+Configure a flat `.pions.json` in the trusted repository root as described in [Worker model configuration](#worker-model-configuration).
 
 ## Pi tools
 
