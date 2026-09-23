@@ -442,9 +442,9 @@ async function workspaceIds() {
   return new Set((await listWorkspaces()).map((w) => w.workspace_id));
 }
 
-async function ownedWorkerWorkspaceIds(stateDir) {
+async function ownedWorkerRecords(stateDir) {
   if (CONSUMER_DIR === undefined || !(await fileExists(CONSUMER_DIR)))
-    return new Set();
+    return new Map();
   const repositoryKey = createHash("sha256")
     .update(await realpath(CONSUMER_DIR), "utf8")
     .digest("hex");
@@ -455,8 +455,8 @@ async function ownedWorkerWorkspaceIds(stateDir) {
     repositoryKey,
     "runtime"
   );
-  if (!(await fileExists(runtimeDir))) return new Set();
-  const owned = new Set();
+  if (!(await fileExists(runtimeDir))) return new Map();
+  const owned = new Map();
   for (const entry of await readdir(runtimeDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const recordPath = join(runtimeDir, entry.name, "events.v27.json");
@@ -477,11 +477,15 @@ async function ownedWorkerWorkspaceIds(stateDir) {
         typeof event.presentation.workspaceId === "string" &&
         event.presentation.workspaceId !== ""
       ) {
-        owned.add(event.presentation.workspaceId);
+        owned.set(event.presentation.workspaceId, record);
       }
     }
   }
   return owned;
+}
+
+async function ownedWorkerWorkspaceIds(stateDir) {
+  return new Set((await ownedWorkerRecords(stateDir)).keys());
 }
 
 async function observedOwnedWorkspaces(observer, stateDir) {
@@ -838,6 +842,9 @@ async function main() {
       "the persisted live Operation has the exact seven-tool Worker surface and nested cwd."
     );
     const snapshot = operationResult.details ?? {};
+    if (snapshot.state !== "completed") {
+      throw new Error(`expected completed Operation, got ${snapshot.state}`);
+    }
     if (JSON.stringify(snapshot).includes(knownString)) {
       throw new Error("pions_operation exposed the accepted Result body");
     }
@@ -1178,9 +1185,7 @@ async function main() {
       );
     }
     if (!(await workspaceIds()).has(failedWorkspaceId)) {
-      throw new Error(
-        "failed or unknown Worker workspace was closed unexpectedly"
-      );
+      throw new Error("failed Worker workspace was closed unexpectedly");
     }
     const failedOperationPrompt = join(runDir, "failed-operation-prompt.txt");
     await writeFile(
@@ -1208,14 +1213,14 @@ async function main() {
       );
     }
     const failedSnapshot = failureInspection.details ?? {};
-    if (!["failed", "unknown"].includes(failedSnapshot.state)) {
+    if (failedSnapshot.state !== "failed") {
       throw new Error(
-        `expected a failed or unknown Operation, got ${failedSnapshot.state}`
+        `expected a failed Operation, got ${failedSnapshot.state}`
       );
     }
     if (failedSnapshot.presentationCleanup?.state === "completed") {
       throw new Error(
-        "a failed or unknown Operation completed presentation cleanup"
+        "a failed Operation completed presentation cleanup"
       );
     }
     if (!(await workspaceIds()).has(failedWorkspaceId)) {
@@ -1223,6 +1228,151 @@ async function main() {
     }
     log(
       `failed Operation ${failedOperationId} remained inspectable with its Worker workspace open.`
+    );
+
+    const unknownWorkerStartedPath = join(
+      runDir,
+      "unknown-worker-started.marker"
+    );
+    const unknownPromptPath = join(runDir, "unknown-prompt.txt");
+    const unknownTask = [
+      `Use bash to execute exactly this command as your first action: printf 'started' > ${shellQuote(unknownWorkerStartedPath)}; sleep 90`,
+      "After the command completes, respond with only `UNKNOWN_TEST_FINISHED`.",
+    ].join("\n");
+    await writeFile(
+      unknownPromptPath,
+      `Use pions_delegate exactly once with this task:\n\n${unknownTask}\n\nDo not do anything else.\n`
+    );
+    const unknownParent = await createWorkspace("pions-e2e-unknown", {
+      XDG_STATE_HOME: stateDir,
+    });
+    parentWorkspaceIds.push(unknownParent.workspaceId);
+    const beforeUnknown = await workspaceIds();
+    const unknownObserver = observeWorkerWorkspaces(
+      beforeUnknown,
+      unknownParent.workspaceId,
+      unknownParent.paneId
+    );
+    let unknownTranscript;
+    let unknownWorkspaceId;
+    let unknownRecord;
+    try {
+      const unknownExecution = await startPiInPane(
+        runDir,
+        unknownParent.paneId,
+        unknownPromptPath,
+        "unknown"
+      );
+      await waitFor(
+        async () =>
+          (await observedOwnedWorkspaces(unknownObserver, stateDir)).length ===
+          1,
+        DELEGATE_TIMEOUT_MS,
+        "the unknown-state Worker workspace to appear"
+      );
+      await waitFor(
+        () => fileExists(unknownWorkerStartedPath),
+        DELEGATE_TIMEOUT_MS,
+        "the unknown-state Worker to start executing its command"
+      );
+      const ownedUnknown = await observedOwnedWorkspaces(
+        unknownObserver,
+        stateDir
+      );
+      if (ownedUnknown.length !== 1) {
+        throw new Error("expected one owned unknown-state Worker workspace");
+      }
+      [unknownWorkspaceId] = ownedUnknown[0];
+      unknownRecord = (await ownedWorkerRecords(stateDir)).get(
+        unknownWorkspaceId
+      );
+      const identity = unknownRecord?.events
+        .findLast((event) => event.type === "worker_identified")
+        ?.workerIdentity;
+      if (
+        !Number.isSafeInteger(identity?.processId) ||
+        identity.processId <= 0 ||
+        typeof identity.processStartToken !== "string" ||
+        identity.processStartToken === "" ||
+        identity.processId === process.pid
+      ) {
+        throw new Error("unknown-state Worker has no valid process identity");
+      }
+      const processStat = await readFile(
+        `/proc/${identity.processId}/stat`,
+        "utf8"
+      );
+      const currentStartToken = processStat
+        .slice(processStat.lastIndexOf(")") + 1)
+        .trim()
+        .split(/\s+/u)[19];
+      if (currentStartToken !== identity.processStartToken) {
+        throw new Error("unknown-state Worker process identity changed");
+      }
+      process.kill(identity.processId, "SIGKILL");
+      unknownTranscript = await finishPiInPane(
+        unknownExecution,
+        unknownParent.paneId,
+        "unknown",
+        RESULT_TIMEOUT_MS,
+        { allowNonZeroExitCode: true }
+      );
+    } finally {
+      await unknownObserver.stop();
+    }
+    const unknownFailure = await extractToolResult(
+      unknownTranscript,
+      "pions_delegate"
+    );
+    if (!unknownFailure.isError) {
+      throw new Error("an unproven Worker exit was reported as success");
+    }
+    const unknownOperationId = operationIdFromError(unknownFailure);
+    if (unknownOperationId !== unknownRecord.operationId) {
+      throw new Error("unknown-state Worker Operation identity mismatch");
+    }
+    const unknownOperationPromptPath = join(
+      runDir,
+      "unknown-operation-prompt.txt"
+    );
+    await writeFile(
+      unknownOperationPromptPath,
+      `Use pions_operation exactly once with operationId "${unknownOperationId}". Do not do anything else.\n`
+    );
+    const unknownInspectionWorkspace = await createWorkspace(
+      "pions-e2e-unknown-operation",
+      { XDG_STATE_HOME: stateDir }
+    );
+    parentWorkspaceIds.push(unknownInspectionWorkspace.workspaceId);
+    const unknownInspectionTranscript = await runPiInPane(
+      runDir,
+      unknownInspectionWorkspace.paneId,
+      unknownOperationPromptPath,
+      "unknown-operation"
+    );
+    const unknownInspection = await extractToolResult(
+      unknownInspectionTranscript,
+      "pions_operation"
+    );
+    if (unknownInspection.isError) {
+      throw new Error(
+        `unknown Operation could not be inspected: ${JSON.stringify(unknownInspection)}`
+      );
+    }
+    const unknownSnapshot = unknownInspection.details ?? {};
+    if (unknownSnapshot.state !== "unknown") {
+      throw new Error(
+        `expected an unknown Operation, got ${unknownSnapshot.state}`
+      );
+    }
+    if (unknownSnapshot.presentationCleanup?.state === "completed") {
+      throw new Error("an unknown Operation completed presentation cleanup");
+    }
+    if (!(await workspaceIds()).has(unknownWorkspaceId)) {
+      throw new Error("unknown Worker workspace disappeared during inspection");
+    }
+    log(
+      `unknown Operation ${unknownOperationId} remained inspectable with its Worker workspace open.`
     );
 
     const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
