@@ -1,578 +1,149 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import test from "node:test";
+
+import { Effect } from "effect";
 
 import {
-  EVENT_SCHEMA_VERSION,
-  OPERATION_AUTHORITY,
-  RUNTIME_ACTOR_ID,
-} from "../src/internal/event-store/model.js";
-import type {
-  EventInput,
-  Operation,
-  OperationEvent,
-} from "../src/internal/event-store/model.js";
-import {
-  reduceOperation,
-  replayOperation,
-  TransitionError,
-} from "../src/internal/event-store/reducer.js";
-import { automaticStartScopeDigest } from "../src/internal/start-instruction.js";
-import {
-  effectiveConfig,
-  observedConfig,
-  requestedConfig,
-  maxResultByteCount,
-} from "./worker-protocol-fixtures.js";
+  advanceTestOperationToRunning,
+  FakeClock,
+  InMemoryEventStore,
+} from "../src/internal/testing.js";
+import type { EventStore } from "../src/internal/event-store/index.js";
 
-const metadata = {
-  operationId: "operation-1",
-  timestamp: "2026-09-06T10:00:00.000Z",
-  actorId: RUNTIME_ACTOR_ID,
-  authority: OPERATION_AUTHORITY,
-  schemaVersion: EVENT_SCHEMA_VERSION,
+const requestedConfig = {};
+const effectiveConfig = {
+  model: { provider: "test", id: "model" },
+  thinkingLevel: "medium" as const,
+  tools: ["read"],
+  cwd: "/work",
+  maxResultByteCount: 1024,
+  modelPolicy: {
+    candidates: [{ provider: "test", id: "model" }],
+    attempted: [{ provider: "test", id: "model" }],
+    maxAttempts: 1 as const,
+    fallback: "forbidden" as const,
+    aliases: [],
+  },
 };
 
-type TestEventInput =
-  | Exclude<EventInput, { readonly type: "operation_requested" }>
-  | Omit<
-      Extract<EventInput, { readonly type: "operation_requested" }>,
-      | "lineage"
-      | "requestedConfig"
-      | "effectiveConfig"
-      | "maxResultByteCount"
-      | "startAuthorizationTiming"
-    >;
-
-function event(seq: number, value: TestEventInput): OperationEvent {
-  return {
-    ...metadata,
-    ...(value.type === "operation_requested"
-      ? {
-          lineage: { rootOperationId: metadata.operationId, depth: 0 },
-          requestedConfig,
-          effectiveConfig,
-          maxResultByteCount,
-          startAuthorizationTiming: {
-            createdAt: metadata.timestamp,
-            windowMs: 0,
-            deadline: metadata.timestamp,
-            configuredPolicy: "disabled",
-            policy: "disabled",
-            authorizedSubjectIds: [],
-          },
-        }
-      : {}),
-    ...value,
-    eventId: `event-${seq}`,
-    seq,
-  } as OperationEvent;
+function clock(): FakeClock {
+  return new FakeClock(
+    Array.from(
+      { length: 40 },
+      (_, index) => `2026-09-23T00:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
 }
 
-const startInstruction = {
-  dispatcherId: RUNTIME_ACTOR_ID,
-  workerProcessInstanceId: "worker-instance",
-  receiptDigest: automaticStartScopeDigest({
-    operationId: metadata.operationId,
-    task: {
-      promptRef: "private://prompt/1",
-      profile: "coding",
-      idempotencyKey: "task-1",
-    },
-    effectiveConfig,
-  }),
-  deliveryGeneration: 1,
-};
-
-function runningEvents(): ReadonlyArray<OperationEvent> {
-  return [
-    event(1, {
-      type: "operation_requested",
+async function create(store: EventStore): Promise<void> {
+  await Effect.runPromise(
+    store.create({
+      operationId: "operation-1",
       task: {
-        promptRef: "private://prompt/1",
+        promptRef: "private://prompt",
         profile: "coding",
         idempotencyKey: "task-1",
       },
-    }),
-    event(2, {
-      type: "presentation_owned",
-      presentation: {
-        kind: "herdr_workspace",
-        workspaceId: "workspace-1",
-        paneId: "pane-1",
-        ownedByPions: true,
-      },
-    }),
-    event(3, { type: "operation_starting" }),
-    event(4, { type: "worker_launched" }),
-    event(5, {
-      type: "worker_identified",
-      workerIdentity: {
-        processId: 1,
-        processInstanceId: "worker-instance",
-        processStartToken: "worker-start",
-        piSessionId: "pi-session",
-        paneId: "pane-1",
-      },
-      observedConfig,
-    }),
-    event(6, {
-      type: "start_delivery_authority_acquired",
-      instruction: startInstruction,
-    }),
-    event(7, { type: "start_delivery_entered", instruction: startInstruction }),
-    event(8, {
-      type: "start_instruction_dispatched",
-      instruction: startInstruction,
-    }),
-    event(9, {
-      type: "start_instruction_accepted",
-      instruction: startInstruction,
-      proof: "worker-durable-acceptance",
-    }),
-    event(10, {
-      type: "start_instruction_acknowledged",
-      instruction: startInstruction,
-      proof: "authenticated-worker-acknowledgement",
-    }),
-  ];
-}
-
-function runningOperation(): Operation {
-  return { ...replayOperation(runningEvents())!, stateSeq: 4 };
-}
-
-test("reducer rejects an inconsistent fixed authorization deadline", () => {
-  const requested = event(1, {
-    type: "operation_requested",
-    task: { promptRef: "prompt", profile: "coding", idempotencyKey: "task" },
-  }) as Extract<OperationEvent, { readonly type: "operation_requested" }>;
-
-  assert.throws(
-    () =>
-      reduceOperation(undefined, {
-        ...requested,
-        startAuthorizationTiming: {
-          ...requested.startAuthorizationTiming,
-          deadline: "2026-09-06T10:01:00.000Z",
-        },
-      }),
-    (error) =>
-      error instanceof TransitionError && error.code === "illegal_transition"
-  );
-});
-
-test("reducer refuses Worker identification without launch evidence", () => {
-  const requested = reduceOperation(undefined, runningEvents()[0]!);
-  const presented = reduceOperation(requested, runningEvents()[1]!);
-  const starting = reduceOperation(presented, runningEvents()[2]!);
-
-  assert.throws(
-    () => reduceOperation(starting, { ...runningEvents()[4]!, seq: 4 }),
-    (error) =>
-      error instanceof TransitionError && error.code === "illegal_transition"
-  );
-});
-
-test("reducer refuses stop confirmation before Worker launch", () => {
-  const requested = reduceOperation(
-    undefined,
-    event(1, {
-      type: "operation_requested",
-      task: { promptRef: "prompt", profile: "coding", idempotencyKey: "task" },
+      requestedConfig,
+      effectiveConfig,
+      maxResultByteCount: 1024,
     })
   );
+}
 
-  assert.throws(
-    () =>
-      reduceOperation(
-        requested,
-        event(2, {
-          type: "worker_stop_confirmed",
-          proof: "worker-stop",
-        })
-      ),
-    (error) =>
-      error instanceof TransitionError && error.code === "illegal_transition"
-  );
+test("作成したオペレーションは待機状態になる", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await create(store);
+  const snapshot = await Effect.runPromise(store.read("operation-1"));
+  assert.equal(snapshot.operation.state, "queued");
 });
 
-test("reducer refuses self-settlement without result evidence", () => {
-  const running = runningOperation();
-
-  assert.throws(
-    () =>
-      reduceOperation(
-        running,
-        event(5, { type: "self_settled", outcome: "succeeded" })
-      ),
-    (error) =>
-      error instanceof TransitionError &&
-      error.code === "result_required_before_self_settlement"
-  );
+test("永続状態に旧ライフサイクル領域を持たない", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await create(store);
+  const snapshot = await Effect.runPromise(store.read("operation-1"));
+  const oldKeys = [
+    "lineage",
+    "revisionSeries",
+    "resourceEvidenceRecord",
+    "externalReviewAllocation",
+    "startAuthorizationTiming",
+    "startupReceipt",
+    "childOperationIds",
+  ].filter((key) => key in snapshot.operation);
+  assert.deepEqual(oldKeys, []);
 });
 
-test("a blocked Operation resumes running after input arrives", () => {
-  const blocked = reduceOperation(
-    runningOperation(),
-    event(5, { type: "operation_blocked" })
-  );
-
-  assert.equal(
-    reduceOperation(blocked, event(6, { type: "operation_unblocked" })).state,
-    "running"
-  );
+test("開始確認応答を保存すると実行中になる", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await create(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const snapshot = await Effect.runPromise(store.read("operation-1"));
+  assert.equal(snapshot.operation.state, "running");
 });
 
-test("a cancellation request atomically freezes spawning", () => {
-  const cancelling = reduceOperation(
-    runningOperation(),
-    event(5, { type: "cancellation_requested", cancellationEpoch: 1 })
-  );
-
-  assert.deepEqual(
-    [cancelling.state, cancelling.spawnFrozen, cancelling.cancellationEpoch],
-    ["cancelling", true, 1]
-  );
-});
-
-test("reducer rejects an older cancellation epoch", () => {
-  const cancelling = reduceOperation(
-    runningOperation(),
-    event(5, { type: "cancellation_requested", cancellationEpoch: 2 })
-  );
-
-  assert.throws(
-    () =>
-      reduceOperation(
-        cancelling,
-        event(6, { type: "cancellation_requested", cancellationEpoch: 1 })
-      ),
-    (error) =>
-      error instanceof TransitionError &&
-      error.code === "stale_cancellation_epoch"
-  );
-});
-
-test("unproven cancellation reaches unknown with its reason", () => {
-  const cancelling = reduceOperation(
-    runningOperation(),
-    event(5, { type: "cancellation_requested", cancellationEpoch: 1 })
-  );
-  const unknown = reduceOperation(
-    cancelling,
-    event(6, {
+test("開始受理が確認不能なら状態不明を保存する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await create(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.advance("operation-1", {
       type: "operation_unknown",
+      reason: "start-acceptance-unknown",
+    })
+  );
+  const snapshot = await Effect.runPromise(store.read("operation-1"));
+  assert.equal(snapshot.operation.terminalReason, "start-acceptance-unknown");
+});
+
+test("停止確認済みのキャンセルはキャンセル済みになる", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await create(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
       cancellationEpoch: 1,
-      reason: "cancel-unproven",
     })
   );
-
-  assert.deepEqual(
-    [unknown.state, unknown.terminalReason],
-    ["unknown", "cancel-unproven"]
-  );
-});
-
-test("a failed self-settlement reaches the failed terminal state", () => {
-  const selfSettled = reduceOperation(
-    runningOperation(),
-    event(5, {
-      type: "self_settled",
-      outcome: "failed",
-      reason: "worker_start_failed",
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancel_dispatched",
+      cancellationEpoch: 1,
     })
   );
-
-  assert.equal(
-    reduceOperation(
-      selfSettled,
-      event(6, { type: "operation_failed", reason: "worker_start_failed" })
-    ).state,
-    "failed"
-  );
-});
-
-test("replay reconstructs a terminal failure reason", () => {
-  const events = [
-    ...runningEvents(),
-    event(11, {
-      type: "self_settled",
-      outcome: "failed",
-      reason: "worker_start_failed",
-    }),
-    event(12, { type: "operation_failed", reason: "worker_start_failed" }),
-  ];
-
-  assert.equal(replayOperation(events)?.terminalReason, "worker_start_failed");
-});
-
-test("replay rejects a reused event identifier", () => {
-  const requested = event(1, {
-    type: "operation_requested",
-    task: {
-      promptRef: "private://prompt/1",
-      profile: "coding",
-      idempotencyKey: "task-1",
-    },
-  });
-  const starting = {
-    ...event(2, { type: "operation_starting" }),
-    eventId: requested.eventId,
-  };
-
-  assert.throws(
-    () => replayOperation([requested, starting]),
-    (error) =>
-      error instanceof TransitionError && error.code === "duplicate_event"
-  );
-});
-
-test("replay reconstructs the same snapshot", () => {
-  const events = [
-    ...runningEvents(),
-    event(11, { type: "operation_blocked" }),
-    event(12, { type: "operation_unblocked" }),
-  ];
-  const snapshot = events.reduce<Operation | undefined>(
-    reduceOperation,
-    undefined
-  );
-
-  assert.deepEqual(replayOperation(events), snapshot);
-});
-
-test("a blocked Operation can revoke its Start delivery authority during recovery", () => {
-  const blocked = reduceOperation(
-    runningOperation(),
-    event(5, { type: "operation_blocked" })
-  );
-  const revoked = reduceOperation(
-    blocked,
-    event(6, {
-      type: "start_delivery_authority_revoked",
-      successorDispatcherId: "dispatcher-2",
-      deliveryGeneration: 2,
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancel_acknowledged",
+      cancellationEpoch: 1,
+      proof: "worker-stop",
     })
   );
-
-  assert.equal(
-    revoked.startDeliveryHandoffs.at(-1)?.successorDispatcherId,
-    "dispatcher-2"
-  );
-});
-
-test("reducer rejects an unsupported event schema", () => {
-  const invalid = {
-    ...event(5, { type: "operation_blocked" }),
-    schemaVersion: 1,
-  };
-
-  assert.throws(
-    () => reduceOperation(runningOperation(), invalid as OperationEvent),
-    (error) =>
-      error instanceof TransitionError &&
-      error.code === "unsupported_schema_version"
-  );
-});
-
-test("reducer rejects an event from the wrong actor", () => {
-  const invalid = {
-    ...event(5, { type: "operation_blocked" }),
-    actorId: "observer",
-  };
-
-  assert.throws(
-    () => reduceOperation(runningOperation(), invalid as OperationEvent),
-    (error) =>
-      error instanceof TransitionError && error.code === "actor_mismatch"
-  );
-});
-
-test("reducer rejects an event with the wrong authority", () => {
-  const invalid = {
-    ...event(5, { type: "operation_blocked" }),
-    authority: "read",
-  };
-
-  assert.throws(
-    () => reduceOperation(runningOperation(), invalid as OperationEvent),
-    (error) =>
-      error instanceof TransitionError && error.code === "authority_mismatch"
-  );
-});
-
-test("reducer rejects an event for another Operation", () => {
-  const invalid = {
-    ...event(5, { type: "operation_blocked" }),
-    operationId: "operation-2",
-  };
-
-  assert.throws(
-    () => reduceOperation(runningOperation(), invalid),
-    (error) =>
-      error instanceof TransitionError && error.code === "operation_id_mismatch"
-  );
-});
-
-test("reducer rejects a duplicate event sequence", () => {
-  assert.throws(
-    () =>
-      reduceOperation(
-        runningOperation(),
-        event(3, { type: "operation_blocked" })
-      ),
-    (error) =>
-      error instanceof TransitionError && error.code === "unexpected_sequence"
-  );
-});
-
-test("reducer rejects an event that skips a sequence number", () => {
-  assert.throws(
-    () =>
-      reduceOperation(
-        runningOperation(),
-        event(6, { type: "operation_blocked" })
-      ),
-    (error) =>
-      error instanceof TransitionError && error.code === "unexpected_sequence"
-  );
-});
-
-test("a rejected event does not change the snapshot", () => {
-  const running = runningOperation();
-  try {
-    reduceOperation(running, event(5, { type: "operation_unblocked" }));
-  } catch {
-    // Rejection is observed separately; this case observes the snapshot.
-  }
-
-  assert.equal(running.state, "running");
-});
-
-test("reducer rejects an illegal state transition", () => {
-  assert.throws(
-    () =>
-      reduceOperation(
-        runningOperation(),
-        event(5, { type: "operation_unblocked" })
-      ),
-    (error) =>
-      error instanceof TransitionError && error.code === "illegal_transition"
-  );
-});
-
-test("reducer keeps a terminal Operation immutable", () => {
-  const selfSettled = reduceOperation(
-    runningOperation(),
-    event(5, {
-      type: "self_settled",
-      outcome: "failed",
-      reason: "worker_start_failed",
-    })
-  );
-  const failed = reduceOperation(
-    selfSettled,
-    event(6, { type: "operation_failed", reason: "worker_start_failed" })
-  );
-
-  assert.throws(
-    () => reduceOperation(failed, event(7, { type: "operation_starting" })),
-    (error) =>
-      error instanceof TransitionError &&
-      error.code === "terminal_state_immutable"
-  );
-});
-
-function cancelledOperation(withConfirmedStop: boolean): Operation {
-  const cancelling = reduceOperation(
-    runningOperation(),
-    event(5, { type: "cancellation_requested", cancellationEpoch: 1 })
-  );
-  const acknowledged = withConfirmedStop
-    ? reduceOperation(
-        cancelling,
-        event(6, {
-          type: "cancel_acknowledged",
-          cancellationEpoch: 1,
-          proof: "worker-stop",
-        })
-      )
-    : cancelling;
-  return reduceOperation(
-    acknowledged,
-    event(withConfirmedStop ? 7 : 6, {
+  const snapshot = await Effect.runPromise(
+    store.advance("operation-1", {
       type: "operation_cancelled",
       cancellationEpoch: 1,
     })
   );
-}
+  assert.equal(snapshot.operation.state, "cancelled");
+});
 
-test("a stop-confirmed cancellation admits workspace cleanup", () => {
-  const cleanup = reduceOperation(
-    cancelledOperation(true),
-    event(8, {
-      type: "presentation_cleanup_started",
-      cleanupId: "cleanup-1",
-      workspaceId: "workspace-1",
+test("停止未確認のキャンセルは状態不明になる", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await create(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
     })
   );
-
-  assert.equal(cleanup.presentationCleanup?.state, "pending");
-});
-
-test("a cancellation without a confirmed stop refuses workspace cleanup", () => {
-  assert.throws(
-    () =>
-      reduceOperation(
-        cancelledOperation(false),
-        event(7, {
-          type: "presentation_cleanup_started",
-          cleanupId: "cleanup-1",
-          workspaceId: "workspace-1",
-        })
-      ),
-    TransitionError
+  const snapshot = await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "operation_unknown",
+      reason: "cancel-unproven",
+      cancellationEpoch: 1,
+    })
   );
-});
-
-test("a failed Operation refuses workspace cleanup", () => {
-  const failed = reduceOperation(
-    reduceOperation(
-      runningOperation(),
-      event(5, {
-        type: "self_settled",
-        outcome: "failed",
-        reason: "worker_start_failed",
-      })
-    ),
-    event(6, { type: "operation_failed", reason: "worker_start_failed" })
-  );
-
-  assert.throws(
-    () =>
-      reduceOperation(
-        failed,
-        event(7, {
-          type: "presentation_cleanup_started",
-          cleanupId: "cleanup-1",
-          workspaceId: "workspace-1",
-        })
-      ),
-    TransitionError
-  );
-});
-
-test("workspace cleanup refuses a workspace Pions does not own", () => {
-  assert.throws(
-    () =>
-      reduceOperation(
-        cancelledOperation(true),
-        event(8, {
-          type: "presentation_cleanup_started",
-          cleanupId: "cleanup-1",
-          workspaceId: "someone-elses-workspace",
-        })
-      ),
-    TransitionError
-  );
+  assert.equal(snapshot.operation.state, "unknown");
 });

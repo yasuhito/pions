@@ -96,7 +96,6 @@ function operation(
 ): Operation {
   return {
     operationId: OPERATION_ID,
-    lineage: { rootOperationId: OPERATION_ID, depth: 0 },
     state: "running",
     stateSeq: 3,
     workerLaunched: true,
@@ -108,21 +107,7 @@ function operation(
     requestedConfig,
     effectiveConfig,
     maxResultByteCount,
-    startAuthorizationTiming: {
-      createdAt: "2026-09-06T10:00:00.000Z",
-      windowMs: 0,
-      deadline: "2026-09-06T10:00:00.000Z",
-      configuredPolicy: "disabled",
-      policy: "disabled",
-      authorizedSubjectIds: [],
-    },
-    startGate: "not_required",
-    rejectedStartAuthorizationDecisions: [],
     startDeliveryHandoffs: [],
-    childOperationIds: [],
-    settledChildOperationIds: [],
-    descendantFailure: false,
-    spawnFrozen: false,
     cancellationEpoch: 0,
     ...(ownership === undefined
       ? {}
@@ -324,7 +309,6 @@ test("configuration projection is size-limited", async () => {
 
 test("projection of any terminal state never closes the owned workspace", async () => {
   const retainedStates: ReadonlyArray<Operation["state"]> = [
-    "blocked",
     "failed",
     "cancelled",
     "unknown",
@@ -495,7 +479,10 @@ test("a Herdr error envelope on close is surfaced as a failure", async () => {
 
 test("Runtime exposes a typed Herdr precondition violation", async () => {
   const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
+    worker: new FakeWorkerAdapter({
+      messages: { body: "finished" },
+      successfulExitConfirmed: true,
+    }),
     clock: new FakeClock([]),
     ids: new FakeIdGenerator(["operation-1"]),
     presentation: presentation(new FakeCommandExecutor([]), {}),
@@ -611,7 +598,10 @@ test("Runtime persists workspace ownership returned by Herdr", async () => {
   ]);
   const store = new InMemoryEventStore();
   const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ messages: { body: "finished" } }),
+    worker: new FakeWorkerAdapter({
+      messages: { body: "finished" },
+      successfulExitConfirmed: true,
+    }),
     clock: new FakeClock(
       Array.from(
         { length: 10 },

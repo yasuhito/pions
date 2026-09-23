@@ -1,267 +1,1116 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { test } from "node:test";
+import test from "node:test";
 
-import { Effect, ManagedRuntime, TestClock, TestContext } from "effect";
+import { Effect } from "effect";
 
-import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "../src/internal/worker-configuration.js";
-import {
-  CancellationRejectedError,
-  OperationCancelledError,
-  OperationFailedError,
-  OperationPersistenceError,
-  OperationUnknownError,
-  ResourceProofRejectedError,
-  SpawnRejectedError,
-  WorkerConfigurationError,
-} from "../src/index.js";
 import type {
   Operation,
   OperationIntent,
 } from "../src/internal/event-store/index.js";
-import type { StoredOperationRecord } from "../src/internal/event-store/store.js";
-import type { WorkerProducedResult } from "../src/public.js";
-import {
-  acknowledgeResultAcceptance,
-  makeSingleRunWorker,
-} from "../src/internal/services.js";
+import { acknowledgeResultAcceptance } from "../src/internal/services.js";
 import type {
-  WorkerCancellationEvidence,
-  RuntimeClock,
   Worker,
-  WorkerRunHooks,
-  WorkerRunOutcome,
   WorkerAdapter,
+  WorkerRunHooks,
 } from "../src/internal/services.js";
 import {
-  FakeWorkerAdapter,
+  advanceTestOperationToRunning,
+  advanceTestOperationToStartDeliveryAuthority,
   FakeClock,
   FakeIdGenerator,
   FakePresentation,
+  FakeWorkerAdapter,
   InMemoryEventStore,
   makeTestRuntime,
 } from "../src/internal/testing.js";
-import type {
-  FakePresentationOptions,
-  FakeWorkerAdapterOptions,
-} from "../src/internal/testing.js";
+import { sha256Digest } from "../src/internal/result-digest.js";
+import {
+  makeResultFormatRegistry,
+  type ResultFormatRegistry,
+} from "../src/internal/result-format-registry.js";
+import type { PinnedResultFormat, WorkerProfilePolicy } from "../src/public.js";
 
-class InterruptedStartWorkerAdapter implements WorkerAdapter {
-  recoveredDeliveryCount = 0;
-  private releaseRun: (() => void) | undefined;
+const profile: WorkerProfilePolicy = {
+  modelCandidates: [{ provider: "test", id: "model" }],
+  thinkingLevel: "medium",
+  tools: ["read"],
+  maxResultByteCount: 1024,
+};
 
-  release(): void {
-    this.releaseRun?.();
-  }
+function clock(): FakeClock {
+  return new FakeClock(
+    Array.from(
+      { length: 80 },
+      (_, index) => `2026-09-23T03:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
+}
 
-  open(operation: Operation): Worker {
-    return makeSingleRunWorker({
-      run: (hooks) =>
-        Effect.gen(this, function* () {
-          yield* hooks.workerLaunched();
-          const instruction = yield* hooks.workerIdentified({
-            processId: 1234,
-            processInstanceId: "interrupted-worker",
-            processStartToken: "interrupted-worker-start",
-            piSessionId: "interrupted-pi",
-            observedConfig: {
-              model: {
-                state: "observed",
-                value: operation.effectiveConfig.model,
-              },
-              thinkingLevel: {
-                state: "observed",
-                value: operation.effectiveConfig.thinkingLevel,
-              },
-              tools: {
-                state: "observed",
-                value: operation.effectiveConfig.tools,
-              },
-              cwd: { state: "observed", value: operation.effectiveConfig.cwd },
-            },
-          });
-          yield* hooks.startDeliveryEntered(instruction);
-          yield* hooks.startInstructionDispatched(instruction);
-          return yield* Effect.async<WorkerRunOutcome>((resume) => {
-            this.releaseRun = () =>
-              resume(Effect.succeed({ state: "liveness-unproven" }));
-          });
-        }),
-      cancel: () => Effect.succeed(undefined),
-    });
+function services(store: InMemoryEventStore, worker: WorkerAdapter) {
+  return {
+    worker,
+    clock: clock(),
+    ids: new FakeIdGenerator(["operation-1"]),
+    presentation: new FakePresentation(),
+    store,
+    configuration: { cwd: "/work", profiles: { coding: profile } },
+  };
+}
+
+test("Runtime exposes only delegation lifecycle operations", () => {
+  const runtime = makeTestRuntime({
+    ...services(new InMemoryEventStore(), new CancellableWorker(true)),
+    recovery: "disabled",
+  });
+
+  assert.deepEqual(Object.keys(runtime), [
+    "ready",
+    "close",
+    "spawn",
+    "operation",
+  ]);
+});
+
+test("new formal review operations are refused", async () => {
+  const profileForReview = { ...profile };
+  const runtime = makeTestRuntime({
+    ...services(new InMemoryEventStore(), new FakeWorkerAdapter()),
+    recovery: "disabled",
+    configuration: {
+      cwd: "/work",
+      profiles: { "formal-review": profileForReview },
+    },
+  });
+
+  await assert.rejects(
+    runtime.spawn({
+      promptRef: "private://review",
+      profile: "formal-review",
+      idempotencyKey: "review-1",
+    }),
+    { name: "WorkerConfigurationError", reason: "unsupported_capability" }
+  );
+});
+
+async function seed(
+  store: InMemoryEventStore,
+  resultFormat?: Readonly<PinnedResultFormat>,
+  operationId = "operation-1"
+): Promise<void> {
+  await Effect.runPromise(
+    store.create({
+      operationId,
+      task: {
+        promptRef: "private://prompt",
+        profile: "coding",
+        idempotencyKey: `task-${operationId}`,
+      },
+      requestedConfig: {},
+      effectiveConfig: {
+        model: { provider: "test", id: "model" },
+        thinkingLevel: "medium",
+        tools: ["read"],
+        cwd: "/work",
+        maxResultByteCount: 1024,
+        modelPolicy: {
+          candidates: [{ provider: "test", id: "model" }],
+          attempted: [{ provider: "test", id: "model" }],
+          maxAttempts: 1,
+          fallback: "forbidden",
+          aliases: [],
+        },
+      },
+      maxResultByteCount: 1024,
+      ...(resultFormat === undefined ? {} : { resultFormat }),
+    })
+  );
+}
+
+class RecoveryWorker implements WorkerAdapter {
+  constructor(
+    private readonly acceptanceState: "accepted" | "unknown",
+    private readonly deliverResult: boolean
+  ) {}
+
+  open(): Worker {
+    throw new Error("not used");
   }
 
   recover(operation: Operation): Worker {
-    return makeSingleRunWorker({
-      run: (hooks) =>
-        Effect.gen(this, function* () {
-          const identity = operation.workerIdentity!;
-          const instruction = yield* hooks.workerIdentified({
-            processId: identity.processId,
-            processInstanceId: identity.processInstanceId,
-            processStartToken: identity.processStartToken,
-            piSessionId: identity.piSessionId,
-            observedConfig: operation.observedConfig!,
-          });
-          yield* hooks.startDeliveryAuthorityRevoked(
-            instruction.dispatcherId,
-            instruction.deliveryGeneration
-          );
-          yield* hooks.deliveryGenerationConfirmed({
-            dispatcherId: instruction.dispatcherId,
-            deliveryGeneration: instruction.deliveryGeneration,
-            acceptanceState: "not_accepted",
-          });
-          yield* hooks.startDeliveryEntered(instruction);
-          yield* hooks.startInstructionDispatched(instruction);
-          this.recoveredDeliveryCount += 1;
-          return { state: "liveness-unproven" } as const;
-        }),
-      cancel: () => Effect.succeed(undefined),
+    return {
+      run: (hooks) => this.run(operation, hooks),
+      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+    };
+  }
+
+  private run(operation: Operation, hooks: Readonly<WorkerRunHooks>) {
+    return Effect.gen(this, function* () {
+      const identity = operation.workerIdentity!;
+      const instruction = yield* hooks.workerIdentified({
+        processId: identity.processId,
+        processInstanceId: identity.processInstanceId,
+        processStartToken: identity.processStartToken,
+        piSessionId: identity.piSessionId,
+        observedConfig: operation.observedConfig!,
+      });
+      yield* hooks.startDeliveryAuthorityRevoked(
+        instruction.dispatcherId,
+        instruction.deliveryGeneration
+      );
+      yield* hooks.deliveryGenerationConfirmed({
+        dispatcherId: instruction.dispatcherId,
+        deliveryGeneration: instruction.deliveryGeneration,
+        acceptanceState: this.acceptanceState,
+        ...(this.acceptanceState === "accepted"
+          ? { acceptedInstruction: operation.startInstructionAcceptance! }
+          : {}),
+      });
+      if (!this.deliverResult) return { state: "liveness-unproven" as const };
+      const body = "recovered result";
+      const bytes = Buffer.from(body, "utf8");
+      const accepted = yield* hooks.acceptResult({
+        acceptanceRequestId: "request-recovered",
+        body,
+        expectedByteCount: bytes.byteLength,
+        expectedDigest: sha256Digest(bytes),
+      });
+      if (
+        accepted.state === "continuable" &&
+        accepted.reason === "validator_unavailable"
+      )
+        return { state: "validator_unavailable" as const };
+      if (accepted.state !== "accepted")
+        return { state: "worker_protocol_failed" as const };
+      return {
+        state: "result_acknowledged" as const,
+        successfulExitConfirmed: true as const,
+        evidence: {
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: 0,
+          },
+          toolUses: [],
+        },
+      };
     });
   }
 }
 
-class AuthorityOnlyWorkerAdapter extends InterruptedStartWorkerAdapter {
-  private releaseAuthorityRun: (() => void) | undefined;
+class CancellableWorker implements WorkerAdapter {
+  private resume: (() => void) | undefined;
 
-  override release(): void {
-    this.releaseAuthorityRun?.();
-  }
+  constructor(private readonly confirmsStop: boolean) {}
 
-  override open(operation: Operation): Worker {
-    return makeSingleRunWorker({
+  open(operation: Operation): Worker {
+    return {
       run: (hooks) =>
         Effect.gen(this, function* () {
           yield* hooks.workerLaunched();
-          yield* hooks.workerIdentified({
-            processId: 1234,
-            processInstanceId: "authority-only-worker",
-            processStartToken: "authority-only-worker-start",
-            piSessionId: "authority-only-pi",
+          const instruction = yield* hooks.workerIdentified({
+            processId: 1,
+            processInstanceId: "fake-process-instance",
+            processStartToken: "fake-process-start",
+            piSessionId: "fake-session",
             observedConfig: {
               model: {
                 state: "observed",
                 value: operation.effectiveConfig.model,
               },
-              thinkingLevel: {
-                state: "observed",
-                value: operation.effectiveConfig.thinkingLevel,
-              },
-              tools: {
-                state: "observed",
-                value: operation.effectiveConfig.tools,
-              },
-              cwd: { state: "observed", value: operation.effectiveConfig.cwd },
+              thinkingLevel: { state: "observed", value: "medium" },
+              tools: { state: "observed", value: ["read"] },
+              cwd: { state: "observed", value: "/work" },
             },
           });
-          return yield* Effect.async<WorkerRunOutcome>((resume) => {
-            this.releaseAuthorityRun = () =>
-              resume(Effect.succeed({ state: "liveness-unproven" }));
-          });
-        }),
-      cancel: () => Effect.succeed(undefined),
-    });
-  }
-}
-
-class PausedHandoffWorkerAdapter extends InterruptedStartWorkerAdapter {
-  revocationRecorded = false;
-  private releaseHandoff: (() => void) | undefined;
-
-  override release(): void {
-    this.releaseHandoff?.();
-  }
-
-  override recover(operation: Operation): Worker {
-    return makeSingleRunWorker({
-      run: (hooks) =>
-        Effect.gen(this, function* () {
-          const identity = operation.workerIdentity!;
-          const instruction = yield* hooks.workerIdentified({
-            processId: identity.processId,
-            processInstanceId: identity.processInstanceId,
-            processStartToken: identity.processStartToken,
-            piSessionId: identity.piSessionId,
-            observedConfig: operation.observedConfig!,
-          });
-          yield* hooks.startDeliveryAuthorityRevoked(
-            instruction.dispatcherId,
-            instruction.deliveryGeneration
+          yield* hooks.startDeliveryEntered(instruction);
+          yield* hooks.startInstructionDispatched(instruction);
+          yield* hooks.startInstructionAccepted(instruction);
+          yield* hooks.startInstructionAcknowledged(instruction);
+          yield* Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                this.resume = resolve;
+              })
           );
-          this.revocationRecorded = true;
-          return yield* Effect.async<WorkerRunOutcome>((resume) => {
-            this.releaseHandoff = () =>
-              resume(Effect.succeed({ state: "liveness-unproven" }));
-          });
+          return { state: "worker_protocol_failed" as const };
         }),
-      cancel: () => Effect.succeed(undefined),
-    });
+      cancel: () => {
+        this.resume?.();
+        return Effect.succeed(
+          this.confirmsStop ? { proof: "worker-stop" as const } : undefined
+        );
+      },
+    };
+  }
+
+  recover(): Worker {
+    throw new Error("not used");
   }
 }
 
-class ControlledTestClock implements RuntimeClock {
-  private readonly runtime = ManagedRuntime.make(TestContext.TestContext);
-  private timestampIndex = 0;
-
-  constructor(private readonly timestamps: ReadonlyArray<string>) {}
-
-  now(): Effect.Effect<string> {
-    return Effect.sync(() => {
-      const timestamp = this.timestamps[this.timestampIndex++];
-      if (timestamp === undefined) throw new Error("TestClock exhausted");
-      return timestamp;
-    });
+async function waitForState(
+  store: InMemoryEventStore,
+  expected: string,
+  operationId = "operation-1"
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const state = (await Effect.runPromise(store.read(operationId))).operation
+      .state;
+    if (state === expected) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
   }
+  throw new Error(`Operation did not reach ${expected}`);
+}
 
-  sleep(milliseconds: number): Effect.Effect<void> {
-    return Effect.promise(() =>
-      this.runtime.runPromise(TestClock.sleep(milliseconds))
+test("復旧時に開始受理が不明なら開始指示を再配送しない", async () => {
+  const trace: Array<string> = [];
+  const store = new InMemoryEventStore(trace, clock());
+  await seed(store);
+  await advanceTestOperationToStartDeliveryAuthority(store, "operation-1");
+  const worker = new RecoveryWorker("unknown", false);
+  makeTestRuntime(services(store, worker));
+  await waitForState(store, "unknown");
+  assert.equal(
+    trace.some((entry) =>
+      entry.includes('"type":"start_instruction_dispatched"')
+    ),
+    false
+  );
+});
+
+test("復旧時に開始受理が不明なら状態不明を永続化する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  await advanceTestOperationToStartDeliveryAuthority(store, "operation-1");
+  const runtime = makeTestRuntime({
+    ...services(store, new RecoveryWorker("unknown", false)),
+  });
+  await waitForState(store, "unknown");
+  const snapshot = await (await runtime.operation("operation-1")).read();
+  assert.equal(snapshot.state, "unknown");
+});
+
+test("状態不明の理由を状態照会で返す", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  await advanceTestOperationToStartDeliveryAuthority(store, "operation-1");
+  const runtime = makeTestRuntime({
+    ...services(store, new RecoveryWorker("unknown", false)),
+  });
+  await waitForState(store, "unknown");
+  const snapshot = await (await runtime.operation("operation-1")).read();
+  assert.equal(snapshot.unknownReason, "start-acceptance-unknown");
+});
+
+test("作成直後に終了したRuntimeは未配送作業を状態不明にする", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  makeTestRuntime({
+    ...services(store, new RecoveryWorker("unknown", false)),
+  });
+  await waitForState(store, "unknown");
+  const snapshot = await Effect.runPromise(store.read("operation-1"));
+  assert.equal(snapshot.operation.terminalReason, "liveness-unproven");
+});
+
+test("停止要求後に終了したRuntimeは停止未確認を状態不明にする", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  makeTestRuntime({
+    ...services(store, new RecoveryWorker("unknown", false)),
+  });
+  await waitForState(store, "unknown");
+  const snapshot = await Effect.runPromise(store.read("operation-1"));
+  assert.equal(snapshot.operation.terminalReason, "cancel-unproven");
+});
+
+test("Runtime再起動後に結果受理を継続する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+  });
+  await waitForState(store, "completed");
+  const result = await (await runtime.operation("operation-1")).readResult();
+  assert.equal(result.kind, "retrieved");
+});
+
+test("復旧した実行の保存失敗を追加のreadyなしで再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "start_delivery_authority_revoked") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const trace: Array<string> = [];
+  const store = new FailingOnceStore(trace, clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", true))
+  );
+  await runtime.ready();
+  await waitForState(store, "completed");
+
+  assert.equal(
+    trace.filter((entry) =>
+      entry.includes('"type":"start_instruction_dispatched"')
+    ).length,
+    1
+  );
+});
+
+test("復旧中の完了保存失敗を受理済み結果から再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "operation_completed") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const worker = new RecoveryWorker("accepted", true);
+  let recoveries = 0;
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: (operation) => {
+        recoveries += 1;
+        return worker.recover(operation);
+      },
+    })
+  );
+  await runtime.ready();
+  await waitForState(store, "completed");
+
+  assert.equal(recoveries, 1);
+});
+
+test("復旧したキャンセルの保存失敗を追加のreadyなしで再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "cancel_dispatched") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  const runtime = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", false))
+  );
+  await runtime.ready();
+  await waitForState(store, "cancelled");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "cancelled"
+  );
+});
+
+test("終了処理は復旧キャンセルの保留中の再試行を実行する", async () => {
+  let failureObserved!: () => void;
+  const failed = new Promise<void>((resolve) => {
+    failureObserved = resolve;
+  });
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "cancel_dispatched") {
+        this.fail = false;
+        failureObserved();
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  const runtime = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", false))
+  );
+  await failed;
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "cancelled"
+  );
+});
+
+test("保存済み正式レビューは検証器復元後に結果受理を再開する", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-review-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
+    },
+  ]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  const store = new InMemoryEventStore([], clock());
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const unavailable = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+  });
+  await unavailable.close();
+  const restored = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+    formalReviewResultFormats: { registry: formats, resultFormat },
+  });
+  await waitForState(store, "completed");
+  const snapshot = await (await restored.operation("operation-1")).read();
+
+  assert.deepEqual(snapshot.resultFormat, resultFormat);
+});
+
+test("検証器の一時的な不在から追加のreadyなしで結果受理を再開する", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-review-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
+    },
+  ]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  let available = false;
+  let firstValidation!: () => void;
+  const attempted = new Promise<void>((resolve) => {
+    firstValidation = resolve;
+  });
+  const registry: ResultFormatRegistry = {
+    ...formats,
+    validate: async (pinned, bytes) => {
+      if (!available) {
+        firstValidation();
+        return { kind: "invalid", reason: "validator_unavailable" };
+      }
+      return formats.validate(pinned, bytes);
+    },
+  };
+  const store = new InMemoryEventStore([], clock());
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+    formalReviewResultFormats: { registry, resultFormat },
+  });
+  await runtime.ready();
+  await attempted;
+  available = true;
+  await waitForState(store, "completed");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
+});
+
+test("検証器が不在の間は復旧の再試行間隔を延ばす", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-review-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
+    },
+  ]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  let available = false;
+  let attempts = 0;
+  let fourthAttempt!: () => void;
+  const attempted = new Promise<void>((resolve) => {
+    fourthAttempt = resolve;
+  });
+  const registry: ResultFormatRegistry = {
+    ...formats,
+    validate: async (pinned, bytes) => {
+      if (available) return formats.validate(pinned, bytes);
+      attempts += 1;
+      if (attempts === 4) fourthAttempt();
+      return { kind: "invalid", reason: "validator_unavailable" };
+    },
+  };
+  const store = new InMemoryEventStore(
+    [],
+    new FakeClock(
+      Array.from(
+        { length: 400 },
+        (_, index) =>
+          `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
+      )
+    )
+  );
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+    formalReviewResultFormats: { registry, resultFormat },
+  });
+  const startedAt = performance.now();
+  await runtime.ready();
+  await attempted;
+  const elapsedMs = performance.now() - startedAt;
+  available = true;
+  await runtime.close();
+
+  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
+});
+
+test("別の復旧対象の解決は待機中の復旧の再試行間隔を戻さない", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-review-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
+    },
+  ]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  let available = false;
+  let attempts = 0;
+  let firstAttempt!: () => void;
+  let fourthAttempt!: () => void;
+  const attemptedOnce = new Promise<void>((resolve) => {
+    firstAttempt = resolve;
+  });
+  const attemptedFourTimes = new Promise<void>((resolve) => {
+    fourthAttempt = resolve;
+  });
+  const registry: ResultFormatRegistry = {
+    ...formats,
+    validate: async (pinned, bytes) => {
+      if (available) return formats.validate(pinned, bytes);
+      attempts += 1;
+      if (attempts === 1) firstAttempt();
+      if (attempts === 4) fourthAttempt();
+      return { kind: "invalid", reason: "validator_unavailable" };
+    },
+  };
+  const store = new InMemoryEventStore(
+    [],
+    new FakeClock(
+      Array.from(
+        { length: 400 },
+        (_, index) =>
+          `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
+      )
+    )
+  );
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await seed(store, undefined, "operation-2");
+  await advanceTestOperationToRunning(store, "operation-2");
+  let releaseOther!: () => void;
+  const otherReleased = new Promise<void>((resolve) => {
+    releaseOther = resolve;
+  });
+  const recoveryWorker = new RecoveryWorker("accepted", true);
+  const runtime = makeTestRuntime({
+    ...services(store, {
+      open: () => {
+        throw new Error("not used");
+      },
+      recover: (operation) => {
+        const worker = recoveryWorker.recover(operation);
+        if (operation.operationId !== "operation-2") return worker;
+        return {
+          run: (hooks) =>
+            Effect.promise(() => otherReleased).pipe(
+              Effect.flatMap(() => worker.run(hooks))
+            ),
+          cancel: worker.cancel,
+        };
+      },
+    }),
+    formalReviewResultFormats: { registry, resultFormat },
+  });
+  const startedAt = performance.now();
+  await runtime.ready();
+  await attemptedOnce;
+  releaseOther();
+  await waitForState(store, "completed", "operation-2");
+  await attemptedFourTimes;
+  const elapsedMs = performance.now() - startedAt;
+  available = true;
+  await runtime.close();
+
+  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
+});
+
+test("表示終了処理の保存失敗が続く間は復旧の再試行間隔を延ばす", async () => {
+  let fourthAttempt!: () => void;
+  const attemptedFourTimes = new Promise<void>((resolve) => {
+    fourthAttempt = resolve;
+  });
+  class FailingStore extends InMemoryEventStore {
+    attempts = 0;
+    fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "presentation_cleanup_started") {
+        this.attempts += 1;
+        if (this.attempts === 4) fourthAttempt();
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingStore([], clock());
+  const runtime = makeTestRuntime({
+    ...services(
+      store,
+      new FakeWorkerAdapter({ successfulExitConfirmed: true })
+    ),
+    recovery: "disabled",
+  });
+  const startedAt = performance.now();
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result();
+  await attemptedFourTimes;
+  const elapsedMs = performance.now() - startedAt;
+  store.fail = false;
+  await runtime.close();
+
+  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
+});
+
+test("表示終了処理一覧の取得失敗が続く間は復旧の再試行間隔を延ばす", async () => {
+  let fourthAttempt!: () => void;
+  const attemptedFourTimes = new Promise<void>((resolve) => {
+    fourthAttempt = resolve;
+  });
+  class FailingStore extends InMemoryEventStore {
+    calls = 0;
+    fail = true;
+
+    override listPendingPresentationCleanups() {
+      if (this.fail) {
+        this.calls += 1;
+        if (this.calls === 4) fourthAttempt();
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listPendingPresentationCleanups();
+    }
+  }
+  const store = new FailingStore([], clock());
+  const startedAt = performance.now();
+  const runtime = makeTestRuntime(services(store, new FakeWorkerAdapter()));
+  await attemptedFourTimes;
+  const elapsedMs = performance.now() - startedAt;
+  store.fail = false;
+  await runtime.close();
+
+  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
+});
+
+test("停止確認済みの親キャンセルを永続化する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  const runtime = makeTestRuntime({
+    ...services(store, new CancellableWorker(true)),
+    recovery: "disabled",
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await waitForState(store, "running");
+  const result = await handle.cancel({});
+  assert.equal(result.state, "cancelled");
+});
+
+test("Runtime終了は進行中の親キャンセルを待つ", async () => {
+  let stopRequested!: () => void;
+  let releaseStop!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    stopRequested = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  const worker = new CancellableWorker(true);
+  const adapter: WorkerAdapter = {
+    open: (operation) => {
+      const opened = worker.open(operation);
+      return {
+        run: (hooks) => opened.run(hooks),
+        cancel: (epoch, timeoutMs) =>
+          Effect.promise(async () => {
+            const evidence = await Effect.runPromise(
+              opened.cancel(epoch, timeoutMs)
+            );
+            stopRequested();
+            await held;
+            return evidence;
+          }),
+      };
+    },
+    recover: (operation) => worker.open(operation),
+  };
+  const store = new InMemoryEventStore([], clock());
+  const runtime = makeTestRuntime({
+    ...services(store, adapter),
+    recovery: "disabled",
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await waitForState(store, "running");
+  const cancellation = handle.cancel({});
+  await requested;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  let closed = false;
+  const closing = runtime.close().then(() => {
+    closed = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const closedBeforeStop = closed;
+  releaseStop();
+  await cancellation;
+  await closing;
+  assert.equal(closedBeforeStop, false);
+});
+
+for (const failedEvent of [
+  "cancel_dispatched",
+  "cancel_acknowledged",
+  "operation_cancelled",
+] as const) {
+  test(`親キャンセルの${failedEvent}保存失敗を終了時に再処理する`, async () => {
+    class FailingOnceStore extends InMemoryEventStore {
+      private fail = true;
+
+      override advance(operationId: string, intent: OperationIntent) {
+        if (this.fail && intent.type === failedEvent) {
+          this.fail = false;
+          return Effect.fail({
+            _tag: "StoreError" as const,
+            code: "write_failed" as const,
+            message: "temporary failure",
+          });
+        }
+        return super.advance(operationId, intent);
+      }
+    }
+    const store = new FailingOnceStore([], clock());
+    const worker = new CancellableWorker(true);
+    let stopRequests = 0;
+    const adapter: WorkerAdapter = {
+      open: (operation) => {
+        const opened = worker.open(operation);
+        return {
+          run: (hooks) => opened.run(hooks),
+          cancel: (epoch, timeoutMs) => {
+            stopRequests += 1;
+            return stopRequests === 1
+              ? opened.cancel(epoch, timeoutMs)
+              : Effect.succeed(undefined);
+          },
+        };
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    };
+    const runtime = makeTestRuntime({
+      ...services(store, adapter),
+      recovery: "disabled",
+    });
+    const handle = await runtime.spawn({
+      promptRef: "private://prompt",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    });
+    await waitForState(store, "running");
+    await handle.cancel({}).catch(() => undefined);
+    await runtime.close();
+
+    assert.equal(
+      (await Effect.runPromise(store.read("operation-1"))).operation.state,
+      "cancelled"
     );
+  });
+}
+
+test("通常実行の停止確認保存失敗を所有Runtimeで再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "worker_stop_confirmed") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  const worker = new FakeWorkerAdapter({ successfulExitConfirmed: true });
+  const runtime = makeTestRuntime({
+    ...services(store, {
+      open: (operation) => worker.open(operation),
+      recover: () => ({
+        run: () =>
+          Effect.succeed({
+            state: "liveness-unproven" as const,
+            successfulExitConfirmed: true as const,
+          }),
+        cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+      }),
+    }),
+    recovery: "disabled",
+  });
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
+});
+
+class FailingOnceIntentStore extends InMemoryEventStore {
+  private fail = true;
+
+  constructor(
+    private readonly failedIntent: OperationIntent["type"],
+    timestamps: FakeClock
+  ) {
+    super([], timestamps);
   }
 
-  monotonicMilliseconds(): number {
-    return 0;
-  }
-
-  recoveredElapsedTimeIsReliable(): boolean {
-    return true;
-  }
-
-  advanceBy(milliseconds: number): Promise<void> {
-    return this.runtime.runPromise(TestClock.adjust(milliseconds));
+  override advance(operationId: string, intent: OperationIntent) {
+    if (this.fail && intent.type === this.failedIntent) {
+      this.fail = false;
+      return Effect.fail({
+        _tag: "StoreError" as const,
+        code: "write_failed" as const,
+        message: "temporary failure",
+      });
+    }
+    return super.advance(operationId, intent);
   }
 }
 
-class ControlledWorkerAdapter implements WorkerAdapter {
-  startCount = 0;
+class ReopenRefusingAdapter implements WorkerAdapter {
   recoverCount = 0;
-  readonly cancelTrace: Array<string> = [];
-  private readonly receivers = new Map<
-    string,
-    (effect: Effect.Effect<Readonly<WorkerProducedResult>>) => void
-  >();
-  private readonly cancellationResponders = new Map<
-    string,
-    (effect: Effect.Effect<WorkerCancellationEvidence | undefined>) => void
-  >();
+
+  constructor(private readonly worker: FakeWorkerAdapter) {}
 
   open(operation: Operation): Worker {
-    return makeSingleRunWorker({
-      run: (hooks) => this.run(operation, hooks),
-      cancel: (cancellationEpoch) =>
-        Effect.async((resume) => {
-          this.cancelTrace.push(
-            `${operation.operationId}:${cancellationEpoch}`
-          );
-          this.cancellationResponders.set(operation.operationId, resume);
-        }),
-    });
+    return this.worker.open(operation);
+  }
+
+  recover(): Worker {
+    this.recoverCount += 1;
+    throw new Error("worker reopened");
+  }
+}
+
+function reopenRefusingServices(
+  store: InMemoryEventStore,
+  worker: ReopenRefusingAdapter
+) {
+  return { ...services(store, worker), recovery: "disabled" as const };
+}
+
+test("汎用ワーカー失敗の記録保存失敗後も観測した失敗理由を保つ", async () => {
+  const store = new FailingOnceIntentStore("agent_settled", clock());
+  const runtime = makeTestRuntime(
+    reopenRefusingServices(
+      store,
+      new ReopenRefusingAdapter(
+        new FakeWorkerAdapter({ failure: "agent_failed" })
+      )
+    )
+  );
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .failureReason,
+    "agent_failed"
+  );
+});
+
+test("汎用ワーカー失敗の記録保存失敗後も観測した実行証跡を保つ", async () => {
+  const store = new FailingOnceIntentStore("agent_settled", clock());
+  const runtime = makeTestRuntime(
+    reopenRefusingServices(
+      store,
+      new ReopenRefusingAdapter(
+        new FakeWorkerAdapter({ failure: "agent_failed" })
+      )
+    )
+  );
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .agentRunEvidence?.toolUses[0]?.isError,
+    true
+  );
+});
+
+test("失敗保存の一時的な失敗後にワーカーの再開を要求しない", async () => {
+  const store = new FailingOnceIntentStore("operation_failed", clock());
+  const worker = new ReopenRefusingAdapter(
+    new FakeWorkerAdapter({ failure: "agent_failed" })
+  );
+  const runtime = makeTestRuntime(reopenRefusingServices(store, worker));
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(worker.recoverCount, 0);
+});
+
+class FormatRejectedWorker implements WorkerAdapter {
+  recoverCount = 0;
+
+  open(): Worker {
+    throw new Error("not used");
   }
 
   recover(operation: Operation): Worker {
     this.recoverCount += 1;
-    return makeSingleRunWorker({
+    return {
       run: (hooks) =>
         Effect.gen(function* () {
           const identity = operation.workerIdentity!;
@@ -280,2147 +1129,748 @@ class ControlledWorkerAdapter implements WorkerAdapter {
             dispatcherId: instruction.dispatcherId,
             deliveryGeneration: instruction.deliveryGeneration,
             acceptanceState: "accepted",
-            acceptedInstruction: {
-              ...operation.startInstructionAcceptance!,
-              ...(operation.startAuthorizationTiming.policy === "required"
-                ? { deadline: operation.startAuthorizationTiming.deadline }
-                : {}),
-            },
+            acceptedInstruction: operation.startInstructionAcceptance!,
           });
-          return { state: "liveness-unproven" } as const;
+          const body = "not a review";
+          const bytes = Buffer.from(body, "utf8");
+          const accepted = yield* hooks.acceptResult({
+            acceptanceRequestId: "request-rejected",
+            body,
+            expectedByteCount: bytes.byteLength,
+            expectedDigest: sha256Digest(bytes),
+          });
+          return yield* acknowledgeResultAcceptance(
+            accepted,
+            {
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cost: 0,
+              },
+              toolUses: [],
+            },
+            () => Effect.void
+          );
         }),
-      cancel: () => Effect.succeed(undefined),
-    });
-  }
-
-  protected run(
-    operation: Operation,
-    hooks: Readonly<WorkerRunHooks>
-  ): Effect.Effect<
-    WorkerRunOutcome,
-    OperationPersistenceError | ResourceProofRejectedError
-  > {
-    return Effect.gen(this, function* () {
-      this.startCount += 1;
-      yield* hooks.workerLaunched();
-      const startInstruction = yield* hooks.workerIdentified({
-        processId: 1234,
-        processInstanceId: `process:${operation.operationId}`,
-        processStartToken: `start:${operation.operationId}`,
-        piSessionId: `session:${operation.operationId}`,
-        observedConfig: {
-          model: {
-            state: "observed",
-            value: { ...operation.effectiveConfig.model },
-          },
-          thinkingLevel: { state: "unavailable" },
-          tools: {
-            state: "observed",
-            value: [...operation.effectiveConfig.tools],
-          },
-          cwd: { state: "observed", value: operation.effectiveConfig.cwd },
-        },
-      });
-      yield* hooks.startDeliveryEntered(startInstruction);
-      yield* hooks.startInstructionDispatched(startInstruction);
-      yield* hooks.startInstructionAccepted(startInstruction);
-      yield* hooks.startInstructionAcknowledged(startInstruction);
-      const produced = yield* Effect.async<Readonly<WorkerProducedResult>>(
-        (resume) => {
-          this.receivers.set(operation.operationId, resume);
-        }
-      );
-      const acceptance = yield* hooks.acceptResult(produced);
-      return yield* acknowledgeResultAcceptance(
-        acceptance,
-        {
-          usage: {
-            input: 10,
-            output: 4,
-            cacheRead: 2,
-            cacheWrite: 1,
-            totalTokens: 17,
-            cost: 0.33,
-          },
-          toolUses: [
-            { toolCallId: "call-1", toolName: "read", isError: false },
-          ],
-        },
-        () => Effect.void
-      );
-    });
-  }
-
-  deliver(operationId: string, body = "finished"): void {
-    const resume = this.receivers.get(operationId);
-    if (resume === undefined) throw new Error(`No receiver for ${operationId}`);
-    const digest =
-      `sha256:${createHash("sha256").update(body).digest("hex")}` as const;
-    const bytes = Buffer.from(body, "utf8");
-    resume(
-      Effect.succeed({
-        acceptanceRequestId: "request-1",
-        body,
-        expectedByteCount: bytes.byteLength,
-        expectedDigest: digest,
-      })
-    );
-  }
-
-  confirmWorkerStopped(operationId: string): void {
-    const resume = this.cancellationResponders.get(operationId);
-    if (resume === undefined)
-      throw new Error(`No cancellation for ${operationId}`);
-    resume(Effect.succeed({ proof: "worker-stop" }));
+      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+    };
   }
 }
 
-class FailingChildWorkerAdapter extends ControlledWorkerAdapter {
-  protected override run(
-    operation: Operation,
-    hooks: Readonly<WorkerRunHooks>
-  ): Effect.Effect<
-    WorkerRunOutcome,
-    OperationPersistenceError | ResourceProofRejectedError
-  > {
-    if (operation.operationId === "child") {
-      this.startCount += 1;
-      return Effect.succeed({ state: "worker_start_failed" });
-    }
-    return super.run(operation, hooks);
-  }
+async function seedFormatRejection(store: InMemoryEventStore) {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("rejecting-review-validator", "utf8"),
+        validate: async () => ({ kind: "invalid", reason: "invalid_json" }),
+      },
+    },
+  ]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  return { registry: formats, resultFormat };
 }
 
-async function waitForReceiver(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 25));
-}
+test("結果形式拒否の保存失敗後も観測した拒否理由を保つ", async () => {
+  const store = new FailingOnceIntentStore("operation_failed", clock());
+  const formalReviewResultFormats = await seedFormatRejection(store);
+  const runtime = makeTestRuntime({
+    ...services(store, new FormatRejectedWorker()),
+    formalReviewResultFormats,
+  });
+  await waitForState(store, "failed");
+  await runtime.close();
 
-async function waitForOperationState(
-  store: InMemoryEventStore,
-  operationId: string,
-  expectedState: Operation["state"]
-): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if ((await storedOperation(store, operationId)).state === expectedState)
-      return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-async function storedOperation(store: InMemoryEventStore, operationId: string) {
-  return (await Effect.runPromise(store.read(operationId))).operation;
-}
-
-function operationEvents(trace: ReadonlyArray<string>, operationId: string) {
-  return trace
-    .filter((entry) => entry.startsWith("event:"))
-    .map(
-      (entry) =>
-        JSON.parse(entry.slice("event:".length)) as {
-          readonly operationId: string;
-          readonly type: string;
-          readonly seq: number;
-          readonly timestamp: string;
-        }
-    )
-    .filter((event) => event.operationId === operationId);
-}
-
-async function completeOperation(
-  messages: NonNullable<FakeWorkerAdapterOptions["messages"]> = {
-    body: "finished",
-  },
-  presentationFails = false
-) {
-  const trace: Array<string> = [];
-  const worker = new FakeWorkerAdapter({ messages, trace });
-  const clock = new FakeClock(
-    Array.from(
-      { length: 20 },
-      (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-    )
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .resultFormatRejection?.reason,
+    "invalid_json"
   );
-  const store = new InMemoryEventStore(trace, clock);
-  const presentation = new FakePresentation({
-    trace,
-    attemptedState: "completed",
-    projectionFails: presentationFails,
-  });
-  const runtime = makeTestRuntime({
-    worker,
-    clock,
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation,
-    store,
-  });
+});
 
+test("結果形式拒否の保存失敗後にワーカーを再開しない", async () => {
+  const store = new FailingOnceIntentStore("operation_failed", clock());
+  const formalReviewResultFormats = await seedFormatRejection(store);
+  const worker = new FormatRejectedWorker();
+  const runtime = makeTestRuntime({
+    ...services(store, worker),
+    formalReviewResultFormats,
+  });
+  await waitForState(store, "failed");
+  await runtime.close();
+
+  assert.equal(worker.recoverCount, 1);
+});
+
+test("停止未確認の親キャンセルを状態不明として永続化する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  const runtime = makeTestRuntime({
+    ...services(store, new CancellableWorker(false)),
+    recovery: "disabled",
+  });
   const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
+    promptRef: "private://prompt",
     profile: "coding",
     idempotencyKey: "task-1",
   });
+  await waitForState(store, "running");
+  const result = await handle.cancel({});
+  assert.equal(result.state, "unknown");
+});
 
-  const completion = await handle.result();
-  return {
-    worker,
-    handle,
-    presentation,
-    result: completion.result,
-    store,
-    trace,
-  };
-}
+test("終端結果の再読込失敗を結果待機者へ通知する", async () => {
+  class FailingResultStore extends InMemoryEventStore {
+    private fail = true;
 
-class PausedWriteStore extends InMemoryEventStore {
-  private gate: Promise<void> | undefined;
-  private release: (() => void) | undefined;
-
-  pauseWrites(): void {
-    this.gate = new Promise<void>((resolve) => {
-      this.release = resolve;
-    });
+    override readResultBody(operationId: string) {
+      if (this.fail) {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.readResultBody(operationId);
+    }
   }
-
-  resumeWrites(): void {
-    this.gate = undefined;
-    this.release?.();
-  }
-
-  protected override async writeRecord(
-    operationId: string,
-    record: StoredOperationRecord
-  ): Promise<void> {
-    if (this.gate !== undefined) await this.gate;
-    return super.writeRecord(operationId, record);
-  }
-}
-
-test("Runtime close waits for a spawn admitted before close began", async () => {
-  const store = new PausedWriteStore();
+  const store = new FailingResultStore([], clock());
   const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter(),
-    clock: new FakeClock(
-      Array.from(
-        { length: 60 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
+    ...services(
+      store,
+      new FakeWorkerAdapter({ successfulExitConfirmed: true })
     ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
+    recovery: "disabled",
   });
-  store.pauseWrites();
-  const admitted = runtime.spawn({
-    promptRef: "private://prompt/1",
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
     profile: "coding",
     idempotencyKey: "task-1",
   });
+
+  await assert.rejects(handle.result(), { name: "ResultRetrievalError" });
+});
+
+test("停止確認と受理済み結果からWorkerを再起動せず完了する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.acceptResult({
+      operationId: "operation-1",
+      acceptanceRequestId: "request-1",
+      bytes: Buffer.from("accepted result", "utf8"),
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "worker_stop_confirmed",
+      proof: "worker-stop",
+    })
+  );
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    })
+  );
+  await runtime.ready();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
+});
+
+test("停止確認後の完了保存失敗を自動で再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "operation_completed") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.acceptResult({
+      operationId: "operation-1",
+      acceptanceRequestId: "request-1",
+      bytes: Buffer.from("accepted result", "utf8"),
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "worker_stop_confirmed",
+      proof: "worker-stop",
+    })
+  );
+  makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    })
+  );
+  await waitForState(store, "completed");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
+});
+
+test("停止確認済みのキャンセルをWorkerに再要求せず完了する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancel_acknowledged",
+      cancellationEpoch: 1,
+      proof: "worker-stop",
+    })
+  );
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    })
+  );
+  await runtime.ready();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "cancelled"
+  );
+});
+
+test("停止確認後のキャンセル保存失敗を自動で再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "operation_cancelled") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancellation_requested",
+      cancellationEpoch: 1,
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "cancel_acknowledged",
+      cancellationEpoch: 1,
+      proof: "worker-stop",
+    })
+  );
+  makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker reopened");
+      },
+      recover: () => {
+        throw new Error("worker reopened");
+      },
+    })
+  );
+  await waitForState(store, "cancelled");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "cancelled"
+  );
+});
+
+test("状態不明の保存失敗を自動で再処理する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override advance(operationId: string, intent: OperationIntent) {
+      if (this.fail && intent.type === "operation_unknown") {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.advance(operationId, intent);
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("worker opened");
+      },
+      recover: () => {
+        throw new Error("worker recovered");
+      },
+    })
+  );
+  await waitForState(store, "unknown");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "unknown"
+  );
+});
+
+test("復旧一覧の一時的な失敗をreadyが通知する", async () => {
+  class FailingStore extends InMemoryEventStore {
+    override listRecoverableOperations() {
+      return Effect.fail({
+        _tag: "StoreError" as const,
+        code: "write_failed" as const,
+        message: "temporary failure",
+      });
+    }
+  }
+  const runtime = makeTestRuntime(
+    services(new FailingStore(), new RecoveryWorker("accepted", true))
+  );
+
+  await assert.rejects(runtime.ready(), { name: "OperationPersistenceError" });
+  await runtime.close().catch(() => undefined);
+});
+
+test("復旧一覧の一時的な失敗を自動で再試行する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override listRecoverableOperations() {
+      if (this.fail) {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listRecoverableOperations();
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
+  await waitForState(store, "completed");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
+});
+
+test("終了処理は待機中の復旧一覧再試行を実行する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    private fail = true;
+
+    override listRecoverableOperations() {
+      if (this.fail) {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listRecoverableOperations();
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", true))
+  );
+  await runtime.ready().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
+});
+
+test("終了時の復旧再試行失敗を呼び出し元へ返す", async () => {
+  class FailingStore extends InMemoryEventStore {
+    override listRecoverableOperations() {
+      return Effect.fail({
+        _tag: "StoreError" as const,
+        code: "write_failed" as const,
+        message: "temporary failure",
+      });
+    }
+  }
+  const runtime = makeTestRuntime(
+    services(new FailingStore(), new FakeWorkerAdapter())
+  );
+  await runtime.ready().catch(() => undefined);
+
+  await assert.rejects(runtime.close(), { name: "OperationPersistenceError" });
+});
+
+test("終了時の復旧再試行失敗後に別のRuntimeで再開する", async () => {
+  class FailingTwiceStore extends InMemoryEventStore {
+    private failures = 2;
+
+    override listRecoverableOperations() {
+      if (this.failures > 0) {
+        this.failures -= 1;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listRecoverableOperations();
+    }
+  }
+  const store = new FailingTwiceStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const first = makeTestRuntime(
+    services(store, new RecoveryWorker("accepted", true))
+  );
+  await first.ready().catch(() => undefined);
+  await first.close().catch(() => undefined);
+  makeTestRuntime(services(store, new RecoveryWorker("accepted", true)));
+  await waitForState(store, "completed");
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation.state,
+    "completed"
+  );
+});
+
+test("表示終了処理一覧の一時的な失敗を自動で再試行する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    calls = 0;
+
+    override listPendingPresentationCleanups() {
+      this.calls += 1;
+      if (this.calls === 1) {
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listPendingPresentationCleanups();
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  makeTestRuntime(services(store, new FakeWorkerAdapter()));
+  for (let index = 0; index < 100 && store.calls < 2; index += 1)
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+
+  assert.equal(store.calls, 2);
+});
+
+for (const failedEvent of [
+  "presentation_cleanup_started",
+  "presentation_cleanup_unconfirmed",
+  "presentation_cleanup_completed",
+] as const) {
+  test(`表示終了処理の${failedEvent}保存失敗を終了時に再処理する`, async () => {
+    class FailingOnceStore extends InMemoryEventStore {
+      private fail = true;
+
+      override advance(operationId: string, intent: OperationIntent) {
+        if (this.fail && intent.type === failedEvent) {
+          this.fail = false;
+          return Effect.fail({
+            _tag: "StoreError" as const,
+            code: "write_failed" as const,
+            message: "temporary failure",
+          });
+        }
+        return super.advance(operationId, intent);
+      }
+    }
+    const store = new FailingOnceStore([], clock());
+    const runtime = makeTestRuntime({
+      ...services(
+        store,
+        new FakeWorkerAdapter({ successfulExitConfirmed: true })
+      ),
+      presentation: new FakePresentation({
+        workspaceInspection:
+          failedEvent === "presentation_cleanup_unconfirmed"
+            ? "missing"
+            : "matching",
+      }),
+      recovery: "disabled",
+    });
+    const handle = await runtime.spawn({
+      promptRef: "private://prompt",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    });
+    await handle.result();
+    await runtime.close();
+
+    assert.equal(
+      (await Effect.runPromise(store.read("operation-1"))).operation
+        .presentationCleanup?.state,
+      failedEvent === "presentation_cleanup_unconfirmed"
+        ? "unconfirmed"
+        : "completed"
+    );
+  });
+}
+
+test("復旧時に未着手の表示終了処理を開始する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await Effect.runPromise(
+    store.acceptResult({
+      operationId: "operation-1",
+      acceptanceRequestId: "request-1",
+      bytes: Buffer.from("accepted result", "utf8"),
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", {
+      type: "worker_stop_confirmed",
+      proof: "worker-stop",
+    })
+  );
+  await Effect.runPromise(
+    store.advance("operation-1", { type: "operation_completed" })
+  );
+  const runtime = makeTestRuntime(services(store, new FakeWorkerAdapter()));
+  await runtime.ready();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .presentationCleanup?.state,
+    "completed"
+  );
+});
+
+test("終了処理は待機中の表示終了処理一覧再試行を実行する", async () => {
+  class FailingOnceStore extends InMemoryEventStore {
+    calls = 0;
+
+    override listPendingPresentationCleanups() {
+      this.calls += 1;
+      if (this.calls === 1) {
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listPendingPresentationCleanups();
+    }
+  }
+  const store = new FailingOnceStore([], clock());
+  const runtime = makeTestRuntime(services(store, new FakeWorkerAdapter()));
+  await runtime.ready().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(store.calls, 2);
+});
+
+test("表示終了処理の復旧失敗後も起動済みWorkerを二重に回収しない", async () => {
+  class FailingCleanupStore extends InMemoryEventStore {
+    private fail = true;
+
+    override listPendingPresentationCleanups() {
+      if (this.fail) {
+        this.fail = false;
+        return Effect.fail({
+          _tag: "StoreError" as const,
+          code: "write_failed" as const,
+          message: "temporary failure",
+        });
+      }
+      return super.listPendingPresentationCleanups();
+    }
+  }
+  const store = new FailingCleanupStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  let recoverCount = 0;
+  let release!: () => void;
+  const workerFinished = new Promise<{ readonly state: "liveness-unproven" }>(
+    (resolve) => {
+      release = () => resolve({ state: "liveness-unproven" });
+    }
+  );
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("not used");
+      },
+      recover: () => {
+        recoverCount += 1;
+        return {
+          run: () => Effect.promise(() => workerFinished),
+          cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+        };
+      },
+    })
+  );
+  await runtime.ready().catch(() => undefined);
+  await runtime.ready();
+  assert.equal(recoverCount, 1);
+  release();
+  await runtime.close();
+});
+
+test("終了処理は一覧取得後に回収されたWorkerも待つ", async () => {
+  let releaseListing!: () => void;
+  let enterListing!: () => void;
+  let releaseWorker!: () => void;
+  let enterWorker!: () => void;
+  const listed = new Promise<void>((resolve) => {
+    enterListing = resolve;
+  });
+  const listingHeld = new Promise<void>((resolve) => {
+    releaseListing = resolve;
+  });
+  const workerStarted = new Promise<void>((resolve) => {
+    enterWorker = resolve;
+  });
+  const workerFinished = new Promise<{ readonly state: "liveness-unproven" }>(
+    (resolve) => {
+      releaseWorker = () => resolve({ state: "liveness-unproven" });
+    }
+  );
+  class HeldListingStore extends InMemoryEventStore {
+    override listRecoverableOperations() {
+      return Effect.promise(async () => {
+        enterListing();
+        await listingHeld;
+        return Effect.runPromise(super.listRecoverableOperations());
+      });
+    }
+  }
+  const store = new HeldListingStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime(
+    services(store, {
+      open: () => {
+        throw new Error("not used");
+      },
+      recover: () => ({
+        run: () =>
+          Effect.promise(() => {
+            enterWorker();
+            return workerFinished;
+          }),
+        cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+      }),
+    })
+  );
+  await listed;
   let closed = false;
   const closing = runtime.close().then(() => {
     closed = true;
   });
-  for (let tick = 0; tick < 20; tick += 1) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  const closedBeforeAdmissionSettled = closed;
-  store.resumeWrites();
-  const handle = await admitted;
-  await handle.result();
-  await closing;
-
-  assert.deepEqual(
-    { closedBeforeAdmissionSettled, state: (await handle.read()).state },
-    { closedBeforeAdmissionSettled: false, state: "completed" }
-  );
-});
-
-test("runtime startup adopts a recoverable Start delivery", async () => {
-  const store = new InMemoryEventStore();
-  const firstWorker = new ControlledWorkerAdapter();
-  const firstRuntime = makeTestRuntime({
-    worker: firstWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await firstRuntime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  while ((await handle.read()).state !== "running") {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  // The first Runtime models a Pi process that died mid-flight. A crash never
-  // closes, and close() would wait for the stalled Worker to settle.
-  const recoveredWorker = new ControlledWorkerAdapter();
-  const recoveredRuntime = makeTestRuntime({
-    worker: recoveredWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T11:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator([]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  let handoff = (await handle.read()).startDeliveryHandoffs.at(-1);
-  while (handoff?.workerGenerationConfirmedAt === undefined) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    handoff = (await handle.read()).startDeliveryHandoffs.at(-1);
-  }
-  await recoveredRuntime.close();
-
-  assert.equal(handoff.acceptanceState, "accepted");
-});
-
-test("runtime recovery delivers a Start instruction acquired before delivery entry", async () => {
-  const store = new InMemoryEventStore();
-  const firstWorker = new AuthorityOnlyWorkerAdapter();
-  const firstRuntime = makeTestRuntime({
-    worker: firstWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T10:05:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await firstRuntime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  while ((await handle.read()).startDeliveryAuthority === undefined) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  // The first Runtime models a Pi process that died mid-flight. A crash never
-  // closes, and close() would wait for the stalled Worker to settle.
-  const recoveredWorker = new InterruptedStartWorkerAdapter();
-  const recoveredRuntime = makeTestRuntime({
-    worker: recoveredWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T11:05:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator([]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  while (recoveredWorker.recoveredDeliveryCount === 0) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  firstWorker.release();
-  await recoveredRuntime.close();
-
-  assert.equal(recoveredWorker.recoveredDeliveryCount, 1);
-});
-
-test("runtime recovery redispatches only after a durable not-accepted result", async () => {
-  const store = new InMemoryEventStore();
-  const firstWorker = new InterruptedStartWorkerAdapter();
-  const firstRuntime = makeTestRuntime({
-    worker: firstWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T10:10:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await firstRuntime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  while ((await handle.read()).startDeliveryEntry === undefined) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  // The first Runtime models a Pi process that died mid-flight. A crash never
-  // closes, and close() would wait for the stalled Worker to settle.
-  const recoveredWorker = new InterruptedStartWorkerAdapter();
-  const recoveredRuntime = makeTestRuntime({
-    worker: recoveredWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T11:10:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator([]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  while (recoveredWorker.recoveredDeliveryCount === 0) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  firstWorker.release();
-  await recoveredRuntime.close();
-
-  assert.equal(recoveredWorker.recoveredDeliveryCount, 1);
-});
-
-test("runtime recovery resumes a Start delivery handoff interrupted after revocation", async () => {
-  const store = new InMemoryEventStore();
-  const firstWorker = new InterruptedStartWorkerAdapter();
-  const firstRuntime = makeTestRuntime({
-    worker: firstWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T10:20:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await firstRuntime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  while ((await handle.read()).startDeliveryEntry === undefined) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  // The first Runtime models a Pi process that died mid-flight. A crash never
-  // closes, and close() would wait for the stalled Worker to settle.
-  const pausedWorker = new PausedHandoffWorkerAdapter();
-  makeTestRuntime({
-    worker: pausedWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T11:20:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator([]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  while (!pausedWorker.revocationRecorded) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  // The interrupted Runtime dies mid-handoff the same way; it is never closed.
-  const recoveredWorker = new InterruptedStartWorkerAdapter();
-  const recoveredRuntime = makeTestRuntime({
-    worker: recoveredWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T12:20:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator([]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  while (recoveredWorker.recoveredDeliveryCount === 0) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  firstWorker.release();
+  releaseListing();
+  await workerStarted;
   await new Promise<void>((resolve) => setImmediate(resolve));
-  pausedWorker.release();
-  await recoveredRuntime.close();
-
-  assert.equal(recoveredWorker.recoveredDeliveryCount, 1);
+  assert.equal(closed, false);
+  releaseWorker();
+  await closing;
 });
 
-test("each Operation records root, parent, and depth lineage", async () => {
-  const worker = new ControlledWorkerAdapter();
-  const store = new InMemoryEventStore();
-  const runtime = makeTestRuntime({
-    worker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 30 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["root", "child", "grandchild"]),
-    presentation: new FakePresentation(),
-    store,
+test("終了処理は作成中の委譲を待つ", async () => {
+  let enterPreflight!: () => void;
+  let leavePreflight!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enterPreflight = resolve;
   });
-
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
+  const held = new Promise<void>((resolve) => {
+    leavePreflight = resolve;
   });
-  const child = await runtime.spawn(
-    { promptRef: "child", profile: "coding", idempotencyKey: "child" },
-    { parentOperationId: root.operationId }
-  );
-  const grandchild = await runtime.spawn(
-    {
-      promptRef: "grandchild",
-      profile: "coding",
-      idempotencyKey: "grandchild",
-    },
-    { parentOperationId: child.operationId }
-  );
-
-  assert.deepEqual(
-    await Promise.all(
-      [root, child, grandchild].map(
-        async ({ operationId }) =>
-          (await storedOperation(store, operationId)).lineage
-      )
-    ),
-    [
-      { rootOperationId: "root", depth: 0 },
-      { rootOperationId: "root", parentOperationId: "root", depth: 1 },
-      { rootOperationId: "root", parentOperationId: "child", depth: 2 },
-    ]
-  );
-});
-
-function nestedRuntime(operationIds: ReadonlyArray<string>) {
-  const worker = new ControlledWorkerAdapter();
-  const ids = new FakeIdGenerator(operationIds);
-  const presentation = new FakePresentation();
-  const store = new InMemoryEventStore();
-  const runtime = makeTestRuntime({
-    worker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 100 },
-        (_, index) =>
-          `2026-09-06T10:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids,
-    presentation,
-    store,
-  });
-  return { ids, presentation, runtime, store, worker };
-}
-
-async function spawnNested(
-  runtime: ReturnType<typeof makeTestRuntime>,
-  parentOperationId: string,
-  key: string
-) {
-  return runtime.spawn(
-    { promptRef: key, profile: "coding", idempotencyKey: key },
-    { parentOperationId }
-  );
-}
-
-function cancellableNestedRuntime(
-  operationIds: ReadonlyArray<string>,
-  presentationOptions: FakePresentationOptions = {}
-) {
-  const worker = new ControlledWorkerAdapter();
-  const clock = new ControlledTestClock(
-    Array.from({ length: 100 }, (_, index) => `cancel-time-${index}`)
-  );
-  const trace: Array<string> = [];
-  const store = new InMemoryEventStore(trace);
-  const presentation = new FakePresentation(presentationOptions);
-  const runtime = makeTestRuntime({
-    worker,
-    clock,
-    ids: new FakeIdGenerator(operationIds),
-    presentation,
-    store,
-  });
-  return { clock, presentation, runtime, store, trace, worker };
-}
-
-async function spawnCancellationTree(
-  presentationOptions: FakePresentationOptions = {}
-) {
-  const fixture = cancellableNestedRuntime(
-    ["root", "child", "grandchild"],
-    presentationOptions
-  );
-  const root = await fixture.runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  const child = await spawnNested(fixture.runtime, root.operationId, "child");
-  const grandchild = await spawnNested(
-    fixture.runtime,
-    child.operationId,
-    "grandchild"
-  );
-  await waitForReceiver();
-  return { ...fixture, child, grandchild, root };
-}
-
-test("runtime startup resumes an interrupted Worker cancellation", async () => {
-  const store = new InMemoryEventStore();
-  const firstWorker = new ControlledWorkerAdapter();
-  const firstRuntime = makeTestRuntime({
-    worker: firstWorker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T10:30:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await firstRuntime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  while ((await handle.read()).state !== "running") {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  const interruptedCancellation = handle.cancel({ scope: "subtree" });
-  while ((await handle.read()).state !== "cancelling") {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  // The first Runtime models a Pi process that died mid-flight. A crash never
-  // closes, and close() would wait for the stalled Worker to settle.
-  const recoveredRuntime = makeTestRuntime({
-    worker: new FakeWorkerAdapter(),
-    clock: new FakeClock(
-      Array.from(
-        { length: 40 },
-        (_, index) => `2026-09-06T11:30:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator([]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const recoveredHandle = await recoveredRuntime.operation("operation-1");
-  while ((await recoveredHandle.read()).state === "cancelling") {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  const operation = await recoveredHandle.read();
-  firstWorker.confirmWorkerStopped("operation-1");
-  await interruptedCancellation.catch(() => undefined);
-  await recoveredRuntime.close();
-
-  assert.equal(operation.state, "cancelled");
-});
-
-test("subtree cancellation freezes new descendants before dispatch", async () => {
-  const { clock, root, runtime } = await spawnCancellationTree();
-  const cancellation = root.cancel({ scope: "subtree" });
-  const rejection = assert.rejects(
-    spawnNested(runtime, root.operationId, "late-child"),
-    (error) =>
-      error instanceof SpawnRejectedError &&
-      error.reason === "cancellation_in_progress"
-  );
-  await waitForReceiver();
-  await clock.advanceBy(1_000);
-  await cancellation;
-
-  await rejection;
-});
-
-test("cancellation remains the outcome when Result acceptance loses the persistence race", async () => {
-  const { runtime, worker } = cancellableNestedRuntime(["root"]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  await waitForReceiver();
-  const cancellation = root.cancel({ scope: "subtree" });
-  await waitForReceiver();
-  worker.deliver(root.operationId);
-  await waitForReceiver();
-  worker.confirmWorkerStopped(root.operationId);
-  await cancellation;
-
-  await assert.rejects(
-    root.result(),
-    (error) => error instanceof OperationCancelledError
-  );
-});
-
-test("subtree cancellation dispatches from grandchild to parent", async () => {
-  const { clock, root, worker } = await spawnCancellationTree();
-  const cancellation = root.cancel({ scope: "subtree" });
-  await waitForReceiver();
-  await clock.advanceBy(1_000);
-  await cancellation;
-
-  assert.deepEqual(worker.cancelTrace, ["grandchild:1", "child:1", "root:1"]);
-});
-
-test("acknowledged subtree cancellation ends as cancelled", async () => {
-  const { child, clock, grandchild, root, store, worker } =
-    await spawnCancellationTree();
-  const cancellation = root.cancel({ scope: "subtree" });
-  await waitForReceiver();
-  worker.confirmWorkerStopped(grandchild.operationId);
-  worker.confirmWorkerStopped(child.operationId);
-  worker.confirmWorkerStopped(root.operationId);
-  await clock.advanceBy(1_000);
-  await cancellation;
-
-  assert.equal(
-    (await storedOperation(store, root.operationId)).state,
-    "cancelled"
-  );
-});
-
-async function cancelTreeWithConfirmedStops(
-  presentationOptions: FakePresentationOptions = {}
-) {
-  const fixture = await spawnCancellationTree(presentationOptions);
-  const { child, clock, grandchild, root, worker } = fixture;
-  const cancellation = root.cancel({ scope: "subtree" });
-  await waitForReceiver();
-  worker.confirmWorkerStopped(grandchild.operationId);
-  worker.confirmWorkerStopped(child.operationId);
-  worker.confirmWorkerStopped(root.operationId);
-  await clock.advanceBy(1_000);
-  await cancellation;
-  return fixture;
-}
-
-test("stop-confirmed cancellations close their owned workspaces", async () => {
-  const { presentation } = await cancelTreeWithConfirmedStops();
-
-  assert.deepEqual(presentation.closedWorkspaceIds, [
-    "fake-workspace:grandchild",
-    "fake-workspace:child",
-    "fake-workspace:root",
-  ]);
-});
-
-test("a stop-confirmed cancellation records completed workspace cleanup", async () => {
-  const { root, store } = await cancelTreeWithConfirmedStops();
-
-  assert.equal(
-    (await storedOperation(store, root.operationId)).presentationCleanup?.state,
-    "completed"
-  );
-});
-
-test("cancellation cleanup follows stop confirmation and the cancelled state", async () => {
-  const { root, trace } = await cancelTreeWithConfirmedStops();
-
-  assert.deepEqual(
-    operationEvents(trace, root.operationId)
-      .slice(-4)
-      .map(({ type }) => type),
-    [
-      "cancel_acknowledged",
-      "operation_cancelled",
-      "presentation_cleanup_started",
-      "presentation_cleanup_completed",
-    ]
-  );
-});
-
-test("a cancelled Operation stays cancelled when its workspace cannot be closed", async () => {
-  const { root, store } = await cancelTreeWithConfirmedStops({
-    workspaceClosureFails: true,
-  });
-
-  assert.equal(
-    (await storedOperation(store, root.operationId)).state,
-    "cancelled"
-  );
-});
-
-test("a failed cancellation workspace close is recorded as a cleanup diagnostic", async () => {
-  const { root, store } = await cancelTreeWithConfirmedStops({
-    workspaceClosureFails: true,
-  });
-
-  assert.equal(
-    (await storedOperation(store, root.operationId)).presentationCleanup
-      ?.diagnostic,
-    "workspace_close_failed"
-  );
-});
-
-test("a cancelled Operation whose workspace identity is missing retains it as unconfirmed", async () => {
-  const { root, store } = await cancelTreeWithConfirmedStops({
-    workspaceInspection: "missing",
-  });
-
-  assert.equal(
-    (await storedOperation(store, root.operationId)).presentationCleanup
-      ?.diagnostic,
-    "workspace_identity_missing"
-  );
-});
-
-test("an unproven descendant makes subtree cancellation unknown", async () => {
-  const { clock, grandchild, root, store, worker } =
-    await spawnCancellationTree();
-  const cancellation = root.cancel({ scope: "subtree" });
-  await waitForReceiver();
-  worker.confirmWorkerStopped(grandchild.operationId);
-  worker.confirmWorkerStopped(root.operationId);
-  await clock.advanceBy(1_000);
-  await cancellation;
-
-  assert.deepEqual(
-    [
-      (await storedOperation(store, root.operationId)).state,
-      (await storedOperation(store, root.operationId)).terminalReason,
-    ],
-    ["unknown", "cancel-unproven"]
-  );
-});
-
-test("unknown cancellations retain their owned workspaces", async () => {
-  const { clock, presentation, root } = await spawnCancellationTree();
-  const cancellation = root.cancel({ scope: "subtree" });
-  await waitForReceiver();
-  await clock.advanceBy(1_000);
-  await cancellation;
-
-  assert.deepEqual(presentation.closedWorkspaceIds, []);
-});
-
-test("an acknowledged parent retains its evidence when a descendant is unproven", async () => {
-  const { clock, grandchild, root, trace, worker } =
-    await spawnCancellationTree();
-  const cancellation = root.cancel({ scope: "subtree" });
-  await waitForReceiver();
-  worker.confirmWorkerStopped(grandchild.operationId);
-  worker.confirmWorkerStopped(root.operationId);
-  await clock.advanceBy(1_000);
-  await cancellation;
-
-  assert.deepEqual(
-    operationEvents(trace, root.operationId)
-      .slice(-2)
-      .map(({ type }) => type),
-    ["cancel_acknowledged", "operation_unknown"]
-  );
-});
-
-test("retrying one cancellation epoch is idempotent", async () => {
-  const { child, clock, grandchild, root, worker } =
-    await spawnCancellationTree();
-  const first = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
-  const retry = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
-  await waitForReceiver();
-  worker.confirmWorkerStopped(grandchild.operationId);
-  worker.confirmWorkerStopped(child.operationId);
-  worker.confirmWorkerStopped(root.operationId);
-  await clock.advanceBy(1_000);
-  await first;
-
-  assert.equal(first, retry);
-});
-
-test("Runtime rejects an older cancellation epoch", async () => {
-  const { child, clock, grandchild, root, worker } =
-    await spawnCancellationTree();
-  const cancellation = root.cancel({ scope: "subtree", cancellationEpoch: 1 });
-  await waitForReceiver();
-  worker.confirmWorkerStopped(grandchild.operationId);
-  worker.confirmWorkerStopped(child.operationId);
-  worker.confirmWorkerStopped(root.operationId);
-  await clock.advanceBy(1_000);
-  await cancellation;
-
-  await assert.rejects(
-    root.cancel({ scope: "subtree", cancellationEpoch: 0 }),
-    (error: unknown) =>
-      error instanceof CancellationRejectedError &&
-      error.reason === "stale_epoch"
-  );
-});
-
-test("subtree cancellation preserves an already completed descendant", async () => {
-  const { child, clock, grandchild, root, store, worker } =
-    await spawnCancellationTree();
-  worker.deliver(grandchild.operationId);
-  await grandchild.result();
-  const cancellation = root.cancel({ scope: "subtree" });
-  await waitForReceiver();
-  worker.confirmWorkerStopped(child.operationId);
-  worker.confirmWorkerStopped(root.operationId);
-  await clock.advanceBy(1_000);
-  await cancellation;
-
-  assert.equal(
-    (await storedOperation(store, grandchild.operationId)).state,
-    "completed"
-  );
-});
-
-test("a self-settled parent drains while its child is still running", async () => {
-  const { runtime, store, worker } = nestedRuntime(["root", "child"]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  await spawnNested(runtime, root.operationId, "child");
-  await waitForReceiver();
-
-  worker.deliver(root.operationId);
-  await waitForOperationState(store, root.operationId, "draining_descendants");
-
-  assert.equal(
-    (await storedOperation(store, root.operationId)).state,
-    "draining_descendants"
-  );
-});
-
-test("a parent completes after its child result handoff terminates", async () => {
-  const { runtime, store, worker } = nestedRuntime(["root", "child"]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  const child = await spawnNested(runtime, root.operationId, "child");
-  await waitForReceiver();
-  worker.deliver(root.operationId);
-  worker.deliver(child.operationId);
-  await Promise.all([root.result(), child.result()]);
-
-  assert.equal(
-    (await storedOperation(store, root.operationId)).state,
-    "completed"
-  );
-});
-
-test("a grandparent completes only after its grandchild terminates", async () => {
-  const { runtime, store, worker } = nestedRuntime([
-    "root",
-    "child",
-    "grandchild",
-  ]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  const child = await spawnNested(runtime, root.operationId, "child");
-  const grandchild = await spawnNested(
-    runtime,
-    child.operationId,
-    "grandchild"
-  );
-  await waitForReceiver();
-  worker.deliver(root.operationId);
-  worker.deliver(child.operationId);
-  await waitForOperationState(store, root.operationId, "draining_descendants");
-
-  const beforeGrandchild = (await storedOperation(store, root.operationId))
-    .state;
-  worker.deliver(grandchild.operationId);
-  await Promise.all([root.result(), child.result(), grandchild.result()]);
-
-  assert.equal(beforeGrandchild, "draining_descendants");
-});
-
-test("the default descendant failure policy fails a successful parent", async () => {
-  const worker = new FailingChildWorkerAdapter();
-  const store = new InMemoryEventStore();
-  const runtime = makeTestRuntime({
-    worker,
-    clock: new FakeClock(
-      Array.from(
-        { length: 30 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["root", "child"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  await spawnNested(runtime, root.operationId, "child");
-  await waitForReceiver();
-  worker.deliver(root.operationId);
-
-  await assert.rejects(
-    root.result(),
-    (error) =>
-      error instanceof OperationFailedError &&
-      error.reason === "descendant_failed"
-  );
-});
-
-test("Runtime rejects a child beyond depth two", async () => {
-  const { runtime } = nestedRuntime(["root", "child", "grandchild"]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  const child = await spawnNested(runtime, root.operationId, "child");
-  const grandchild = await spawnNested(
-    runtime,
-    child.operationId,
-    "grandchild"
-  );
-
-  await assert.rejects(
-    spawnNested(runtime, grandchild.operationId, "great-grandchild"),
-    (error) =>
-      error instanceof SpawnRejectedError &&
-      error.reason === "depth_limit_exceeded"
-  );
-});
-
-test("Runtime rejects a fourth child of one parent", async () => {
-  const { runtime } = nestedRuntime(["root", "child-1", "child-2", "child-3"]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  await Promise.all([
-    spawnNested(runtime, root.operationId, "child-1"),
-    spawnNested(runtime, root.operationId, "child-2"),
-    spawnNested(runtime, root.operationId, "child-3"),
-  ]);
-
-  await assert.rejects(
-    spawnNested(runtime, root.operationId, "child-4"),
-    (error) =>
-      error instanceof SpawnRejectedError &&
-      error.reason === "child_limit_exceeded"
-  );
-});
-
-test("Runtime rejects a fifth live descendant of one root", async () => {
-  const { runtime } = nestedRuntime([
-    "root",
-    "child-1",
-    "child-2",
-    "child-3",
-    "grandchild",
-  ]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  const children = await Promise.all([
-    spawnNested(runtime, root.operationId, "child-1"),
-    spawnNested(runtime, root.operationId, "child-2"),
-    spawnNested(runtime, root.operationId, "child-3"),
-  ]);
-  await spawnNested(
-    runtime,
-    children[0]?.operationId ?? "missing",
-    "grandchild"
-  );
-
-  await assert.rejects(
-    spawnNested(runtime, children[1]?.operationId ?? "missing", "fifth"),
-    (error) =>
-      error instanceof SpawnRejectedError &&
-      error.reason === "live_descendant_limit_exceeded"
-  );
-});
-
-async function rejectedChildResources() {
-  const { ids, presentation, runtime, worker } = nestedRuntime([
-    "root",
-    "child-1",
-    "child-2",
-    "child-3",
-  ]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  await Promise.all([
-    spawnNested(runtime, root.operationId, "child-1"),
-    spawnNested(runtime, root.operationId, "child-2"),
-    spawnNested(runtime, root.operationId, "child-3"),
-  ]);
-  await waitForReceiver();
-  const before = {
-    issuedIdentifiers: ids.issuedCount,
-    presentations: presentation.projections.length,
-    workerStarts: worker.startCount,
-  };
-  await spawnNested(runtime, root.operationId, "child-4").catch(
-    () => undefined
-  );
-  await waitForReceiver();
-  return { before, ids, presentation, worker };
-}
-
-test("a rejected child creates no identifier", async () => {
-  const { before, ids } = await rejectedChildResources();
-
-  assert.equal(ids.issuedCount, before.issuedIdentifiers);
-});
-
-test("a rejected child creates no Worker resource", async () => {
-  const { before, worker } = await rejectedChildResources();
-
-  assert.equal(worker.startCount, before.workerStarts);
-});
-
-test("a rejected child creates no Presentation resource", async () => {
-  const { before, presentation } = await rejectedChildResources();
-
-  assert.equal(presentation.projections.length, before.presentations);
-});
-
-test("retrying the same child acceptance returns one child", async () => {
-  const { runtime } = nestedRuntime(["root", "child"]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-  });
-  const children = await Promise.all([
-    spawnNested(runtime, root.operationId, "child"),
-    spawnNested(runtime, root.operationId, "child"),
-  ]);
-
-  assert.equal(children[0], children[1]);
-});
-
-test("OperationHandle returns the accepted Result", async () => {
-  const { result } = await completeOperation();
-
-  assert.deepEqual(result, {
-    body: "finished",
-    byteCount: 8,
-    digest:
-      "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
-  });
-});
-
-test("OperationHandle exposes the Operation identifier", async () => {
-  const { handle } = await completeOperation();
-
-  assert.equal(handle.operationId, "operation-1");
-});
-
-test("Runtime starts the Worker once", async () => {
-  const { worker } = await completeOperation();
-
-  assert.equal(worker.startCount, 1);
-});
-
-test("Operation records requested configuration separately", async () => {
-  const { store } = await completeOperation();
-
-  assert.deepEqual(
-    (await storedOperation(store, "operation-1")).requestedConfig,
-    {}
-  );
-});
-
-test("Operation records the policy-resolved effective configuration", async () => {
-  const { store } = await completeOperation();
-
-  assert.deepEqual(
-    (await storedOperation(store, "operation-1")).effectiveConfig.modelPolicy,
-    {
-      candidates: [{ provider: "test", id: "test-model" }],
-      attempted: [{ provider: "test", id: "test-model" }],
-      maxAttempts: 1,
-      fallback: "forbidden",
-      aliases: [],
+  class HeldPresentation extends FakePresentation {
+    override preflight() {
+      return Effect.promise(async () => {
+        enterPreflight();
+        await held;
+      });
     }
-  );
-});
-
-test("Operation does not invent an observed thinking level", async () => {
-  const { store } = await completeOperation();
-
-  assert.deepEqual(
-    (await storedOperation(store, "operation-1")).observedConfig?.thinkingLevel,
-    { state: "unavailable" }
-  );
-});
-
-test("Operation records the observed Worker tool set", async () => {
-  const { store } = await completeOperation();
-
-  assert.deepEqual(
-    (await storedOperation(store, "operation-1")).observedConfig?.tools,
-    { state: "observed", value: ["read", "bash"] }
-  );
-});
-
-async function rejectedModelConfiguration() {
-  const fixture = nestedRuntime(["operation-1"]);
-  let rejection: unknown;
-  try {
-    await fixture.runtime.spawn({
-      promptRef: "prompt",
-      profile: "coding",
-      idempotencyKey: "task",
-      model: { provider: "other", id: "model" },
-    });
-  } catch (error) {
-    rejection = error;
   }
-  return { ...fixture, rejection };
-}
-
-test("Runtime rejects a model outside the exact candidate policy", async () => {
-  const { rejection } = await rejectedModelConfiguration();
-
-  assert.equal(
-    rejection instanceof WorkerConfigurationError &&
-      rejection.reason === "model_mismatch",
-    true
-  );
-});
-
-test("a rejected model creates no identifier", async () => {
-  const { ids } = await rejectedModelConfiguration();
-
-  assert.equal(ids.issuedCount, 0);
-});
-
-test("a rejected model creates no Presentation resource", async () => {
-  const { presentation } = await rejectedModelConfiguration();
-
-  assert.equal(presentation.createdWorkspaceIds.length, 0);
-});
-
-test("a rejected model creates no Worker resource", async () => {
-  const { worker } = await rejectedModelConfiguration();
-
-  assert.equal(worker.startCount, 0);
-});
-
-test("Runtime rejects tools above the profile ceiling before resources", async () => {
-  const { ids, runtime } = nestedRuntime(["operation-1"]);
-
-  await assert.rejects(
-    runtime.spawn({
-      promptRef: "prompt",
-      profile: "coding",
-      idempotencyKey: "task",
-      tools: ["read", "network"],
-    }),
-    (error) =>
-      error instanceof WorkerConfigurationError &&
-      error.reason === "tool_policy_violation" &&
-      ids.issuedCount === 0
-  );
-});
-
-test("Runtime rejects a profile requiring an unavailable tool before issuing an identifier", async () => {
-  const ids = new FakeIdGenerator(["operation-1"]);
+  const store = new InMemoryEventStore([], clock());
   const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter(),
-    clock: new FakeClock([]),
-    ids,
-    presentation: new FakePresentation(),
-    store: new InMemoryEventStore(),
-    configuration: {
-      cwd: "/work/project",
-      profiles: {
-        coding: {
-          intendedUse: "reader",
-          modelCandidates: [{ provider: "test", id: "test-model" }],
-          thinkingLevel: "medium",
-          tools: ["read", "network"],
-          resources: { resourceProofPolicy: "disabled" },
-          startAuthorization: { policy: "disabled" },
-          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
-        },
-      },
-    },
+    ...services(store, new FakeWorkerAdapter()),
+    presentation: new HeldPresentation(),
+    recovery: "disabled",
   });
-
-  await runtime
-    .spawn({ promptRef: "prompt", profile: "coding", idempotencyKey: "task" })
-    .catch(() => undefined);
-
-  assert.equal(ids.issuedCount, 0);
-});
-
-test("Runtime rejects a contradictory candidate profile without disabling its guarantees", async () => {
-  const workspace = {
-    workspaceId: "workspace-1",
-    normalizedPath: "/work/project",
-    baseRevision: "a".repeat(40),
-    owner: { state: "known" as const, ownerId: "launcher-1" },
-    pionsMayDelete: false as const,
-  };
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter(),
-    clock: new FakeClock([]),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store: new InMemoryEventStore(),
-    configuration: {
-      cwd: "/work/project",
-      profiles: {
-        candidate: {
-          intendedUse: "writer",
-          modelCandidates: [{ provider: "test", id: "test-model" }],
-          thinkingLevel: "medium",
-          tools: ["read"],
-          resources: {
-            resourceProofPolicy: "required",
-            authorityId: "launcher-1",
-            authorityRegistrationId: "registration-1",
-            authorityGeneration: "generation-1",
-            normalizationVersion: "selector-v1",
-            workspace,
-            permissionManifest: {
-              tools: ["read", "bash"],
-              read: { kind: "workspace" },
-              write: { kind: "workspace" },
-              commands: "none",
-              network: "none",
-              externalResources: [],
-            },
-            cleanupPolicy: "coordinator_required",
-            cleanupTimeoutMs: 1_000,
-            maxCleanupAttempts: 2,
-            safetyCleanupOperations: ["inspect", "revoke", "release"],
-          },
-          startAuthorization: {
-            policy: "required",
-            windowMs: 60_000,
-            authorizedSubjectIds: ["coordinator-1"],
-            receipt: {
-              workspace,
-              permissionManifest: {
-                manifestId: "manifest-1",
-                digest: `sha256:${"ab".repeat(32)}`,
-              },
-              reviewSubjectVerification: "disabled",
-            },
-          },
-          maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
-        },
-      },
-    },
-  });
-
-  await assert.rejects(
-    runtime.spawn({
-      promptRef: "prompt",
-      profile: "candidate",
-      idempotencyKey: "candidate",
-    }),
-    { name: "ResourceProofRejectedError", reason: "permission_contradiction" }
-  );
-});
-
-test("a child cannot raise its inherited thinking ceiling", async () => {
-  const { runtime } = nestedRuntime(["root", "child"]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-    thinkingLevel: "low",
-  });
-
-  await assert.rejects(
-    runtime.spawn(
-      {
-        promptRef: "child",
-        profile: "coding",
-        idempotencyKey: "child",
-        thinkingLevel: "medium",
-      },
-      { parentOperationId: root.operationId }
-    ),
-    (error) =>
-      error instanceof WorkerConfigurationError &&
-      error.reason === "unsupported_capability"
-  );
-});
-
-test("a child cannot raise its inherited tool ceiling", async () => {
-  const { runtime } = nestedRuntime(["root", "child"]);
-  const root = await runtime.spawn({
-    promptRef: "root",
-    profile: "coding",
-    idempotencyKey: "root",
-    tools: ["read"],
-  });
-
-  await assert.rejects(
-    runtime.spawn(
-      {
-        promptRef: "child",
-        profile: "coding",
-        idempotencyKey: "child",
-        tools: ["read", "bash"],
-      },
-      { parentOperationId: root.operationId }
-    ),
-    (error) =>
-      error instanceof WorkerConfigurationError &&
-      error.reason === "tool_policy_violation"
-  );
-});
-
-test("an observed model mismatch becomes a typed Operation failure", async () => {
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ failure: "model_mismatch" }),
-    clock: new FakeClock(
-      Array.from({ length: 8 }, (_, index) => `config-time-${index}`)
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store: new InMemoryEventStore(),
-  });
-  const handle = await runtime.spawn({
-    promptRef: "prompt",
-    profile: "coding",
-    idempotencyKey: "task",
-  });
-
-  await assert.rejects(
-    handle.result(),
-    (error) =>
-      error instanceof OperationFailedError && error.reason === "model_mismatch"
-  );
-});
-
-test("an observed thinking mismatch becomes a typed Operation failure", async () => {
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ failure: "thinking_level_mismatch" }),
-    clock: new FakeClock(
-      Array.from({ length: 8 }, (_, index) => `config-time-${index}`)
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store: new InMemoryEventStore(),
-  });
-  const handle = await runtime.spawn({
-    promptRef: "prompt",
-    profile: "coding",
-    idempotencyKey: "task",
-  });
-
-  await assert.rejects(
-    handle.result(),
-    (error) =>
-      error instanceof OperationFailedError &&
-      error.reason === "thinking_level_mismatch"
-  );
-});
-
-test("Operation records the worker process identifier", async () => {
-  const { store } = await completeOperation();
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).workerIdentity?.processId,
-    1234
-  );
-});
-
-test("Operation records the worker process instance identity", async () => {
-  const { store } = await completeOperation();
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).workerIdentity
-      ?.processInstanceId,
-    "fake-process-instance"
-  );
-});
-
-test("Operation records the worker process start identity", async () => {
-  const { store } = await completeOperation();
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).workerIdentity
-      ?.processStartToken,
-    "fake-process-start"
-  );
-});
-
-test("Operation records the Pi session identity", async () => {
-  const { store } = await completeOperation();
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).workerIdentity?.piSessionId,
-    "fake-pi-session"
-  );
-});
-
-test("Operation records Pi usage at agent settlement", async () => {
-  const { store } = await completeOperation();
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).agentRunEvidence?.usage
-      .totalTokens,
-    17
-  );
-});
-
-test("Operation records Pi tool use at agent settlement", async () => {
-  const { store } = await completeOperation();
-
-  assert.deepEqual(
-    (await storedOperation(store, "operation-1")).agentRunEvidence?.toolUses,
-    [{ toolCallId: "fake-call", toolName: "read", isError: false }]
-  );
-});
-
-test("Operation records the worker's owned workspace root pane identity", async () => {
-  const { store } = await completeOperation();
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).workerIdentity?.paneId,
-    "fake-pane:operation-1"
-  );
-});
-
-test("Runtime records the successful Operation event sequence", async () => {
-  const { trace } = await completeOperation();
-
-  assert.deepEqual(
-    operationEvents(trace, "operation-1").map(({ type }) => type),
-    [
-      "operation_requested",
-      "presentation_owned",
-      "operation_starting",
-      "worker_launched",
-      "worker_identified",
-      "start_delivery_authority_acquired",
-      "start_delivery_entered",
-      "start_instruction_dispatched",
-      "start_instruction_accepted",
-      "start_instruction_acknowledged",
-      "result_accepted",
-      "agent_settled",
-      "self_settled",
-      "operation_completed",
-    ]
-  );
-});
-
-test("Runtime uses deterministic event sequence numbers and timestamps", async () => {
-  const { trace } = await completeOperation();
-
-  assert.deepEqual(
-    operationEvents(trace, "operation-1").map(({ seq, timestamp }) => ({
-      seq,
-      timestamp,
-    })),
-    [
-      { seq: 1, timestamp: "2026-09-06T10:00:00.000Z" },
-      { seq: 2, timestamp: "2026-09-06T10:00:01.000Z" },
-      { seq: 3, timestamp: "2026-09-06T10:00:02.000Z" },
-      { seq: 4, timestamp: "2026-09-06T10:00:03.000Z" },
-      { seq: 5, timestamp: "2026-09-06T10:00:04.000Z" },
-      { seq: 6, timestamp: "2026-09-06T10:00:05.000Z" },
-      { seq: 7, timestamp: "2026-09-06T10:00:06.000Z" },
-      { seq: 8, timestamp: "2026-09-06T10:00:07.000Z" },
-      { seq: 9, timestamp: "2026-09-06T10:00:08.000Z" },
-      { seq: 10, timestamp: "2026-09-06T10:00:09.000Z" },
-      { seq: 11, timestamp: "2026-09-06T10:00:10.000Z" },
-      { seq: 12, timestamp: "2026-09-06T10:00:11.000Z" },
-      { seq: 13, timestamp: "2026-09-06T10:00:12.000Z" },
-      { seq: 14, timestamp: "2026-09-06T10:00:13.000Z" },
-    ]
-  );
-});
-
-test("Presentation cannot change Operation state", async () => {
-  const { presentation } = await completeOperation();
-
-  assert.equal(presentation.stateChangeSucceeded, false);
-});
-
-test("Presentation receives the completed Operation projection", async () => {
-  const { presentation } = await completeOperation();
-
-  assert.equal(presentation.projections.at(-1)?.state, "completed");
-});
-
-test("Presentation failure cannot prevent terminal completion", async () => {
-  const { store } = await completeOperation({ body: "finished" }, true);
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).state,
-    "completed"
-  );
-});
-
-test("completion without confirmed Worker stop retains its workspace", async () => {
-  const { presentation } = await completeOperation();
-
-  assert.deepEqual(presentation.closedWorkspaceIds, []);
-});
-
-class CleanupWriteFailingStore extends InMemoryEventStore {
-  constructor(private readonly failedType: OperationIntent["type"]) {
-    super();
-  }
-
-  override advance(operationId: string, intent: OperationIntent) {
-    return intent.type === this.failedType
-      ? Effect.fail({
-          _tag: "StoreError" as const,
-          code: "write_failed" as const,
-          message: "simulated cleanup write failure",
-        })
-      : super.advance(operationId, intent);
-  }
-}
-
-async function completeWithWorkspaceClosureFailure(
-  store: InMemoryEventStore = new InMemoryEventStore()
-) {
-  const presentation = new FakePresentation({ workspaceClosureFails: true });
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(
-      Array.from(
-        { length: 20 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation,
-    store,
-  });
-  const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
+  const spawn = runtime.spawn({
+    promptRef: "private://prompt",
     profile: "coding",
     idempotencyKey: "task-1",
   });
-  await handle.result();
-  return {
-    operation: await storedOperation(store, handle.operationId),
-    presentation,
-  };
-}
-
-test("successful cleanup follows Result acceptance and Worker stop confirmation", async () => {
-  const trace: Array<string> = [];
-  const store = new InMemoryEventStore(
-    trace,
-    new FakeClock(
-      Array.from(
-        { length: 20 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    )
-  );
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true, trace }),
-    clock: new FakeClock(
-      Array.from(
-        { length: 20 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation({ trace }),
-    store,
+  await entered;
+  let closed = false;
+  const closing = runtime.close().then(() => {
+    closed = true;
   });
-  const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  await handle.result();
-  const sequence = trace
-    .flatMap((entry) => {
-      if (entry.startsWith("presentation:")) return [entry];
-      if (!entry.startsWith("event:")) return [];
-      const type = (
-        JSON.parse(entry.slice("event:".length)) as { readonly type: string }
-      ).type;
-      return [type];
-    })
-    .filter((entry) =>
-      [
-        "result_accepted",
-        "worker_stop_confirmed",
-        "presentation_cleanup_started",
-        "presentation:inspect-owned-workspace",
-        "presentation:close-owned-workspace",
-        "presentation_cleanup_completed",
-      ].includes(entry)
-    );
-
-  assert.deepEqual(sequence, [
-    "result_accepted",
-    "worker_stop_confirmed",
-    "presentation_cleanup_started",
-    "presentation:inspect-owned-workspace",
-    "presentation:close-owned-workspace",
-    "presentation_cleanup_completed",
-  ]);
-});
-
-test("Runtime records failed successful-workspace cleanup", async () => {
-  const { operation } = await completeWithWorkspaceClosureFailure();
-
-  assert.equal(
-    operation.presentationCleanup?.diagnostic,
-    "workspace_close_failed"
-  );
-});
-
-test("failed successful-workspace cleanup cannot prevent terminal completion", async () => {
-  const { operation } = await completeWithWorkspaceClosureFailure();
-
-  assert.equal(operation.state, "completed");
-});
-
-test("successful-worker cleanup targets only the Operation's persisted workspace", async () => {
-  const { presentation } = await completeWithWorkspaceClosureFailure();
-
-  assert.deepEqual(presentation.closedWorkspaceIds, [
-    "fake-workspace:operation-1",
-  ]);
-});
-
-test("cleanup does not close a workspace when its pending record cannot be saved", async () => {
-  const { presentation } = await completeWithWorkspaceClosureFailure(
-    new CleanupWriteFailingStore("presentation_cleanup_started")
-  );
-
-  assert.deepEqual(presentation.closedWorkspaceIds, []);
-});
-
-test("a pending-record failure is returned as an independent cleanup diagnostic", async () => {
-  const store = new CleanupWriteFailingStore("presentation_cleanup_started");
-  const presentation = new FakePresentation();
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(
-      Array.from(
-        { length: 20 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation,
-    store,
-  });
-  const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  const completion = await handle.result();
-
-  assert.deepEqual(completion.cleanupDiagnostics, [
-    { code: "cleanup_record_unavailable" },
-  ]);
-});
-
-test("close and diagnostic persistence failures preserve both cleanup failures", async () => {
-  const store = new CleanupWriteFailingStore(
-    "presentation_cleanup_unconfirmed"
-  );
-  const presentation = new FakePresentation({ workspaceClosureFails: true });
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(
-      Array.from(
-        { length: 20 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation,
-    store,
-  });
-  const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  const completion = await handle.result();
-
-  assert.deepEqual(
-    completion.cleanupDiagnostics.map(({ code }) => code).sort(),
-    ["cleanup_record_unavailable", "workspace_close_failed"]
-  );
-});
-
-async function recoverInterruptedCleanup() {
-  const store = new CleanupWriteFailingStore("presentation_cleanup_completed");
-  const firstRuntime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
-    clock: new FakeClock(
-      Array.from(
-        { length: 30 },
-        (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
-      )
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await firstRuntime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  await handle.result();
-  await firstRuntime.close();
-
-  const recoveredPresentation = new FakePresentation({
-    workspaceInspection: "missing",
-  });
-  const recoveredRuntime = makeTestRuntime({
-    worker: new FakeWorkerAdapter(),
-    clock: new FakeClock(["2026-09-06T10:01:00.000Z"]),
-    ids: new FakeIdGenerator([]),
-    presentation: recoveredPresentation,
-    store,
-  });
-  await recoveredRuntime.close();
-  return {
-    operation: await storedOperation(store, "operation-1"),
-    presentation: recoveredPresentation,
-  };
-}
-
-test("cleanup recovery does not close a workspace whose identity is no longer present", async () => {
-  const { presentation } = await recoverInterruptedCleanup();
-
-  assert.deepEqual(presentation.closedWorkspaceIds, []);
-});
-
-test("cleanup recovery records missing completion proof as unconfirmed", async () => {
-  const { operation } = await recoverInterruptedCleanup();
-
-  assert.equal(operation.presentationCleanup?.state, "unconfirmed");
-});
-
-async function retryOperation(options?: {
-  readonly parentOperationId?: string;
-}) {
-  const worker = new FakeWorkerAdapter({ messages: { body: "finished" } });
-  const runtime = makeTestRuntime({
-    worker,
-    clock: new FakeClock([
-      "2026-09-06T10:00:00.000Z",
-      "2026-09-06T10:00:01.000Z",
-      "2026-09-06T10:00:02.000Z",
-      "2026-09-06T10:00:03.000Z",
-      "2026-09-06T10:00:04.000Z",
-      "2026-09-06T10:00:05.000Z",
-      "2026-09-06T10:00:06.000Z",
-      "2026-09-06T10:00:07.000Z",
-      "2026-09-06T10:00:08.000Z",
-    ]),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store: new InMemoryEventStore(),
-  });
-  const task = {
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  };
-
-  const handles = await Promise.all([
-    runtime.spawn(task, options),
-    runtime.spawn(task, options),
-  ]);
-  await handles[0]?.result();
-
-  return { handles, worker };
-}
-
-test("Runtime returns the same OperationHandle for an idempotent spawn", async () => {
-  const { handles } = await retryOperation();
-
-  assert.equal(handles[0], handles[1]);
-});
-
-test("Runtime starts the Worker once for an idempotent spawn", async () => {
-  const { worker } = await retryOperation();
-
-  assert.equal(worker.startCount, 1);
-});
-
-test("OperationHandle returns the same Result without republishing it", async () => {
-  const { handle } = await completeOperation();
-
-  const results = (await Promise.all([handle.result(), handle.result()])).map(
-    (completion) => completion.result
-  );
-
-  assert.deepEqual(results, [
-    {
-      body: "finished",
-      byteCount: 8,
-      digest:
-        "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
-    },
-    {
-      body: "finished",
-      byteCount: 8,
-      digest:
-        "sha256:05343e9845302eb730fa9d18ac7b28d5e509893daf1eb76ede8d6e82d47b2da9",
-    },
-  ]);
-});
-
-async function failOperation() {
-  const trace: Array<string> = [];
-  const store = new InMemoryEventStore(trace);
-  const presentation = new FakePresentation();
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({
-      messages: { body: "must not be returned" },
-      trace,
-      failure: "worker_start_failed",
-    }),
-    clock: new FakeClock([
-      "2026-09-06T10:00:00.000Z",
-      "2026-09-06T10:00:01.000Z",
-      "2026-09-06T10:00:02.000Z",
-      "2026-09-06T10:00:03.000Z",
-      "2026-09-06T10:00:04.000Z",
-    ]),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation,
-    store,
-  });
-  const handle = await runtime.spawn({
-    promptRef: "private://prompt/1",
-    profile: "coding",
-    idempotencyKey: "task-1",
-  });
-  await handle.result().catch(() => undefined);
-
-  return { handle, presentation, store, trace };
-}
-
-test("failed Worker retains its workspace", async () => {
-  const { presentation } = await failOperation();
-
-  assert.deepEqual(presentation.closedWorkspaceIds, []);
-});
-
-async function settledAgentFailure() {
-  const store = new InMemoryEventStore();
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ failure: "agent_failed" }),
-    clock: new FakeClock(
-      Array.from({ length: 12 }, (_, index) => `failure-time-${index}`)
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await runtime.spawn({
-    promptRef: "prompt",
-    profile: "coding",
-    idempotencyKey: "task",
-  });
-  await handle.result().catch(() => undefined);
-  return { handle, store };
-}
-
-test("a settled Pi failure is durably classified", async () => {
-  const { store } = await settledAgentFailure();
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).terminalReason,
-    "agent_failed"
-  );
-});
-
-test("a settled Pi failure retains usage and tool evidence", async () => {
-  const { store } = await settledAgentFailure();
-
-  assert.deepEqual(
-    (await storedOperation(store, "operation-1")).agentRunEvidence,
-    {
-      usage: {
-        input: 10,
-        output: 4,
-        cacheRead: 2,
-        cacheWrite: 1,
-        totalTokens: 17,
-        cost: 0.33,
-      },
-      toolUses: [{ toolCallId: "fake-call", toolName: "read", isError: true }],
-    }
-  );
-});
-
-test("confirmed process exit without a Result becomes a bounded failure", async () => {
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ failure: "process-exited-without-result" }),
-    clock: new FakeClock(
-      Array.from({ length: 10 }, (_, index) => `exit-time-${index}`)
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store: new InMemoryEventStore(),
-  });
-  const handle = await runtime.spawn({
-    promptRef: "prompt",
-    profile: "coding",
-    idempotencyKey: "task",
-  });
-
-  await assert.rejects(
-    handle.result(),
-    (error) =>
-      error instanceof OperationFailedError &&
-      error.reason === "process-exited-without-result"
-  );
-});
-
-test("unproven Worker liveness becomes an unknown Operation", async () => {
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ failure: "liveness-unproven" }),
-    clock: new FakeClock(
-      Array.from({ length: 10 }, (_, index) => `unknown-time-${index}`)
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store: new InMemoryEventStore(),
-  });
-  const handle = await runtime.spawn({
-    promptRef: "prompt",
-    profile: "coding",
-    idempotencyKey: "task",
-  });
-
-  await assert.rejects(
-    handle.result(),
-    (error) =>
-      error instanceof OperationUnknownError &&
-      error.reason === "liveness-unproven"
-  );
-});
-
-test("a Worker protocol failure is durably classified without fake completion", async () => {
-  const store = new InMemoryEventStore();
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({
-      messages: { body: "unused" },
-      failure: "worker_protocol_failed",
-    }),
-    clock: new FakeClock(
-      Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await runtime.spawn({
-    promptRef: "prompt",
-    profile: "coding",
-    idempotencyKey: "task",
-  });
-  await handle.result().catch(() => undefined);
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).terminalReason,
-    "worker_protocol_failed"
-  );
-});
-
-async function acknowledgementFailure(
-  messages: NonNullable<FakeWorkerAdapterOptions["messages"]> = {
-    body: "accepted",
-  }
-): Promise<InMemoryEventStore> {
-  const store = new InMemoryEventStore();
-  const runtime = makeTestRuntime({
-    worker: new FakeWorkerAdapter({ messages, acknowledgementFails: true }),
-    clock: new FakeClock(
-      Array.from({ length: 10 }, (_, index) => `failure-time-${index}`)
-    ),
-    ids: new FakeIdGenerator(["operation-1"]),
-    presentation: new FakePresentation(),
-    store,
-  });
-  const handle = await runtime.spawn({
-    promptRef: "prompt",
-    profile: "coding",
-    idempotencyKey: "task",
-  });
-  await handle.result().catch(() => undefined);
-  return store;
-}
-
-test("an acknowledgement failure leaves the Operation unknown", async () => {
-  const store = await acknowledgementFailure();
-
-  assert.equal(
-    (await storedOperation(store, "operation-1")).terminalReason,
-    "liveness-unproven"
-  );
-});
-
-test("an acknowledgement failure retains the accepted Result", async () => {
-  const store = await acknowledgementFailure();
-
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result
-      ?.acceptanceRequestId,
-    "request-1"
-  );
-});
-
-test("OperationHandle reports Worker start failure as a bounded typed failure", async () => {
-  const { handle } = await failOperation();
-
-  await assert.rejects(
-    handle.result(),
-    (error) =>
-      error instanceof OperationFailedError &&
-      error.reason === "worker_start_failed"
-  );
-});
-
-test("Worker start failure records the failed terminal result", async () => {
-  const { trace } = await failOperation();
-
-  assert.deepEqual(
-    operationEvents(trace, "operation-1").map(({ type }) => type),
-    [
-      "operation_requested",
-      "presentation_owned",
-      "operation_starting",
-      "self_settled",
-      "operation_failed",
-    ]
-  );
-});
-
-test("Worker start failure does not publish a successful Result", async () => {
-  const { store } = await failOperation();
-
-  assert.equal(
-    (await Effect.runPromise(store.read("operation-1"))).operation.result,
-    undefined
-  );
+  await Promise.resolve();
+  assert.equal(closed, false);
+  leavePreflight();
+  await spawn;
+  await closing;
 });

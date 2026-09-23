@@ -31,10 +31,7 @@ import type {
   WorkerRunHooks,
   WorkerRunOutcome,
 } from "./services.js";
-import {
-  OperationPersistenceError,
-  ResourceProofRejectedError,
-} from "../public.js";
+import { OperationPersistenceError } from "../public.js";
 import type { ResultAcceptanceOutcome } from "./result-acceptance.js";
 import type {
   WorkerConfigurationFailureReason,
@@ -353,10 +350,7 @@ export class VisibleWorker implements WorkerAdapter {
     hooks: Readonly<WorkerRunHooks>,
     cancellation: WorkerCancellation,
     recovering: boolean
-  ): Effect.Effect<
-    WorkerRunOutcome,
-    OperationPersistenceError | ResourceProofRejectedError
-  > {
+  ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError> {
     let session: Session | undefined;
     let startDeliveryEntered = false;
     return Effect.gen(this, function* () {
@@ -572,6 +566,14 @@ export class VisibleWorker implements WorkerAdapter {
                 error instanceof Error ? error : new Error(String(error)),
             })
         );
+        if (acknowledged.state === "result_format_rejected") {
+          const stopped = yield* Effect.promise(() =>
+            this.cancelSession(operation, 1_000)
+          );
+          return stopped === undefined
+            ? ({ state: "liveness-unproven" } as const)
+            : ({ ...acknowledged, successfulExitConfirmed: true } as const);
+        }
         if (acknowledged.state !== "result_acknowledged") return acknowledged;
         const stopped = yield* Effect.promise(() =>
           this.confirmSuccessfulExit(session!)
@@ -584,17 +586,7 @@ export class VisibleWorker implements WorkerAdapter {
         Effect.catchAll(
           (
             error
-          ): Effect.Effect<
-            WorkerRunOutcome,
-            OperationPersistenceError | ResourceProofRejectedError
-          > => {
-            if (error instanceof ResourceProofRejectedError) {
-              return startDeliveryEntered
-                ? Effect.promise(() =>
-                    this.cancelSession(operation, 1_000)
-                  ).pipe(Effect.andThen(Effect.fail(error)))
-                : Effect.fail(error);
-            }
+          ): Effect.Effect<WorkerRunOutcome, OperationPersistenceError> => {
             if (error instanceof OperationPersistenceError) {
               if (recovering && !startDeliveryEntered) {
                 return Effect.promise(() =>
@@ -770,13 +762,7 @@ export class VisibleWorker implements WorkerAdapter {
       dispatcherId: previous.dispatcherId,
       workerProcessInstanceId: previous.workerProcessInstanceId,
       receiptDigest: previous.receiptDigest,
-      ...(previous.authorizationDecisionId === undefined
-        ? {}
-        : { authorizationDecisionId: previous.authorizationDecisionId }),
       deliveryGeneration: previous.deliveryGeneration,
-      ...(operation.startAuthorizationTiming.policy === "required"
-        ? { deadline: operation.startAuthorizationTiming.deadline }
-        : {}),
     });
     this.sessions.set(operation.operationId, session);
     try {

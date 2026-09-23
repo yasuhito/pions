@@ -164,7 +164,6 @@ const StartInstructionSchema = Schema.Struct({
   dispatcherId: IdentifierSchema,
   workerProcessInstanceId: ProcessInstanceIdSchema,
   receiptDigest: DigestSchema,
-  authorizationDecisionId: Schema.optional(IdentifierSchema),
   deliveryGeneration: Schema.Number,
   deadline: Schema.optional(Schema.String),
 });

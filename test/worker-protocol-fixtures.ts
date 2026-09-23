@@ -33,12 +33,9 @@ export const observedConfig: ObservedWorkerConfig = {
   cwd: { state: "observed", value: "/test/workspace" },
 };
 export const profilePolicy: WorkerProfilePolicy = {
-  intendedUse: "reader",
   modelCandidates: [{ provider: "test", id: "test-model" }],
   thinkingLevel: "medium",
   tools: ["read", "bash"],
-  resources: { resourceProofPolicy: "disabled" },
-  startAuthorization: { policy: "disabled" },
   maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
 };
 export const maxResultByteCount = profilePolicy.maxResultByteCount;

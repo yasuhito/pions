@@ -1,7 +1,7 @@
 import type {
   EffectiveWorkerConfig,
   StartInstructionReference,
-  StartupReceipt,
+  Sha256Digest,
   TaskSpec,
 } from "../public.js";
 import { sha256Digest } from "./result-digest.js";
@@ -13,24 +13,17 @@ export function startInstructionReference(
     dispatcherId: instruction.dispatcherId,
     workerProcessInstanceId: instruction.workerProcessInstanceId,
     receiptDigest: instruction.receiptDigest,
-    ...(instruction.authorizationDecisionId === undefined
-      ? {}
-      : { authorizationDecisionId: instruction.authorizationDecisionId }),
     deliveryGeneration: instruction.deliveryGeneration,
   };
 }
 
-/**
- * Trusted profiles without an external Start gate have no Startup receipt.
- * This digest binds their Start instruction to the Operation's fixed automatic-start scope.
- */
 export function automaticStartScopeDigest(
   scope: Readonly<{
     readonly operationId: string;
     readonly task: Readonly<TaskSpec>;
     readonly effectiveConfig: Readonly<EffectiveWorkerConfig>;
   }>
-): StartupReceipt["digest"] {
+): Sha256Digest {
   return sha256Digest(
     Buffer.from(
       JSON.stringify({

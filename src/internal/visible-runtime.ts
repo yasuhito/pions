@@ -9,26 +9,12 @@ import {
   NodeCommandExecutor,
 } from "./herdr-presentation.js";
 import { PrivateFileEventStore } from "./event-store/index.js";
-import { EventStoreResourceEvidenceRepository } from "./event-store-resource-evidence.js";
-import { makeExternalReviewAllocationRegistry } from "./external-review-allocation.js";
-import type { ResourceAdapterApprovalPolicy } from "./resource-adapter-identity.js";
-import { makeResourceProofController } from "./resource-controller.js";
 import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import { makeRuntime } from "./runtime.js";
 import type { RuntimeClock } from "./services.js";
 import { VisibleWorker } from "./visible-worker.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
-import type {
-  ExternalReviewAllocationAuthenticator,
-  ResourceAuthorityRegistration,
-  ResourceCleanupAuthenticator,
-  RetryClearanceVerifier,
-  RevisionAuthenticator,
-  Runtime,
-  StartAuthorizationAuthenticator,
-  StartAuthorizationAuthority,
-  WorkerProfilePolicy,
-} from "../public.js";
+import type { Runtime, WorkerProfilePolicy } from "../public.js";
 
 export interface VisibleRuntimeOptions {
   readonly cwd: string;
@@ -36,17 +22,8 @@ export interface VisibleRuntimeOptions {
   readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly extensionEntryPath?: string;
-  readonly startAuthorizationAuthenticator?: StartAuthorizationAuthenticator;
-  readonly startAuthorizationAuthority?: StartAuthorizationAuthority;
-  readonly revisionAuthenticator?: RevisionAuthenticator;
-  readonly retryClearanceVerifier?: RetryClearanceVerifier;
-  readonly resourceAuthorities?: ReadonlyArray<
-    Readonly<ResourceAuthorityRegistration>
-  >;
-  readonly resourceAdapterApprovalPolicy?: Readonly<ResourceAdapterApprovalPolicy>;
-  readonly resourceCleanupAuthenticator?: ResourceCleanupAuthenticator;
   readonly formalReviewResultFormats?: Readonly<ConfiguredResultFormats>;
-  readonly externalReviewAllocationAuthenticator?: ExternalReviewAllocationAuthenticator;
+  readonly recovery?: "disabled";
 }
 
 const systemClock: RuntimeClock = {
@@ -104,44 +81,7 @@ export function makeVisibleRuntime(options: VisibleRuntimeOptions): Runtime {
     ...(options.formalReviewResultFormats === undefined
       ? {}
       : { formalReviewResultFormats: options.formalReviewResultFormats }),
-    ...(options.externalReviewAllocationAuthenticator === undefined
-      ? {}
-      : {
-          externalReviewAllocations: makeExternalReviewAllocationRegistry({
-            stateDirectory: options.stateDirectory,
-            authenticator: options.externalReviewAllocationAuthenticator,
-            now: () => new Date(),
-          }),
-        }),
-    ...(options.startAuthorizationAuthenticator === undefined
-      ? {}
-      : {
-          startAuthorizationAuthenticator:
-            options.startAuthorizationAuthenticator,
-        }),
-    ...(options.startAuthorizationAuthority === undefined
-      ? {}
-      : { startAuthorizationAuthority: options.startAuthorizationAuthority }),
-    ...(options.revisionAuthenticator === undefined
-      ? {}
-      : { revisionAuthenticator: options.revisionAuthenticator }),
-    ...(options.retryClearanceVerifier === undefined
-      ? {}
-      : { retryClearanceVerifier: options.retryClearanceVerifier }),
-    ...(options.resourceAuthorities === undefined
-      ? {}
-      : {
-          resourceProofController: makeResourceProofController({
-            registrations: options.resourceAuthorities,
-            ...(options.resourceAdapterApprovalPolicy === undefined
-              ? {}
-              : { approvalPolicy: options.resourceAdapterApprovalPolicy }),
-            repository: new EventStoreResourceEvidenceRepository(store),
-            ...(options.resourceCleanupAuthenticator === undefined
-              ? {}
-              : { cleanupAuthenticator: options.resourceCleanupAuthenticator }),
-          }),
-        }),
+    ...(options.recovery === undefined ? {} : { recovery: options.recovery }),
     configuration: { cwd: options.cwd, profiles: options.profiles },
   });
 }

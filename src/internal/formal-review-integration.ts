@@ -1,4 +1,3 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -8,10 +7,6 @@ import {
   installPionsExtension,
   type PionsExtensionOptions,
 } from "./pi-extension.js";
-import {
-  resourceAdapterIdentitiesMatch,
-  validResourceAuthorityIdentity,
-} from "./resource-adapter-identity.js";
 import { configuredResultFormat } from "./result-format-registry.js";
 import type { VisibleRuntimeOptions } from "./visible-runtime.js";
 import type {
@@ -22,11 +17,7 @@ import {
   formalReviewIntegrationModule,
   FormalReviewBootstrapError,
 } from "../formal-review.js";
-import type {
-  Runtime,
-  StartAuthorizationAuthenticator,
-  StartAuthorizationAuthority,
-} from "../public.js";
+import type { Runtime } from "../public.js";
 
 export interface FormalReviewIntegrationDependencies {
   readonly stateBaseDirectory?: string;
@@ -98,83 +89,12 @@ function validateTrustedBootstrap(
       "The trusted bootstrap expected a different Pions formal review module version"
     );
   }
-  const authority = configuration.formalReview?.resourceAuthority;
-  if (authority !== undefined) {
-    if (!validResourceAuthorityIdentity(authority)) {
-      throw new FormalReviewBootstrapError(
-        "adapter_identity_mismatch",
-        "The Resource Adapter implementation does not match its identity"
-      );
-    }
-    if (
-      !bootstrap.approvedAdapters.some((approved) =>
-        resourceAdapterIdentitiesMatch(approved, authority.identity)
-      )
-    ) {
-      throw new FormalReviewBootstrapError(
-        "adapter_identity_mismatch",
-        "The Resource Adapter identity is not approved by the trusted bootstrap"
-      );
-    }
+  if (bootstrap.deployment === "production" && hasTestOverride) {
+    throw new FormalReviewBootstrapError(
+      "test_adapter_rejected",
+      "Test-only integration overrides are forbidden in production"
+    );
   }
-  if (bootstrap.deployment === "production") {
-    if (hasTestOverride) {
-      throw new FormalReviewBootstrapError(
-        "test_adapter_rejected",
-        "Test-only integration overrides are forbidden in production"
-      );
-    }
-    if (authority?.identity.intendedUse === "non-production") {
-      throw new FormalReviewBootstrapError(
-        "non_production_adapter_rejected",
-        "A non-production Resource Adapter is forbidden in production"
-      );
-    }
-    if (configuration.formalReview !== undefined) {
-      throw new FormalReviewBootstrapError(
-        "production_formal_review_disabled",
-        "Formal review has not been approved for production"
-      );
-    }
-  }
-}
-
-function coordinatorConfiguration(
-  configuration: Readonly<FormalReviewIntegrationConfiguration>
-):
-  | Readonly<{
-      credential: string;
-      authenticator: StartAuthorizationAuthenticator;
-      authority: StartAuthorizationAuthority;
-    }>
-  | undefined {
-  const coordinator = configuration.formalReview?.coordinator;
-  if (coordinator === undefined) return undefined;
-  const credential = randomBytes(32).toString("hex");
-  const credentialBytes = Buffer.from(credential, "utf8");
-  const authority: StartAuthorizationAuthority = {
-    currentAuthorization: (subjectId, operationId) =>
-      subjectId === coordinator.subjectId
-        ? coordinator.currentAuthorization(operationId)
-        : Promise.resolve("denied"),
-  };
-  const authenticator: StartAuthorizationAuthenticator = {
-    authenticate: async (candidate) => {
-      const candidateBytes = Buffer.from(candidate, "utf8");
-      if (
-        candidateBytes.byteLength !== credentialBytes.byteLength ||
-        !timingSafeEqual(candidateBytes, credentialBytes)
-      ) {
-        throw new Error("Invalid formal review Coordinator credential");
-      }
-      return {
-        subjectId: coordinator.subjectId,
-        currentAuthorization: (operationId) =>
-          coordinator.currentAuthorization(operationId),
-      };
-    },
-  };
-  return { credential, authenticator, authority };
 }
 
 export function makeFormalReviewIntegration(
@@ -185,16 +105,10 @@ export function makeFormalReviewIntegration(
   const dependencies = configuredDependencies ?? {};
   const environment = dependencies.environment ?? process.env;
   const homeDirectory = dependencies.homeDirectory ?? homedir();
-  const coordinator = coordinatorConfiguration(configuration);
-  const formalReviewSetup =
+  const resultFormats =
     configuration.formalReview === undefined
       ? undefined
-      : {
-          configuration: configuration.formalReview,
-          resultFormats: configuredResultFormat(
-            configuration.formalReview.resultFormat
-          ),
-        };
+      : configuredResultFormat(configuration.formalReview.resultFormat);
 
   return {
     installPiExtension(pi: ExtensionAPI): void {
@@ -211,37 +125,10 @@ export function makeFormalReviewIntegration(
         ...(dependencies.resultRuntimeFactory === undefined
           ? {}
           : { resultRuntimeFactory: dependencies.resultRuntimeFactory }),
-        ...(formalReviewSetup === undefined
+        ...(resultFormats === undefined
           ? {}
           : {
-              formalReview: {
-                profile: formalReviewSetup.configuration.profile,
-                resultFormats: formalReviewSetup.resultFormats,
-                resourceAdapterApprovalPolicy: {
-                  deployment: configuration.trustedBootstrap.deployment,
-                  approvedAdapters:
-                    configuration.trustedBootstrap.approvedAdapters,
-                },
-                resourceAuthorities: [
-                  formalReviewSetup.configuration.resourceAuthority,
-                ],
-                ...(formalReviewSetup.configuration.externalAllocation ===
-                undefined
-                  ? {}
-                  : {
-                      externalAllocation:
-                        formalReviewSetup.configuration.externalAllocation,
-                    }),
-                ...(coordinator === undefined
-                  ? {}
-                  : {
-                      coordinator: {
-                        credential: coordinator.credential,
-                        authenticator: coordinator.authenticator,
-                        authority: coordinator.authority,
-                      },
-                    }),
-              },
+              formalReview: { resultFormats },
             }),
       });
     },

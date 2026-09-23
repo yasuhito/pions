@@ -27,7 +27,6 @@ async function configuration(
         verifyIdentity: (root) => root === repositoryRoot,
       },
       deployment: "non-production",
-      approvedAdapters: [],
     },
   };
 }

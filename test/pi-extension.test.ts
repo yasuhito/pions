@@ -16,6 +16,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { Effect } from "effect";
+
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -27,6 +29,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
+import type { Operation } from "../src/internal/event-store/index.js";
 import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
 import {
   DEFAULT_MAX_RESULT_BYTE_COUNT,
@@ -37,8 +40,13 @@ import {
   FakeIdGenerator,
   FakePresentation,
   FakeWorkerAdapter,
+  advanceTestOperationToRunning,
   makeTestRuntime,
 } from "../src/internal/testing.js";
+import type {
+  WorkerAdapter,
+  WorkerRunHooks,
+} from "../src/internal/services.js";
 import {
   installPionsExtension,
   type PionsDelegateDetails,
@@ -62,12 +70,7 @@ import type {
   Result,
   ResultChunk,
   Runtime,
-  SpawnOptions,
-  StartAuthorizationAuthenticator,
-  StartAuthorizationDecisionRequest,
-  StartAuthorizationDecisionOutcome,
   TaskSpec,
-  WorkerProfilePolicy,
 } from "../src/index.js";
 
 const SNAPSHOT: OperationSnapshot = {
@@ -97,75 +100,6 @@ const SNAPSHOT: OperationSnapshot = {
     tools: { state: "observed", value: ["read"] },
     cwd: { state: "observed", value: "/repository" },
   },
-  startAuthorization: {
-    timing: {
-      createdAt: "2026-04-01T00:00:00.000Z",
-      windowMs: 60_000,
-      deadline: "2026-04-01T00:01:00.000Z",
-      configuredPolicy: "required",
-      policy: "required",
-      authorizedSubjectIds: ["coordinator-1"],
-    },
-    gate: "waiting",
-    receipt: {
-      operationId: "operation-1",
-      digest: `sha256:${"ef".repeat(32)}`,
-      recordedAt: "2026-04-01T00:00:03.000Z",
-      workerIdentity: {
-        processId: 123,
-        processInstanceId: "process-1",
-        processStartToken: "start-1",
-        piSessionId: "worker-session-1",
-        paneId: "pane-1",
-      },
-      requestedConfig: {
-        model: { provider: "anthropic", id: "claude-opus-5" },
-        thinkingLevel: "high",
-        tools: ["read"],
-        cwd: "/repository",
-      },
-      effectiveConfig: {
-        model: { provider: "anthropic", id: "claude-opus-5" },
-        thinkingLevel: "high",
-        tools: ["read"],
-        cwd: "/repository",
-        maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
-        modelPolicy: {
-          candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
-          attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
-          maxAttempts: 1,
-          fallback: "forbidden",
-          aliases: [],
-        },
-      },
-      observedConfig: {
-        model: {
-          state: "observed",
-          value: { provider: "anthropic", id: "claude-opus-5" },
-        },
-        thinkingLevel: { state: "observed", value: "high" },
-        tools: { state: "observed", value: ["read"] },
-        cwd: { state: "observed", value: "/repository" },
-      },
-      workspace: {
-        workspaceId: "workspace-1",
-        normalizedPath: "/repository",
-        baseRevision: "revision-1",
-        owner: { state: "unknown" },
-        pionsMayDelete: false,
-      },
-      permissionManifest: {
-        manifestId: "manifest-1",
-        digest: `sha256:${"cd".repeat(32)}`,
-      },
-      reviewSubjectId: "subject-1",
-      reviewSubjectVerification: "required",
-      configuredAuthorizationPolicy: "required",
-      authorizationPolicy: "required",
-      authorizationDeadline: "2026-04-01T00:01:00.000Z",
-    },
-    rejectedDecisions: [],
-  },
   startDeliveryHandoffs: [],
   cleanupDiagnostics: [{ code: "workspace_close_failed" }],
 };
@@ -174,16 +108,11 @@ const ACCEPTANCE_ID = `pions.result-acceptance.v1:${"ef".repeat(32)}` as const;
 
 class FakeRuntime implements Runtime {
   readonly tasks: Array<TaskSpec> = [];
-  readonly spawnOptions: Array<Readonly<SpawnOptions> | undefined> = [];
   spawnCount = 0;
   operationReadCount = 0;
   resultReadCount = 0;
   closeCount = 0;
-  readonly authorizationCredentials: Array<string> = [];
-  readonly authorizationDecisions: Array<
-    Readonly<StartAuthorizationDecisionRequest>
-  > = [];
-
+  readyCount = 0;
   constructor(
     private readonly outcome: Result | Error = {
       body: "review complete",
@@ -196,20 +125,15 @@ class FakeRuntime implements Runtime {
     private readonly snapshot: Readonly<OperationSnapshot> = SNAPSHOT
   ) {}
 
-  async spawn(
-    task: TaskSpec,
-    options?: SpawnOptions
-  ): Promise<OperationHandle> {
+  async spawn(task: TaskSpec): Promise<OperationHandle> {
     this.spawnCount += 1;
     this.tasks.push(task);
-    this.spawnOptions.push(options);
     const outcome = this.outcome;
     return {
       operationId: "operation-1",
       read: () => Promise.resolve(this.snapshot),
       readResult: () => Promise.reject(new Error("unused")),
       readResultChunk: () => Promise.reject(new Error("unused")),
-      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
       result: () =>
         outcome instanceof Error
           ? Promise.reject(outcome)
@@ -258,41 +182,15 @@ class FakeRuntime implements Runtime {
           },
         });
       },
-      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
     };
-  }
-
-  startAuthorizationInbox(credential: string) {
-    this.authorizationCredentials.push(credential);
-    return Promise.resolve({
-      listWaiting: () => Promise.resolve([]),
-      decide: (request: Readonly<StartAuthorizationDecisionRequest>) => {
-        this.authorizationDecisions.push(request);
-        return Promise.resolve({
-          status: "accepted",
-          decision: {
-            decisionId: request.decisionId,
-            actorId: "coordinator-1",
-            kind: request.kind,
-            receiptDigest: request.receiptDigest,
-            decidedAt: "2026-04-01T00:00:04.000Z",
-          },
-          gate: request.kind === "authorize" ? "authorized" : "rejected",
-        } satisfies StartAuthorizationDecisionOutcome);
-      },
-    });
-  }
-
-  revisions(): Promise<never> {
-    return Promise.reject(new Error("unused"));
-  }
-
-  resourceProofs(): never {
-    throw new Error("unused");
   }
 
   async close(): Promise<void> {
     this.closeCount += 1;
+  }
+
+  async ready(): Promise<void> {
+    this.readyCount += 1;
   }
 }
 
@@ -315,10 +213,7 @@ async function waitForOperation(
 }
 
 class PendingRuntime implements Runtime {
-  readonly cancellations: Array<{
-    readonly operationId: string;
-    readonly scope: "subtree";
-  }> = [];
+  readonly cancellations: Array<{ readonly operationId: string }> = [];
   readonly results = new Map<string, ReturnType<typeof deferred<Result>>>();
   closeCount = 0;
   cancellationResponse: Promise<CancellationResult> = Promise.resolve({
@@ -326,6 +221,10 @@ class PendingRuntime implements Runtime {
     state: "cancelled",
   });
   private nextId = 1;
+
+  ready(): Promise<void> {
+    return Promise.resolve();
+  }
 
   async spawn(): Promise<OperationHandle> {
     const operationId = `operation-${this.nextId}`;
@@ -337,14 +236,13 @@ class PendingRuntime implements Runtime {
       read: () => Promise.reject(new Error("unused")),
       readResult: () => Promise.reject(new Error("unused")),
       readResultChunk: () => Promise.reject(new Error("unused")),
-      waitForStartupReceipt: () => Promise.reject(new Error("unused")),
       result: () =>
         result.promise.then((accepted) => ({
           result: accepted,
           cleanupDiagnostics: [],
         })),
-      cancel: async ({ scope }) => {
-        this.cancellations.push({ operationId, scope });
+      cancel: async () => {
+        this.cancellations.push({ operationId });
         const response = await this.cancellationResponse;
         result.reject(
           response.state === "unknown"
@@ -358,18 +256,6 @@ class PendingRuntime implements Runtime {
 
   operation(): Promise<never> {
     return Promise.reject(new Error("unused"));
-  }
-
-  startAuthorizationInbox(): Promise<never> {
-    return Promise.reject(new Error("unused"));
-  }
-
-  revisions(): Promise<never> {
-    return Promise.reject(new Error("unused"));
-  }
-
-  resourceProofs(): never {
-    throw new Error("unused");
   }
 
   async close(): Promise<void> {
@@ -398,34 +284,6 @@ interface RegisteredTool {
   }>;
 }
 
-const FORMAL_REVIEW_PROFILE: WorkerProfilePolicy = {
-  intendedUse: "formal_reviewer",
-  modelCandidates: [{ provider: "anthropic", id: "claude-opus-5" }],
-  thinkingLevel: "high",
-  tools: ["read", "grep", "find", "ls", "bash"],
-  resources: { resourceProofPolicy: "disabled" },
-  startAuthorization: {
-    policy: "required",
-    windowMs: 60_000,
-    authorizedSubjectIds: ["coordinator-1"],
-    receipt: {
-      workspace: {
-        workspaceId: "workspace-1",
-        normalizedPath: "/repository",
-        baseRevision: "revision-1",
-        owner: { state: "unknown" },
-        pionsMayDelete: false,
-      },
-      permissionManifest: {
-        manifestId: "manifest-1",
-        digest: `sha256:${"cd".repeat(32)}`,
-      },
-      reviewSubjectVerification: "required",
-    },
-  },
-  maxResultByteCount: 50_000,
-};
-
 const FORMAL_REVIEW_RESULT_FORMATS = makeResultFormatRegistry([
   {
     formatId: "test.formal-review-result",
@@ -449,15 +307,6 @@ const CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS = {
   resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
 };
 
-const START_AUTHORIZATION_AUTHENTICATOR: StartAuthorizationAuthenticator = {
-  authenticate: async () => ({
-    subjectId: "coordinator-1",
-    currentAuthorization: async () => "authorized",
-  }),
-};
-
-const COORDINATOR_CREDENTIAL = "private-coordinator-credential";
-
 async function fixture<TRuntime extends Runtime = FakeRuntime>(
   runtime: TRuntime = new FakeRuntime() as unknown as TRuntime,
   options: Omit<PionsExtensionOptions, "runtime" | "stateBaseDirectory"> & {
@@ -466,7 +315,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   useDefaultStateDirectory = false,
   fixtureOptions: {
     readonly enableFormalReview?: boolean;
-    readonly enableCoordinator?: boolean;
     readonly registeredProviderIds?: ReadonlyArray<string>;
   } = {}
 ) {
@@ -497,16 +345,7 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
     ...(fixtureOptions.enableFormalReview === true
       ? {
           formalReview: {
-            profile: FORMAL_REVIEW_PROFILE,
             resultFormats: CONFIGURED_FORMAL_REVIEW_RESULT_FORMATS,
-            ...(fixtureOptions.enableCoordinator === false
-              ? {}
-              : {
-                  coordinator: {
-                    credential: COORDINATOR_CREDENTIAL,
-                    authenticator: START_AUTHORIZATION_AUTHENTICATOR,
-                  },
-                }),
           },
         }
       : {}),
@@ -550,37 +389,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       context
     );
   };
-  const review = (
-    reviewSubjectId = "subject-1",
-    task = "Review the registered change"
-  ) => {
-    const reviewTool = tools.get("pions_review");
-    if (reviewTool === undefined)
-      throw new Error("pions_review was not registered");
-    return reviewTool.execute(
-      "review-call-1",
-      { reviewSubjectId, task },
-      undefined,
-      undefined,
-      context
-    );
-  };
-  const decide = (
-    kind: "authorize" | "reject" = "authorize",
-    operationId = "operation-1",
-    receiptDigest = `sha256:${"ef".repeat(32)}`
-  ) => {
-    const decisionTool = tools.get("pions_review_decision");
-    if (decisionTool === undefined)
-      throw new Error("pions_review_decision was not registered");
-    return decisionTool.execute(
-      "decision-call-1",
-      { operationId, receiptDigest, decision: kind },
-      undefined,
-      undefined,
-      context
-    );
-  };
   const inspect = (operationId = "operation-1") => {
     const operationTool = tools.get("pions_operation");
     if (operationTool === undefined)
@@ -601,14 +409,19 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
       handler({ type: "session_shutdown", reason }, context)
     );
   };
+  const start = () => {
+    const handler = handlers.get("session_start");
+    if (handler === undefined)
+      throw new Error("session_start was not registered");
+    return Promise.resolve(handler({ type: "session_start" }, context));
+  };
   return {
     context,
-    decide,
     execute,
     inspect,
     registered: tool,
     result,
-    review,
+    start,
     root,
     setSessionId: (value: string) => {
       sessionId = value;
@@ -622,8 +435,6 @@ async function fixture<TRuntime extends Runtime = FakeRuntime>(
   };
 }
 
-// The retained formal review tools are reachable only when trusted host code
-// passes formalReview; the delegation-only extension entry never does.
 function formalReviewFixture<TRuntime extends Runtime = FakeRuntime>(
   runtime?: TRuntime,
   options: Parameters<typeof fixture>[1] = {},
@@ -659,341 +470,221 @@ test("the delegation-only extension does not register pions_review_decision", as
   assert.equal(value.tools.has("pions_review_decision"), false);
 });
 
-test("trusted formal review configuration registers pions_review", async (context) => {
+test("trusted formal review configuration pauses new review creation", async (context) => {
   const value = await formalReviewFixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
-  assert.equal(value.tools.get("pions_review")?.name, "pions_review");
+  assert.equal(value.tools.has("pions_review"), false);
 });
 
-test("pions_review accepts only a Review subject identifier and review task", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.deepEqual(value.tools.get("pions_review")?.parameters, {
-    type: "object",
-    required: ["reviewSubjectId", "task"],
-    additionalProperties: false,
-    properties: {
-      reviewSubjectId: { type: "string", minLength: 1 },
-      task: {
-        type: "string",
-        minLength: 1,
-        description: "Self-contained formal review task",
-      },
-    },
-  });
-});
-
-test("pions_review returns the created Operation identifier", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    (await value.review()).content[0]?.text,
-    "[Operation: operation-1]"
-  );
-});
-
-test("pions_review fixes the supplied Review subject identifier", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review("subject-42");
-
-  assert.equal(value.runtime.spawnOptions[0]?.reviewSubjectId, "subject-42");
-});
-
-test("pions_review uses the formal reviewer profile", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-
-  assert.equal(value.runtime.tasks[0]?.profile, "formal-review");
-});
-
-test("pions_review uses the trusted formal-review model", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-
-  assert.deepEqual(value.runtime.tasks[0]?.model, {
-    provider: "anthropic",
-    id: "claude-opus-5",
-  });
-});
-
-test("pions_review uses the trusted formal-review thinking level", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-
-  assert.equal(value.runtime.tasks[0]?.thinkingLevel, "high");
-});
-
-test("pions_review registers a required Start gate in the Runtime", async (context) => {
-  let profile: Readonly<WorkerProfilePolicy> | undefined;
-  const runtime = new FakeRuntime();
-  const value = await formalReviewFixture(runtime, {
+test("trusted formal review configuration cannot create a review profile", async (context) => {
+  let profiles: VisibleRuntimeOptions["profiles"] | undefined;
+  const value = await formalReviewFixture(undefined, {
     runtimeFactory: (options) => {
-      profile = options.profiles["formal-review"];
-      return runtime;
+      profiles = options.profiles;
+      return new FakeRuntime();
     },
   });
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
+  await value.execute();
 
-  assert.equal(profile?.startAuthorization.policy, "required");
+  assert.deepEqual(Object.keys(profiles ?? {}), ["worker"]);
 });
 
-test("pions_review does not wait for the Result", async (context) => {
-  const value = await formalReviewFixture(new PendingRuntime());
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    (await value.review()).content[0]?.text,
-    "[Operation: operation-1]"
-  );
-});
-
-for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
-  test(`session shutdown caused by ${reason} cancels an active formal review`, async (context) => {
-    const runtime = new PendingRuntime();
-    const value = await formalReviewFixture(runtime);
-    context.after(() => rm(value.root, { recursive: true, force: true }));
-    await value.review();
-    await value.shutdown(reason);
-
-    assert.deepEqual(runtime.cancellations, [
-      { operationId: "operation-1", scope: "subtree" },
-    ]);
+test("trusted formal review configuration supplies recovery validators", async (context) => {
+  let configured: VisibleRuntimeOptions["formalReviewResultFormats"];
+  const value = await formalReviewFixture(undefined, {
+    runtimeFactory: (options) => {
+      configured = options.formalReviewResultFormats;
+      return new FakeRuntime();
+    },
   });
-}
-
-test("session shutdown does not cancel a completed formal review", async (context) => {
-  const runtime = new PendingRuntime();
-  const value = await formalReviewFixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  runtime.results.get("operation-1")?.resolve({
-    body: "done",
-    byteCount: 4,
-    digest: `sha256:${"ab".repeat(32)}`,
+  await value.execute();
+
+  assert.deepEqual(configured?.resultFormat, FORMAL_REVIEW_RESULT_FORMAT);
+});
+
+test("delegation after cold recovery does not recover the same Workers twice", async (context) => {
+  const recoveryModes: Array<VisibleRuntimeOptions["recovery"]> = [];
+  const value = await fixture(undefined, {
+    runtimeFactory: (options) => {
+      recoveryModes.push(options.recovery);
+      return new FakeRuntime();
+    },
   });
-  await new Promise(setImmediate);
-  await value.shutdown("quit");
-
-  assert.equal(runtime.cancellations.length, 0);
-});
-
-test("session shutdown does not cancel a failed formal review", async (context) => {
-  const runtime = new PendingRuntime();
-  const value = await formalReviewFixture(runtime);
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  runtime.results
-    .get("operation-1")
-    ?.reject(new OperationFailedError("operation-1", "agent_failed"));
-  await new Promise(setImmediate);
-  await value.shutdown("quit");
+  await value.start();
+  await value.execute();
 
-  assert.equal(runtime.cancellations.length, 0);
+  assert.deepEqual(recoveryModes, [undefined, "disabled"]);
 });
 
-test("formal review shutdown keeps the Runtime open until cancellation is classified", async (context) => {
-  const runtime = new PendingRuntime();
-  const classification = deferred<CancellationResult>();
-  runtime.cancellationResponse = classification.promise;
-  const value = await formalReviewFixture(runtime);
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  const shutdown = value.shutdown("quit");
-  await new Promise(setImmediate);
-
-  assert.equal(runtime.closeCount, 0);
-  classification.resolve({ cancellationEpoch: 1, state: "cancelled" });
-  await shutdown;
-});
-
-test("project extension registers pions_review_decision", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    value.tools.get("pions_review_decision")?.name,
-    "pions_review_decision"
-  );
-});
-
-test("pions_review_decision accepts no Coordinator identity or credential", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  const parameters = value.tools.get("pions_review_decision")?.parameters as {
-    readonly properties?: Readonly<Record<string, unknown>>;
-  };
-
-  assert.deepEqual(Object.keys(parameters.properties ?? {}).sort(), [
-    "decision",
-    "operationId",
-    "receiptDigest",
-  ]);
-});
-
-test("pions_review_decision submits authorization for the owned Operation", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  await value.decide("authorize");
-
-  assert.equal(value.runtime.authorizationDecisions[0]?.kind, "authorize");
-});
-
-test("pions_review_decision submits rejection for the owned Operation", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  await value.decide("reject");
-
-  assert.equal(value.runtime.authorizationDecisions[0]?.kind, "reject");
-});
-
-test("pions_review_decision binds the decision to the Operation identifier", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  await value.decide();
-
-  assert.equal(
-    value.runtime.authorizationDecisions[0]?.operationId,
-    "operation-1"
-  );
-});
-
-test("pions_review_decision binds the decision to the inspected Startup receipt", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  await value.decide();
-
-  assert.equal(
-    value.runtime.authorizationDecisions[0]?.receiptDigest,
-    `sha256:${"ef".repeat(32)}`
-  );
-});
-
-test("pions_review_decision derives a stable decision identifier from the Pi tool call", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  await value.decide();
-  await value.decide();
-
-  assert.equal(
-    value.runtime.authorizationDecisions[0]?.decisionId,
-    value.runtime.authorizationDecisions[1]?.decisionId
-  );
-});
-
-test("pions_review_decision uses the trusted Coordinator credential", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  await value.decide();
-
-  assert.equal(
-    value.runtime.authorizationCredentials[0],
-    COORDINATOR_CREDENTIAL
-  );
-});
-
-test("pions_review_decision returns the Runtime decision outcome", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-
-  assert.equal(
-    (await value.decide()).content[0]?.text,
-    "[Operation: operation-1; decision: accepted; gate: authorized]"
-  );
-});
-
-test("pions_review_decision does not expose the Coordinator identity", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-
-  assert.deepEqual((await value.decide()).details, {
-    status: "accepted",
-    gate: "authorized",
-  });
-});
-
-test("pions_review_decision fails closed without trusted Coordinator configuration", async (context) => {
-  const value = await formalReviewFixture(
-    new FakeRuntime(),
-    {},
-    {
-      enableCoordinator: false,
+test("一時的な復旧失敗後も同じRuntimeが回収を続ける", async (context) => {
+  const recoveryModes: Array<VisibleRuntimeOptions["recovery"]> = [];
+  let fail = true;
+  class FailingOnceRuntime extends FakeRuntime {
+    override async ready(): Promise<void> {
+      if (fail) {
+        fail = false;
+        throw new Error("temporary recovery failure");
+      }
+      await super.ready();
     }
-  );
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-
-  await assert.rejects(
-    value.decide(),
-    (error) =>
-      error instanceof WorkerConfigurationError &&
-      error.reason === "unsupported_capability"
-  );
-});
-
-test("pions_review_decision refuses an Operation not owned by the current session", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  await assert.rejects(
-    value.decide(),
-    /Operation is not owned by the current Pi session/u
-  );
-});
-
-test("pions_review_decision refuses an Operation owned by another Pi session", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  value.setSessionId("pi-session-2");
-
-  await assert.rejects(
-    value.decide(),
-    /Operation is not owned by the current Pi session/u
-  );
-});
-
-test("pions_review does not pass the Coordinator credential to the Worker", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-  const promptRef = value.runtime.tasks[0]?.promptRef;
-  if (promptRef === undefined) throw new Error("Worker prompt was not stored");
-
-  assert.equal(
-    (await readFile(promptRef, "utf8")).includes(COORDINATOR_CREDENTIAL),
-    false
-  );
-});
-
-test("pions_review passes the trusted Start authorization authenticator to the Runtime", async (context) => {
-  let authenticator: StartAuthorizationAuthenticator | undefined;
-  const runtime = new FakeRuntime();
-  const value = await formalReviewFixture(runtime, {
+  }
+  const value = await fixture(undefined, {
     runtimeFactory: (options) => {
-      authenticator = options.startAuthorizationAuthenticator;
-      return runtime;
+      recoveryModes.push(options.recovery);
+      return recoveryModes.length === 1
+        ? new FailingOnceRuntime()
+        : new FakeRuntime();
     },
   });
   context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
+  await value.start().catch(() => undefined);
+  await value.execute();
 
-  assert.equal(authenticator, START_AUTHORIZATION_AUTHENTICATOR);
+  assert.deepEqual(recoveryModes, [undefined, "disabled"]);
+});
+
+test("cold session resumes format-pinned Result acceptance", async (context) => {
+  const repository = await realpath(
+    await mkdtemp(join(tmpdir(), "pions-cold-repository-"))
+  );
+  const stateBase = await mkdtemp(join(tmpdir(), "pions-cold-state-"));
+  context.after(() => rm(repository, { recursive: true, force: true }));
+  context.after(() => rm(stateBase, { recursive: true, force: true }));
+  const repositoryKey = createHash("sha256")
+    .update(repository, "utf8")
+    .digest("hex");
+  const stateDirectory = join(
+    stateBase,
+    "pions",
+    "repositories",
+    repositoryKey,
+    "runtime"
+  );
+  const clock = new FakeClock(
+    Array.from(
+      { length: 80 },
+      (_, index) => `2026-09-23T04:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
+  const store = new PrivateFileEventStore(stateDirectory, clock);
+  await Effect.runPromise(
+    store.create({
+      operationId: "operation-1",
+      task: {
+        promptRef: "private://review",
+        profile: "formal-review",
+        idempotencyKey: "review-1",
+      },
+      requestedConfig: {},
+      effectiveConfig: {
+        model: { provider: "anthropic", id: "claude-opus-5" },
+        thinkingLevel: "high",
+        tools: ["read"],
+        cwd: repository,
+        maxResultByteCount: 1024,
+        modelPolicy: {
+          candidates: [{ provider: "anthropic", id: "claude-opus-5" }],
+          attempted: [{ provider: "anthropic", id: "claude-opus-5" }],
+          maxAttempts: 1,
+          fallback: "forbidden",
+          aliases: [],
+        },
+      },
+      maxResultByteCount: 1024,
+      resultFormat: FORMAL_REVIEW_RESULT_FORMAT,
+    })
+  );
+  await advanceTestOperationToRunning(store, "operation-1");
+  const worker: WorkerAdapter = {
+    open: () => {
+      throw new Error("new Worker was not requested");
+    },
+    recover: (operation: Operation) => ({
+      run: (hooks: Readonly<WorkerRunHooks>) =>
+        Effect.gen(function* () {
+          const identity = operation.workerIdentity!;
+          const instruction = yield* hooks.workerIdentified({
+            processId: identity.processId,
+            processInstanceId: identity.processInstanceId,
+            processStartToken: identity.processStartToken,
+            piSessionId: identity.piSessionId,
+            observedConfig: operation.observedConfig!,
+          });
+          yield* hooks.startDeliveryAuthorityRevoked(
+            instruction.dispatcherId,
+            instruction.deliveryGeneration
+          );
+          yield* hooks.deliveryGenerationConfirmed({
+            dispatcherId: instruction.dispatcherId,
+            deliveryGeneration: instruction.deliveryGeneration,
+            acceptanceState: "accepted",
+            acceptedInstruction: operation.startInstructionAcceptance!,
+          });
+          const body = "recovered review";
+          const bytes = Buffer.from(body, "utf8");
+          const acceptance = yield* hooks.acceptResult({
+            acceptanceRequestId: "review-result-1",
+            body,
+            expectedByteCount: bytes.byteLength,
+            expectedDigest: `sha256:${createHash("sha256")
+              .update(bytes)
+              .digest("hex")}`,
+          });
+          if (acceptance.state !== "accepted")
+            return { state: "worker_protocol_failed" as const };
+          return {
+            state: "result_acknowledged" as const,
+            successfulExitConfirmed: true as const,
+            evidence: {
+              usage: {
+                input: 1,
+                output: 1,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 2,
+                cost: 0,
+              },
+              toolUses: [],
+            },
+          };
+        }),
+      cancel: () => Effect.succeed({ proof: "worker-stop" as const }),
+    }),
+  };
+  const value = await formalReviewFixture(undefined, {
+    repositoryRoot: repository,
+    stateBaseDirectory: stateBase,
+    runtimeFactory: (options) =>
+      makeTestRuntime({
+        worker,
+        clock,
+        ids: new FakeIdGenerator([]),
+        presentation: new FakePresentation(),
+        store: new PrivateFileEventStore(options.stateDirectory, clock),
+        configuration: { cwd: options.cwd, profiles: options.profiles },
+        ...(options.recovery === undefined
+          ? {}
+          : { recovery: options.recovery }),
+        ...(options.formalReviewResultFormats === undefined
+          ? {}
+          : { formalReviewResultFormats: options.formalReviewResultFormats }),
+      }),
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  value.setWorkingDirectory(repository);
+  await value.start();
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const snapshot = await Effect.runPromise(store.read("operation-1"));
+    if (snapshot.operation.state === "completed") break;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+
+  const snapshot = (await value.inspect()).details as OperationSnapshot;
+  assert.equal(snapshot.state, "completed");
 });
 
 test("project extension registers pions_operation", async (context) => {
@@ -1033,51 +724,6 @@ test("pions_operation reads an earlier session snapshot through a retrieval Runt
   await value.inspect();
 
   assert.equal(retrievalRuntime.operationReadCount, 1);
-});
-
-test("a newly requested formal review has no accepted Start instruction", async (context) => {
-  const value = await formalReviewFixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-  await value.review();
-
-  assert.equal(
-    ((await value.inspect()).details as OperationSnapshot)
-      .startInstructionAcceptance,
-    undefined
-  );
-});
-
-test("pions_operation returns the persisted Start gate", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .gate,
-    "waiting"
-  );
-});
-
-test("pions_operation returns the authorization deadline", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .timing.deadline,
-    "2026-04-01T00:01:00.000Z"
-  );
-});
-
-test("pions_operation returns the persisted Startup receipt", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.deepEqual(
-    ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .receipt,
-    SNAPSHOT.startAuthorization.receipt
-  );
 });
 
 test("pions_operation returns the effective model", async (context) => {
@@ -1121,17 +767,6 @@ test("pions_operation returns the observed thinking level", async (context) => {
     ((await value.inspect()).details as OperationSnapshot).observedConfig
       ?.thinkingLevel,
     { state: "observed", value: "high" }
-  );
-});
-
-test("pions_operation returns the fixed Review subject", async (context) => {
-  const value = await fixture();
-  context.after(() => rm(value.root, { recursive: true, force: true }));
-
-  assert.equal(
-    ((await value.inspect()).details as OperationSnapshot).startAuthorization
-      .receipt?.reviewSubjectId,
-    SNAPSHOT.startAuthorization.receipt?.reviewSubjectId
   );
 });
 
@@ -1832,7 +1467,7 @@ test("delegation uses the general Worker profile", async (context) => {
   assert.equal(value.runtime.tasks[0]?.profile, "worker");
 });
 
-test("the Worker profile declares a general intended use", async (context) => {
+test("the Worker profile allows only built-in tools", async (context) => {
   let profiles: VisibleRuntimeOptions["profiles"] | undefined;
   const runtime = new FakeRuntime();
   const value = await fixture(runtime, {
@@ -1844,7 +1479,15 @@ test("the Worker profile declares a general intended use", async (context) => {
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
 
-  assert.equal(profiles?.worker?.intendedUse, "general");
+  assert.deepEqual(profiles?.worker?.tools, [
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+  ]);
 });
 
 test("the Worker runs in the delegating working directory", async (context) => {
@@ -2082,9 +1725,7 @@ test("Pi interruption requests subtree cancellation once", async (context) => {
   controller.abort();
   await execution.catch(() => undefined);
 
-  assert.deepEqual(runtime.cancellations, [
-    { operationId: "operation-1", scope: "subtree" },
-  ]);
+  assert.deepEqual(runtime.cancellations, [{ operationId: "operation-1" }]);
 });
 
 test("an Operation completed before interruption is not cancelled", async (context) => {
@@ -2160,9 +1801,7 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"] as const) {
     await waitForOperation(runtime);
     await value.shutdown(reason);
 
-    assert.deepEqual(runtime.cancellations, [
-      { operationId: "operation-1", scope: "subtree" },
-    ]);
+    assert.deepEqual(runtime.cancellations, [{ operationId: "operation-1" }]);
   });
 }
 
@@ -2263,8 +1902,8 @@ test("session shutdown cancels every active Operation by its identifier", async 
   await value.shutdown("quit");
 
   assert.deepEqual(runtime.cancellations, [
-    { operationId: "operation-1", scope: "subtree" },
-    { operationId: "operation-2", scope: "subtree" },
+    { operationId: "operation-1" },
+    { operationId: "operation-2" },
   ]);
 });
 

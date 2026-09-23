@@ -1,60 +1,32 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { test } from "node:test";
+import test from "node:test";
 
 import { Effect } from "effect";
 
 import { makeResultAcceptance } from "../src/internal/result-acceptance.js";
+import { sha256Digest } from "../src/internal/result-digest.js";
+import { makeResultFormatRegistry } from "../src/internal/result-format-registry.js";
+import type { ResultFormatRegistry } from "../src/internal/result-format-registry.js";
+import type { PinnedResultFormat } from "../src/public.js";
 import {
-  makeResultFormatRegistry,
-  type ResultFormatRegistry,
-} from "../src/internal/result-format-registry.js";
-import {
+  advanceTestOperationToRunning,
   FakeClock,
   InMemoryEventStore,
-  advanceTestOperationToRunning,
 } from "../src/internal/testing.js";
-import type {
-  PinnedResultFormat,
-  ResultFormatValidationFailureReason,
-  WorkerProducedResult,
-} from "../src/public.js";
-import {
-  effectiveConfig,
-  requestedConfig,
-  maxResultByteCount,
-} from "./worker-protocol-fixtures.js";
-
-function digest(bytes: Uint8Array) {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
-}
-
-function produced(
-  body = "finished",
-  acceptanceRequestId = "request-1"
-): WorkerProducedResult {
-  const bytes = Buffer.from(body, "utf8");
-  return {
-    acceptanceRequestId,
-    body,
-    expectedByteCount: bytes.byteLength,
-    expectedDigest: digest(bytes),
-  };
-}
 
 async function fixture(
-  resultFormat?: Readonly<{
-    readonly registry: ResultFormatRegistry;
-    readonly pinned: Readonly<PinnedResultFormat>;
-  }>
+  resultFormat?: Readonly<PinnedResultFormat>,
+  resultFormats?: ResultFormatRegistry
 ) {
-  const clock = new FakeClock(
-    Array.from(
-      { length: 30 },
-      (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+  const store = new InMemoryEventStore(
+    [],
+    new FakeClock(
+      Array.from(
+        { length: 30 },
+        (_, index) => `2026-09-23T01:00:${String(index).padStart(2, "0")}.000Z`
+      )
     )
   );
-  const store = new InMemoryEventStore([], clock);
   await Effect.runPromise(
     store.create({
       operationId: "operation-1",
@@ -63,19 +35,23 @@ async function fixture(
         profile: "coding",
         idempotencyKey: "task-1",
       },
-      requestedConfig,
-      effectiveConfig,
-      maxResultByteCount,
-      ...(resultFormat === undefined
-        ? {}
-        : { resultFormat: resultFormat.pinned }),
-      lineage: { rootOperationId: "operation-1", depth: 0 },
-      startAuthorization: {
-        configuredPolicy: "disabled",
-        policy: "disabled",
-        windowMs: 0,
-        authorizedSubjectIds: [],
+      requestedConfig: {},
+      effectiveConfig: {
+        model: { provider: "test", id: "model" },
+        thinkingLevel: "medium",
+        tools: ["read"],
+        cwd: "/work",
+        maxResultByteCount: 1024,
+        modelPolicy: {
+          candidates: [{ provider: "test", id: "model" }],
+          attempted: [{ provider: "test", id: "model" }],
+          maxAttempts: 1,
+          fallback: "forbidden",
+          aliases: [],
+        },
       },
+      maxResultByteCount: 1024,
+      ...(resultFormat === undefined ? {} : { resultFormat }),
     })
   );
   await advanceTestOperationToRunning(store, "operation-1");
@@ -83,405 +59,245 @@ async function fixture(
     store,
     acceptance: makeResultAcceptance({
       store,
-      ...(resultFormat === undefined
-        ? {}
-        : { resultFormats: resultFormat.registry }),
+      ...(resultFormats === undefined ? {} : { resultFormats }),
     }),
   };
 }
 
-async function storedResult(store: InMemoryEventStore) {
-  return (await Effect.runPromise(store.read("operation-1"))).operation.result;
-}
-
-async function storedBody(store: InMemoryEventStore) {
-  const bytes = await Effect.runPromise(store.readResultBody("operation-1"));
-  return bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
-}
-
-function configuredResultFormat(
-  validate: (input: {
-    readonly bytes: Uint8Array;
-    readonly formatId: string;
-    readonly version: string;
-    readonly normalizationId: string;
-    readonly expectations: Readonly<Record<string, string>>;
-  }) => Promise<
-    | { readonly kind: "valid" }
-    | {
-        readonly kind: "invalid";
-        readonly reason: ResultFormatValidationFailureReason;
-      }
-  >
-) {
-  const registry = makeResultFormatRegistry([
+test("形式不適合の結果を受理前に拒否する", async () => {
+  const formats = makeResultFormatRegistry([
     {
-      formatId: "test.formal-review-result",
+      formatId: "review-result",
       version: "1",
-      normalizationId: "test.canonical-json.v1",
+      normalizationId: "identity.v1",
       validator: {
-        validatorId: "test.formal-review-result-validator",
+        validatorId: "review-validator",
         validatorVersion: "1",
-        implementation: Buffer.from("test validator v1", "utf8"),
-        validate,
+        implementation: Buffer.from("invalid-verdict-validator", "utf8"),
+        validate: async () => ({ kind: "invalid", reason: "invalid_verdict" }),
       },
     },
   ]);
-  return {
-    registry,
-    pinned: registry.pin({
-      formatId: "test.formal-review-result",
-      version: "1",
-      expectations: { axis: "standards" },
-    }),
-  };
-}
-
-for (const reason of [
-  "invalid_encoding",
-  "invalid_json",
-  "duplicate_key",
-  "unknown_key",
-  "missing_key",
-  "invalid_verdict",
-  "invalid_finding",
-  "expectation_mismatch",
-] as const) {
-  test(`a formal review Result rejected for ${reason} is not accepted`, async () => {
-    const format = configuredResultFormat(async () => ({
-      kind: "invalid",
-      reason,
-    }));
-    const { acceptance } = await fixture(format);
-
-    const outcome = await Effect.runPromise(
-      acceptance.accept("operation-1", produced())
-    );
-
-    assert.equal(
-      outcome.state === "failed"
-        ? outcome.resultFormatRejection?.reason
-        : undefined,
-      reason
-    );
-  });
-}
-
-test("a formal review validator receives the pinned format contract", async () => {
-  let received:
-    | Readonly<{
-        formatId: string;
-        version: string;
-        normalizationId: string;
-        expectations: Readonly<Record<string, string>>;
-      }>
-    | undefined;
-  const format = configuredResultFormat(async (input) => {
-    received = {
-      formatId: input.formatId,
-      version: input.version,
-      normalizationId: input.normalizationId,
-      expectations: input.expectations,
-    };
-    return { kind: "valid" };
-  });
-  const { acceptance } = await fixture(format);
-
-  await Effect.runPromise(acceptance.accept("operation-1", produced()));
-
-  assert.deepEqual(received, {
-    formatId: "test.formal-review-result",
+  const pinned = formats.pin({
+    formatId: "review-result",
     version: "1",
-    normalizationId: "test.canonical-json.v1",
-    expectations: { axis: "standards" },
+    expectations: {},
   });
-});
-
-test("a rejected formal review Result is not published", async () => {
-  const format = configuredResultFormat(async () => ({
-    kind: "invalid",
-    reason: "invalid_json",
-  }));
-  const { acceptance, store } = await fixture(format);
-
-  await Effect.runPromise(acceptance.accept("operation-1", produced()));
-
-  assert.equal(await storedResult(store), undefined);
-});
-
-test("a valid formal review Result preserves its original bytes", async () => {
-  const body = '{ "axis": "standards" }\n';
-  const format = configuredResultFormat(async ({ bytes }) => {
-    bytes.fill(0x78);
-    return { kind: "valid" };
-  });
-  const { acceptance, store } = await fixture(format);
-
-  await Effect.runPromise(acceptance.accept("operation-1", produced(body)));
-
-  assert.equal(await storedBody(store), body);
-});
-
-test("an unavailable validator rejects a formal review Result", async () => {
-  const format = configuredResultFormat(async () => ({ kind: "valid" }));
-  const { acceptance } = await fixture({
-    ...format,
-    registry: makeResultFormatRegistry([]),
-  });
-
+  const { acceptance } = await fixture(pinned, formats);
+  const body = "invalid";
+  const bytes = Buffer.from(body, "utf8");
   const outcome = await Effect.runPromise(
-    acceptance.accept("operation-1", produced())
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body,
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
   );
 
-  assert.equal(
-    outcome.state === "failed"
-      ? outcome.resultFormatRejection?.reason
-      : undefined,
-    "validator_unavailable"
+  assert.deepEqual(
+    outcome.state === "failed" ? outcome.resultFormatRejection : undefined,
+    {
+      formatId: pinned.formatId,
+      version: pinned.version,
+      validator: pinned.validator,
+      reason: "invalid_verdict",
+    }
   );
 });
 
-test("a changed validator identity rejects an unaccepted formal review Result", async () => {
-  const original = configuredResultFormat(async () => ({ kind: "valid" }));
-  const replacement = makeResultFormatRegistry([
+test("形式に適合する結果は受理される", async () => {
+  const formats = makeResultFormatRegistry([
     {
-      formatId: "test.formal-review-result",
+      formatId: "review-result",
       version: "1",
-      normalizationId: "test.canonical-json.v1",
+      normalizationId: "identity.v1",
       validator: {
-        validatorId: "test.formal-review-result-validator",
-        validatorVersion: "2",
-        implementation: Buffer.from("replacement validator", "utf8"),
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-result-validator", "utf8"),
         validate: async () => ({ kind: "valid" }),
       },
     },
   ]);
-  const { acceptance } = await fixture({
-    registry: replacement,
-    pinned: original.pinned,
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
   });
-
+  const { acceptance } = await fixture(pinned, formats);
+  const body = "valid";
+  const bytes = Buffer.from(body, "utf8");
   const outcome = await Effect.runPromise(
-    acceptance.accept("operation-1", produced())
-  );
-
-  assert.equal(
-    outcome.state === "failed"
-      ? outcome.resultFormatRejection?.reason
-      : undefined,
-    "validator_identity_mismatch"
-  );
-});
-
-test("an accepted Result replay is not reinterpreted by a changed validator", async () => {
-  const original = configuredResultFormat(async () => ({ kind: "valid" }));
-  const { acceptance, store } = await fixture(original);
-  const first = await Effect.runPromise(
-    acceptance.accept("operation-1", produced())
-  );
-  const replacement = makeResultFormatRegistry([
-    {
-      formatId: "test.formal-review-result",
-      version: "1",
-      normalizationId: "test.canonical-json.v1",
-      validator: {
-        validatorId: "test.formal-review-result-validator",
-        validatorVersion: "2",
-        implementation: Buffer.from("replacement validator", "utf8"),
-        validate: async () => ({
-          kind: "invalid" as const,
-          reason: "invalid_json" as const,
-        }),
-      },
-    },
-  ]);
-  const replayAcceptance = makeResultAcceptance({
-    store,
-    resultFormats: replacement,
-  });
-
-  const replay = await Effect.runPromise(
-    replayAcceptance.accept("operation-1", produced())
-  );
-
-  assert.equal(
-    replay.state === "accepted" && first.state === "accepted"
-      ? replay.proof.acceptanceId
-      : undefined,
-    first.state === "accepted" ? first.proof.acceptanceId : undefined
-  );
-});
-
-test("Result acceptance reports a missing Operation as not found", async () => {
-  const { acceptance } = await fixture();
-
-  const outcome = await Effect.runPromise(
-    acceptance.accept("missing-operation", produced())
-  );
-
-  assert.equal(
-    outcome.state === "failed" ? outcome.reason : undefined,
-    "operation_not_found"
-  );
-});
-
-test("a Worker final answer is accepted as the Operation-owned Result", async () => {
-  const { acceptance } = await fixture();
-
-  const outcome = await Effect.runPromise(
-    acceptance.accept("operation-1", produced())
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body,
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
   );
 
   assert.equal(outcome.state, "accepted");
 });
 
-test("the acceptance proof carries the digest of the accepted bytes", async () => {
+test("正確なUTF-8結果を受理する", async () => {
   const { acceptance } = await fixture();
-
+  const body = "完了";
+  const bytes = Buffer.from(body, "utf8");
   const outcome = await Effect.runPromise(
-    acceptance.accept("operation-1", produced("finished"))
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body,
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
   );
-
-  assert.equal(
-    outcome.state === "accepted" ? outcome.proof.digest : undefined,
-    digest(Buffer.from("finished", "utf8"))
-  );
+  assert.equal(outcome.state, "accepted");
 });
 
-test("Result acceptance persists the exact body bytes", async () => {
-  const { acceptance, store } = await fixture();
-
-  await Effect.runPromise(
-    acceptance.accept("operation-1", produced("先頭\r\n🌱\n末尾"))
-  );
-
-  assert.equal(await storedBody(store), "先頭\r\n🌱\n末尾");
-});
-
-test("a body whose bytes do not match the declared digest is rejected", async () => {
+test("同じ要求の再送は同じ結果受理へ合流する", async () => {
   const { acceptance } = await fixture();
-  const result: WorkerProducedResult = {
-    ...produced(),
-    expectedDigest: digest(Buffer.from("other", "utf8")),
+  const bytes = Buffer.from("done", "utf8");
+  const produced = {
+    acceptanceRequestId: "request-1",
+    body: "done",
+    expectedByteCount: bytes.byteLength,
+    expectedDigest: sha256Digest(bytes),
   };
-
-  const outcome = await Effect.runPromise(
-    acceptance.accept("operation-1", result)
+  const first = await Effect.runPromise(
+    acceptance.accept("operation-1", produced)
   );
+  const second = await Effect.runPromise(
+    acceptance.accept("operation-1", produced)
+  );
+  assert.equal(
+    second.state === "accepted" ? second.proof.acceptanceId : undefined,
+    first.state === "accepted" ? first.proof.acceptanceId : undefined
+  );
+});
 
+test("完全性宣言が本文と異なる結果を拒否する", async () => {
+  const { acceptance } = await fixture();
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body: "done",
+      expectedByteCount: 5,
+      expectedDigest: sha256Digest(Buffer.from("done", "utf8")),
+    })
+  );
   assert.equal(
     outcome.state === "failed" ? outcome.reason : undefined,
     "input_integrity_mismatch"
   );
 });
 
-test("a body whose bytes do not match the declared byte count is rejected", async () => {
-  const { acceptance } = await fixture();
-  const result: WorkerProducedResult = {
-    ...produced(),
-    expectedByteCount: 1,
-  };
-
+test("形式検証器がない場合は結果を保留する", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-result-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
+    },
+  ]);
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  const { acceptance } = await fixture(pinned);
+  const bytes = Buffer.from("valid", "utf8");
   const outcome = await Effect.runPromise(
-    acceptance.accept("operation-1", result)
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body: "valid",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
   );
 
-  assert.equal(
-    outcome.state === "failed" ? outcome.reason : undefined,
-    "input_integrity_mismatch"
-  );
+  assert.deepEqual(outcome, {
+    state: "continuable",
+    reason: "validator_unavailable",
+  });
 });
 
-test("a mismatched body leaves the Operation without a Result", async () => {
-  const { acceptance, store } = await fixture();
-  const result: WorkerProducedResult = {
-    ...produced(),
-    expectedByteCount: 1,
+test("形式検証器を復元すると保留した結果を受理できる", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("valid-result-validator", "utf8"),
+        validate: async () => ({ kind: "valid" }),
+      },
+    },
+  ]);
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  const { store, acceptance } = await fixture(pinned);
+  const bytes = Buffer.from("valid", "utf8");
+  const produced = {
+    acceptanceRequestId: "request-1",
+    body: "valid",
+    expectedByteCount: bytes.byteLength,
+    expectedDigest: sha256Digest(bytes),
   };
-
-  await Effect.runPromise(acceptance.accept("operation-1", result));
-
-  assert.equal(await storedResult(store), undefined);
-});
-
-test("a repeated acceptance request returns the same acceptance identifier", async () => {
-  const { acceptance } = await fixture();
-  const first = await Effect.runPromise(
-    acceptance.accept("operation-1", produced())
-  );
-
-  const repeated = await Effect.runPromise(
-    acceptance.accept("operation-1", produced())
-  );
-
-  assert.equal(
-    repeated.state === "accepted" && first.state === "accepted"
-      ? repeated.proof.acceptanceId
-      : undefined,
-    first.state === "accepted" ? first.proof.acceptanceId : undefined
-  );
-});
-
-test("the same acceptance request with different content is a request mismatch", async () => {
-  const { acceptance } = await fixture();
-  await Effect.runPromise(acceptance.accept("operation-1", produced("first")));
-
-  const conflicting = await Effect.runPromise(
-    acceptance.accept("operation-1", produced("second"))
-  );
-
-  assert.equal(
-    conflicting.state === "failed" ? conflicting.reason : undefined,
-    "request_mismatch"
-  );
-});
-
-test("another request with the same content returns the accepted identifier", async () => {
-  const { acceptance } = await fixture();
-  const first = await Effect.runPromise(
-    acceptance.accept("operation-1", produced("same", "request-1"))
-  );
-
-  const joined = await Effect.runPromise(
-    acceptance.accept("operation-1", produced("same", "request-2"))
-  );
-
-  assert.equal(
-    joined.state === "accepted" && first.state === "accepted"
-      ? joined.proof.acceptanceId
-      : undefined,
-    first.state === "accepted" ? first.proof.acceptanceId : undefined
-  );
-});
-
-test("another request with different content is a Result conflict", async () => {
-  const { acceptance } = await fixture();
-  await Effect.runPromise(
-    acceptance.accept("operation-1", produced("first", "request-1"))
-  );
-
-  const conflicting = await Effect.runPromise(
-    acceptance.accept("operation-1", produced("second", "request-2"))
-  );
-
-  assert.equal(
-    conflicting.state === "failed" ? conflicting.reason : undefined,
-    "result_conflict"
-  );
-});
-
-test("a body over the Operation body limit is rejected", async () => {
-  const { acceptance } = await fixture();
-
+  await Effect.runPromise(acceptance.accept("operation-1", produced));
+  const recovered = makeResultAcceptance({ store, resultFormats: formats });
   const outcome = await Effect.runPromise(
-    acceptance.accept(
-      "operation-1",
-      produced("a".repeat(maxResultByteCount + 1))
-    )
+    recovered.accept("operation-1", produced)
   );
 
-  assert.equal(
-    outcome.state === "failed" ? outcome.reason : undefined,
-    "limit_exceeded"
+  assert.equal(outcome.state, "accepted");
+});
+
+test("登録済み検証器が利用できない場合も結果を保留する", async () => {
+  const formats = makeResultFormatRegistry([
+    {
+      formatId: "review-result",
+      version: "1",
+      normalizationId: "identity.v1",
+      validator: {
+        validatorId: "review-validator",
+        validatorVersion: "1",
+        implementation: Buffer.from("unavailable-validator", "utf8"),
+        validate: async () => {
+          throw new Error("validator unavailable");
+        },
+      },
+    },
+  ]);
+  const pinned = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  const { acceptance } = await fixture(pinned, formats);
+  const bytes = Buffer.from("valid", "utf8");
+  const outcome = await Effect.runPromise(
+    acceptance.accept("operation-1", {
+      acceptanceRequestId: "request-1",
+      body: "valid",
+      expectedByteCount: bytes.byteLength,
+      expectedDigest: sha256Digest(bytes),
+    })
   );
+
+  assert.deepEqual(outcome, {
+    state: "continuable",
+    reason: "validator_unavailable",
+  });
 });

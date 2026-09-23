@@ -14,7 +14,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { ResourceAdapterApprovalPolicy } from "./resource-adapter-identity.js";
 import { makeResultRetrievalRuntime } from "./result-runtime.js";
 import type { ConfiguredResultFormats } from "./result-format-registry.js";
 import {
@@ -22,15 +21,10 @@ import {
   resolveRepositoryState,
   writePrivatePrompt,
 } from "./repository-state.js";
-import {
-  makeVisibleRuntime,
-  type VisibleRuntimeOptions,
-} from "./visible-runtime.js";
+import { makeVisibleRuntime } from "./visible-runtime.js";
 import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "./worker-configuration.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
-import type { FormalReviewExternalAllocationConfiguration } from "../formal-review.js";
 import {
-  ExternalReviewAllocationRejoinedError,
   OperationCancelledError,
   OperationUnknownError,
   ProjectConfigurationError,
@@ -43,14 +37,11 @@ import type {
   OperationCompletion,
   OperationHandle,
   Runtime,
-  StartAuthorizationAuthenticator,
-  StartAuthorizationAuthority,
   ThinkingLevel,
   WorkerProfilePolicy,
 } from "../public.js";
 
 const WORKER_PROFILE = "worker";
-const FORMAL_REVIEW_PROFILE = "formal-review";
 const WORKER_TOOLS = Object.freeze([
   "read",
   "write",
@@ -88,28 +79,8 @@ const DelegateParameters = Type.Object(
   { additionalProperties: false }
 );
 
-const FormalReviewParameters = Type.Object(
-  {
-    reviewSubjectId: Type.String({ minLength: 1 }),
-    task: Type.String({
-      minLength: 1,
-      description: "Self-contained formal review task",
-    }),
-  },
-  { additionalProperties: false }
-);
-
 const OperationParameters = Type.Object(
   { operationId: Type.String({ minLength: 1 }) },
-  { additionalProperties: false }
-);
-
-const FormalReviewDecisionParameters = Type.Object(
-  {
-    operationId: Type.String({ minLength: 1 }),
-    receiptDigest: Type.String({ pattern: "^sha256:[0-9a-f]{64}$" }),
-    decision: Type.Union([Type.Literal("authorize"), Type.Literal("reject")]),
-  },
   { additionalProperties: false }
 );
 
@@ -138,16 +109,7 @@ export interface PionsExtensionOptions {
   readonly runtimeFactory?: typeof makeVisibleRuntime;
   readonly resultRuntimeFactory?: typeof makeResultRetrievalRuntime;
   readonly formalReview?: Readonly<{
-    readonly profile: Readonly<WorkerProfilePolicy>;
     readonly resultFormats: Readonly<ConfiguredResultFormats>;
-    readonly resourceAuthorities?: VisibleRuntimeOptions["resourceAuthorities"];
-    readonly resourceAdapterApprovalPolicy?: Readonly<ResourceAdapterApprovalPolicy>;
-    readonly externalAllocation?: Readonly<FormalReviewExternalAllocationConfiguration>;
-    readonly coordinator?: Readonly<{
-      readonly credential: string;
-      readonly authenticator: StartAuthorizationAuthenticator;
-      readonly authority?: StartAuthorizationAuthority;
-    }>;
   }>;
   readonly repositoryRoot?: string;
   readonly stateBaseDirectory?: string;
@@ -332,22 +294,6 @@ function workerPrompt(task: string): string {
   ].join("\n");
 }
 
-function formalReviewPrompt(
-  task: string,
-  tools: ReadonlyArray<string>
-): string {
-  return [
-    "You are a formal-review Worker with an independent context.",
-    "Follow the trusted project's AGENTS.md instructions.",
-    "Do not load skills, extensions, or prompt templates.",
-    `Use only the configured tools: ${tools.join(", ")}.`,
-    "Return a self-contained textual Result.",
-    "",
-    "Review task:",
-    task,
-  ].join("\n");
-}
-
 function boundedResultBody(
   body: string,
   operationId: string
@@ -380,7 +326,7 @@ class TrackedOperation {
 
   cancel(): Promise<CancellationResult> {
     if (this.cancellation !== undefined) return this.cancellation;
-    this.cancellation = this.handle.cancel({ scope: "subtree" });
+    this.cancellation = this.handle.cancel({});
     void this.cancellation.catch(() => undefined);
     return this.cancellation;
   }
@@ -472,14 +418,6 @@ export function installPionsExtension(
   const runtimesByConfig = new Map<string, Runtime>();
   const runtimesByRepository = new Map<string, Runtime>();
   const runtimesByCall = new Map<string, Runtime>();
-  const sessionOwnedFormalReviews = new Map<
-    string,
-    {
-      readonly runtime: Runtime;
-      readonly sessionId: string;
-      readonly repositoryRoot: string;
-    }
-  >();
   const knownRuntimes = new Set<Runtime>();
   const operationLifetime = new OperationLifetime();
   let shuttingDown = false;
@@ -527,11 +465,39 @@ export function installPionsExtension(
     }
   }
 
+  pi.on("session_start", async (_event, context) => {
+    if (!context.isProjectTrusted()) return;
+    const { normalizedRoot, repositoryState } =
+      await resolveRepositoryContext(context);
+    let runtime = options.runtime ?? runtimesByRepository.get(normalizedRoot);
+    if (runtime === undefined) {
+      const workerCwd = await realpath(context.cwd);
+      const runtimeStateDirectory = join(repositoryState, "runtime");
+      await options.formalReview?.resultFormats.registry.register(
+        runtimeStateDirectory
+      );
+      runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
+        cwd: workerCwd,
+        stateDirectory: runtimeStateDirectory,
+        profiles: {},
+        environment: options.environment ?? process.env,
+        ...(options.extensionEntryPath === undefined
+          ? {}
+          : { extensionEntryPath: options.extensionEntryPath }),
+        ...(options.formalReview === undefined
+          ? {}
+          : { formalReviewResultFormats: options.formalReview.resultFormats }),
+      });
+      runtimesByRepository.set(normalizedRoot, runtime);
+    }
+    knownRuntimes.add(runtime);
+    await runtime.ready();
+  });
+
   async function prepareWorkerCall(
     toolCallId: string,
     prompt: string,
-    context: ExtensionContext,
-    requiredModel?: Readonly<ModelReference>
+    context: ExtensionContext
   ): Promise<{
     readonly idempotencyKey: string;
     readonly normalizedRoot: string;
@@ -545,13 +511,15 @@ export function installPionsExtension(
     const inheritedThinkingLevel = selectedThinkingLevel(context);
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
+    const recoveredRuntime = runtimesByRepository.get(normalizedRoot);
+    if (recoveredRuntime !== undefined) await recoveredRuntime.ready();
     const workerCwd = await realpath(context.cwd);
     const configured = await projectConfig(normalizedRoot);
     const workerModel =
       configured?.model === undefined
         ? inheritedModel
         : configuredModel(context, configured.model);
-    requireWorkerLoadableProvider(context, requiredModel ?? workerModel);
+    requireWorkerLoadableProvider(context, workerModel);
     const workerThinkingLevel =
       configured?.thinkingLevel ?? inheritedThinkingLevel;
     const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
@@ -562,30 +530,26 @@ export function installPionsExtension(
     );
     await writePrivatePrompt(promptRef, prompt);
     const workerProfile: WorkerProfilePolicy = {
-      intendedUse: "general",
       modelCandidates: [workerModel],
       thinkingLevel: workerThinkingLevel,
       tools: WORKER_TOOLS,
-      resources: { resourceProofPolicy: "disabled" },
-      startAuthorization: { policy: "disabled" },
       maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     };
     const runtimeStateDirectory = join(repositoryState, "runtime");
     await options.formalReview?.resultFormats.registry.register(
       runtimeStateDirectory
     );
-    const formalProfileDigest =
+    const resultFormatDigest =
       options.formalReview === undefined
         ? "disabled"
         : opaqueDigest(
             JSON.stringify({
-              profile: options.formalReview.profile,
               resultFormat: options.formalReview.resultFormats.resultFormat,
               registryDigest:
                 options.formalReview.resultFormats.registry.digest,
             })
           );
-    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${formalProfileDigest}`;
+    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${resultFormatDigest}`;
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
     let runtime = options.runtime;
     if (runtime === undefined) {
@@ -601,48 +565,22 @@ export function installPionsExtension(
         runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
           cwd: workerCwd,
           stateDirectory: runtimeStateDirectory,
-          profiles: {
-            [WORKER_PROFILE]: workerProfile,
-            ...(options.formalReview === undefined
-              ? {}
-              : { [FORMAL_REVIEW_PROFILE]: options.formalReview.profile }),
-          },
+          profiles: { [WORKER_PROFILE]: workerProfile },
           environment: options.environment ?? process.env,
           extensionEntryPath,
+          ...(runtimesByRepository.has(normalizedRoot)
+            ? { recovery: "disabled" as const }
+            : {}),
           ...(options.formalReview === undefined
             ? {}
             : {
                 formalReviewResultFormats: options.formalReview.resultFormats,
-                ...(options.formalReview.resourceAuthorities === undefined
-                  ? {}
-                  : {
-                      resourceAuthorities:
-                        options.formalReview.resourceAuthorities,
-                      resourceAdapterApprovalPolicy:
-                        options.formalReview.resourceAdapterApprovalPolicy,
-                    }),
-                ...(options.formalReview.externalAllocation === undefined
-                  ? {}
-                  : {
-                      externalReviewAllocationAuthenticator:
-                        options.formalReview.externalAllocation.authenticator,
-                    }),
-                ...(options.formalReview.coordinator === undefined
-                  ? {}
-                  : {
-                      startAuthorizationAuthenticator:
-                        options.formalReview.coordinator.authenticator,
-                      ...(options.formalReview.coordinator.authority ===
-                      undefined
-                        ? {}
-                        : {
-                            startAuthorizationAuthority:
-                              options.formalReview.coordinator.authority,
-                          }),
-                    }),
               }),
         });
         runtimesByConfig.set(configKey, runtime);
+        runtimesByRepository.set(normalizedRoot, runtime);
+        knownRuntimes.add(runtime);
+        await runtime.ready();
       }
     }
     runtimesByCall.set(idempotencyKey, runtime);
@@ -763,150 +701,6 @@ export function installPionsExtension(
       });
     },
   });
-
-  // Formal review tools stay reachable only for the retained trusted
-  // integration; the delegation-only extension entry never configures them.
-  if (options.formalReview !== undefined) {
-    pi.registerTool({
-      name: "pions_review",
-      label: "Pions Formal Review",
-      description:
-        "Create a non-waiting formal-review Operation and return its Operation identifier.",
-      parameters: FormalReviewParameters,
-      async execute(toolCallId, parameters, _signal, _onUpdate, context) {
-        if (shuttingDown) throw new Error("Pions Runtime is shutting down");
-        if (!context.isProjectTrusted()) {
-          throw new Error("pions_review requires a trusted project");
-        }
-        const formalReview = options.formalReview;
-        if (formalReview === undefined) {
-          throw new WorkerConfigurationError(
-            "unsupported_capability",
-            "Formal review is not enabled by trusted configuration"
-          );
-        }
-        const modelCandidate = formalReview.profile.modelCandidates[0];
-        if (modelCandidate === undefined) {
-          throw new WorkerConfigurationError(
-            "unsupported_capability",
-            "Formal review has no configured model"
-          );
-        }
-        const model = configuredModel(context, modelCandidate);
-        const prepared = await prepareWorkerCall(
-          toolCallId,
-          formalReviewPrompt(parameters.task, formalReview.profile.tools),
-          context,
-          model
-        );
-        const externalReviewAllocation =
-          formalReview.externalAllocation === undefined
-            ? undefined
-            : await formalReview.externalAllocation.allocationFor({
-                reviewSubjectId: parameters.reviewSubjectId,
-              });
-        let handle: OperationHandle;
-        try {
-          handle = await prepared.runtime.spawn(
-            {
-              promptRef: prepared.promptRef,
-              profile: FORMAL_REVIEW_PROFILE,
-              idempotencyKey: prepared.idempotencyKey,
-              model,
-              thinkingLevel: formalReview.profile.thinkingLevel,
-              tools: formalReview.profile.tools,
-              cwd: prepared.normalizedRoot,
-            },
-            {
-              reviewSubjectId: parameters.reviewSubjectId,
-              ...(externalReviewAllocation === undefined
-                ? {}
-                : { externalReviewAllocation }),
-            }
-          );
-        } catch (error) {
-          if (!(error instanceof ExternalReviewAllocationRejoinedError))
-            throw error;
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `[Operation: ${error.operationId}]`,
-              },
-            ],
-            details: { operationId: error.operationId, rejoined: true },
-          };
-        }
-        operationLifetime.track(handle);
-        sessionOwnedFormalReviews.set(handle.operationId, {
-          runtime: prepared.runtime,
-          sessionId: context.sessionManager.getSessionId(),
-          repositoryRoot: prepared.normalizedRoot,
-        });
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `[Operation: ${handle.operationId}]`,
-            },
-          ],
-          details: { operationId: handle.operationId, rejoined: false },
-        };
-      },
-    });
-
-    pi.registerTool({
-      name: "pions_review_decision",
-      label: "Pions Formal Review Decision",
-      description:
-        "Authorize or reject the inspected Startup receipt for a formal-review Operation owned by this Pi session.",
-      parameters: FormalReviewDecisionParameters,
-      async execute(toolCallId, parameters, _signal, _onUpdate, context) {
-        if (shuttingDown) throw new Error("Pions Runtime is shutting down");
-        if (!context.isProjectTrusted()) {
-          throw new Error("pions_review_decision requires a trusted project");
-        }
-        const coordinator = options.formalReview?.coordinator;
-        if (coordinator === undefined) {
-          throw new WorkerConfigurationError(
-            "unsupported_capability",
-            "Formal review decisions are not enabled by trusted Coordinator configuration"
-          );
-        }
-        const ownedReview = sessionOwnedFormalReviews.get(
-          parameters.operationId
-        );
-        const currentRepository = await resolveRepositoryContext(context);
-        if (
-          ownedReview === undefined ||
-          ownedReview.sessionId !== context.sessionManager.getSessionId() ||
-          ownedReview.repositoryRoot !== currentRepository.normalizedRoot
-        ) {
-          throw new Error("Operation is not owned by the current Pi session");
-        }
-        const inbox = await ownedReview.runtime.startAuthorizationInbox(
-          coordinator.credential
-        );
-        const outcome = await inbox.decide({
-          operationId: parameters.operationId,
-          decisionId: `pi-decision:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`,
-          kind: parameters.decision,
-          receiptDigest: parameters.receiptDigest as `sha256:${string}`,
-        });
-        const summary =
-          outcome.status === "rejected"
-            ? `[Operation: ${parameters.operationId}; decision: rejected; reason: ${outcome.reason}]`
-            : `[Operation: ${parameters.operationId}; decision: ${outcome.status}; gate: ${outcome.gate}]`;
-        return {
-          content: [{ type: "text" as const, text: summary }],
-          details:
-            outcome.status === "rejected"
-              ? { status: outcome.status, reason: outcome.reason }
-              : { status: outcome.status, gate: outcome.gate },
-        };
-      },
-    });
-  }
 
   pi.registerTool({
     name: "pions_delegate",

@@ -62,13 +62,6 @@ async function createOperation(store: EventStore): Promise<void> {
       requestedConfig,
       effectiveConfig,
       maxResultByteCount,
-      lineage: { rootOperationId: "operation-1", depth: 0 },
-      startAuthorization: {
-        configuredPolicy: "disabled",
-        policy: "disabled",
-        windowMs: 0,
-        authorizedSubjectIds: [],
-      },
     })
   );
 }
@@ -431,7 +424,7 @@ test("a rewritten acceptance record is rejected as corrupt", async (context) => 
   const path = join(
     root,
     operationDirectoryKey("operation-1"),
-    "events.v21.json"
+    "events.v27.json"
   );
   const record = JSON.parse(await readFile(path, "utf8")) as {
     events: Array<{ type: string; acceptance?: { byteCount: number } }>;
@@ -455,7 +448,7 @@ test("an old Event Store root is rejected instead of initialized as the current 
   await makeRunning(store);
   const directory = join(root, operationDirectoryKey("operation-1"));
   await rename(
-    join(directory, "events.v21.json"),
+    join(directory, "events.v27.json"),
     join(directory, "events.v10.json")
   );
 
