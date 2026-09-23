@@ -8,7 +8,7 @@
 > [Pi拡張から作業を委譲する](../pi-extension.md#ワーカーモデルの設定)を参照する。
 
 - 参照日: 2026-02-21
-- 対象: Pi Coding Agentと、別のPiプロセスを起動するPionsのレビューワーカー
+- 対象: Pi Coding Agentと、別のPiプロセスを起動するPionsの委譲ワーカー
 
 ## 結論
 
@@ -16,7 +16,7 @@
 
 1. **Anthropic APIキーを使うだけなら拡張は不要**である。Pi組み込みの`anthropic`プロバイダーと`ANTHROPIC_API_KEY`または`~/.pi/agent/auth.json`を使い、Pionsでは`.pions.json`に`anthropic/claude-opus-5`のような正確な組を指定できる。ただし、これはClaude Pro/Maxの定額枠ではなく、Claude Console/APIの従量課金である。Pi公式文書も、APIキー方式とClaude Pro/Max OAuth方式を別項目としている。[^pi-providers]
 2. **Pi組み込みのClaude Pro/Max OAuthログインもある**が、Pi公式文書は、Piのような第三者ハーネスからの利用はClaudeプラン枠ではなく`extra usage`のトークン課金になると明記する。したがって、`/login anthropic`だけでは「Pro/Maxの定額枠でPionsのOpusを動かす」という目的を満たさない。[^pi-providers]
-3. **目的に最も近く、規約面で相対的に妥当なのは`pi-claude-bridge`**である。これはAnthropic公式のClaude Agent SDKから**未改変のClaude Code実行ファイル**を起動し、`claude-bridge/claude-opus-5`等をPiプロバイダーとして登録する。Anthropic公式文書は、Agent SDKがClaude Codeをサブプロセスとして起動する構造を説明し、エンドユーザーが未改変のClaude Codeへ自分のサブスクリプションでログインする利用を明示的に認めている。[^bridge-readme][^bridge-source][^agent-sdk-hosting][^anthropic-legal]
+3. **調査当時、目的に最も近く、規約面で相対的に妥当だったのは`pi-claude-bridge`**である。これはAnthropic公式のClaude Agent SDKから**未改変のClaude Code実行ファイル**を起動し、`claude-bridge/claude-opus-5`等をPiプロバイダーとして登録する。Anthropic公式文書は、Agent SDKがClaude Codeをサブプロセスとして起動する構造を説明し、エンドユーザーが未改変のClaude Codeへ自分のサブスクリプションでログインする利用を明示的に認めている。ただし、現行Pionsのワーカーはこの拡張を読み込まない。[^bridge-readme][^bridge-source][^agent-sdk-hosting][^anthropic-legal]
 4. **Claude Codeに見せかけるヘッダーやシステムプロンプトを書き換え、Piからサブスクリプション枠へ直接流すOAuth互換拡張は存在するが、Pionsには採用しない方がよい。** 代表例は`@gotgenes/pi-anthropic-auth`、`pi-anthropic-oauth`、`sylv-io/pi-anthropic-auth`である。Anthropic公式文書は、OAuthをネイティブAnthropicアプリの通常利用向けとし、第三者アプリでClaude.aiログインを提供したり、Free/Pro/Max資格情報を介して要求を流したりすることを許可していない。Consumer Termsも、明示的な許可またはAPIキーなしの自動・非人間アクセスを禁じる。アカウント停止、突然の非互換化、意図しない追加課金のリスクがある。[^anthropic-legal][^consumer-terms][^gotgenes-source][^leohenon-readme][^sylv-readme]
 
 ## 認証・課金方式の整理
@@ -40,7 +40,7 @@ PiはOAuthトークンを`~/.pi/agent/auth.json`へ保存し自動更新し、AP
 
 **Claude Pro/Max OAuth方式。** `/login anthropic`で購読ログインできるが、Pi公式は第三者ハーネス利用を`extra usage`課金と明記する。これは「ログイン可能」と「定額枠を消費する」を区別すべき例である。保守はPi本体に含まれ最も良好だが、定額枠利用という要件には不適合である。[^pi-providers]
 
-### 2. `pi-claude-bridge` — 条件付き第一候補
+### 2. `pi-claude-bridge` — 調査当時の候補
 
 **仕組み。** `pi install npm:pi-claude-bridge`で導入するPiパッケージで、`@anthropic-ai/claude-agent-sdk`を依存関係に持ち、`claude-bridge`プロバイダーを登録する。ソースではダミーの`apiKey: "not-used"`と独自`streamSimple`を登録し、Agent SDKの`query()`へ委譲する。SDKはAnthropic公式で、公式文書どおりClaude Codeサブプロセスとローカルの`~/.claude`セッション状態を使う。[^bridge-package][^bridge-source][^agent-sdk-readme][^agent-sdk-hosting]
 
@@ -71,17 +71,15 @@ PiはOAuthトークンを`~/.pi/agent/auth.json`へ保存し自動更新し、AP
 
 ### A. APIキーまたはPi組み込みOAuthを使う場合
 
-Pionsは委譲元Piのモデルレジストリーでモデル存在と認証設定を検査し、`.pions.json`のモデル、または委譲元モデルを実効設定へ固定する。別Piを`--provider`、`--model`、`--thinking`付きで起動し、観測値が違えば失敗する。したがって、次を満たせばよい。[^pions-extension][^pions-worker]
+Pionsは委譲元Piのモデルレジストリーでモデル存在と認証設定を検査し、`.pions.json`のモデル、または委譲元モデルを実効設定へ固定する。別Piを`--provider`、`--model`、`--thinking`付きで起動し、観測値が違えば失敗する。ワーカーは`--no-extensions`で起動し、Pions内部拡張だけを明示的に読み込む。Pi拡張が登録したプロバイダーは、委譲元で利用できてもワーカーでは利用できないため、ワーカー開始前に設定エラーとなる。[^pions-extension][^pions-worker]
 
 ```json
 {
-  "review": {
-    "model": {
-      "provider": "anthropic",
-      "id": "claude-opus-5"
-    },
-    "thinkingLevel": "high"
-  }
+  "model": {
+    "provider": "anthropic",
+    "id": "claude-opus-5"
+  },
+  "thinkingLevel": "high"
 }
 ```
 
@@ -92,43 +90,18 @@ Pionsは委譲元Piのモデルレジストリーでモデル存在と認証設�
 
 Piの解決順はCLIキー、`auth.json`、環境変数、カスタム設定の順なので、保存済みOAuthがある状態で`ANTHROPIC_API_KEY`を設定しただけではAPIキーへ切り替わらない。[^pi-providers]
 
-### B. `pi-claude-bridge`を使う場合
+### B. Pi拡張が登録するプロバイダーを使う場合
 
-設定例は次のようになる。[^pions-extension][^bridge-readme]
+`pi-claude-bridge`と直接OAuth互換拡張は、どちらもPi拡張がプロバイダーを登録する。現行Pionsはプロバイダー拡張を同梱または自動読込せず、ワーカーにも渡さない。したがって、これらを`.pions.json`の`model`へ指定してPionsから委譲することはできない。委譲元だけへインストールしても別プロセスのワーカーへ登録は伝播しない。[^pions-extension][^pions-worker][^gotgenes-architecture]
 
-```json
-{
-  "review": {
-    "model": {
-      "provider": "claude-bridge",
-      "id": "claude-opus-5"
-    },
-    "thinkingLevel": "high"
-  }
-}
-```
-
-Pionsは`pi-claude-bridge` 0.7.0を依存関係とロックファイルで固定し、委譲元のプロジェクト拡張とClaudeワーカーの双方へ同じ実エントリーを読み込む。ワーカーでは`--no-extensions`を維持し、Pions内部拡張と固定版プロバイダー拡張だけを個別の`--extension`で指定する。起動直前にパッケージ名、版、エントリーを再検査し、不一致ならオペレーションを開始しない。[^pions-worker][^pi-extensions]
-
-運用上は次を満たす必要がある。
-
-1. 未改変Claude Codeで`claude`を実行し、同一利用者の`~/.claude`へ事前にログインする。分離する場合は委譲元Piの起動前から`CLAUDE_CONFIG_DIR`を指定する。資格情報はPions設定や引数へ複製しない。[^pions-extension][^bridge-source][^anthropic-auth]
-2. `provider.plan`は実契約に合わせる。Pionsは`longContextExtraUsage: true`を拒否し、未ログイン、モデル利用不可、プラン不適合を別の型付き理由として返し、別モデルへフォールバックしない。[^pions-extension][^bridge-models]
-3. `AskClaude`、Claude Code自動メモリー、利用者MCPを無効に保つ。Pionsはこれらを弱める設定を起動前に拒否し、Claude Code内蔵ツールではなくPiから橋渡しした許可済みツールだけを使う。[^bridge-source][^pi-packages]
-4. 実契約でのOpus 5、課金先、並列時のレート制限、キャンセル後のClaude Code子プロセスは[Issue #49手動スモークテスト](../manual-smoke-test-issue-49.md)に従って確認する。
-
-### C. 直接OAuth互換拡張を使う場合
-
-技術的条件はBの1と同様で、**各ワーカーPiへ対象拡張を明示ロード**しなければならない。`@gotgenes/pi-anthropic-auth`自身もfork子プロセスはプロセス単位でラッパーを読み込むと説明する。親だけへインストールしても別ランタイムへプロバイダー変更は伝播しない。[^gotgenes-architecture][^pions-worker]
-
-ただし、これはAnthropicの認証利用方針と衝突するため、実装条件を満たしても採用判断は「不可」とする。秘密情報を`.pions.json`やプロセス引数へ複製せず、認証ファイル権限、拡張の供給元固定、更新差分監査も必要である。[^anthropic-legal][^pi-packages]
+直接OAuth互換拡張については、前述の認証利用方針との衝突も採用しない理由となる。[^anthropic-legal]
 
 ## 推奨
 
 1. **安定性と規約確実性を優先するなら、Pi組み込み`anthropic`＋Anthropic APIキーを使う。** Pro/Maxとは別課金である。[^pi-providers][^commercial-terms]
-2. **自分のPro/Max枠をローカルPionsで使う必要があるなら、`pi-claude-bridge`を小規模に検証する。** 未改変Claude Code、利用者本人のログイン、ローカル利用、明示的なワーカー拡張読込を採用条件とする。[^bridge-readme][^anthropic-legal][^pions-worker]
+2. **Pi拡張が登録するプロバイダーは現行Pionsの委譲先に指定しない。** `pi-claude-bridge`を含め、ワーカーで利用できないためである。[^pions-extension][^pions-worker]
 3. **要求整形型OAuth拡張は採用しない。** 動作実績よりAnthropic公式の認証方針を優先する。[^anthropic-legal][^gotgenes-source]
-4. 導入前に、Opus 5が実契約で選択可能か、定額枠か追加利用か、並列ワーカー時の上限、キャンセル後のClaude Code子プロセス停止、ツール制限、資格情報・セッション保存先を手動スモークテストする。モデル提供とプラン条件は変更され得る。[^anthropic-auth][^anthropic-legal][^bridge-readme]
+4. 導入前に、指定モデルがPiの組み込みカタログで選択可能か、認証と課金先は何かを確認する。モデル提供とプラン条件は変更され得る。[^pi-providers][^pi-models]
 
 ## 参照資料
 
