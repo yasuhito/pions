@@ -562,6 +562,63 @@ test("検証器の一時的な不在から追加のreadyなしで結果受理を
   );
 });
 
+test("検証器が不在の間は復旧の再試行間隔を延ばす", async () => {
+  const formats = makeResultFormatRegistry([{
+    formatId: "review-result",
+    version: "1",
+    normalizationId: "identity.v1",
+    validator: {
+      validatorId: "review-validator",
+      validatorVersion: "1",
+      implementation: Buffer.from("valid-review-validator", "utf8"),
+      validate: async () => ({ kind: "valid" }),
+    },
+  }]);
+  const resultFormat = formats.pin({
+    formatId: "review-result",
+    version: "1",
+    expectations: {},
+  });
+  let available = false;
+  let attempts = 0;
+  let fourthAttempt!: () => void;
+  const attempted = new Promise<void>((resolve) => {
+    fourthAttempt = resolve;
+  });
+  const registry: ResultFormatRegistry = {
+    ...formats,
+    validate: async (pinned, bytes) => {
+      if (available) return formats.validate(pinned, bytes);
+      attempts += 1;
+      if (attempts === 4) fourthAttempt();
+      return { kind: "invalid", reason: "validator_unavailable" };
+    },
+  };
+  const store = new InMemoryEventStore(
+    [],
+    new FakeClock(
+      Array.from(
+        { length: 400 },
+        (_, index) => `2026-09-23T03:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`
+      )
+    )
+  );
+  await seed(store, resultFormat);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const runtime = makeTestRuntime({
+    ...services(store, new RecoveryWorker("accepted", true)),
+    formalReviewResultFormats: { registry, resultFormat },
+  });
+  const startedAt = performance.now();
+  await runtime.ready();
+  await attempted;
+  const elapsedMs = performance.now() - startedAt;
+  available = true;
+  await runtime.close();
+
+  assert.ok(elapsedMs >= 140, `retries took ${elapsedMs}ms`);
+});
+
 test("停止確認済みの親キャンセルを永続化する", async () => {
   const store = new InMemoryEventStore([], clock());
   const runtime = makeTestRuntime({

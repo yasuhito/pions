@@ -54,6 +54,9 @@ import type {
   TaskSpec,
 } from "../public.js";
 
+const INITIAL_RECOVERY_DELAY_MS = 20;
+const MAX_RECOVERY_DELAY_MS = 5_000;
+
 const TaskSpecSchema = Schema.Struct({
   promptRef: Schema.NonEmptyString,
   profile: Schema.NonEmptyString,
@@ -590,6 +593,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   ): Promise<void> => {
     try {
       await runEffect(project(operation));
+      recoveryDelayMs = INITIAL_RECOVERY_DELAY_MS;
       if (operation.state === "completed") {
         await performCleanup(operation, true);
         const outcome = await readResult(record.operationId);
@@ -1394,8 +1398,11 @@ export function makeRuntime(services: RuntimeServices): Runtime {
   let cleanupsRecovered = false;
   let recovery: Promise<void> | undefined;
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let recoveryDelayMs = INITIAL_RECOVERY_DELAY_MS;
   const scheduleRecovery = (): void => {
     if (closing || recoveryTimer !== undefined) return;
+    const delayMs = recoveryDelayMs;
+    recoveryDelayMs = Math.min(delayMs * 2, MAX_RECOVERY_DELAY_MS);
     recoveryTimer = setTimeout(() => {
       recoveryTimer = undefined;
       void Promise.resolve(recovery)
@@ -1404,7 +1411,7 @@ export function makeRuntime(services: RuntimeServices): Runtime {
           if (!closing) return recover();
         })
         .catch(() => undefined);
-    }, 20);
+    }, delayMs);
     recoveryTimer.unref();
   };
   const recover = (duringClose = false): Promise<void> => {
