@@ -82,6 +82,25 @@ Worker lifecycle and result frames travel over a local Unix-domain socket authen
 
 The worker protocol and private files do not provide an OS sandbox.
 
+## Installation
+
+Once version `0.1.0` is published to npm, install it in a Pi project:
+
+```sh
+pi install npm:@yasuhito/pions@0.1.0
+```
+
+The package manifest registers only the Pions extension. To use a fixed local tarball in another Pi project, pack it here, then install the archive as an npm dependency in that project and register the installed package with Pi:
+
+```sh
+npm pack
+cd /path/to/pi-project
+npm install --save-exact /path/to/pions/yasuhito-pions-0.1.0.tgz
+pi install --local ./node_modules/@yasuhito/pions
+```
+
+Configure a flat `.pions.json` in the trusted repository root as described in [Worker model configuration](#worker-model-configuration).
+
 ## Pi tools
 
 The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`.
@@ -161,7 +180,6 @@ Pions is under active development.
 - The Pi extension exposes one general-purpose worker profile; custom agent definitions are not supported.
 - Workers run without extension discovery, so only providers available to a plain Pi worker can be configured.
 - Background execution, chains, and mid-run steering are not supported.
-- Pions is not yet published as an installable npm package.
 - APIs, persistence formats, configuration, and installation may change without compatibility paths.
 
 ## Development

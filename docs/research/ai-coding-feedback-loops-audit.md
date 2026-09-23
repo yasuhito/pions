@@ -33,4 +33,4 @@ TypeScript 7は調査時点の`typescript-eslint`の対応範囲外であるた�
 
 ## 記事外の補足
 
-`npm run check`とCIは`npm run build`を実行しない。型検査とテスト用コンパイルは行われるが、`tsconfig.build.json`固有の宣言ファイル生成などは通常のCIゲートに含まれない。
+`npm run check`とCIは公開物のビルドと内容検査を実行しない。型検査とテスト用コンパイルは行われるが、公開物は`npm pack`や`npm publish`の前に`prepack`から実行する`check:package`でビルドし、ファイル集合と実行時依存を検査する。
