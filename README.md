@@ -190,7 +190,7 @@ npm run build
 npm run check
 ```
 
-`npm run check` runs type checking, linting, formatting checks, test-assertion validation, and the full test suite.
+`npm run check` runs type checking, linting, formatting checks, test-assertion validation, and the full test suite. Run `npm run release-gate` before a release to add package-content validation and the real Pi + Herdr end-to-end test using a packed `@yasuhito/pions@0.1.0` tarball installed in a fresh consumer. The release gate needs authenticated Pi model access, uses a disposable Herdr session, and may incur model charges. It is intentionally excluded from CI.
 
 ## Design documentation
 
