@@ -15,7 +15,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { makeResultRetrievalRuntime } from "./result-runtime.js";
+import { makePersistedOperationReader } from "./persisted-operation-reader.js";
 import {
   opaqueDigest,
   resolveRepositoryState,
@@ -84,7 +84,7 @@ export interface PionsDelegateDetails {
 export interface PionsExtensionOptions {
   readonly runtime?: OperationRuntime;
   readonly runtimeFactory?: typeof makeVisibleRuntime;
-  readonly resultRuntimeFactory?: typeof makeResultRetrievalRuntime;
+  readonly persistedReaderFactory?: typeof makePersistedOperationReader;
   readonly repositoryRoot?: string;
   readonly stateBaseDirectory?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -277,26 +277,22 @@ export function installPionsExtension(
 
   async function useRepositoryRuntime<Value>(
     context: ExtensionContext,
-    use: (runtime: OperationRuntime) => Promise<Value>
+    use: (runtime: Pick<OperationRuntime, "operation">) => Promise<Value>
   ): Promise<Value> {
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
     const existingRuntime =
       options.runtime ?? runtimesByRepository.get(normalizedRoot);
-    const temporaryRuntime =
-      existingRuntime === undefined
-        ? (options.resultRuntimeFactory ?? makeResultRetrievalRuntime)({
-            cwd: normalizedRoot,
-            stateDirectory: join(repositoryState, "runtime"),
-          })
-        : undefined;
-    const runtime = existingRuntime ?? temporaryRuntime!;
-    if (temporaryRuntime === undefined) knownRuntimes.add(runtime);
-    try {
-      return await use(runtime);
-    } finally {
-      await temporaryRuntime?.close();
+    if (existingRuntime !== undefined) {
+      knownRuntimes.add(existingRuntime);
+      return use(existingRuntime);
     }
+    const reader = (
+      options.persistedReaderFactory ?? makePersistedOperationReader
+    )({
+      stateDirectory: join(repositoryState, "runtime"),
+    });
+    return use(reader);
   }
 
   pi.on("session_start", async (_event, context) => {

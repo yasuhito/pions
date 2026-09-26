@@ -476,17 +476,27 @@ test("pions_operation returns the persisted Operation snapshot", async (context)
   assert.deepEqual((await value.inspect()).details, SNAPSHOT);
 });
 
-test("pions_operation reads an earlier session snapshot through a retrieval Runtime", async (context) => {
-  const retrievalRuntime = new FakeRuntime();
+test("pions_operation reads through the active Runtime after session_start", async (context) => {
+  const activeRuntime = new FakeRuntime();
+  const value = await fixture(activeRuntime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.start();
+  await value.inspect();
+
+  assert.equal(activeRuntime.operationReadCount, 1);
+});
+
+test("pions_operation reads an earlier session snapshot through the persisted reader", async (context) => {
+  const retrievalReader = new FakeRuntime();
   const value = await fixture(undefined, {
     runtimeFactory: () => new FakeRuntime(),
-    resultRuntimeFactory: () => retrievalRuntime,
+    persistedReaderFactory: () => retrievalReader,
   });
   context.after(() => rm(value.root, { recursive: true, force: true }));
   value.setSessionId("pi-session-2");
   await value.inspect();
 
-  assert.equal(retrievalRuntime.operationReadCount, 1);
+  assert.equal(retrievalReader.operationReadCount, 1);
 });
 
 test("pions_operation returns the effective model", async (context) => {
@@ -2057,16 +2067,28 @@ test("pions_result hides Operations outside the current repository", async (cont
   );
 });
 
-test("pions_result closes its temporary retrieval Runtime", async (context) => {
-  const retrievalRuntime = new FakeRuntime();
-  const value = await fixture(new FakeRuntime(), {
-    runtimeFactory: () => new FakeRuntime(),
-    resultRuntimeFactory: () => retrievalRuntime,
+test("pions_result reads through the active Runtime after session_start", async (context) => {
+  const activeRuntime = new FakeRuntime();
+  const value = await fixture(activeRuntime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.start();
+  await value.result();
+
+  assert.equal(activeRuntime.resultReadCount, 1);
+});
+
+test("pions_result reads without constructing a Worker Runtime", async (context) => {
+  const retrievalReader = new FakeRuntime();
+  const value = await fixture(undefined, {
+    runtimeFactory: () => {
+      throw new Error("Worker Runtime must not start");
+    },
+    persistedReaderFactory: () => retrievalReader,
   });
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.result();
 
-  assert.equal(retrievalRuntime.closeCount, 1);
+  assert.equal(retrievalReader.resultReadCount, 1);
 });
 
 test("pions_result retrieves a persisted Result after Pi session restart", async (context) => {
