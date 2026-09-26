@@ -1129,105 +1129,139 @@ async function main() {
       "worker-extension.js"
     );
     originalWorkerExtension = await readFile(workerExtensionPath, "utf8");
-    await writeFile(workerExtensionPath, "export default function broken( {\n");
-    const workerFailurePromptPath = join(runDir, "worker-failure-prompt.txt");
-    await writeFile(
-      workerFailurePromptPath,
-      'Use the pions_delegate tool exactly once with task "Respond with OK". Do not do anything else.\n'
-    );
-    const failureParent = await createWorkspace("pions-e2e-worker-failure", {
-      XDG_STATE_HOME: stateDir,
-    });
-    parentWorkspaceIds.push(failureParent.workspaceId);
-    const beforeWorkerFailure = await workspaceIds();
-    const failureObserver = observeWorkerWorkspaces(
-      beforeWorkerFailure,
-      failureParent.workspaceId,
-      failureParent.paneId
-    );
-    let failureTranscript;
-    let failedWorkerWorkspaces;
-    try {
-      failureTranscript = await runPiInPane(
+    const workerStartupFailures = [
+      {
+        label: "worker-failure",
+        description: "a Worker extension that cannot be loaded",
+        source: "export default function broken( {\n",
+      },
+      {
+        label: "worker-startup-throw",
+        description:
+          "a loaded Worker extension that fails before protocol identification",
+        source: [
+          "export default function failingWorker(pi) {",
+          '  pi.registerFlag("pions-worker-config", { type: "string" });',
+          '  pi.on("session_start", () => {',
+          '    throw new Error("Pions E2E Worker startup failure");',
+          "  });",
+          "}",
+          "",
+        ].join("\n"),
+      },
+    ];
+    for (const workerStartupFailure of workerStartupFailures) {
+      await writeFile(workerExtensionPath, workerStartupFailure.source);
+      const workerFailurePromptPath = join(
         runDir,
-        failureParent.paneId,
+        `${workerStartupFailure.label}-prompt.txt`
+      );
+      await writeFile(
         workerFailurePromptPath,
-        "worker-failure",
-        { allowNonZeroExitCode: true }
+        'Use the pions_delegate tool exactly once with task "Respond with OK". Do not do anything else.\n'
       );
-    } finally {
-      failedWorkerWorkspaces = await failureObserver.stop();
-    }
-    await writeFile(workerExtensionPath, originalWorkerExtension);
-    const workerFailure = await extractToolResult(
-      failureTranscript,
-      "pions_delegate"
-    );
-    if (!workerFailure.isError) {
-      throw new Error("a Worker startup failure was reported as success");
-    }
-    if ((await countToolResults(failureTranscript, "pions_delegate")) !== 1) {
-      throw new Error("a failed delegation was executed more than once");
-    }
-    const failedOperationId = operationIdFromError(workerFailure);
-    const failedWorkspaces = await observedOwnedWorkspaces(
-      failedWorkerWorkspaces,
-      stateDir
-    );
-    if (failedWorkspaces.length !== 1) {
-      throw new Error(
-        `expected one Worker workspace during failed startup, observed ${JSON.stringify(failedWorkspaces)}`
+      const failureParent = await createWorkspace(
+        `pions-e2e-${workerStartupFailure.label}`,
+        {
+          XDG_STATE_HOME: stateDir,
+        }
+      );
+      parentWorkspaceIds.push(failureParent.workspaceId);
+      const beforeWorkerFailure = await workspaceIds();
+      const failureObserver = observeWorkerWorkspaces(
+        beforeWorkerFailure,
+        failureParent.workspaceId,
+        failureParent.paneId
+      );
+      let failureTranscript;
+      let failedWorkerWorkspaces;
+      try {
+        failureTranscript = await runPiInPane(
+          runDir,
+          failureParent.paneId,
+          workerFailurePromptPath,
+          workerStartupFailure.label,
+          { allowNonZeroExitCode: true }
+        );
+      } finally {
+        failedWorkerWorkspaces = await failureObserver.stop();
+      }
+      await writeFile(workerExtensionPath, originalWorkerExtension);
+      const workerFailure = await extractToolResult(
+        failureTranscript,
+        "pions_delegate"
+      );
+      if (!workerFailure.isError) {
+        throw new Error("a Worker startup failure was reported as success");
+      }
+      if ((await countToolResults(failureTranscript, "pions_delegate")) !== 1) {
+        throw new Error("a failed delegation was executed more than once");
+      }
+      const failedOperationId = operationIdFromError(workerFailure);
+      const failedWorkspaces = await observedOwnedWorkspaces(
+        failedWorkerWorkspaces,
+        stateDir
+      );
+      if (failedWorkspaces.length !== 1) {
+        throw new Error(
+          `expected one Worker workspace during failed startup, observed ${JSON.stringify(failedWorkspaces)}`
+        );
+      }
+      const [failedWorkspaceId, failedWorkspace] = failedWorkspaces[0];
+      if (failedWorkspace.label !== `Pions ${failedOperationId.slice(0, 8)}`) {
+        throw new Error(
+          "failed Worker workspace label did not match its Operation"
+        );
+      }
+      if (!(await workspaceIds()).has(failedWorkspaceId)) {
+        throw new Error("failed Worker workspace was closed unexpectedly");
+      }
+      const failedOperationPrompt = join(
+        runDir,
+        `${workerStartupFailure.label}-operation-prompt.txt`
+      );
+      await writeFile(
+        failedOperationPrompt,
+        `Use the pions_operation tool exactly once with operationId "${failedOperationId}". Do not do anything else.\n`
+      );
+      const failureInspectionWorkspace = await createWorkspace(
+        `pions-e2e-${workerStartupFailure.label}-operation`,
+        { XDG_STATE_HOME: stateDir }
+      );
+      parentWorkspaceIds.push(failureInspectionWorkspace.workspaceId);
+      const failureInspectionTranscript = await runPiInPane(
+        runDir,
+        failureInspectionWorkspace.paneId,
+        failedOperationPrompt,
+        `${workerStartupFailure.label}-operation`
+      );
+      const failureInspection = await extractToolResult(
+        failureInspectionTranscript,
+        "pions_operation"
+      );
+      if (failureInspection.isError) {
+        throw new Error(
+          `failed Operation could not be inspected: ${JSON.stringify(failureInspection)}`
+        );
+      }
+      const failedSnapshot = failureInspection.details ?? {};
+      if (failedSnapshot.state !== "failed") {
+        throw new Error(
+          `expected a failed Operation, got ${failedSnapshot.state}`
+        );
+      }
+      if (failedSnapshot.presentationCleanup?.state === "completed") {
+        throw new Error("a failed Operation completed presentation cleanup");
+      }
+      if (!(await workspaceIds()).has(failedWorkspaceId)) {
+        throw new Error(
+          "failed Worker workspace disappeared during inspection"
+        );
+      }
+      log(
+        `${workerStartupFailure.description}: failed Operation ${failedOperationId} (${failedSnapshot.failureReason}) remained inspectable with its Worker workspace open.`
       );
     }
-    const [failedWorkspaceId, failedWorkspace] = failedWorkspaces[0];
-    if (failedWorkspace.label !== `Pions ${failedOperationId.slice(0, 8)}`) {
-      throw new Error(
-        "failed Worker workspace label did not match its Operation"
-      );
-    }
-    if (!(await workspaceIds()).has(failedWorkspaceId)) {
-      throw new Error("failed Worker workspace was closed unexpectedly");
-    }
-    const failedOperationPrompt = join(runDir, "failed-operation-prompt.txt");
-    await writeFile(
-      failedOperationPrompt,
-      `Use the pions_operation tool exactly once with operationId "${failedOperationId}". Do not do anything else.\n`
-    );
-    const failureInspectionWorkspace = await createWorkspace(
-      "pions-e2e-failed-operation",
-      { XDG_STATE_HOME: stateDir }
-    );
-    parentWorkspaceIds.push(failureInspectionWorkspace.workspaceId);
-    const failureInspectionTranscript = await runPiInPane(
-      runDir,
-      failureInspectionWorkspace.paneId,
-      failedOperationPrompt,
-      "failed-operation"
-    );
-    const failureInspection = await extractToolResult(
-      failureInspectionTranscript,
-      "pions_operation"
-    );
-    if (failureInspection.isError) {
-      throw new Error(
-        `failed Operation could not be inspected: ${JSON.stringify(failureInspection)}`
-      );
-    }
-    const failedSnapshot = failureInspection.details ?? {};
-    if (failedSnapshot.state !== "failed") {
-      throw new Error(
-        `expected a failed Operation, got ${failedSnapshot.state}`
-      );
-    }
-    if (failedSnapshot.presentationCleanup?.state === "completed") {
-      throw new Error("a failed Operation completed presentation cleanup");
-    }
-    if (!(await workspaceIds()).has(failedWorkspaceId)) {
-      throw new Error("failed Worker workspace disappeared during inspection");
-    }
-    log(
-      `failed Operation ${failedOperationId} remained inspectable with its Worker workspace open.`
-    );
 
     const unknownWorkerStartedPath = join(
       runDir,

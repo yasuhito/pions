@@ -1007,6 +1007,53 @@ test("Worker launch failure releases Worker protocol listeners", async (context)
   assert.equal(protocolListenerCount({ server: protocolServer }), 0);
 });
 
+test("a launched Worker that never identifies reports a Worker start failure", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const worker = new VisibleWorker({
+    rootDirectory: root,
+    socketDirectory: root,
+    cwd: "/work/project",
+    executor: new FakeExecutor(),
+    extensionEntryPath: "/pions/worker-extension.js",
+    capabilityGenerator: { nextCapability: () => "ab".repeat(32) },
+    promptReader: {
+      read: () => Promise.resolve(Buffer.from("private prompt", "utf8")),
+    },
+    agentStartTimeoutMs: 1,
+  });
+  const outcome = await Effect.runPromise(
+    worker.open(operation()).run(workerHooks())
+  );
+
+  assert.equal(outcome.state, "worker_start_failed");
+});
+
+test("a Worker identification timeout stops accepting Worker connections", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  let protocolServer!: Server;
+  const worker = new VisibleWorker({
+    rootDirectory: root,
+    socketDirectory: root,
+    cwd: "/work/project",
+    executor: new FakeExecutor(),
+    extensionEntryPath: "/pions/worker-extension.js",
+    capabilityGenerator: { nextCapability: () => "ab".repeat(32) },
+    promptReader: {
+      read: () => Promise.resolve(Buffer.from("private prompt", "utf8")),
+    },
+    serverFactory: () => {
+      protocolServer = createServer();
+      return protocolServer;
+    },
+    agentStartTimeoutMs: 1,
+  });
+  await Effect.runPromise(worker.open(operation()).run(workerHooks()));
+
+  assert.equal(protocolServer.listening, false);
+});
+
 test("visible Worker socket uses private permissions", async (context) => {
   const value = await fixture();
   context.after(() => {

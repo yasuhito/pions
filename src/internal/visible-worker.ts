@@ -386,11 +386,16 @@ export class VisibleWorker implements WorkerAdapter {
       if (!recovering) yield* hooks.workerLaunched();
 
       return yield* Effect.gen(this, function* () {
+        // Pi keeps running when the Worker extension fails before
+        // identification, so waiting without a deadline would never settle.
         const started = yield* receiveWorkerProtocol(
-          recovering
-            ? this.waitForRecoveredWorker(session!)
-            : session!.startedReception
+          this.waitForIdentification(session!)
         );
+        if (started === undefined) {
+          return recovering
+            ? yield* Effect.promise(() => this.stopRecoveredWorker(operation))
+            : ({ state: "worker_start_failed" } as const);
+        }
         if (started.state === "configuration_failed") {
           return { state: started.reason } as WorkerRunOutcome;
         }
@@ -1189,12 +1194,13 @@ export class VisibleWorker implements WorkerAdapter {
     });
   }
 
-  private waitForRecoveredWorker(
+  /** Resolves `undefined` when the Worker does not identify in time. */
+  private waitForIdentification(
     session: Session
-  ): Promise<WorkerStartReception> {
+  ): Promise<WorkerStartReception | undefined> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(
-        () => resolve({ state: "liveness-unproven" }),
+        () => resolve(undefined),
         this.agentStartTimeoutMs
       );
       timeout.unref();
