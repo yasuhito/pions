@@ -22,62 +22,30 @@ import {
   writePrivatePrompt,
 } from "./repository-state.js";
 import { makeVisibleRuntime } from "./visible-runtime.js";
-import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "./worker-configuration.js";
+import {
+  decodeProjectWorkerConfig,
+  delegatingWorkerSettings,
+  projectWorkerProfile,
+  selectProjectWorker,
+  type ProjectWorkerConfig,
+} from "./project-worker-configuration.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
 import {
   resolvePiExtensionPackages,
   workerExtensions,
   type WorkerExtensionPackageResolver,
 } from "./worker-extensions.js";
-import {
-  OperationCancelledError,
-  OperationUnknownError,
-  ProjectConfigurationError,
-  WorkerConfigurationError,
-} from "./types.js";
+import { OperationCancelledError, OperationUnknownError } from "./types.js";
 import type {
   CancellationResult,
   CleanupDiagnostic,
-  ModelReference,
+  EffectiveWorkerConfig,
   OperationCompletion,
   OperationHandle,
   OperationRuntime,
-  ThinkingLevel,
-  WorkerProfilePolicy,
 } from "./types.js";
 
 const WORKER_PROFILE = "worker";
-const WORKER_TOOLS = Object.freeze([
-  "read",
-  "write",
-  "edit",
-  "bash",
-  "grep",
-  "find",
-  "ls",
-]);
-const THINKING_LEVELS: ReadonlyArray<ThinkingLevel> = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
-const PROJECT_CONFIG_FILE = ".pions.json";
-const PROVIDER_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u;
-const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u;
-
-interface ProjectConfig {
-  readonly model?: Readonly<ModelReference>;
-  readonly thinkingLevel?: ThinkingLevel;
-  readonly extensions?: ReadonlyArray<string>;
-}
-
-const MAX_EXTENSION_SOURCES = 16;
-const MAX_EXTENSION_SOURCE_BYTES = 512;
-
 const DelegateParameters = Type.Object(
   {
     task: Type.String({
@@ -126,132 +94,12 @@ export interface PionsExtensionOptions {
   readonly resolveWorkerExtensionPackages?: WorkerExtensionPackageResolver;
 }
 
-function selectedModel(context: ExtensionContext): ModelReference {
-  if (context.model === undefined) {
-    throw new WorkerConfigurationError(
-      "model_mismatch",
-      "The delegating Pi session has no selected model"
-    );
-  }
-  return { provider: context.model.provider, id: context.model.id };
-}
-
-function isThinkingLevel(value: unknown): value is ThinkingLevel {
-  return THINKING_LEVELS.some((level) => level === value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requireKnownKeys(
-  value: Readonly<Record<string, unknown>>,
-  keys: ReadonlyArray<string>,
-  location: string
-): void {
-  const unknown = Object.keys(value).find((key) => !keys.includes(key));
-  if (unknown !== undefined) {
-    throw new ProjectConfigurationError(
-      "unknown_key",
-      `Unknown key ${JSON.stringify(unknown)} in ${location}`
-    );
-  }
-}
-
-function decodeProjectConfig(source: string): ProjectConfig {
-  let decoded: unknown;
+async function projectConfig(
+  root: string
+): Promise<ProjectWorkerConfig | undefined> {
   try {
-    decoded = JSON.parse(source) as unknown;
-  } catch {
-    throw new ProjectConfigurationError(
-      "invalid_json",
-      `${PROJECT_CONFIG_FILE} is not valid JSON`
-    );
-  }
-  if (!isRecord(decoded)) {
-    throw new ProjectConfigurationError(
-      "invalid_shape",
-      `${PROJECT_CONFIG_FILE} must contain an object`
-    );
-  }
-  requireKnownKeys(
-    decoded,
-    ["model", "thinkingLevel", "extensions"],
-    PROJECT_CONFIG_FILE
-  );
-
-  let model: ModelReference | undefined;
-  if (decoded.model !== undefined) {
-    if (!isRecord(decoded.model)) {
-      throw new ProjectConfigurationError(
-        "invalid_shape",
-        "model must contain an object"
-      );
-    }
-    requireKnownKeys(decoded.model, ["provider", "id"], "model");
-    if (
-      typeof decoded.model.provider !== "string" ||
-      !PROVIDER_PATTERN.test(decoded.model.provider)
-    ) {
-      throw new ProjectConfigurationError(
-        "invalid_provider",
-        "model.provider is invalid"
-      );
-    }
-    if (
-      typeof decoded.model.id !== "string" ||
-      !MODEL_ID_PATTERN.test(decoded.model.id)
-    ) {
-      throw new ProjectConfigurationError(
-        "invalid_model_id",
-        "model.id is invalid"
-      );
-    }
-    model = { provider: decoded.model.provider, id: decoded.model.id };
-  }
-
-  if (
-    decoded.thinkingLevel !== undefined &&
-    !isThinkingLevel(decoded.thinkingLevel)
-  ) {
-    throw new ProjectConfigurationError(
-      "invalid_thinking_level",
-      "thinkingLevel is invalid"
-    );
-  }
-  const extensions = decoded.extensions;
-  if (
-    extensions !== undefined &&
-    (!Array.isArray(extensions) ||
-      extensions.length > MAX_EXTENSION_SOURCES ||
-      new Set(extensions).size !== extensions.length ||
-      extensions.some(
-        (source) =>
-          typeof source !== "string" ||
-          source.length === 0 ||
-          Buffer.byteLength(source, "utf8") > MAX_EXTENSION_SOURCE_BYTES
-      ))
-  ) {
-    throw new ProjectConfigurationError(
-      "invalid_extensions",
-      "extensions must be a list of distinct Pi package sources"
-    );
-  }
-  return {
-    ...(model === undefined ? {} : { model }),
-    ...(decoded.thinkingLevel === undefined
-      ? {}
-      : { thinkingLevel: decoded.thinkingLevel }),
-    ...(extensions === undefined
-      ? {}
-      : { extensions: extensions as ReadonlyArray<string> }),
-  };
-}
-
-async function projectConfig(root: string): Promise<ProjectConfig | undefined> {
-  try {
-    return decodeProjectConfig(
-      await readFile(join(root, PROJECT_CONFIG_FILE), "utf8")
+    return decodeProjectWorkerConfig(
+      await readFile(join(root, ".pions.json"), "utf8")
     );
   } catch (error) {
     if (
@@ -263,57 +111,6 @@ async function projectConfig(root: string): Promise<ProjectConfig | undefined> {
       return undefined;
     throw error;
   }
-}
-
-function configuredModel(
-  context: ExtensionContext,
-  model: Readonly<ModelReference>
-): ModelReference {
-  const registered = context.modelRegistry.find(model.provider, model.id);
-  if (registered === undefined) {
-    throw new WorkerConfigurationError(
-      "model_not_found",
-      `Configured Worker model ${model.provider}/${model.id} was not found`
-    );
-  }
-  if (!context.modelRegistry.hasConfiguredAuth(registered)) {
-    throw new WorkerConfigurationError(
-      "model_auth_unavailable",
-      `Configured Worker model provider ${model.provider} is not authenticated`
-    );
-  }
-  return { provider: registered.provider, id: registered.id };
-}
-
-// Workers load only the configured extension packages, so a provider that a
-// Pi extension registered needs that package in the Worker. Pi does not tell
-// which package registered a provider; the common omission of configuring no
-// package at all is reported here, and other mistakes fail when the Worker
-// starts or reports a different model.
-function requireWorkerLoadableProvider(
-  context: ExtensionContext,
-  model: Readonly<ModelReference>,
-  extensionSources: ReadonlyArray<string>
-): void {
-  if (
-    extensionSources.length === 0 &&
-    context.modelRegistry.getRegisteredProviderIds().includes(model.provider)
-  ) {
-    throw new WorkerConfigurationError(
-      "unsupported_capability",
-      `Model provider ${model.provider} is registered by a Pi extension; add the Pi package that provides it to ${PROJECT_CONFIG_FILE} "extensions"`
-    );
-  }
-}
-
-function selectedThinkingLevel(context: ExtensionContext): ThinkingLevel {
-  if (!isThinkingLevel(context.thinkingLevel)) {
-    throw new WorkerConfigurationError(
-      "unsupported_capability",
-      "The delegating Pi session has no supported thinking level"
-    );
-  }
-  return context.thinkingLevel;
 }
 
 function workerPrompt(task: string): string {
@@ -534,33 +331,48 @@ export function installPionsExtension(
     readonly normalizedRoot: string;
     readonly promptRef: string;
     readonly workerCwd: string;
-    readonly workerModel: Readonly<ModelReference>;
-    readonly workerThinkingLevel: ThinkingLevel;
+    readonly workerSettings: Pick<
+      EffectiveWorkerConfig,
+      "model" | "thinkingLevel" | "tools"
+    >;
     readonly runtime: OperationRuntime;
   }> {
-    const inheritedModel = selectedModel(context);
-    const inheritedThinkingLevel = selectedThinkingLevel(context);
+    const inherited = delegatingWorkerSettings(
+      context.model,
+      context.thinkingLevel
+    );
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
     const recoveredRuntime = runtimesByRepository.get(normalizedRoot);
     if (recoveredRuntime !== undefined) await recoveredRuntime.ready();
     const workerCwd = await realpath(context.cwd);
     const configured = await projectConfig(normalizedRoot);
-    const workerModel =
+    const registered =
       configured?.model === undefined
-        ? inheritedModel
-        : configuredModel(context, configured.model);
-    const extensionSources = configured?.extensions ?? [];
-    requireWorkerLoadableProvider(context, workerModel, extensionSources);
+        ? undefined
+        : context.modelRegistry.find(
+            configured.model.provider,
+            configured.model.id
+          );
+    const selection = selectProjectWorker({
+      configured,
+      inherited,
+      registeredModel: registered,
+      registeredModelAuthenticated:
+        registered === undefined
+          ? undefined
+          : context.modelRegistry.hasConfiguredAuth(registered),
+      registeredProviderIds: context.modelRegistry.getRegisteredProviderIds(),
+    });
+    const { model: workerModel, thinkingLevel: workerThinkingLevel } =
+      selection;
     const extensions = await workerExtensions({
-      sources: extensionSources,
+      sources: selection.extensionSources,
       cwd: workerCwd,
       piAgentDirectory: options.piAgentDirectory ?? getAgentDir(),
       resolvePackages:
         options.resolveWorkerExtensionPackages ?? resolvePiExtensionPackages,
     });
-    const workerThinkingLevel =
-      configured?.thinkingLevel ?? inheritedThinkingLevel;
     const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
     const promptRef = join(
       repositoryState,
@@ -568,13 +380,7 @@ export function installPionsExtension(
       `${idempotencyKey.slice("pi-tool:".length)}.utf8`
     );
     await writePrivatePrompt(promptRef, prompt);
-    const workerProfile: WorkerProfilePolicy = {
-      modelCandidates: [workerModel],
-      thinkingLevel: workerThinkingLevel,
-      tools: WORKER_TOOLS,
-      extensions,
-      maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
-    };
+    const workerProfile = projectWorkerProfile(selection, extensions);
     const runtimeStateDirectory = join(repositoryState, "runtime");
     const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${JSON.stringify(extensions)}`;
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
@@ -613,8 +419,11 @@ export function installPionsExtension(
       normalizedRoot,
       promptRef,
       workerCwd,
-      workerModel,
-      workerThinkingLevel,
+      workerSettings: {
+        model: workerModel,
+        thinkingLevel: workerThinkingLevel,
+        tools: workerProfile.tools,
+      },
       runtime,
     };
   }
@@ -752,9 +561,7 @@ export function installPionsExtension(
         promptRef: prepared.promptRef,
         profile: WORKER_PROFILE,
         idempotencyKey: prepared.idempotencyKey,
-        model: prepared.workerModel,
-        thinkingLevel: prepared.workerThinkingLevel,
-        tools: WORKER_TOOLS,
+        ...prepared.workerSettings,
         cwd: prepared.workerCwd,
       });
       const operation = operationLifetime.track(handle);

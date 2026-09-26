@@ -777,6 +777,79 @@ test("project configuration overrides the Worker model", async (context) => {
   });
 });
 
+async function persistedWorkerConfiguration(
+  context: { after(fn: () => Promise<void>): void },
+  config: unknown
+): Promise<OperationSnapshot["effectiveConfig"]> {
+  const clock = new FakeClock(
+    Array.from(
+      { length: 30 },
+      (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
+  const value = await fixture(new FakeRuntime(), {
+    resolveWorkerExtensionPackages: (sources) =>
+      Promise.resolve(
+        sources.map((source) => ({ source, path: "/pi-agent/web.ts" }))
+      ),
+    runtimeFactory: (options) =>
+      makeTestRuntime({
+        worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
+        clock,
+        ids: new FakeIdGenerator(["operation-1"]),
+        presentation: new FakePresentation(),
+        store: new PrivateFileEventStore(options.stateDirectory, clock),
+        configuration: { cwd: options.cwd, profiles: options.profiles },
+      }),
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await writeFile(join(value.root, ".pions.json"), JSON.stringify(config));
+  const response = await value.execute();
+  const operationId = (response.details as PionsDelegateDetails).operationId;
+  const snapshot = (await value.inspect(operationId))
+    .details as OperationSnapshot;
+  return snapshot.effectiveConfig;
+}
+
+test("delegation persists the selected Worker model as the Operation effective model", async (context) => {
+  const effective = await persistedWorkerConfiguration(context, {
+    model: { provider: "openai", id: "gpt-5.6-codex" },
+  });
+  assert.deepEqual(effective.model, {
+    provider: "openai",
+    id: "gpt-5.6-codex",
+  });
+});
+
+test("delegation persists the selected Worker thinking level", async (context) => {
+  const effective = await persistedWorkerConfiguration(context, {
+    thinkingLevel: "low",
+  });
+  assert.equal(effective.thinkingLevel, "low");
+});
+
+test("delegation persists the Worker tool selection", async (context) => {
+  const effective = await persistedWorkerConfiguration(context, {});
+  assert.deepEqual(effective.tools, [
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+  ]);
+});
+
+test("delegation persists the resolved Worker extensions", async (context) => {
+  const effective = await persistedWorkerConfiguration(context, {
+    extensions: ["npm:pi-web-access"],
+  });
+  assert.deepEqual(effective.extensions, [
+    { source: "npm:pi-web-access", path: "/pi-agent/web.ts" },
+  ]);
+});
+
 test("model-only project configuration inherits the Pi thinking level", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
@@ -839,6 +912,20 @@ test("project configuration applies model and thinking level together", async (c
       model: { provider: "anthropic", id: "claude-opus-5" },
       thinkingLevel: "xhigh",
     }
+  );
+});
+
+test("missing delegating model is rejected before reading project configuration", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  (value.context as unknown as { model?: unknown }).model = undefined;
+  await writeFile(join(value.root, ".pions.json"), "{");
+
+  await assert.rejects(
+    value.execute(),
+    (error) =>
+      error instanceof WorkerConfigurationError &&
+      error.reason === "model_mismatch"
   );
 });
 
