@@ -46,7 +46,10 @@ import {
   WorkerProtocolPeer,
   encodeWorkerConfig,
 } from "../src/internal/worker-protocol.js";
-import type { WorkerProducedResult } from "../src/internal/types.js";
+import type {
+  EffectiveWorkerConfig,
+  WorkerProducedResult,
+} from "../src/internal/types.js";
 import {
   agentRunEvidence,
   effectiveConfig,
@@ -222,7 +225,8 @@ class DeferredExecutor {
 function operation(
   operationId = "operation-1",
   paneId = "opaque:pane",
-  model = effectiveConfig.model
+  model = effectiveConfig.model,
+  extensions: EffectiveWorkerConfig["extensions"] = []
 ): Operation {
   return {
     operationId,
@@ -241,7 +245,7 @@ function operation(
       idempotencyKey: operationId,
     },
     requestedConfig,
-    effectiveConfig: { ...effectiveConfig, model },
+    effectiveConfig: { ...effectiveConfig, model, extensions },
     maxResultByteCount,
     startDeliveryHandoffs: [],
     cancellationEpoch: 0,
@@ -322,10 +326,7 @@ async function fixture(
     readonly startInstructionAccepted?: WorkerRunHooks["startInstructionAccepted"];
     readonly startInstructionAcknowledged?: WorkerRunHooks["startInstructionAcknowledged"];
     readonly acceptResult?: WorkerRunHooks["acceptResult"];
-    readonly operationModel?: Readonly<{
-      readonly provider: string;
-      readonly id: string;
-    }>;
+    readonly extensions?: EffectiveWorkerConfig["extensions"];
   } = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
@@ -359,7 +360,8 @@ async function fixture(
   const current = operation(
     "operation-1",
     "opaque:pane",
-    options.operationModel ?? effectiveConfig.model
+    effectiveConfig.model,
+    options.extensions
   );
   const deliveries: Array<Readonly<WorkerProducedResult>> = [];
   const identities: Array<string> = [];
@@ -919,8 +921,6 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "test-model",
     "--thinking",
     "medium",
-    "--tools",
-    "read,bash",
     "--no-session",
     "--tui-mode",
     "regular",
@@ -933,6 +933,31 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--approve",
     "--pions-worker-config",
     join(value.directory, "worker.v16.json"),
+  ]);
+});
+
+test("visible Worker loads each Worker extension after the Pions Worker extension", async (context) => {
+  const value = await fixture({
+    extensions: [
+      { source: "herdr", path: "/agent/extensions/herdr-agent-state.ts" },
+      {
+        source: "npm:pi-web-access",
+        path: "/agent/npm/pi-web-access/index.ts",
+      },
+    ],
+  });
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
+
+  assert.deepEqual(value.executor.invocations[0]?.args.slice(20, 26), [
+    "--extension",
+    "/pions/worker-extension.js",
+    "--extension",
+    "/agent/extensions/herdr-agent-state.ts",
+    "--extension",
+    "/agent/npm/pi-web-access/index.ts",
   ]);
 });
 

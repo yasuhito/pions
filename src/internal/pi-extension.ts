@@ -6,6 +6,7 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
+  getAgentDir,
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import type {
@@ -23,6 +24,11 @@ import {
 import { makeVisibleRuntime } from "./visible-runtime.js";
 import { DEFAULT_MAX_RESULT_BYTE_COUNT } from "./worker-configuration.js";
 import { resolveWorkerExtensionEntryPath } from "./worker-extension-entry.js";
+import {
+  resolvePiExtensionPackages,
+  workerExtensions,
+  type WorkerExtensionPackageResolver,
+} from "./worker-extensions.js";
 import {
   OperationCancelledError,
   OperationUnknownError,
@@ -66,7 +72,11 @@ const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u;
 interface ProjectConfig {
   readonly model?: Readonly<ModelReference>;
   readonly thinkingLevel?: ThinkingLevel;
+  readonly extensions?: ReadonlyArray<string>;
 }
+
+const MAX_EXTENSION_SOURCES = 16;
+const MAX_EXTENSION_SOURCE_BYTES = 512;
 
 const DelegateParameters = Type.Object(
   {
@@ -112,6 +122,8 @@ export interface PionsExtensionOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly homeDirectory?: string;
   readonly extensionEntryPath?: string;
+  readonly piAgentDirectory?: string;
+  readonly resolveWorkerExtensionPackages?: WorkerExtensionPackageResolver;
 }
 
 function selectedModel(context: ExtensionContext): ModelReference {
@@ -162,7 +174,11 @@ function decodeProjectConfig(source: string): ProjectConfig {
       `${PROJECT_CONFIG_FILE} must contain an object`
     );
   }
-  requireKnownKeys(decoded, ["model", "thinkingLevel"], PROJECT_CONFIG_FILE);
+  requireKnownKeys(
+    decoded,
+    ["model", "thinkingLevel", "extensions"],
+    PROJECT_CONFIG_FILE
+  );
 
   let model: ModelReference | undefined;
   if (decoded.model !== undefined) {
@@ -203,11 +219,32 @@ function decodeProjectConfig(source: string): ProjectConfig {
       "thinkingLevel is invalid"
     );
   }
+  const extensions = decoded.extensions;
+  if (
+    extensions !== undefined &&
+    (!Array.isArray(extensions) ||
+      extensions.length > MAX_EXTENSION_SOURCES ||
+      new Set(extensions).size !== extensions.length ||
+      extensions.some(
+        (source) =>
+          typeof source !== "string" ||
+          source.length === 0 ||
+          Buffer.byteLength(source, "utf8") > MAX_EXTENSION_SOURCE_BYTES
+      ))
+  ) {
+    throw new ProjectConfigurationError(
+      "invalid_extensions",
+      "extensions must be a list of distinct Pi package sources"
+    );
+  }
   return {
     ...(model === undefined ? {} : { model }),
     ...(decoded.thinkingLevel === undefined
       ? {}
       : { thinkingLevel: decoded.thinkingLevel }),
+    ...(extensions === undefined
+      ? {}
+      : { extensions: extensions as ReadonlyArray<string> }),
   };
 }
 
@@ -248,19 +285,23 @@ function configuredModel(
   return { provider: registered.provider, id: registered.id };
 }
 
-// Workers start with --no-extensions, so a provider that only exists because
-// a Pi extension registered it in the delegating session is unavailable to
-// them. Pions neither bundles nor loads that extension for the Worker.
+// Workers load only the configured extension packages, so a provider that a
+// Pi extension registered needs that package in the Worker. Pi does not tell
+// which package registered a provider; the common omission of configuring no
+// package at all is reported here, and other mistakes fail when the Worker
+// starts or reports a different model.
 function requireWorkerLoadableProvider(
   context: ExtensionContext,
-  model: Readonly<ModelReference>
+  model: Readonly<ModelReference>,
+  extensionSources: ReadonlyArray<string>
 ): void {
   if (
+    extensionSources.length === 0 &&
     context.modelRegistry.getRegisteredProviderIds().includes(model.provider)
   ) {
     throw new WorkerConfigurationError(
       "unsupported_capability",
-      `Model provider ${model.provider} is registered by a Pi extension, which Pions Workers do not load`
+      `Model provider ${model.provider} is registered by a Pi extension; add the Pi package that provides it to ${PROJECT_CONFIG_FILE} "extensions"`
     );
   }
 }
@@ -279,8 +320,8 @@ function workerPrompt(task: string): string {
   return [
     "You are a general-purpose Worker with an independent context.",
     "Follow the trusted project's AGENTS.md instructions.",
-    "Do not load skills, extensions, or prompt templates.",
-    `Use only ${WORKER_TOOLS.join(", ")}.`,
+    "Do not load skills or prompt templates.",
+    "Use only the tools available to you.",
     "You work in the same working directory as the delegating session; edits apply there directly, and Pions creates no worktree or branch for you.",
     "You cannot delegate further; complete the task yourself.",
     "Return a self-contained textual Result.",
@@ -509,7 +550,15 @@ export function installPionsExtension(
       configured?.model === undefined
         ? inheritedModel
         : configuredModel(context, configured.model);
-    requireWorkerLoadableProvider(context, workerModel);
+    const extensionSources = configured?.extensions ?? [];
+    requireWorkerLoadableProvider(context, workerModel, extensionSources);
+    const extensions = await workerExtensions({
+      sources: extensionSources,
+      cwd: workerCwd,
+      piAgentDirectory: options.piAgentDirectory ?? getAgentDir(),
+      resolvePackages:
+        options.resolveWorkerExtensionPackages ?? resolvePiExtensionPackages,
+    });
     const workerThinkingLevel =
       configured?.thinkingLevel ?? inheritedThinkingLevel;
     const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
@@ -523,10 +572,11 @@ export function installPionsExtension(
       modelCandidates: [workerModel],
       thinkingLevel: workerThinkingLevel,
       tools: WORKER_TOOLS,
+      extensions,
       maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     };
     const runtimeStateDirectory = join(repositoryState, "runtime");
-    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}`;
+    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${JSON.stringify(extensions)}`;
     if (shuttingDown) throw new Error("Pions Runtime is shutting down");
     let runtime = options.runtime;
     if (runtime === undefined) {

@@ -34,6 +34,7 @@ async function fixture() {
         model: { provider: "test", id: "model" },
         thinkingLevel: "medium",
         tools: ["read"],
+        extensions: [],
         cwd: "/work",
         maxResultByteCount: 1024,
         modelPolicy: {

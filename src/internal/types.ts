@@ -21,10 +21,18 @@ export interface ModelSelectionPolicy {
   readonly aliases: ReadonlyArray<string>;
 }
 
+/** A Pi extension file loaded into the Worker, with the package it came from. */
+export interface WorkerExtension {
+  readonly source: string;
+  readonly path: string;
+}
+
 export interface EffectiveWorkerConfig {
   readonly model: Readonly<ModelReference>;
   readonly thinkingLevel: ThinkingLevel;
+  /** Pi built-in tools; tools added by `extensions` are also available. */
   readonly tools: ReadonlyArray<string>;
+  readonly extensions: ReadonlyArray<Readonly<WorkerExtension>>;
   readonly cwd: string;
   readonly maxResultByteCount: number;
   readonly modelPolicy: Readonly<ModelSelectionPolicy>;
@@ -45,6 +53,7 @@ export interface WorkerProfilePolicy {
   readonly modelCandidates: ReadonlyArray<Readonly<ModelReference>>;
   readonly thinkingLevel: ThinkingLevel;
   readonly tools: ReadonlyArray<string>;
+  readonly extensions: ReadonlyArray<Readonly<WorkerExtension>>;
   readonly maxResultByteCount: number;
 }
 
@@ -86,7 +95,8 @@ export type ProjectConfigurationFailureReason =
   | "invalid_shape"
   | "invalid_provider"
   | "invalid_model_id"
-  | "invalid_thinking_level";
+  | "invalid_thinking_level"
+  | "invalid_extensions";
 
 export class ProjectConfigurationError extends Error {
   override readonly name = "ProjectConfigurationError";

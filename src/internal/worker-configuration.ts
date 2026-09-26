@@ -34,6 +34,12 @@ export const EffectiveWorkerConfigSchema = Schema.Struct({
   model: ModelReferenceSchema,
   thinkingLevel: ThinkingLevelSchema,
   tools: Schema.Array(Schema.NonEmptyString),
+  extensions: Schema.Array(
+    Schema.Struct({
+      source: Schema.NonEmptyString,
+      path: Schema.NonEmptyString,
+    })
+  ),
   cwd: Schema.NonEmptyString,
   maxResultByteCount: Schema.Number,
   modelPolicy: Schema.Struct({
@@ -97,6 +103,8 @@ const PI_BUILTIN_TOOLS = new Set([
   "ls",
 ]);
 
+const DELEGATION_TOOL = "pions_delegate";
+
 export const DEFAULT_MAX_RESULT_BYTE_COUNT = 1_048_576;
 
 export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
@@ -112,6 +120,7 @@ export const DEFAULT_WORKER_PROFILE_POLICY: WorkerProfilePolicy = Object.freeze(
       "find",
       "ls",
     ]),
+    extensions: Object.freeze([]),
     maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
   }
 );
@@ -243,6 +252,9 @@ export function resolveWorkerConfig(options: {
     model: Object.freeze({ ...model }),
     thinkingLevel,
     tools,
+    extensions: Object.freeze(
+      profile.extensions.map((extension) => Object.freeze({ ...extension }))
+    ),
     cwd: options.runtimeCwd,
     maxResultByteCount: profile.maxResultByteCount,
     modelPolicy: Object.freeze({
@@ -271,10 +283,18 @@ export function configurationMismatch(
   ) {
     return "thinking_level_mismatch";
   }
+  // Tools registered by Worker extensions are allowed; Pi built-ins stay
+  // within the effective set and delegation is never offered to a Worker.
+  const observedTools =
+    observed.tools.state === "observed" ? observed.tools.value : undefined;
   if (
-    observed.tools.state !== "observed" ||
-    observed.tools.value.length !== effective.tools.length ||
-    observed.tools.value.some((tool) => !effective.tools.includes(tool))
+    observedTools === undefined ||
+    effective.tools.some((tool) => !observedTools.includes(tool)) ||
+    observedTools.some(
+      (tool) =>
+        tool === DELEGATION_TOOL ||
+        (PI_BUILTIN_TOOLS.has(tool) && !effective.tools.includes(tool))
+    )
   ) {
     return "tool_policy_violation";
   }

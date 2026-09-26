@@ -10,7 +10,9 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
-import pionsWorkerExtension from "../src/worker-extension.js";
+import pionsWorkerExtension, {
+  workerActiveTools,
+} from "../src/worker-extension.js";
 import {
   HostProtocolPeer,
   encodeWorkerConfig,
@@ -87,6 +89,8 @@ async function extensionResult(
     registerFlag: () => undefined,
     getFlag: () => configPath,
     getActiveTools: () => [...effectiveConfig.tools],
+    getAllTools: () => [],
+    setActiveTools: () => undefined,
     sendUserMessage: (prompt: string) => {
       prompts.push(prompt);
     },
@@ -305,6 +309,8 @@ async function extensionCancellation(phase: "before-begin" | "during-run") {
     registerFlag: () => undefined,
     getFlag: () => configPath,
     getActiveTools: () => [...effectiveConfig.tools],
+    getAllTools: () => [],
+    setActiveTools: () => undefined,
     sendUserMessage: (prompt: string) => {
       prompts.push(prompt);
     },
@@ -422,4 +428,36 @@ test("Pi Worker extension acknowledges cancellation only after interruption sett
 
 test("Pi Worker extension requests normal shutdown for a cancelled run", async () => {
   assert.equal((await extensionCancellation("during-run")).shutdownCount, 1);
+});
+
+function tool(name: string, source: string) {
+  return { name, sourceInfo: { source } };
+}
+
+test("the Worker activates tools registered by its extensions", () => {
+  assert.deepEqual(
+    workerActiveTools(
+      ["read", "bash"],
+      [
+        tool("read", "builtin"),
+        tool("bash", "builtin"),
+        tool("web_search", "npm:pi-web-access"),
+      ]
+    ),
+    ["read", "bash", "web_search"]
+  );
+});
+
+test("the Worker activates only the effective Pi built-in tools", () => {
+  assert.deepEqual(
+    workerActiveTools(
+      ["read", "grep"],
+      [
+        tool("read", "builtin"),
+        tool("powershell", "builtin"),
+        tool("grep", "builtin"),
+      ]
+    ),
+    ["read", "grep"]
+  );
 });

@@ -485,6 +485,37 @@ async function ownedWorkerRecords(stateDir) {
   return owned;
 }
 
+async function persistedOperationEvents(stateDir, operationId) {
+  const repositoryKey = createHash("sha256")
+    .update(await realpath(CONSUMER_DIR), "utf8")
+    .digest("hex");
+  const record = JSON.parse(
+    await readFile(
+      join(
+        stateDir,
+        "pions",
+        "repositories",
+        repositoryKey,
+        "runtime",
+        createHash("sha256").update(operationId, "utf8").digest("hex"),
+        "events.v29.json"
+      ),
+      "utf8"
+    )
+  );
+  return record.events;
+}
+
+function processIsAlive(processId) {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 async function ownedWorkerWorkspaceIds(stateDir) {
   return new Set((await ownedWorkerRecords(stateDir)).keys());
 }
@@ -877,11 +908,40 @@ async function main() {
       rejectionPromptPath,
       'Use the pions_delegate tool exactly once with task "Respond with OK". Do not do anything else.\n'
     );
-    const providerExtensionPath = join(runDir, "unavailable-provider.ts");
+    const workerExtensionPackage = join(runDir, "pions-e2e-worker-extension");
+    const providerExtensionPath = join(workerExtensionPackage, "index.js");
+    const workerExtensionMarker = `PIONS_E2E_EXTENSION_TOOL_${randomBytes(6).toString("hex")}`;
+    const workerExtensionChildPath = join(runDir, "worker-extension-child.pid");
+    await mkdir(workerExtensionPackage, { recursive: true });
+    await writeFile(
+      join(workerExtensionPackage, "package.json"),
+      JSON.stringify({
+        name: "pions-e2e-worker-extension",
+        type: "module",
+        pi: { extensions: ["./index.js"] },
+      })
+    );
     await writeFile(
       providerExtensionPath,
       [
-        "export default function unavailableProvider(pi) {",
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        "export default function workerExtension(pi) {",
+        "  let child;",
+        '  pi.on("session_start", () => {',
+        '    child = spawn("sleep", ["600"], { stdio: "ignore" });',
+        `    writeFileSync(${JSON.stringify(workerExtensionChildPath)}, String(child.pid));`,
+        "  });",
+        '  pi.on("session_shutdown", () => { child?.kill("SIGTERM"); });',
+        "  pi.registerTool({",
+        '    name: "pions_e2e_marker",',
+        '    label: "Pions E2E marker",',
+        '    description: "Returns the Pions E2E marker text",',
+        '    parameters: { type: "object", properties: {} },',
+        "    async execute() {",
+        `      return { content: [{ type: "text", text: ${JSON.stringify(workerExtensionMarker)} }], details: {} };`,
+        "    },",
+        "  });",
         '  pi.registerProvider("e2e-extension-provider", {',
         '    name: "E2E extension provider",',
         '    baseUrl: "http://127.0.0.1:1/v1",',
@@ -922,6 +982,11 @@ async function main() {
     if (!providerResult.isError) {
       throw new Error("extension-derived Worker provider was accepted");
     }
+    if (!JSON.stringify(providerResult.content).includes('\\"extensions\\"')) {
+      throw new Error(
+        `extension-derived provider rejection did not point to .pions.json extensions: ${JSON.stringify(providerResult.content)}`
+      );
+    }
     const providerOwned = await ownedWorkerWorkspaceIds(stateDir);
     const newProviderOwned = [...providerOwned].filter(
       (id) => !beforeProvider.has(id)
@@ -942,6 +1007,158 @@ async function main() {
     }
     log(
       "an extension-derived provider was rejected before Worker creation without retry."
+    );
+
+    await mkdir(join(CONSUMER_DIR, ".pi"), { recursive: true });
+    await writeFile(
+      join(CONSUMER_DIR, ".pi", "settings.json"),
+      JSON.stringify({ packages: [workerExtensionPackage] })
+    );
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        ...JSON.parse(originalProjectConfig),
+        extensions: [workerExtensionPackage],
+      })
+    );
+    const extensionPromptPath = join(runDir, "worker-extension-prompt.txt");
+    await writeFile(
+      extensionPromptPath,
+      'Use the pions_delegate tool exactly once with task "Call the pions_e2e_marker tool exactly once, then respond with only the exact text it returned." Do not do anything else.\n'
+    );
+    const extensionWorkspace = await createWorkspace(
+      "pions-e2e-worker-extension",
+      { XDG_STATE_HOME: stateDir }
+    );
+    parentWorkspaceIds.push(extensionWorkspace.workspaceId);
+    const extensionTranscript = await runPiInPane(
+      runDir,
+      extensionWorkspace.paneId,
+      extensionPromptPath,
+      "worker-extension"
+    );
+    const extensionResult = await extractToolResult(
+      extensionTranscript,
+      "pions_delegate"
+    );
+    const extensionText = JSON.stringify(extensionResult.content);
+    if (
+      extensionResult.isError ||
+      !extensionText.includes(workerExtensionMarker)
+    ) {
+      throw new Error(
+        `the Worker did not return its extension tool output: ${extensionText}`
+      );
+    }
+    const extensionOperationId = operationIdFromError(extensionResult);
+    const extensionEvents = await persistedOperationEvents(
+      stateDir,
+      extensionOperationId
+    );
+    const loadedExtensions = extensionEvents.find(
+      (event) => event.type === "operation_requested"
+    )?.effectiveConfig?.extensions;
+    const herdrIntegration = join(
+      process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"),
+      "extensions",
+      "herdr-agent-state.ts"
+    );
+    const expectedExtensions = [
+      ...((await fileExists(herdrIntegration))
+        ? [{ source: "herdr", path: herdrIntegration }]
+        : []),
+      { source: workerExtensionPackage, path: providerExtensionPath },
+    ];
+    if (
+      JSON.stringify(loadedExtensions) !== JSON.stringify(expectedExtensions)
+    ) {
+      throw new Error(
+        `the Operation recorded unexpected Worker extensions: ${JSON.stringify(loadedExtensions)}`
+      );
+    }
+    const observedTools = extensionEvents.find(
+      (event) => event.observedConfig !== undefined
+    )?.observedConfig?.tools?.value;
+    if (!observedTools?.includes("pions_e2e_marker")) {
+      throw new Error(
+        `the Operation did not record the extension tool: ${JSON.stringify(observedTools)}`
+      );
+    }
+    const markerCalls = extensionEvents
+      .find((event) => event.type === "agent_settled")
+      ?.evidence?.toolUses?.filter(
+        (toolUse) =>
+          toolUse.toolName === "pions_e2e_marker" && toolUse.isError === false
+      );
+    if (markerCalls === undefined || markerCalls.length === 0) {
+      throw new Error(
+        "the Worker execution evidence does not record a successful extension tool call"
+      );
+    }
+    if (
+      !extensionEvents.some((event) => event.type === "operation_completed")
+    ) {
+      throw new Error(
+        "a Worker whose extension stops its child process did not complete"
+      );
+    }
+    const extensionChildPid = Number(
+      await readFile(workerExtensionChildPath, "utf8")
+    );
+    if (processIsAlive(extensionChildPid)) {
+      throw new Error(
+        `the Worker extension child process ${extensionChildPid} outlived a completed Operation`
+      );
+    }
+    log(
+      `Worker extension Operation ${extensionOperationId} used the extension tool, recorded ${loadedExtensions.length} Worker extensions, and completed after its child process stopped.`
+    );
+
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        model: { provider: "e2e-extension-provider", id: "e2e-model" },
+        // The E2E model has no reasoning, so Pi runs it with thinking off.
+        thinkingLevel: "off",
+        extensions: [workerExtensionPackage],
+      })
+    );
+    const agentFailureWorkspace = await createWorkspace(
+      "pions-e2e-agent-failure",
+      { XDG_STATE_HOME: stateDir }
+    );
+    parentWorkspaceIds.push(agentFailureWorkspace.workspaceId);
+    const agentFailureTranscript = await runPiInPane(
+      runDir,
+      agentFailureWorkspace.paneId,
+      rejectionPromptPath,
+      "agent-failure",
+      { extensions: [providerExtensionPath], allowNonZeroExitCode: true }
+    );
+    const agentFailure = await extractToolResult(
+      agentFailureTranscript,
+      "pions_delegate"
+    );
+    const agentFailureText = JSON.stringify(agentFailure.content);
+    if (!agentFailure.isError || !agentFailureText.includes("agent_failed: ")) {
+      throw new Error(
+        `an agent failure did not report the provider error text: ${agentFailureText}`
+      );
+    }
+    const agentFailureEvents = await persistedOperationEvents(
+      stateDir,
+      operationIdFromError(agentFailure)
+    );
+    const agentErrorMessage = agentFailureEvents.find(
+      (event) => event.type === "agent_settled"
+    )?.evidence?.errorMessage;
+    if (typeof agentErrorMessage !== "string" || agentErrorMessage === "") {
+      throw new Error(
+        "an agent failure did not persist the provider error text"
+      );
+    }
+    log(
+      `an agent failure with an extension provider persisted its provider error text: ${JSON.stringify(agentErrorMessage)}`
     );
     await writeFile(projectConfigPath, originalProjectConfig);
 
