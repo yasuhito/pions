@@ -1,7 +1,7 @@
 {
   "model": {
-    "provider": "openrouter",
-    "id": "z-ai/glm-5.3-flash"
+    "provider": "openai-codex",
+    "id": "gpt-6-sol"
   },
-  "thinkingLevel": "max"
+  "thinkingLevel": "medium"
 }
