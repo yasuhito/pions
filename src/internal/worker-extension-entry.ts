@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 function isRegularFile(path: string): boolean {
@@ -18,7 +18,12 @@ function isRegularFile(path: string): boolean {
   }
 }
 
-/** 可視ワーカーが読み込むPions所有の拡張を解決し、検証する。 */
+/**
+ * 可視ワーカーが読み込むPions所有の拡張を解決し、検証する。
+ *
+ * 既定では、このモジュールと同じ形式(ソースなら`.ts`、ビルド済みなら`.js`)の
+ * 隣接するワーカー拡張だけを使い、委譲元とワーカーが同じ版のコードで動くようにする。
+ */
 export function resolveWorkerExtensionEntryPath(
   options: {
     readonly explicitPath?: string;
@@ -27,33 +32,30 @@ export function resolveWorkerExtensionEntryPath(
   } = {}
 ): string {
   const moduleUrl = options.moduleUrl ?? import.meta.url;
-  const candidates =
-    options.explicitPath === undefined
-      ? [
-          fileURLToPath(new URL("../worker-extension.js", moduleUrl)),
-          fileURLToPath(
-            new URL("../../dist/src/worker-extension.js", moduleUrl)
-          ),
-        ]
-      : [options.explicitPath];
-  const cwd = options.cwd ?? process.cwd();
-  const validationPaths = candidates.map((candidate) =>
-    isAbsolute(candidate) ? candidate : resolve(cwd, candidate)
-  );
-  for (const [index, validationPath] of validationPaths.entries()) {
-    try {
-      if (isRegularFile(validationPath)) return candidates[index]!;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Pions Worker extension entry cannot be inspected at ${validationPath}: ${reason}`,
-        {
-          cause: error,
-        }
-      );
-    }
+  const candidate =
+    options.explicitPath ??
+    fileURLToPath(
+      new URL(
+        `../worker-extension${extname(fileURLToPath(moduleUrl))}`,
+        moduleUrl
+      )
+    );
+  const validationPath = isAbsolute(candidate)
+    ? candidate
+    : resolve(options.cwd ?? process.cwd(), candidate);
+  let available: boolean;
+  try {
+    available = isRegularFile(validationPath);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Pions Worker extension entry cannot be inspected at ${validationPath}: ${reason}`,
+      { cause: error }
+    );
   }
-  throw new Error(
-    `Pions Worker extension entry is unavailable: ${validationPaths.join(", ")}`
-  );
+  if (!available)
+    throw new Error(
+      `Pions Worker extension entry is unavailable: ${validationPath}`
+    );
+  return candidate;
 }

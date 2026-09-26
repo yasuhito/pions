@@ -1,23 +1,15 @@
 # Feature: Build and Extension Readiness
 
-Pions is a TypeScript ESM runtime used through its Pi extension. Before using the extension, you must build the project to generate `dist/`, which includes the internal worker extension loaded by visible workers.
+Pions is a TypeScript ESM runtime used through its Pi extension. The build generates `dist/`, the packaged form that npm consumers install. The in-repository development extension (`.pi/extensions/pions.ts`) runs from `src/` and does not need a build.
 
 ## Sub-features
 
 1. **TypeScript compilation** (`tsc -p tsconfig.build.json`)
-2. **Worker extension** (`dist/src/worker-extension.js`)
+2. **Packaged Worker extension** (`dist/src/worker-extension.js`)
 
 ## How to get to it (user perspective)
 
-A developer runs `npm run build` after cloning the repo or after changing any source file. The extension then loads the built worker extension. `resolveWorkerExtensionEntryPath` (`src/internal/worker-extension-entry.ts`) tries candidates in order: a sibling `../worker-extension.js` (relative to the internal module), then `../../dist/src/worker-extension.js`. After a normal `npm run build`, the dist candidate is the expected resolution; verification still expects `dist/src/worker-extension.js` to exist.
-
-If you skip this step and try to use `pions_delegate`, the worker fails with:
-
-```
-Worker configuration version does not match
-```
-
-This happens because the host extension reads the source version, but the worker extension reads the stale `dist/` version.
+A developer runs `npm run build` before packing or when checking the packaged form. `resolveWorkerExtensionEntryPath` (`src/internal/worker-extension-entry.ts`) resolves only the sibling Worker extension in the same form as the resolver module: `src/worker-extension.ts` when loaded from source, `dist/src/worker-extension.js` when loaded from the build. It never falls back from source to `dist/`, so a stale `dist/` cannot cause a `Worker configuration version does not match` failure in the development extension.
 
 ## Driving it with harness
 
@@ -103,7 +95,7 @@ There's no `npm run build:watch`. Rebuild manually after changes.
 
 ### Build vs test build (`dist/` vs `.test-dist/`)
 
-- **Live/user path** (Herdr workers, packing): requires `npm run build` → `dist/src/worker-extension.js`.
+- **Packaged path** (packing, npm consumers): requires `npm run build` → `dist/src/worker-extension.js`. The development extension's live Herdr Workers load `src/worker-extension.ts` and need no build.
 - **Automated test gate** (`npm run check`, `npm test`): uses `npm run build:test` → `.test-dist/`. Tests import from `../src/...`, not from `dist/`.
 
 Running `npm run build` does **not** populate `.test-dist/`. The test harness invokes `build:test` itself.

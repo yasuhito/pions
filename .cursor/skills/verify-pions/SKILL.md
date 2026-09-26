@@ -23,13 +23,13 @@ Get Pions ready to verify:
    npm install
    ```
 
-3. **Build the project** (REQUIRED before using the extension):
+3. **Build the project** (only needed for the packaged form):
 
    ```bash
    npm run build
    ```
 
-   This generates `dist/` with the internal worker extension. If you skip this after protocol version changes, workers fail with "Worker configuration version does not match".
+   This generates `dist/`, which npm consumers install. The development extension and its Workers run from `src/` and never load `dist/`.
 
 4. **Verify build artifacts exist**:
 
@@ -233,7 +233,7 @@ npm run build
 ls -la dist/src/worker-extension.js
 ```
 
-**What it proves**: The project compiles successfully, and the internal worker extension (loaded by visible workers) exists.
+**What it proves**: The project compiles successfully, and the packaged Worker extension exists.
 
 **Expected outcome**:
 
@@ -241,8 +241,8 @@ ls -la dist/src/worker-extension.js
 
 **Gotchas**:
 
-- The `dist/` directory is gitignored. Always rebuild after pulling changes.
-- Worker protocol version mismatches happen if you forget to rebuild after protocol changes (`WORKER_PROTOCOL_VERSION` in source vs stale `dist/`).
+- The `dist/` directory is gitignored. Rebuild before packing.
+- The development extension and its Workers run from `src/` and never load `dist/`, so a stale `dist/` cannot cause a Worker protocol version mismatch there.
 
 **See `features/build-and-extension.md` for detailed steps and gotchas.**
 
@@ -397,7 +397,7 @@ Save as `.cursor/skills/verify-pions/helpers/health-check.sh` and run with `bash
 ### Interpreting test failures
 
 - **Effect errors**: Pions uses Effect for functional control flow. Errors include `Effect.runSync`, `Effect.gen`, and internal fiber traces. Look for the top-level error message first.
-- **Worker protocol errors**: If tests fail with "Worker configuration version does not match", rebuild with `npm run build`.
+- **Worker protocol errors**: "Worker configuration version does not match" means the parent and the Worker loaded different Pions code, for example through an explicit Worker extension path. The default resolution always pairs them.
 - **Herdr errors**: If `pions_delegate` fails with `HerdrPreconditionError`, Herdr is not available. This is expected in most cloud environments.
 
 ### Feature map reference

@@ -61,7 +61,7 @@ The exit code should be 0.
 
 `npm run check` does **not** require `npm run build` first. The test and assertion-check steps invoke `npm run build:test`, which compiles to `.test-dist/` via the default `tsconfig.json`. Tests import from `../src/...`, not from `dist/`.
 
-`npm run build` remains relevant for live Herdr workers and packing (`dist/src/worker-extension.js`), not as a gate for the automated suite.
+`npm run build` is relevant only for the packaged form (`dist/src/worker-extension.js`), not as a gate for the automated suite.
 
 ### Effect error traces
 

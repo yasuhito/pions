@@ -87,13 +87,7 @@ If `command -v herdr` fails (typical Cloud VM):
    - Mark live delegation **BLOCKED / verified-unreachable** with this prerequisite documented.
    - **Do NOT** fall back to gmktec or another host to work around missing auth.
 
-4. **Pions is built** (CRITICAL — protocol version mismatch if skipped):
-
-   ```bash
-   cd "$PIONS_ROOT"
-   npm run build
-   ls -la dist/src/worker-extension.js
-   ```
+4. **Pions source is current**: the development extension and its Workers both run from `src/`, so no build is required. The Worker loads `src/worker-extension.ts`.
 
 5. **Dedicated `verify-pions` session server is running** (see above).
 
