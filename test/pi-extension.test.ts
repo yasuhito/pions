@@ -408,6 +408,289 @@ test("the delegation-only extension registers exactly the three delegation tools
   );
 });
 
+test("shutdown rejects a delegation still resolving Worker extensions", async (context) => {
+  const resolving = deferred<void>();
+  const release = deferred<void>();
+  let creations = 0;
+  const value = await fixture(undefined, {
+    resolveWorkerExtensionPackages: async () => {
+      resolving.resolve();
+      await release.promise;
+      return [];
+    },
+    runtimeFactory: () => {
+      creations += 1;
+      return new FakeRuntime();
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const delegation = value.execute();
+  await resolving.promise;
+  const shutdown = value.shutdown("quit");
+  release.resolve();
+  await shutdown;
+  await delegation.catch(() => undefined);
+
+  assert.equal(creations, 0);
+});
+
+test("shutdown waits for session startup recovery before closing the Runtime", async (context) => {
+  const readiness = deferred<void>();
+  class SlowRecoveryRuntime extends FakeRuntime {
+    override ready(): Promise<void> {
+      this.readyCount += 1;
+      return readiness.promise;
+    }
+  }
+  const runtime = new SlowRecoveryRuntime();
+  const value = await fixture(undefined, { runtimeFactory: () => runtime });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const startup = value.start();
+  while (runtime.readyCount === 0) await new Promise(setImmediate);
+  const shutdown = value.shutdown("quit");
+  await new Promise(setImmediate);
+  const closedDuringRecovery = runtime.closeCount;
+  readiness.resolve();
+  await Promise.all([startup.catch(() => undefined), shutdown]);
+
+  assert.equal(closedDuringRecovery, 0);
+});
+
+test("shutdown prevents a delegation waiting for Runtime readiness from spawning", async (context) => {
+  const readiness = deferred<void>();
+  class SlowRuntime extends FakeRuntime {
+    override ready(): Promise<void> {
+      this.readyCount += 1;
+      return readiness.promise;
+    }
+  }
+  const runtime = new SlowRuntime();
+  const value = await fixture(undefined, { runtimeFactory: () => runtime });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const delegation = value.execute();
+  while (runtime.readyCount === 0) await new Promise(setImmediate);
+  const shutdown = value.shutdown("quit");
+  readiness.resolve();
+  await shutdown;
+  await delegation.catch(() => undefined);
+
+  assert.equal(runtime.spawnCount, 0);
+});
+
+test("concurrent delegations with different settings assign one recovery owner", async (context) => {
+  const readiness = deferred<void>();
+  const recoveryModes: Array<VisibleRuntimeOptions["recovery"]> = [];
+  class SlowRuntime extends FakeRuntime {
+    override ready(): Promise<void> {
+      this.readyCount += 1;
+      return readiness.promise;
+    }
+  }
+  const value = await fixture(undefined, {
+    runtimeFactory: (options) => {
+      recoveryModes.push(options.recovery);
+      return recoveryModes.length === 1 ? new SlowRuntime() : new FakeRuntime();
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const first = value.execute("first");
+  while (recoveryModes.length === 0) await new Promise(setImmediate);
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ thinkingLevel: "low" })
+  );
+  const second = value.execute("second");
+  readiness.resolve();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(recoveryModes, [undefined, "disabled"]);
+});
+
+test("concurrent delegations retain their respective Worker settings", async (context) => {
+  const readiness = deferred<void>();
+  const runtimes: Array<FakeRuntime> = [];
+  class SlowRuntime extends FakeRuntime {
+    override ready(): Promise<void> {
+      return readiness.promise;
+    }
+  }
+  const value = await fixture(undefined, {
+    runtimeFactory: () => {
+      const runtime =
+        runtimes.length === 0 ? new SlowRuntime() : new FakeRuntime();
+      runtimes.push(runtime);
+      return runtime;
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const first = value.execute("first");
+  while (runtimes.length === 0) await new Promise(setImmediate);
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ thinkingLevel: "low" })
+  );
+  const second = value.execute("second");
+  while (runtimes.length < 2) await new Promise(setImmediate);
+  readiness.resolve();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(
+    runtimes.map((runtime) => runtime.tasks[0]?.thinkingLevel),
+    ["high", "low"]
+  );
+});
+
+test("a new delegation after changing Worker settings uses the new selection", async (context) => {
+  const runtimes: Array<FakeRuntime> = [];
+  const value = await fixture(undefined, {
+    runtimeFactory: () => {
+      const runtime = new FakeRuntime();
+      runtimes.push(runtime);
+      return runtime;
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute("first");
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ thinkingLevel: "low" })
+  );
+  await value.execute("second");
+
+  assert.equal(runtimes[1]?.tasks[0]?.thinkingLevel, "low");
+});
+
+test("a replay does not create another Operation in the same Runtime", async (context) => {
+  const clock = new FakeClock(
+    Array.from(
+      { length: 30 },
+      (_, index) => `2026-09-06T10:00:${String(index).padStart(2, "0")}.000Z`
+    )
+  );
+  const value = await fixture(undefined, {
+    runtimeFactory: (options) =>
+      makeTestRuntime({
+        worker: new FakeWorkerAdapter({ successfulExitConfirmed: true }),
+        clock,
+        ids: new FakeIdGenerator(["operation-1"]),
+        presentation: new FakePresentation(),
+        store: new PrivateFileEventStore(options.stateDirectory, clock),
+        configuration: { cwd: options.cwd, profiles: options.profiles },
+      }),
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const original = await value.execute("same-call");
+  await writeFile(join(value.root, ".pions.json"), "{invalid json");
+  const replay = await value.execute("same-call");
+
+  assert.equal(
+    (replay.details as PionsDelegateDetails).operationId,
+    (original.details as PionsDelegateDetails).operationId
+  );
+});
+
+test("a replay after changing Worker settings keeps its original selection", async (context) => {
+  const runtimes: Array<FakeRuntime> = [];
+  const value = await fixture(undefined, {
+    runtimeFactory: () => {
+      const runtime = new FakeRuntime();
+      runtimes.push(runtime);
+      return runtime;
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute("same-call");
+  await writeFile(
+    join(value.root, ".pions.json"),
+    JSON.stringify({ thinkingLevel: "low" })
+  );
+  await value.execute("same-call");
+
+  assert.equal(runtimes[0]?.tasks[1]?.thinkingLevel, "high");
+});
+
+test("conflicting concurrent retries are rejected before writing a prompt", async (context) => {
+  const resolving = deferred<void>();
+  const release = deferred<void>();
+  const value = await fixture(new FakeRuntime(), {
+    resolveWorkerExtensionPackages: async () => {
+      resolving.resolve();
+      await release.promise;
+      return [];
+    },
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const first = value.execute("same-call", "First task");
+  await resolving.promise;
+  const conflict = assert.rejects(
+    value.execute("same-call", "Different task"),
+    /different task/u
+  );
+  release.resolve();
+  await first;
+
+  await conflict;
+});
+
+test("an existing prompt with different bytes cannot start a Worker", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const repositoryId = createHash("sha256").update(value.root).digest("hex");
+  const callId = createHash("sha256")
+    .update("pi-session-1\0same-call")
+    .digest("hex");
+  const requests = join(
+    value.root,
+    "state",
+    "pions",
+    "repositories",
+    repositoryId,
+    "requests"
+  );
+  await mkdir(requests, { recursive: true });
+  await writeFile(join(requests, `${callId}.utf8`), "Different task");
+
+  await assert.rejects(
+    value.execute("same-call", "Original task"),
+    /prompt.*different/u
+  );
+});
+
+test("reusing a tool call for a different task is rejected", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.execute("same-call", "First task");
+
+  await assert.rejects(
+    value.execute("same-call", "Different task"),
+    /different task/u
+  );
+});
+
+test("shutdown waits for an admitted spawn before closing its Runtime", async (context) => {
+  const spawning = deferred<void>();
+  const release = deferred<void>();
+  class SlowSpawnRuntime extends FakeRuntime {
+    override async spawn(task: TaskSpec): Promise<OperationHandle> {
+      spawning.resolve();
+      await release.promise;
+      return super.spawn(task);
+    }
+  }
+  const runtime = new SlowSpawnRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const delegation = value.execute();
+  await spawning.promise;
+  const shutdown = value.shutdown("quit");
+  await new Promise(setImmediate);
+  const closedWhileSpawning = runtime.closeCount;
+  release.resolve();
+  await Promise.all([delegation, shutdown]);
+
+  assert.equal(closedWhileSpawning, 0);
+});
+
 test("delegation after cold recovery does not recover the same Workers twice", async (context) => {
   const recoveryModes: Array<VisibleRuntimeOptions["recovery"]> = [];
   const value = await fixture(undefined, {

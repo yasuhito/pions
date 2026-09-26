@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, realpath, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse } from "node:path";
 
@@ -71,6 +78,12 @@ export async function writePrivatePrompt(
       error.code === "EEXIST"
     )) {
       throw error;
+    }
+    const existing = await readFile(path);
+    if (!existing.equals(Buffer.from(body, "utf8"))) {
+      throw new Error("Existing Pions prompt contains different bytes", {
+        cause: error,
+      });
     }
   }
   await chmod(path, FILE_MODE);

@@ -39,10 +39,10 @@ import { OperationCancelledError, OperationUnknownError } from "./types.js";
 import type {
   CancellationResult,
   CleanupDiagnostic,
-  EffectiveWorkerConfig,
   OperationCompletion,
   OperationHandle,
   OperationRuntime,
+  TaskSpec,
 } from "./types.js";
 
 const WORKER_PROFILE = "worker";
@@ -244,17 +244,143 @@ async function awaitOperation(
   }
 }
 
+class RuntimeOwnership {
+  private readonly byRepository = new Map<string, OperationRuntime>();
+  private readonly byConfig = new Map<string, OperationRuntime>();
+  private readonly preparations = new Map<
+    string,
+    {
+      readonly root: string;
+      readonly promptDigest: string;
+      readonly result: Promise<{
+        readonly runtime: OperationRuntime;
+        readonly task: TaskSpec;
+      }>;
+    }
+  >();
+  private readonly recoveryOwners = new Map<string, OperationRuntime>();
+  private readonly known = new Set<OperationRuntime>();
+  private readonly admissions = new Set<Promise<unknown>>();
+  private closing = false;
+
+  assertOpen(): void {
+    if (this.closing) throw new Error("Pions Runtime is shutting down");
+  }
+
+  async admit<Value>(work: () => Promise<Value>): Promise<Value> {
+    this.assertOpen();
+    const pending = Promise.resolve().then(work);
+    this.admissions.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.admissions.delete(pending);
+    }
+  }
+
+  async stopAdmissions(): Promise<void> {
+    this.closing = true;
+    await Promise.allSettled([...this.admissions]);
+  }
+
+  async recover(root: string, create: () => OperationRuntime): Promise<void> {
+    this.assertOpen();
+    let runtime = this.recoveryOwners.get(root);
+    if (runtime === undefined) {
+      runtime = create();
+      this.recoveryOwners.set(root, runtime);
+      this.byRepository.set(root, runtime);
+      this.known.add(runtime);
+    }
+    await runtime.ready();
+    this.assertOpen();
+  }
+
+  async forCall(
+    root: string,
+    callKey: string,
+    promptDigest: string,
+    prepare: () => Promise<{
+      readonly runtime: OperationRuntime;
+      readonly task: TaskSpec;
+    }>
+  ): Promise<{ readonly runtime: OperationRuntime; readonly task: TaskSpec }> {
+    this.assertOpen();
+    const existing = this.preparations.get(callKey);
+    if (existing !== undefined) {
+      if (existing.root !== root || existing.promptDigest !== promptDigest) {
+        throw new Error(
+          "Pions tool call was reused for a different task or repository"
+        );
+      }
+      return existing.result;
+    }
+    const result = Promise.resolve().then(prepare);
+    const entry = { root, promptDigest, result };
+    this.preparations.set(callKey, entry);
+    try {
+      return await result;
+    } catch (error) {
+      if (this.preparations.get(callKey) === entry)
+        this.preparations.delete(callKey);
+      throw error;
+    }
+  }
+
+  private async readyForCall(
+    root: string,
+    runtime: OperationRuntime
+  ): Promise<void> {
+    const owner = this.recoveryOwners.get(root);
+    await owner?.ready();
+    if (runtime !== owner) await runtime.ready();
+  }
+
+  async acquire(
+    root: string,
+    configKey: string,
+    task: TaskSpec,
+    create: (recoveryDisabled: boolean) => OperationRuntime
+  ): Promise<{ readonly runtime: OperationRuntime; readonly task: TaskSpec }> {
+    this.assertOpen();
+    const runtime =
+      this.byConfig.get(configKey) ?? create(this.recoveryOwners.has(root));
+    if (!this.recoveryOwners.has(root)) this.recoveryOwners.set(root, runtime);
+    this.byConfig.set(configKey, runtime);
+    this.known.add(runtime);
+    this.byRepository.set(root, runtime);
+    await this.readyForCall(root, runtime);
+    this.assertOpen();
+    return { runtime, task };
+  }
+
+  reader(
+    root: string,
+    create: () => Pick<OperationRuntime, "operation">,
+    override?: OperationRuntime
+  ): Pick<OperationRuntime, "operation"> {
+    this.assertOpen();
+    if (override !== undefined) this.known.add(override);
+    return override ?? this.byRepository.get(root) ?? create();
+  }
+
+  async closeAll(): Promise<ReadonlyArray<unknown>> {
+    const outcomes = await Promise.allSettled(
+      [...this.known].map((runtime) => runtime.close())
+    );
+    return outcomes.flatMap((outcome) =>
+      outcome.status === "rejected" ? [outcome.reason] : []
+    );
+  }
+}
+
 /** Install the project-local Pi delegation tool. */
 export function installPionsExtension(
   pi: ExtensionAPI,
   options: PionsExtensionOptions = {}
 ): void {
-  const runtimesByConfig = new Map<string, OperationRuntime>();
-  const runtimesByRepository = new Map<string, OperationRuntime>();
-  const runtimesByCall = new Map<string, OperationRuntime>();
-  const knownRuntimes = new Set<OperationRuntime>();
+  const ownership = new RuntimeOwnership();
   const operationLifetime = new OperationLifetime();
-  let shuttingDown = false;
 
   async function resolveRepositoryContext(context: ExtensionContext): Promise<{
     readonly normalizedRoot: string;
@@ -271,7 +397,7 @@ export function installPionsExtension(
       environment: options.environment ?? process.env,
       homeDirectory: options.homeDirectory ?? homedir(),
     });
-    if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+    ownership.assertOpen();
     return { normalizedRoot, repositoryState };
   }
 
@@ -281,41 +407,38 @@ export function installPionsExtension(
   ): Promise<Value> {
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
-    const existingRuntime =
-      options.runtime ?? runtimesByRepository.get(normalizedRoot);
-    if (existingRuntime !== undefined) {
-      knownRuntimes.add(existingRuntime);
-      return use(existingRuntime);
-    }
-    const reader = (
-      options.persistedReaderFactory ?? makePersistedOperationReader
-    )({
-      stateDirectory: join(repositoryState, "runtime"),
-    });
+    const reader = ownership.reader(
+      normalizedRoot,
+      () =>
+        (options.persistedReaderFactory ?? makePersistedOperationReader)({
+          stateDirectory: join(repositoryState, "runtime"),
+        }),
+      options.runtime
+    );
     return use(reader);
   }
 
   pi.on("session_start", async (_event, context) => {
     if (!context.isProjectTrusted()) return;
-    const { normalizedRoot, repositoryState } =
-      await resolveRepositoryContext(context);
-    let runtime = options.runtime ?? runtimesByRepository.get(normalizedRoot);
-    if (runtime === undefined) {
+    await ownership.admit(async () => {
+      const { normalizedRoot, repositoryState } =
+        await resolveRepositoryContext(context);
       const workerCwd = await realpath(context.cwd);
-      const runtimeStateDirectory = join(repositoryState, "runtime");
-      runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
-        cwd: workerCwd,
-        stateDirectory: runtimeStateDirectory,
-        profiles: {},
-        environment: options.environment ?? process.env,
-        ...(options.extensionEntryPath === undefined
-          ? {}
-          : { extensionEntryPath: options.extensionEntryPath }),
-      });
-      runtimesByRepository.set(normalizedRoot, runtime);
-    }
-    knownRuntimes.add(runtime);
-    await runtime.ready();
+      await ownership.recover(
+        normalizedRoot,
+        () =>
+          options.runtime ??
+          (options.runtimeFactory ?? makeVisibleRuntime)({
+            cwd: workerCwd,
+            stateDirectory: join(repositoryState, "runtime"),
+            profiles: {},
+            environment: options.environment ?? process.env,
+            ...(options.extensionEntryPath === undefined
+              ? {}
+              : { extensionEntryPath: options.extensionEntryPath }),
+          })
+      );
+    });
   });
 
   async function prepareWorkerCall(
@@ -323,123 +446,115 @@ export function installPionsExtension(
     prompt: string,
     context: ExtensionContext
   ): Promise<{
-    readonly idempotencyKey: string;
-    readonly normalizedRoot: string;
-    readonly promptRef: string;
-    readonly workerCwd: string;
-    readonly workerSettings: Pick<
-      EffectiveWorkerConfig,
-      "model" | "thinkingLevel" | "tools"
-    >;
+    readonly task: TaskSpec;
     readonly runtime: OperationRuntime;
   }> {
-    const inherited = delegatingWorkerSettings(
-      context.model,
-      context.thinkingLevel
-    );
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
-    const recoveredRuntime = runtimesByRepository.get(normalizedRoot);
-    if (recoveredRuntime !== undefined) await recoveredRuntime.ready();
-    const workerCwd = await realpath(context.cwd);
-    const configured = await projectConfig(normalizedRoot);
-    const registered =
-      configured?.model === undefined
-        ? undefined
-        : context.modelRegistry.find(
-            configured.model.provider,
-            configured.model.id
-          );
-    const selection = selectProjectWorker({
-      configured,
-      inherited,
-      registeredModel: registered,
-      registeredModelAuthenticated:
-        registered === undefined
-          ? undefined
-          : context.modelRegistry.hasConfiguredAuth(registered),
-      registeredProviderIds: context.modelRegistry.getRegisteredProviderIds(),
-    });
-    const { model: workerModel, thinkingLevel: workerThinkingLevel } =
-      selection;
-    const extensions = await workerExtensions({
-      sources: selection.extensionSources,
-      cwd: workerCwd,
-      piAgentDirectory: options.piAgentDirectory ?? getAgentDir(),
-      resolvePackages:
-        options.resolveWorkerExtensionPackages ?? resolvePiExtensionPackages,
-    });
     const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
-    const promptRef = join(
-      repositoryState,
-      "requests",
-      `${idempotencyKey.slice("pi-tool:".length)}.utf8`
-    );
-    await writePrivatePrompt(promptRef, prompt);
-    const workerProfile = projectWorkerProfile(selection, extensions);
-    const runtimeStateDirectory = join(repositoryState, "runtime");
-    const configKey = `${normalizedRoot}\0${workerCwd}\0${workerModel.provider}\0${workerModel.id}\0${workerThinkingLevel}\0${JSON.stringify(extensions)}`;
-    if (shuttingDown) throw new Error("Pions Runtime is shutting down");
-    let runtime = options.runtime;
-    if (runtime === undefined) {
-      const extensionEntryPath = resolveWorkerExtensionEntryPath({
-        ...(options.extensionEntryPath === undefined
-          ? {}
-          : { explicitPath: options.extensionEntryPath }),
-        cwd: workerCwd,
-      });
-      runtime =
-        runtimesByCall.get(idempotencyKey) ?? runtimesByConfig.get(configKey);
-      if (runtime === undefined) {
-        runtime = (options.runtimeFactory ?? makeVisibleRuntime)({
-          cwd: workerCwd,
-          stateDirectory: runtimeStateDirectory,
-          profiles: { [WORKER_PROFILE]: workerProfile },
-          environment: options.environment ?? process.env,
-          extensionEntryPath,
-          ...(runtimesByRepository.has(normalizedRoot)
-            ? { recovery: "disabled" as const }
-            : {}),
-        });
-        runtimesByConfig.set(configKey, runtime);
-        runtimesByRepository.set(normalizedRoot, runtime);
-        knownRuntimes.add(runtime);
-        await runtime.ready();
-      }
-    }
-    runtimesByCall.set(idempotencyKey, runtime);
-    runtimesByRepository.set(normalizedRoot, runtime);
-    knownRuntimes.add(runtime);
-    return {
-      idempotencyKey,
+    return ownership.forCall(
       normalizedRoot,
-      promptRef,
-      workerCwd,
-      workerSettings: {
-        model: workerModel,
-        thinkingLevel: workerThinkingLevel,
-        tools: workerProfile.tools,
-      },
-      runtime,
-    };
+      idempotencyKey,
+      opaqueDigest(prompt),
+      async () => {
+        const inherited = delegatingWorkerSettings(
+          context.model,
+          context.thinkingLevel
+        );
+        const workerCwd = await realpath(context.cwd);
+        const configured = await projectConfig(normalizedRoot);
+        const registered =
+          configured?.model === undefined
+            ? undefined
+            : context.modelRegistry.find(
+                configured.model.provider,
+                configured.model.id
+              );
+        const selection = selectProjectWorker({
+          configured,
+          inherited,
+          registeredModel: registered,
+          registeredModelAuthenticated:
+            registered === undefined
+              ? undefined
+              : context.modelRegistry.hasConfiguredAuth(registered),
+          registeredProviderIds:
+            context.modelRegistry.getRegisteredProviderIds(),
+        });
+        const { model: workerModel, thinkingLevel: workerThinkingLevel } =
+          selection;
+        const extensions = await workerExtensions({
+          sources: selection.extensionSources,
+          cwd: workerCwd,
+          piAgentDirectory: options.piAgentDirectory ?? getAgentDir(),
+          resolvePackages:
+            options.resolveWorkerExtensionPackages ??
+            resolvePiExtensionPackages,
+        });
+        const promptRef = join(
+          repositoryState,
+          "requests",
+          `${idempotencyKey.slice("pi-tool:".length)}.utf8`
+        );
+        await writePrivatePrompt(promptRef, prompt);
+        const workerProfile = projectWorkerProfile(selection, extensions);
+        const runtimeStateDirectory = join(repositoryState, "runtime");
+        const configKey = JSON.stringify([
+          normalizedRoot,
+          workerCwd,
+          workerModel,
+          workerThinkingLevel,
+          extensions,
+        ]);
+        const extensionEntryPath =
+          options.runtime === undefined
+            ? resolveWorkerExtensionEntryPath({
+                ...(options.extensionEntryPath === undefined
+                  ? {}
+                  : { explicitPath: options.extensionEntryPath }),
+                cwd: workerCwd,
+              })
+            : undefined;
+        const selectedTask: TaskSpec = {
+          promptRef,
+          profile: WORKER_PROFILE,
+          idempotencyKey,
+          model: workerModel,
+          thinkingLevel: workerThinkingLevel,
+          tools: workerProfile.tools,
+          cwd: workerCwd,
+        };
+        return ownership.acquire(
+          normalizedRoot,
+          configKey,
+          selectedTask,
+          (recoveryDisabled) => {
+            if (options.runtime !== undefined) return options.runtime;
+            if (extensionEntryPath === undefined)
+              throw new Error("Pions Worker extension entry is unavailable");
+            return (options.runtimeFactory ?? makeVisibleRuntime)({
+              cwd: workerCwd,
+              stateDirectory: runtimeStateDirectory,
+              profiles: { [WORKER_PROFILE]: workerProfile },
+              environment: options.environment ?? process.env,
+              extensionEntryPath,
+              ...(recoveryDisabled ? { recovery: "disabled" as const } : {}),
+            });
+          }
+        );
+      }
+    );
   }
 
   pi.on("session_shutdown", async () => {
-    shuttingDown = true;
     const failures: Array<unknown> = [];
+    await ownership.stopAdmissions();
     try {
       await operationLifetime.cancelAll();
     } catch (error) {
       failures.push(error);
     }
-    const closeOutcomes = await Promise.allSettled(
-      [...knownRuntimes].map((runtime) => runtime.close())
-    );
-    failures.push(
-      ...closeOutcomes.flatMap((outcome) =>
-        outcome.status === "rejected" ? [outcome.reason] : []
-      )
-    );
+    failures.push(...(await ownership.closeAll()));
     if (failures.length > 0) {
       throw new AggregateError(
         failures,
@@ -455,7 +570,7 @@ export function installPionsExtension(
       "Retrieve a verified persisted Result chunk for an Operation in the current trusted repository.",
     parameters: ResultParameters,
     async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
-      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+      ownership.assertOpen();
       if (!context.isProjectTrusted()) {
         throw new Error("pions_result requires a trusted project");
       }
@@ -507,7 +622,7 @@ export function installPionsExtension(
       "Read the persisted state of an Operation in the current trusted repository without retrieving Result bytes.",
     parameters: OperationParameters,
     async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
-      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+      ownership.assertOpen();
       if (!context.isProjectTrusted()) {
         throw new Error("pions_operation requires a trusted project");
       }
@@ -544,32 +659,29 @@ export function installPionsExtension(
     ],
     parameters: DelegateParameters,
     async execute(toolCallId, parameters, signal, _onUpdate, context) {
-      if (shuttingDown) throw new Error("Pions Runtime is shutting down");
+      ownership.assertOpen();
       if (!context.isProjectTrusted()) {
         throw new Error("pions_delegate requires a trusted project");
       }
-      const prepared = await prepareWorkerCall(
-        toolCallId,
-        workerPrompt(parameters.task),
-        context
-      );
-      const handle = await prepared.runtime.spawn({
-        promptRef: prepared.promptRef,
-        profile: WORKER_PROFILE,
-        idempotencyKey: prepared.idempotencyKey,
-        ...prepared.workerSettings,
-        cwd: prepared.workerCwd,
+      const operation = await ownership.admit(async () => {
+        const prepared = await prepareWorkerCall(
+          toolCallId,
+          workerPrompt(parameters.task),
+          context
+        );
+        ownership.assertOpen();
+        const handle = await prepared.runtime.spawn(prepared.task);
+        return operationLifetime.track(handle);
       });
-      const operation = operationLifetime.track(handle);
       const completion = await awaitOperation(operation, signal);
       const bounded = boundedResultBody(
         completion.result.body,
-        handle.operationId
+        operation.handle.operationId
       );
       return {
         content: [{ type: "text", text: bounded.text }],
         details: {
-          operationId: handle.operationId,
+          operationId: operation.handle.operationId,
           byteCount: completion.result.byteCount,
           digest: completion.result.digest,
           truncated: bounded.truncated,
