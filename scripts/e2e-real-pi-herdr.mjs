@@ -460,7 +460,7 @@ async function ownedWorkerRecords(stateDir) {
   const owned = new Map();
   for (const entry of await readdir(runtimeDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const recordPath = join(runtimeDir, entry.name, "events.v27.json");
+    const recordPath = join(runtimeDir, entry.name, "events.v29.json");
     if (!(await fileExists(recordPath))) continue;
     const record = JSON.parse(await readFile(recordPath, "utf8"));
     if (
@@ -1344,7 +1344,7 @@ async function main() {
         repositoryKey,
         "runtime",
         operationKey,
-        "worker.v15.json"
+        "worker.v16.json"
       );
       const stopped = await run("python3", [
         join(ROOT_DIR, "scripts", "stop-owned-worker.py"),

@@ -301,9 +301,6 @@ export type OperationFailureReason =
   | "agent_failed"
   | "model_mismatch"
   | "thinking_level_mismatch"
-  | "model_not_found"
-  | "model_auth_unavailable"
-  | "unsupported_capability"
   | "tool_policy_violation";
 
 export class HerdrPreconditionError extends Error {
@@ -360,9 +357,14 @@ export class OperationFailedError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: OperationFailureReason
+    readonly reason: OperationFailureReason,
+    readonly agentErrorMessage?: string
   ) {
-    super(`Operation ${operationId} failed: ${reason}`);
+    super(
+      agentErrorMessage === undefined
+        ? `Operation ${operationId} failed: ${reason}`
+        : `Operation ${operationId} failed: ${reason}: ${agentErrorMessage}`
+    );
   }
 }
 

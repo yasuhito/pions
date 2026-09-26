@@ -644,7 +644,8 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
     record.rejectTerminal(
       new OperationFailedError(
         record.operationId,
-        operation.failureReason ?? "worker_protocol_failed"
+        operation.failureReason ?? "worker_protocol_failed",
+        operation.agentRunEvidence?.errorMessage
       )
     );
   };

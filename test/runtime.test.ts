@@ -23,7 +23,10 @@ import {
   makeTestRuntime,
 } from "../src/internal/testing.js";
 import { sha256Digest } from "../src/internal/result-digest.js";
-import type { WorkerProfilePolicy } from "../src/internal/types.js";
+import {
+  OperationFailedError,
+  type WorkerProfilePolicy,
+} from "../src/internal/types.js";
 
 const profile: WorkerProfilePolicy = {
   modelCandidates: [{ provider: "test", id: "model" }],
@@ -810,6 +813,49 @@ test("汎用ワーカー失敗の記録保存失敗後も観測した実行証�
     (await Effect.runPromise(store.read("operation-1"))).operation
       .agentRunEvidence?.toolUses[0]?.isError,
     true
+  );
+});
+
+test("汎用ワーカー失敗の結果待ちにプロバイダーのエラー文を渡す", async () => {
+  const runtime = makeTestRuntime(
+    services(
+      new InMemoryEventStore([], clock()),
+      new FakeWorkerAdapter({ failure: "agent_failed" })
+    )
+  );
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  const failure = await handle.result().catch((error: unknown) => error);
+  await runtime.close();
+
+  assert.equal(
+    failure instanceof OperationFailedError
+      ? failure.agentErrorMessage
+      : undefined,
+    "fake provider rejected the request"
+  );
+});
+
+test("汎用ワーカー失敗のエラー文を実行証跡として永続化する", async () => {
+  const store = new InMemoryEventStore([], clock());
+  const runtime = makeTestRuntime(
+    services(store, new FakeWorkerAdapter({ failure: "agent_failed" }))
+  );
+  const handle = await runtime.spawn({
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  });
+  await handle.result().catch(() => undefined);
+  await runtime.close();
+
+  assert.equal(
+    (await Effect.runPromise(store.read("operation-1"))).operation
+      .agentRunEvidence?.errorMessage,
+    "fake provider rejected the request"
   );
 });
 

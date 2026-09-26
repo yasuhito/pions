@@ -310,7 +310,7 @@ class PiWorkerBridge {
         capability: this.config.capability,
       },
       new FileStartInstructionAcceptanceStore(
-        join(dirname(this.config.promptPath), "start-instruction.v15.json")
+        join(dirname(this.config.promptPath), "start-instruction.v16.json")
       ),
       { resultBytes: this.config.effectiveConfig.maxResultByteCount }
     );

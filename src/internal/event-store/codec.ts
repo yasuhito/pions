@@ -88,6 +88,7 @@ const ToolUse = Schema.Struct({
 const AgentRunEvidence = Schema.Struct({
   usage: Usage,
   toolUses: Schema.Array(ToolUse),
+  errorMessage: Schema.optional(Schema.String),
 });
 const AcceptedResult = Schema.Struct({
   acceptanceId: Schema.String,
@@ -105,9 +106,6 @@ const FailureReason = Schema.Literal(
   "agent_failed",
   "model_mismatch",
   "thinking_level_mismatch",
-  "model_not_found",
-  "model_auth_unavailable",
-  "unsupported_capability",
   "tool_policy_violation"
 );
 const CleanupDiagnostic = Schema.Literal(

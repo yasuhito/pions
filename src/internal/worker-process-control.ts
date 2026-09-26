@@ -9,7 +9,8 @@ import type {
 
 export type WorkerProcessState = "running" | "stopped" | "unverifiable";
 
-export interface BackendProcessIdentity {
+/** ワーカーのPiプロセスから起動された子孫プロセスの識別情報。 */
+export interface DescendantProcessIdentity {
   readonly processId: number;
   readonly processStartToken: string;
 }
@@ -26,15 +27,21 @@ export interface WorkerProcessControl {
     identity: Readonly<WorkerProcessIdentity>,
     timeoutMilliseconds?: number
   ): Effect.Effect<WorkerCancellationEvidence | undefined>;
-  captureDescendants?(
+  /**
+   * 稼働中のワーカーから辿れる子孫プロセスを捕捉する。ワーカーが停止済み、
+   * または辿れない場合は`undefined`を返す。
+   */
+  captureDescendants(
     identity: Readonly<WorkerProcessIdentity>
-  ): Effect.Effect<ReadonlyArray<Readonly<BackendProcessIdentity>> | undefined>;
-  waitForBackendStop?(
-    identities: ReadonlyArray<Readonly<BackendProcessIdentity>>,
+  ): Effect.Effect<
+    ReadonlyArray<Readonly<DescendantProcessIdentity>> | undefined
+  >;
+  waitForDescendantsStop(
+    identities: ReadonlyArray<Readonly<DescendantProcessIdentity>>,
     timeoutMilliseconds: number
   ): Effect.Effect<WorkerProcessState>;
-  terminateBackend?(
-    identities: ReadonlyArray<Readonly<BackendProcessIdentity>>,
+  terminateDescendants(
+    identities: ReadonlyArray<Readonly<DescendantProcessIdentity>>,
     timeoutMilliseconds: number
   ): Effect.Effect<WorkerCancellationEvidence | undefined>;
 }
@@ -131,15 +138,17 @@ export class NodeWorkerProcessControl implements WorkerProcessControl {
   captureDescendants(
     identity: Readonly<WorkerProcessIdentity>
   ): Effect.Effect<
-    ReadonlyArray<Readonly<BackendProcessIdentity>> | undefined
+    ReadonlyArray<Readonly<DescendantProcessIdentity>> | undefined
   > {
     return Effect.promise(async () => {
       const rootIdentity = {
         processId: identity.processId,
         processStartToken: identity.processStartToken,
       };
-      const captured: Array<Readonly<BackendProcessIdentity>> = [];
-      const pending: Array<Readonly<BackendProcessIdentity>> = [rootIdentity];
+      const captured: Array<Readonly<DescendantProcessIdentity>> = [];
+      const pending: Array<Readonly<DescendantProcessIdentity>> = [
+        rootIdentity,
+      ];
       try {
         if ((await this.observeProcess(rootIdentity)) !== "running")
           return undefined;
@@ -174,8 +183,8 @@ export class NodeWorkerProcessControl implements WorkerProcessControl {
     });
   }
 
-  waitForBackendStop(
-    identities: ReadonlyArray<Readonly<BackendProcessIdentity>>,
+  waitForDescendantsStop(
+    identities: ReadonlyArray<Readonly<DescendantProcessIdentity>>,
     timeoutMilliseconds: number
   ): Effect.Effect<WorkerProcessState> {
     return Effect.promise(async () => {
@@ -196,8 +205,8 @@ export class NodeWorkerProcessControl implements WorkerProcessControl {
     });
   }
 
-  terminateBackend(
-    identities: ReadonlyArray<Readonly<BackendProcessIdentity>>,
+  terminateDescendants(
+    identities: ReadonlyArray<Readonly<DescendantProcessIdentity>>,
     timeoutMilliseconds: number
   ): Effect.Effect<WorkerCancellationEvidence | undefined> {
     return Effect.promise(async () => {
@@ -214,7 +223,7 @@ export class NodeWorkerProcessControl implements WorkerProcessControl {
         }
       }
       const state = await Effect.runPromise(
-        this.waitForBackendStop(identities, timeoutMilliseconds)
+        this.waitForDescendantsStop(identities, timeoutMilliseconds)
       );
       return state === "stopped" ? { proof: "worker-stop" } : undefined;
     });
@@ -249,7 +258,7 @@ export class NodeWorkerProcessControl implements WorkerProcessControl {
   }
 
   private async observeProcess(
-    identity: Readonly<BackendProcessIdentity>
+    identity: Readonly<DescendantProcessIdentity>
   ): Promise<WorkerProcessState> {
     try {
       const observed = processStartToken(
