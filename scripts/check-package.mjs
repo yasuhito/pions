@@ -41,6 +41,7 @@ const expected = new Set([
     "has-code",
     "herdr-presentation",
     "pi-extension",
+    "project-worker-configuration",
     "repository-state",
     "result-acceptance-transaction",
     "result-acceptance",
