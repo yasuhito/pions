@@ -21,10 +21,18 @@ export interface ModelSelectionPolicy {
   readonly aliases: ReadonlyArray<string>;
 }
 
+/** A Pi extension file loaded into the Worker, with the package it came from. */
+export interface WorkerExtension {
+  readonly source: string;
+  readonly path: string;
+}
+
 export interface EffectiveWorkerConfig {
   readonly model: Readonly<ModelReference>;
   readonly thinkingLevel: ThinkingLevel;
+  /** Pi built-in tools; tools added by `extensions` are also available. */
   readonly tools: ReadonlyArray<string>;
+  readonly extensions: ReadonlyArray<Readonly<WorkerExtension>>;
   readonly cwd: string;
   readonly maxResultByteCount: number;
   readonly modelPolicy: Readonly<ModelSelectionPolicy>;
@@ -45,6 +53,7 @@ export interface WorkerProfilePolicy {
   readonly modelCandidates: ReadonlyArray<Readonly<ModelReference>>;
   readonly thinkingLevel: ThinkingLevel;
   readonly tools: ReadonlyArray<string>;
+  readonly extensions: ReadonlyArray<Readonly<WorkerExtension>>;
   readonly maxResultByteCount: number;
 }
 
@@ -86,7 +95,8 @@ export type ProjectConfigurationFailureReason =
   | "invalid_shape"
   | "invalid_provider"
   | "invalid_model_id"
-  | "invalid_thinking_level";
+  | "invalid_thinking_level"
+  | "invalid_extensions";
 
 export class ProjectConfigurationError extends Error {
   override readonly name = "ProjectConfigurationError";
@@ -301,9 +311,6 @@ export type OperationFailureReason =
   | "agent_failed"
   | "model_mismatch"
   | "thinking_level_mismatch"
-  | "model_not_found"
-  | "model_auth_unavailable"
-  | "unsupported_capability"
   | "tool_policy_violation";
 
 export class HerdrPreconditionError extends Error {
@@ -360,9 +367,14 @@ export class OperationFailedError extends Error {
 
   constructor(
     readonly operationId: string,
-    readonly reason: OperationFailureReason
+    readonly reason: OperationFailureReason,
+    readonly agentErrorMessage?: string
   ) {
-    super(`Operation ${operationId} failed: ${reason}`);
+    super(
+      agentErrorMessage === undefined
+        ? `Operation ${operationId} failed: ${reason}`
+        : `Operation ${operationId} failed: ${reason}: ${agentErrorMessage}`
+    );
   }
 }
 

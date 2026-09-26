@@ -8,7 +8,6 @@ import type {
   ObservedWorkerConfig,
   ResultAcceptanceId,
   StartInstructionReference,
-  WorkerConfigurationFailureReason,
   WorkerProducedResult,
 } from "./types.js";
 import { sha256Digest } from "./result-digest.js";
@@ -18,7 +17,7 @@ import {
   ObservedWorkerConfigSchema,
 } from "./worker-configuration.js";
 
-export const WORKER_PROTOCOL_VERSION = 15 as const;
+export const WORKER_PROTOCOL_VERSION = 16 as const;
 
 export interface ProtocolAuthority {
   readonly operationId: string;
@@ -90,18 +89,6 @@ const StartedSchema = Schema.Struct({
   type: Schema.Literal("started"),
   piSessionId: Schema.NonEmptyString,
   observedConfig: ObservedWorkerConfigSchema,
-});
-const ConfigurationFailedSchema = Schema.Struct({
-  ...CommonWorkerFrameFields,
-  type: Schema.Literal("configuration_failed"),
-  reason: Schema.Literal(
-    "model_mismatch",
-    "thinking_level_mismatch",
-    "model_not_found",
-    "model_auth_unavailable",
-    "unsupported_capability",
-    "tool_policy_violation"
-  ),
 });
 const ResultBeginSchema = Schema.Struct({
   ...CommonWorkerFrameFields,
@@ -295,10 +282,6 @@ export type HostProtocolEvent =
       readonly observedConfig: Readonly<ObservedWorkerConfig>;
     }
   | {
-      readonly type: "worker_configuration_failed";
-      readonly reason: WorkerConfigurationFailureReason;
-    }
-  | {
       readonly type: "result_received";
       readonly result: Readonly<WorkerProducedResult>;
       readonly evidence: Readonly<AgentRunEvidence>;
@@ -340,10 +323,6 @@ export type WorkerProtocolEvent =
       readonly type: "started";
       readonly piSessionId: string;
       readonly observedConfig: Readonly<ObservedWorkerConfig>;
-    }
-  | {
-      readonly type: "configuration_failed";
-      readonly reason: WorkerConfigurationFailureReason;
     }
   | {
       readonly type: "result";
@@ -868,22 +847,6 @@ export class HostProtocolPeer extends FramedPeer {
         observedConfig: started.observedConfig as ObservedWorkerConfig,
       };
     }
-    if (object.type === "configuration_failed") {
-      const failed = decodeShape(
-        ConfigurationFailedSchema,
-        value,
-        "Worker configuration failure frame has an invalid shape"
-      );
-      this.validateCommon(failed);
-      if (this.state !== "awaiting_started") {
-        throw violation(
-          "invalid_transition",
-          "Configuration failure arrived after Worker start"
-        );
-      }
-      this.state = "done";
-      return { type: "worker_configuration_failed", reason: failed.reason };
-    }
     if (object.type === "cancelled") {
       const cancelled = decodeShape(
         CancelledSchema,
@@ -1313,15 +1276,6 @@ export class WorkerProtocolPeer extends FramedPeer {
           observedConfig: event.observedConfig,
         });
         this.state = "ready";
-        return bytes;
-      }
-      case "configuration_failed": {
-        if (this.state !== "identified") return this.invalidSend(event.type);
-        const bytes = this.encodeWorkerFrame({
-          type: "configuration_failed",
-          reason: event.reason,
-        });
-        this.state = "done";
         return bytes;
       }
       case "generation_updated": {

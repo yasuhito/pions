@@ -16,6 +16,7 @@ export const effectiveConfig: EffectiveWorkerConfig = {
   model: { provider: "test", id: "test-model" },
   thinkingLevel: "medium",
   tools: ["read", "bash"],
+  extensions: [],
   cwd: "/test/workspace",
   maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
   modelPolicy: {
@@ -36,6 +37,7 @@ export const profilePolicy: WorkerProfilePolicy = {
   modelCandidates: [{ provider: "test", id: "test-model" }],
   thinkingLevel: "medium",
   tools: ["read", "bash"],
+  extensions: [],
   maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
 };
 export const maxResultByteCount = profilePolicy.maxResultByteCount;

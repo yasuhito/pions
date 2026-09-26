@@ -310,7 +310,7 @@ class PiWorkerBridge {
         capability: this.config.capability,
       },
       new FileStartInstructionAcceptanceStore(
-        join(dirname(this.config.promptPath), "start-instruction.v15.json")
+        join(dirname(this.config.promptPath), "start-instruction.v16.json")
       ),
       { resultBytes: this.config.effectiveConfig.maxResultByteCount }
     );
@@ -453,6 +453,31 @@ class PiWorkerBridge {
   }
 }
 
+/**
+ * Pi built-in tools are limited to the effective ones; every tool registered
+ * by a loaded Worker extension is available as well. Pi's `--tools` cannot
+ * express this because it also drops extension tools from the registry.
+ */
+export function workerActiveTools(
+  effectiveTools: ReadonlyArray<string>,
+  allTools: ReadonlyArray<{
+    readonly name: string;
+    readonly sourceInfo: { readonly source: string };
+  }>
+): Array<string> {
+  return [
+    ...new Set(
+      allTools
+        .filter(({ name, sourceInfo }) =>
+          sourceInfo.source === "builtin" || sourceInfo.source === "sdk"
+            ? effectiveTools.includes(name)
+            : true
+        )
+        .map(({ name }) => name)
+    ),
+  ];
+}
+
 export default function pionsWorkerExtension(pi: ExtensionAPI): void {
   pi.registerFlag(CONFIG_FLAG, {
     description: "Pions private Worker configuration path",
@@ -466,6 +491,9 @@ export default function pionsWorkerExtension(pi: ExtensionAPI): void {
       throw new Error("Pions Worker configuration path is required");
     }
     const config = decodeWorkerConfig(await readFile(configPath, "utf8"));
+    pi.setActiveTools(
+      workerActiveTools(config.effectiveConfig.tools, pi.getAllTools())
+    );
     bridge = new PiWorkerBridge(pi, config);
     await bridge.start(ctx);
   });

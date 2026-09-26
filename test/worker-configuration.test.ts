@@ -13,8 +13,21 @@ const profile: WorkerProfilePolicy = {
   modelCandidates: [{ provider: "test", id: "test-model" }],
   thinkingLevel: "medium",
   tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
+  extensions: [],
   maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
 };
+
+const webExtension = {
+  source: "npm:pi-web-access",
+  path: "/home/user/.pi/agent/npm/node_modules/pi-web-access/index.ts",
+};
+
+function observedTools(tools: ReadonlyArray<string>) {
+  return {
+    ...observedConfig,
+    tools: { state: "observed", value: tools },
+  } as const;
+}
 
 test("observed thinking different from effective thinking is rejected", () => {
   const observed = {
@@ -65,5 +78,53 @@ test("unavailable observed thinking is rejected", () => {
   assert.equal(
     configurationMismatch(effectiveConfig, observed),
     "thinking_level_mismatch"
+  );
+});
+
+test("the Worker profile carries its extensions into the effective configuration", () => {
+  assert.deepEqual(
+    resolveWorkerConfig({
+      requested: {},
+      profile: { ...profile, extensions: [webExtension] },
+      runtimeCwd: "/workspace",
+    }).extensions,
+    [webExtension]
+  );
+});
+
+test("tools added by Worker extensions are accepted beside the effective tools", () => {
+  assert.equal(
+    configurationMismatch(
+      effectiveConfig,
+      observedTools(["read", "bash", "web_search"])
+    ),
+    undefined
+  );
+});
+
+test("an observed Pi built-in tool outside the effective tools is rejected", () => {
+  assert.equal(
+    configurationMismatch(
+      effectiveConfig,
+      observedTools(["read", "bash", "write"])
+    ),
+    "tool_policy_violation"
+  );
+});
+
+test("an observed delegation tool is rejected", () => {
+  assert.equal(
+    configurationMismatch(
+      effectiveConfig,
+      observedTools(["read", "bash", "pions_delegate"])
+    ),
+    "tool_policy_violation"
+  );
+});
+
+test("a missing effective tool is rejected", () => {
+  assert.equal(
+    configurationMismatch(effectiveConfig, observedTools(["read"])),
+    "tool_policy_violation"
   );
 });

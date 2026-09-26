@@ -154,9 +154,6 @@ export interface FakeWorkerAdapterOptions {
     | "agent_failed"
     | "model_mismatch"
     | "thinking_level_mismatch"
-    | "model_not_found"
-    | "model_auth_unavailable"
-    | "unsupported_capability"
     | "tool_policy_violation";
   readonly acknowledgementFails?: boolean;
   readonly successfulExitConfirmed?: boolean;
@@ -207,9 +204,6 @@ export class FakeWorkerAdapter implements WorkerAdapter {
       if (
         this.failure === "model_mismatch" ||
         this.failure === "thinking_level_mismatch" ||
-        this.failure === "model_not_found" ||
-        this.failure === "model_auth_unavailable" ||
-        this.failure === "unsupported_capability" ||
         this.failure === "tool_policy_violation"
       ) {
         return { state: this.failure } as const;
@@ -257,6 +251,7 @@ export class FakeWorkerAdapter implements WorkerAdapter {
             toolUses: [
               { toolCallId: "fake-call", toolName: "read", isError: true },
             ],
+            errorMessage: "fake provider rejected the request",
           },
         } as const;
       }

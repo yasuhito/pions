@@ -68,7 +68,7 @@ export interface Operation {
     | "liveness-unproven";
 }
 
-export const EVENT_SCHEMA_VERSION = 28 as const;
+export const EVENT_SCHEMA_VERSION = 29 as const;
 export const RUNTIME_ACTOR_ID = "pions-runtime" as const;
 export const OPERATION_AUTHORITY = "operation:lifecycle" as const;
 

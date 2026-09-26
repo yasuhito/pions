@@ -15,6 +15,7 @@ const profile: WorkerProfilePolicy = {
   modelCandidates: [{ provider: "test", id: "model" }],
   thinkingLevel: "medium",
   tools: ["read"],
+  extensions: [],
   maxResultByteCount: 1024,
 };
 

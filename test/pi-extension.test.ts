@@ -72,6 +72,7 @@ const SNAPSHOT: OperationSnapshot = {
     model: { provider: "anthropic", id: "claude-opus-5" },
     thinkingLevel: "high",
     tools: ["read"],
+    extensions: [],
     cwd: "/repository",
     maxResultByteCount: DEFAULT_MAX_RESULT_BYTE_COUNT,
     modelPolicy: {
@@ -310,6 +311,8 @@ async function fixture<TRuntime extends OperationRuntime = FakeRuntime>(
   installPionsExtension(pi, {
     ...(options.runtimeFactory === undefined ? { runtime } : {}),
     repositoryRoot: root,
+    piAgentDirectory: join(root, "pi-agent"),
+    resolveWorkerExtensionPackages: () => Promise.resolve([]),
     ...(useDefaultStateDirectory
       ? {}
       : { stateBaseDirectory: join(root, "state") }),
@@ -1048,6 +1051,178 @@ test("a model provider registered by a Pi extension does not fall back to anothe
   assert.equal(value.runtime.spawnCount, 0);
 });
 
+async function capturedWorkerExtensions(
+  context: { after(fn: () => Promise<void>): void },
+  options: Omit<PionsExtensionOptions, "runtime" | "stateBaseDirectory"> = {},
+  prepare: (root: string) => Promise<void> = () => Promise.resolve(),
+  fixtureOptions: {
+    readonly registeredProviderIds?: ReadonlyArray<string>;
+  } = {}
+) {
+  let extensions: ReadonlyArray<unknown> | undefined;
+  const runtime = new FakeRuntime();
+  const harness = await fixture(
+    runtime,
+    {
+      runtimeFactory: (runtimeOptions) => {
+        extensions = runtimeOptions.profiles["worker"]?.extensions;
+        return runtime;
+      },
+      ...options,
+    },
+    false,
+    fixtureOptions
+  );
+  context.after(() => rm(harness.root, { recursive: true, force: true }));
+  await prepare(harness.root);
+  const outcome = await harness.execute().catch((error: unknown) => error);
+  return { extensions, outcome, harness };
+}
+
+const webExtension = {
+  source: "npm:pi-web-access",
+  path: "/pi-agent/npm/node_modules/pi-web-access/dist/index.js",
+};
+
+function writeProjectConfig(config: unknown) {
+  return (root: string) =>
+    writeFile(join(root, ".pions.json"), JSON.stringify(config));
+}
+
+test("configured Worker extension packages are loaded into the Worker", async (context) => {
+  const { extensions } = await capturedWorkerExtensions(
+    context,
+    {
+      resolveWorkerExtensionPackages: (sources) =>
+        Promise.resolve(
+          sources.includes(webExtension.source) ? [webExtension] : []
+        ),
+    },
+    writeProjectConfig({ extensions: [webExtension.source] })
+  );
+
+  assert.deepEqual(extensions, [webExtension]);
+});
+
+test("the Herdr integration is loaded into the Worker without configuration", async (context) => {
+  let herdrIntegration = "";
+  const { extensions } = await capturedWorkerExtensions(
+    context,
+    {},
+    async (root) => {
+      await mkdir(join(root, "pi-agent", "extensions"), { recursive: true });
+      herdrIntegration = join(
+        root,
+        "pi-agent",
+        "extensions",
+        "herdr-agent-state.ts"
+      );
+      await writeFile(herdrIntegration, "");
+    }
+  );
+
+  assert.deepEqual(extensions, [{ source: "herdr", path: herdrIntegration }]);
+});
+
+test("a missing Herdr integration leaves the Worker without it", async (context) => {
+  const { extensions } = await capturedWorkerExtensions(context);
+
+  assert.deepEqual(extensions, []);
+});
+
+test("an extension package not installed in Pi is rejected before spawning", async (context) => {
+  const { harness } = await capturedWorkerExtensions(
+    context,
+    {},
+    writeProjectConfig({ extensions: ["npm:not-installed"] })
+  );
+
+  assert.equal(harness.runtime.spawnCount, 0);
+});
+
+test("an extension package not installed in Pi is a Worker configuration error", async (context) => {
+  const { outcome } = await capturedWorkerExtensions(
+    context,
+    {},
+    writeProjectConfig({ extensions: ["npm:not-installed"] })
+  );
+
+  assert.equal(
+    outcome instanceof WorkerConfigurationError ? outcome.reason : undefined,
+    "unsupported_capability"
+  );
+});
+
+test("Pions itself cannot be loaded as a Worker extension", async (context) => {
+  const pionsPackage = await mkdtemp(join(tmpdir(), "pions-package-"));
+  context.after(() => rm(pionsPackage, { recursive: true, force: true }));
+  await writeFile(
+    join(pionsPackage, "package.json"),
+    JSON.stringify({ name: "@yasuhito/pions" })
+  );
+  await mkdir(join(pionsPackage, "dist", "src"), { recursive: true });
+  const { outcome } = await capturedWorkerExtensions(
+    context,
+    {
+      resolveWorkerExtensionPackages: (sources) =>
+        Promise.resolve(
+          sources.map((source) => ({
+            source,
+            path: join(pionsPackage, "dist", "src", "extension.js"),
+          }))
+        ),
+    },
+    writeProjectConfig({ extensions: ["npm:@yasuhito/pions"] })
+  );
+
+  assert.equal(outcome instanceof WorkerConfigurationError, true);
+});
+
+test("Worker extensions must be a list of package sources", async (context) => {
+  const { outcome } = await capturedWorkerExtensions(
+    context,
+    {},
+    writeProjectConfig({ extensions: "npm:pi-web-access" })
+  );
+
+  assert.equal(outcome instanceof ProjectConfigurationError, true);
+});
+
+test("an extension-registered model provider asks for its Worker extension", async (context) => {
+  const { outcome } = await capturedWorkerExtensions(
+    context,
+    {},
+    writeProjectConfig({
+      model: { provider: "claude-bridge", id: "claude-opus-5" },
+    }),
+    { registeredProviderIds: ["claude-bridge"] }
+  );
+
+  assert.match(
+    outcome instanceof Error ? outcome.message : "",
+    /\.pions\.json "extensions"/u
+  );
+});
+
+test("an extension-registered model provider is delegated when Worker extensions are configured", async (context) => {
+  const { harness } = await capturedWorkerExtensions(
+    context,
+    {
+      resolveWorkerExtensionPackages: (sources) =>
+        Promise.resolve(
+          sources.map((source) => ({ source, path: `/pi-agent/${source}.ts` }))
+        ),
+    },
+    writeProjectConfig({
+      model: { provider: "claude-bridge", id: "claude-opus-5" },
+      extensions: ["git:https://github.com/elidickinson/pi-claude-bridge"],
+    }),
+    { registeredProviderIds: ["claude-bridge"] }
+  );
+
+  assert.equal(harness.runtime.spawnCount, 1);
+});
+
 test("delegation resolves the default Worker extension from the Pions distribution", async (context) => {
   let extensionEntryPath: string | undefined;
   const runtime = new FakeRuntime();
@@ -1268,7 +1443,7 @@ test("Worker prompt begins with a general-purpose role without naming review", a
   );
 });
 
-test("Worker prompt names the general Worker tools", async (context) => {
+test("Worker prompt limits the Worker to its available tools", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
   await value.execute();
@@ -1277,7 +1452,7 @@ test("Worker prompt names the general Worker tools", async (context) => {
 
   assert.match(
     await readFile(promptRef, "utf8"),
-    /^Use only read, write, edit, bash, grep, find, ls\.$/m
+    /^Use only the tools available to you\.$/m
   );
 });
 

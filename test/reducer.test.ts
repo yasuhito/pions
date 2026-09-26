@@ -15,6 +15,7 @@ const effectiveConfig = {
   model: { provider: "test", id: "model" },
   thinkingLevel: "medium" as const,
   tools: ["read"],
+  extensions: [],
   cwd: "/work",
   maxResultByteCount: 1024,
   modelPolicy: {

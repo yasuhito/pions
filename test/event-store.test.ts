@@ -117,7 +117,7 @@ test("Operation identifiers are not used as record paths", async (context) => {
         join(
           directory,
           operationDirectoryKey("../private-operation"),
-          "events.v27.json"
+          "events.v29.json"
         )
       )
     ).byteLength > 0,
@@ -131,7 +131,7 @@ test("an unsupported record schema is rejected", async (context) => {
   const path = join(
     directory,
     operationDirectoryKey("operation-1"),
-    "events.v27.json"
+    "events.v29.json"
   );
   const record = JSON.parse(await readFile(path, "utf8"));
   record.schemaVersion = 11;
@@ -152,7 +152,7 @@ test("an unsupported event schema is rejected", async (context) => {
   const path = join(
     directory,
     operationDirectoryKey("operation-1"),
-    "events.v27.json"
+    "events.v29.json"
   );
   const record = JSON.parse(await readFile(path, "utf8"));
   record.events[0].schemaVersion = 11;

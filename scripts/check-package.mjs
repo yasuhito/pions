@@ -55,6 +55,7 @@ const expected = new Set([
     "visible-worker",
     "worker-configuration",
     "worker-extension-entry",
+    "worker-extensions",
     "worker-process-control",
     "worker-protocol",
   ].map((name) => `dist/src/internal/${name}.js`),

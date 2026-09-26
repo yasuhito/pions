@@ -29,7 +29,11 @@ import type {
   WorkerProcessState,
 } from "../src/internal/worker-process-control.js";
 import { operationDirectoryKey } from "../src/internal/event-store/index.js";
-import { VisibleWorker } from "../src/internal/visible-worker.js";
+import {
+  MAX_AGENT_ERROR_MESSAGE_BYTES,
+  VisibleWorker,
+  boundedAgentErrorMessage,
+} from "../src/internal/visible-worker.js";
 import {
   FakeClock,
   FakeIdGenerator,
@@ -42,7 +46,10 @@ import {
   WorkerProtocolPeer,
   encodeWorkerConfig,
 } from "../src/internal/worker-protocol.js";
-import type { WorkerProducedResult } from "../src/internal/types.js";
+import type {
+  EffectiveWorkerConfig,
+  WorkerProducedResult,
+} from "../src/internal/types.js";
 import {
   agentRunEvidence,
   effectiveConfig,
@@ -57,14 +64,50 @@ import {
 import { HerdrPreconditionError } from "../src/internal/types.js";
 import { makeVisibleRuntime } from "../src/internal/visible-runtime.js";
 
+/** How the Worker's descendant processes behave in a fake process tree. */
+type FakeDescendants = "none" | "stopping" | "running" | "untraceable";
+
+const noDescendantProcesses = {
+  captureDescendants: () => Effect.succeed([]),
+  waitForDescendantsStop: () => Effect.succeed("stopped" as const),
+  terminateDescendants: () => Effect.succeed({ proof: "worker-stop" } as const),
+};
+
 class FakeProcessControl implements WorkerProcessControl {
   readonly terminations: Array<Readonly<WorkerProcessIdentity>> = [];
   readonly stopObservations: Array<Readonly<WorkerProcessIdentity>> = [];
 
   constructor(
     private readonly state: WorkerProcessState,
-    private readonly terminationEvidence?: WorkerCancellationEvidence
+    private readonly terminationEvidence?: WorkerCancellationEvidence,
+    private readonly descendants: FakeDescendants = "none"
   ) {}
+
+  captureDescendants(_identity: Readonly<WorkerProcessIdentity>) {
+    return Effect.succeed(
+      this.descendants === "untraceable"
+        ? undefined
+        : this.descendants === "none"
+          ? []
+          : [{ processId: 4321, processStartToken: "child-start" }]
+    );
+  }
+
+  waitForDescendantsStop() {
+    return Effect.succeed(
+      this.descendants === "running"
+        ? ("running" as const)
+        : ("stopped" as const)
+    );
+  }
+
+  terminateDescendants() {
+    return Effect.succeed(
+      this.descendants === "running"
+        ? undefined
+        : ({ proof: "worker-stop" } as const)
+    );
+  }
 
   observe(_identity: Readonly<WorkerProcessIdentity>) {
     return Effect.succeed(this.state);
@@ -88,23 +131,11 @@ class FakeProcessControl implements WorkerProcessControl {
   }
 }
 
-class FakeClaudeProcessControl extends FakeProcessControl {
-  captureDescendants() {
-    return Effect.succeed([
-      { processId: 4321, processStartToken: "child-start" },
-    ]);
-  }
-
-  waitForBackendStop() {
-    return Effect.succeed("stopped" as const);
-  }
-
-  terminateBackend() {
-    return Effect.succeed({ proof: "worker-stop" } as const);
-  }
-}
-
 class DeferredStopProcessControl implements WorkerProcessControl {
+  readonly captureDescendants = noDescendantProcesses.captureDescendants;
+  readonly waitForDescendantsStop =
+    noDescendantProcesses.waitForDescendantsStop;
+  readonly terminateDescendants = noDescendantProcesses.terminateDescendants;
   readonly terminations: Array<Readonly<WorkerProcessIdentity>> = [];
   private resolveStop!: (state: WorkerProcessState) => void;
   private readonly stop = new Promise<WorkerProcessState>((resolve) => {
@@ -194,7 +225,8 @@ class DeferredExecutor {
 function operation(
   operationId = "operation-1",
   paneId = "opaque:pane",
-  model = effectiveConfig.model
+  model = effectiveConfig.model,
+  extensions: EffectiveWorkerConfig["extensions"] = []
 ): Operation {
   return {
     operationId,
@@ -213,7 +245,7 @@ function operation(
       idempotencyKey: operationId,
     },
     requestedConfig,
-    effectiveConfig: { ...effectiveConfig, model },
+    effectiveConfig: { ...effectiveConfig, model, extensions },
     maxResultByteCount,
     startDeliveryHandoffs: [],
     cancellationEpoch: 0,
@@ -285,7 +317,7 @@ function workerHooks(
 async function fixture(
   options: {
     readonly processControl?: WorkerProcessControl;
-    readonly backendCancellationGraceMs?: number;
+    readonly cancellationGraceMs?: number;
     readonly socketDirectory?: string;
     readonly executor?: FakeExecutor | DeferredExecutor;
     readonly workerIdentified?: (
@@ -294,10 +326,7 @@ async function fixture(
     readonly startInstructionAccepted?: WorkerRunHooks["startInstructionAccepted"];
     readonly startInstructionAcknowledged?: WorkerRunHooks["startInstructionAcknowledged"];
     readonly acceptResult?: WorkerRunHooks["acceptResult"];
-    readonly operationModel?: Readonly<{
-      readonly provider: string;
-      readonly id: string;
-    }>;
+    readonly extensions?: EffectiveWorkerConfig["extensions"];
   } = {}
 ) {
   const root = await mkdtemp(join(tmpdir(), "pions-visible-worker-"));
@@ -316,9 +345,9 @@ async function fixture(
       read: () => Promise.resolve(Buffer.from("private prompt", "utf8")),
     },
     processControl: options.processControl ?? new FakeProcessControl("stopped"),
-    ...(options.backendCancellationGraceMs === undefined
+    ...(options.cancellationGraceMs === undefined
       ? {}
-      : { backendCancellationGraceMs: options.backendCancellationGraceMs }),
+      : { cancellationGraceMs: options.cancellationGraceMs }),
     serverFactory: () => {
       protocolServer = createServer();
       protocolServer.unref();
@@ -331,7 +360,8 @@ async function fixture(
   const current = operation(
     "operation-1",
     "opaque:pane",
-    options.operationModel ?? effectiveConfig.model
+    effectiveConfig.model,
+    options.extensions
   );
   const deliveries: Array<Readonly<WorkerProducedResult>> = [];
   const identities: Array<string> = [];
@@ -386,7 +416,7 @@ async function fixture(
   }
   const directory = join(root, operationDirectoryKey(current.operationId));
   const config = JSON.parse(
-    await readFile(join(directory, "worker.v15.json"), "utf8")
+    await readFile(join(directory, "worker.v16.json"), "utf8")
   ) as {
     readonly socketPath: string;
   };
@@ -603,7 +633,7 @@ test("visible Worker recovery does not redispatch a durably accepted Start instr
   );
   await mkdir(directory, { recursive: true });
   await writeFile(
-    join(directory, "worker.v15.json"),
+    join(directory, "worker.v16.json"),
     encodeWorkerConfig({
       operationId: recovered.operationId,
       capability: "ab".repeat(32),
@@ -718,7 +748,7 @@ test("recovery timeout confirms a stopped Worker instead of waiting forever", as
   );
   await mkdir(directory, { recursive: true });
   await writeFile(
-    join(directory, "worker.v15.json"),
+    join(directory, "worker.v16.json"),
     encodeWorkerConfig({
       operationId: recovered.operationId,
       capability: "ab".repeat(32),
@@ -813,7 +843,7 @@ test("visible Pi adapter satisfies the caller-facing Runtime Result contract", a
   const configPath = join(
     root,
     operationDirectoryKey("operation-1"),
-    "worker.v15.json"
+    "worker.v16.json"
   );
   const config = JSON.parse(await readFile(configPath, "utf8")) as {
     readonly socketPath: string;
@@ -891,8 +921,6 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "test-model",
     "--thinking",
     "medium",
-    "--tools",
-    "read,bash",
     "--no-session",
     "--tui-mode",
     "regular",
@@ -904,7 +932,32 @@ test("visible Worker gives Pi the effective policy as structured arguments", asy
     "--no-themes",
     "--approve",
     "--pions-worker-config",
-    join(value.directory, "worker.v15.json"),
+    join(value.directory, "worker.v16.json"),
+  ]);
+});
+
+test("visible Worker loads each Worker extension after the Pions Worker extension", async (context) => {
+  const value = await fixture({
+    extensions: [
+      { source: "herdr", path: "/agent/extensions/herdr-agent-state.ts" },
+      {
+        source: "npm:pi-web-access",
+        path: "/agent/npm/pi-web-access/index.ts",
+      },
+    ],
+  });
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
+
+  assert.deepEqual(value.executor.invocations[0]?.args.slice(20, 26), [
+    "--extension",
+    "/pions/worker-extension.js",
+    "--extension",
+    "/agent/extensions/herdr-agent-state.ts",
+    "--extension",
+    "/agent/npm/pi-web-access/index.ts",
   ]);
 });
 
@@ -952,7 +1005,7 @@ test("visible Worker configuration uses private permissions", async (context) =>
     return rm(value.root, { recursive: true, force: true });
   });
 
-  assert.equal(await mode(join(value.directory, "worker.v15.json")), 0o600);
+  assert.equal(await mode(join(value.directory, "worker.v16.json")), 0o600);
 });
 
 test("invalid Worker configuration reports a Worker start failure", async (context) => {
@@ -1395,6 +1448,50 @@ test("successful Worker reports confirmed exit after process stop", async (conte
   );
 });
 
+test("successful exit is confirmed once the Worker's descendants stop", async (context) => {
+  const value = await fixture({
+    processControl: new FakeProcessControl("stopped", undefined, "stopping"),
+  });
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
+  const delivered = await deliver(value);
+
+  assert.equal(
+    delivered.outcome.state === "result_acknowledged"
+      ? delivered.outcome.successfulExitConfirmed
+      : undefined,
+    true
+  );
+});
+
+test("a descendant still running after a successful exit leaves liveness unproven", async (context) => {
+  const value = await fixture({
+    processControl: new FakeProcessControl("stopped", undefined, "running"),
+  });
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
+  const delivered = await deliver(value);
+
+  assert.equal(delivered.outcome.state, "liveness-unproven");
+});
+
+test("a successful exit with untraceable descendants leaves liveness unproven", async (context) => {
+  const value = await fixture({
+    processControl: new FakeProcessControl("stopped", undefined, "untraceable"),
+  });
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
+  const delivered = await deliver(value);
+
+  assert.equal(delivered.outcome.state, "liveness-unproven");
+});
+
 async function cancelDuringExitConfirmation(context: TestContext) {
   const processControl = new DeferredStopProcessControl();
   const value = await fixture({ processControl });
@@ -1614,24 +1711,6 @@ test("visible Worker does not send begin when observed thinking is unavailable",
   assert.equal(frames.length, 0);
 });
 
-test("pre-start configuration failure becomes a typed Worker failure", async (context) => {
-  const value = await fixture();
-  context.after(() => {
-    value.release();
-    return rm(value.root, { recursive: true, force: true });
-  });
-  const client = await socket(value.config.socketPath);
-  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
-  send(
-    client,
-    frame(value.capability, 2, "configuration_failed", {
-      reason: "tool_policy_violation",
-    })
-  );
-
-  assert.equal((await value.outcome).state, "tool_policy_violation");
-});
-
 test("settled Pi failure becomes an agent failure with evidence", async (context) => {
   const value = await fixture();
   context.after(() => {
@@ -1656,15 +1735,12 @@ test("settled Pi failure becomes an agent failure with evidence", async (context
 
   assert.deepEqual(await value.outcome, {
     state: "agent_failed",
-    evidence: agentRunEvidence,
+    evidence: { ...agentRunEvidence, errorMessage: "provider failed" },
   });
 });
 
-test("Claude Code login failure becomes an authentication failure", async (context) => {
-  const value = await fixture({
-    processControl: new FakeClaudeProcessControl("stopped"),
-    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
-  });
+test("an agent failure keeps the provider error text verbatim", async (context) => {
+  const value = await fixture();
   context.after(() => {
     value.release();
     return rm(value.root, { recursive: true, force: true });
@@ -1694,87 +1770,28 @@ test("Claude Code login failure becomes an authentication failure", async (conte
     })
   );
 
-  assert.equal((await value.outcome).state, "model_auth_unavailable");
+  const outcome = await value.outcome;
+
+  assert.equal(
+    outcome.state === "agent_failed"
+      ? outcome.evidence.errorMessage
+      : undefined,
+    "Not logged in. Please run /login in Claude Code."
+  );
 });
 
-test("Claude Code unavailable model failure stays model-specific", async (context) => {
-  const value = await fixture({
-    processControl: new FakeClaudeProcessControl("stopped"),
-    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
-  });
-  context.after(() => {
-    value.release();
-    return rm(value.root, { recursive: true, force: true });
-  });
-  const client = await socket(value.config.socketPath);
-  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
-  const begin = receiveFrame(client);
-  send(
-    client,
-    frame(value.capability, 2, "started", {
-      piSessionId,
-      observedConfig: {
-        ...observedConfig,
-        model: {
-          state: "observed",
-          value: value.current.effectiveConfig.model,
-        },
-      },
-    })
-  );
-  await acknowledgeBegin(client, value.capability, await begin);
-  send(
-    client,
-    frame(value.capability, 5, "failed", {
-      errorMessage: "Model claude-opus-5 is not available.",
-      ...agentRunEvidence,
-    })
-  );
+test("an agent error message is bounded on a UTF-8 character boundary", () => {
+  const message = `${"a".repeat(MAX_AGENT_ERROR_MESSAGE_BYTES - 1)}日本`;
 
-  assert.equal((await value.outcome).state, "model_not_found");
+  assert.equal(
+    boundedAgentErrorMessage(message),
+    "a".repeat(MAX_AGENT_ERROR_MESSAGE_BYTES - 1)
+  );
 });
 
-test("Claude Code plan failure becomes an unsupported capability failure", async (context) => {
+test("an agent failure keeps the Worker without tracing its descendants", async (context) => {
   const value = await fixture({
-    processControl: new FakeClaudeProcessControl("stopped"),
-    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
-  });
-  context.after(() => {
-    value.release();
-    return rm(value.root, { recursive: true, force: true });
-  });
-  const client = await socket(value.config.socketPath);
-  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
-  const begin = receiveFrame(client);
-  send(
-    client,
-    frame(value.capability, 2, "started", {
-      piSessionId,
-      observedConfig: {
-        ...observedConfig,
-        model: {
-          state: "observed",
-          value: value.current.effectiveConfig.model,
-        },
-      },
-    })
-  );
-  await acknowledgeBegin(client, value.capability, await begin);
-  send(
-    client,
-    frame(value.capability, 5, "failed", {
-      errorMessage: "Claude Opus 5 is not available on your current plan.",
-      ...agentRunEvidence,
-    })
-  );
-
-  assert.equal((await value.outcome).state, "unsupported_capability");
-});
-
-test("Claude failure with uninspectable child processes has unknown liveness", async (context) => {
-  const value = await fixture({
-    processControl: new FakeProcessControl("stopped"),
-    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+    processControl: new FakeProcessControl("running", undefined, "untraceable"),
   });
   context.after(() => {
     value.release();
@@ -1805,7 +1822,7 @@ test("Claude failure with uninspectable child processes has unknown liveness", a
     })
   );
 
-  assert.equal((await value.outcome).state, "liveness-unproven");
+  assert.equal((await value.outcome).state, "agent_failed");
 });
 
 test("protocol rejection becomes a Worker protocol failure", async (context) => {
@@ -2059,10 +2076,9 @@ test("backend cancellation acknowledgement requires confirmed process stop", asy
   assert.deepEqual(await cancellation, { proof: "worker-stop" });
 });
 
-test("Claude cancellation requires both Worker and backend process stops", async (context) => {
+test("cancellation proves stop when the Worker and its descendants stop", async (context) => {
   const value = await fixture({
-    processControl: new FakeClaudeProcessControl("stopped"),
-    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+    processControl: new FakeProcessControl("stopped", undefined, "stopping"),
   });
   context.after(() => {
     value.release();
@@ -2093,10 +2109,9 @@ test("Claude cancellation requires both Worker and backend process stops", async
   assert.deepEqual(await cancellation, { proof: "worker-stop" });
 });
 
-test("Claude cancellation without child-process observation remains unproven", async (context) => {
+test("cancellation without traceable descendants remains unproven", async (context) => {
   const value = await fixture({
-    processControl: new FakeProcessControl("stopped"),
-    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+    processControl: new FakeProcessControl("stopped", undefined, "untraceable"),
   });
   context.after(() => {
     value.release();
@@ -2127,13 +2142,37 @@ test("Claude cancellation without child-process observation remains unproven", a
   assert.equal(await cancellation, undefined);
 });
 
+test("cancellation with a descendant that keeps running remains unproven", async (context) => {
+  const value = await fixture({
+    processControl: new FakeProcessControl("stopped", undefined, "running"),
+  });
+  context.after(() => {
+    value.release();
+    return rm(value.root, { recursive: true, force: true });
+  });
+  const client = await socket(value.config.socketPath);
+  send(client, frame(value.capability, 1, "hello", { processInstanceId }));
+  send(
+    client,
+    frame(value.capability, 2, "started", { piSessionId, observedConfig })
+  );
+  while (value.piSessionIds.length === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const cancellation = Effect.runPromise(value.worker.cancel(1, 1_000));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  send(client, frame(value.capability, 3, "cancelled"));
+
+  assert.equal(await cancellation, undefined);
+});
+
 test("forced termination begins after cancellation acknowledgement grace", async (context) => {
   const processControl = new FakeProcessControl("running", {
     proof: "worker-stop",
   });
   const value = await fixture({
     processControl,
-    backendCancellationGraceMs: 100,
+    cancellationGraceMs: 100,
   });
   context.after(() => {
     value.release();
@@ -2162,7 +2201,7 @@ test("missing cancellation acknowledgement triggers process termination", async 
   });
   const value = await fixture({
     processControl,
-    backendCancellationGraceMs: 0,
+    cancellationGraceMs: 0,
   });
   context.after(() => {
     value.release();
@@ -2188,7 +2227,7 @@ test("concurrent protocol loss and cancellation send one Worker termination", as
   });
   const value = await fixture({
     processControl,
-    backendCancellationGraceMs: 10,
+    cancellationGraceMs: 10,
   });
   context.after(() => {
     value.release();
@@ -2216,7 +2255,7 @@ test("cancellation after a disconnected protocol channel terminates the Worker",
   });
   const value = await fixture({
     processControl,
-    backendCancellationGraceMs: 0,
+    cancellationGraceMs: 0,
   });
   context.after(() => {
     value.release();
@@ -2240,10 +2279,13 @@ test("cancellation after a disconnected protocol channel terminates the Worker",
   assert.equal(processControl.terminations.length, 1);
 });
 
-test("disconnected Claude cancellation without backend stop confirmation remains unproven", async (context) => {
+test("disconnected cancellation with a descendant that keeps running remains unproven", async (context) => {
   const value = await fixture({
-    processControl: new FakeProcessControl("running", { proof: "worker-stop" }),
-    operationModel: { provider: "claude-bridge", id: "claude-opus-5" },
+    processControl: new FakeProcessControl(
+      "running",
+      { proof: "worker-stop" },
+      "running"
+    ),
   });
   context.after(() => {
     value.release();
@@ -2429,10 +2471,10 @@ test("a Worker rejects a Result acceptance proof for another Operation", async (
   const firstDirectory = join(root, operationDirectoryKey(first.operationId));
   const secondDirectory = join(root, operationDirectoryKey(second.operationId));
   const firstConfig = JSON.parse(
-    await readFile(join(firstDirectory, "worker.v15.json"), "utf8")
+    await readFile(join(firstDirectory, "worker.v16.json"), "utf8")
   ) as { readonly socketPath: string; readonly capability: string };
   const secondConfig = JSON.parse(
-    await readFile(join(secondDirectory, "worker.v15.json"), "utf8")
+    await readFile(join(secondDirectory, "worker.v16.json"), "utf8")
   ) as { readonly socketPath: string; readonly capability: string };
   const secondClient = await socket(secondConfig.socketPath);
   await sendResultDelivery(secondClient, {

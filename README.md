@@ -99,7 +99,7 @@ npm install --save-exact /path/to/pions/yasuhito-pions-0.1.0.tgz
 pi install --local ./node_modules/@yasuhito/pions
 ```
 
-Configure a flat `.pions.json` in the trusted repository root as described in [Worker model configuration](#worker-model-configuration).
+Configure a flat `.pions.json` in the trusted repository root as described in [Worker configuration](#worker-configuration).
 
 ## Pi tools
 
@@ -117,7 +117,7 @@ Use pions_delegate to investigate the lifecycle boundary in this change.
 
 The tool input is only `task`. The model cannot choose the worker model, thinking level, tools, working directory, persistence policy, presentation policy, or cancellation policy through the tool input. Every successful response returns the accepted final answer together with the `Operation` identifier, whether or not the displayed result was truncated.
 
-The worker has `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`; it does not have `pions_delegate`, so delegation is one level deep. It runs in the same working directory as the delegating session and edits it directly: Pions creates no worktree or branch and does not merge changes. Failed delegations are never retried automatically; the parent starts a new `Operation` explicitly if needed.
+The worker has `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`, plus the tools of the Pi extensions configured for it; it does not have `pions_delegate`, so delegation is one level deep. It runs in the same working directory as the delegating session and edits it directly: Pions creates no worktree or branch and does not merge changes. Failed delegations are never retried automatically; the parent starts a new `Operation` explicitly if needed.
 
 Independent delegations compose through Pi's normal parallel tool execution. Not running conflicting write delegations in parallel is the parent's responsibility.
 
@@ -139,18 +139,23 @@ Returns the persisted state and diagnostics of an `Operation` without reading re
 operationId: <operation-id>
 ```
 
-### Worker model configuration
+### Worker configuration
 
-A trusted repository pins the worker model and thinking level in `.pions.json`. Only top-level `model` and `thinkingLevel` are accepted; the former `review` block is rejected.
+A trusted repository pins the worker model and thinking level, and chooses the Pi extensions workers load, in `.pions.json`. Only top-level `model`, `thinkingLevel`, and `extensions` are accepted; the former `review` block is rejected.
 
 ```json
 {
   "model": { "provider": "anthropic", "id": "claude-opus-5" },
-  "thinkingLevel": "high"
+  "thinkingLevel": "high",
+  "extensions": ["npm:pi-web-access"]
 }
 ```
 
-Pions bundles no model provider and loads none automatically. Installing and authenticating the configured provider is the Pi environment's responsibility. Workers start without extension discovery, so a provider that exists only because a Pi extension registered it in the delegating session is rejected with a configuration error before any worker starts; Pions never falls back to another model.
+Workers start without extension discovery. Besides the internal Pions worker extension, they load only the Pi packages listed in `extensions`, written as in Pi settings, plus Herdr's Pi integration (`extensions/herdr-agent-state.ts` in the Pi agent directory) when it is installed. Pions resolves listed packages from the ones the delegating Pi already has installed and enabled, and never downloads them; a missing or disabled package, or Pions itself, is a configuration error before any worker starts. Workers can use every tool their loaded extensions register, in addition to the seven built-in tools.
+
+Pions bundles no model provider. Installing and authenticating the configured provider is the Pi environment's responsibility. To use a provider that a Pi extension registers, such as `claude-bridge`, list the package that provides it in `extensions`; with no `extensions`, such a provider is rejected before any worker starts. Pions never falls back to another model.
+
+When a worker's agent fails, the provider's error text is kept verbatim (up to 4 KiB of UTF-8) in the `pions_delegate` error and in the operation's execution evidence, without being classified.
 
 ## Pions and pi-subagents
 
@@ -178,7 +183,7 @@ Pions is under active development.
 
 - Herdr is required; Pions does not fall back to headless execution.
 - The Pi extension exposes one general-purpose worker profile; custom agent definitions are not supported.
-- Workers run without extension discovery, so only providers available to a plain Pi worker can be configured.
+- Workers run without extension discovery; only the Pi packages listed in `.pions.json` and Herdr's Pi integration are loaded into them.
 - Background execution, chains, and mid-run steering are not supported.
 - APIs, persistence formats, configuration, and installation may change without compatibility paths.
 
