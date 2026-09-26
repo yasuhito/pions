@@ -1,0 +1,9 @@
+{
+  "packages": [
+    {
+      "source": "npm:@yasuhito/pions",
+      "autoload": false,
+      "extensions": ["-dist/src/extension.js"]
+    }
+  ]
+}
