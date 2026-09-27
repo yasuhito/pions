@@ -56,6 +56,130 @@ function services(store: InMemoryEventStore, worker: WorkerAdapter) {
   };
 }
 
+test("a Runtime reopened with the same Operation identifier reuses the persisted result", async () => {
+  const store = new InMemoryEventStore([], clock());
+  const task = {
+    promptRef: "private://prompt",
+    profile: "coding",
+    idempotencyKey: "task-1",
+  };
+  const first = makeTestRuntime({
+    ...services(
+      store,
+      new FakeWorkerAdapter({ successfulExitConfirmed: true })
+    ),
+    recovery: "disabled",
+  });
+  await (await first.spawn(task)).result();
+  await first.close();
+  const secondWorker = new FakeWorkerAdapter({ successfulExitConfirmed: true });
+  const second = makeTestRuntime({
+    ...services(store, secondWorker),
+    recovery: "disabled",
+  });
+  await (await second.spawn(task)).result();
+  await second.close();
+
+  assert.equal(secondWorker.startCount, 0);
+});
+
+test("a retried request joins recovery instead of starting a second Worker", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store);
+  await advanceTestOperationToRunning(store, "operation-1");
+  class CountingRecoveryWorker extends RecoveryWorker {
+    recoverCount = 0;
+    override recover(operation: Operation): Worker {
+      this.recoverCount += 1;
+      return super.recover(operation);
+    }
+  }
+  const worker = new CountingRecoveryWorker("accepted", true);
+  const runtime = makeTestRuntime(services(store, worker));
+  await (
+    await runtime.spawn({
+      promptRef: "private://prompt",
+      profile: "coding",
+      idempotencyKey: "task-operation-1",
+    })
+  ).result();
+  await runtime.close();
+
+  assert.equal(worker.recoverCount, 1);
+});
+
+test("a persisted Operation identifier cannot be reused for a different request", async () => {
+  const store = new InMemoryEventStore([], clock());
+  const first = makeTestRuntime({
+    ...services(
+      store,
+      new FakeWorkerAdapter({ successfulExitConfirmed: true })
+    ),
+    recovery: "disabled",
+  });
+  await (
+    await first.spawn({
+      promptRef: "private://prompt",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    })
+  ).result();
+  await first.close();
+  const second = makeTestRuntime({
+    ...services(store, new FakeWorkerAdapter()),
+    recovery: "disabled",
+  });
+  await assert.rejects(
+    second.spawn({
+      promptRef: "private://different-prompt",
+      profile: "coding",
+      idempotencyKey: "task-1",
+    }),
+    /belongs to a different request/u
+  );
+  await second.close();
+});
+
+test("a foreground Runtime does not recover a background Operation", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store, "operation-1", true);
+  await advanceTestOperationToRunning(store, "operation-1");
+  const worker = new FakeWorkerAdapter();
+  const runtime = makeTestRuntime({
+    ...services(store, worker),
+    recovery: "foreground-only",
+  });
+  await runtime.ready();
+  await runtime.close();
+
+  assert.equal(worker.startCount, 0);
+});
+
+test("a background owner recovers only its own Operation", async () => {
+  const store = new InMemoryEventStore([], clock());
+  await seed(store, "operation-1", true);
+  await advanceTestOperationToRunning(store, "operation-1");
+  await seed(store, "operation-2", true);
+  await advanceTestOperationToRunning(store, "operation-2");
+  class CountingRecoveryWorker extends RecoveryWorker {
+    recoverCount = 0;
+    override recover(operation: Operation): Worker {
+      this.recoverCount += 1;
+      return super.recover(operation);
+    }
+  }
+  const worker = new CountingRecoveryWorker("accepted", true);
+  const runtime = makeTestRuntime({
+    ...services(store, worker),
+    recovery: "background-only",
+    recoveryOperationId: "operation-1",
+  });
+  await runtime.ready();
+  await runtime.close();
+
+  assert.equal(worker.recoverCount, 1);
+});
+
 test("Runtime exposes only delegation lifecycle operations", () => {
   const runtime = makeTestRuntime({
     ...services(new InMemoryEventStore(), new CancellableWorker(true)),
@@ -67,17 +191,20 @@ test("Runtime exposes only delegation lifecycle operations", () => {
     "close",
     "spawn",
     "operation",
+    "recoveredOperations",
   ]);
 });
 
 async function seed(
   store: InMemoryEventStore,
-  operationId = "operation-1"
+  operationId = "operation-1",
+  background = false
 ): Promise<void> {
   await Effect.runPromise(
     store.create({
       operationId,
       task: {
+        ...(background ? { background: true as const } : {}),
         promptRef: "private://prompt",
         profile: "coding",
         idempotencyKey: `task-${operationId}`,

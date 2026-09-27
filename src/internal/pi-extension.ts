@@ -15,8 +15,17 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import {
+  backgroundOwnerEntryPath,
+  cancelBackgroundProcess,
+  readBackgroundRequest,
+  recoverBackgroundProcesses,
+  startBackgroundProcess,
+} from "./background-process.js";
+import type { BackgroundOwnerRequest } from "./background-owner.js";
 import { makePersistedOperationReader } from "./persisted-operation-reader.js";
 import {
+  backgroundOperationId,
   opaqueDigest,
   resolveRepositoryState,
   writePrivatePrompt,
@@ -43,6 +52,7 @@ import type {
   OperationHandle,
   OperationRuntime,
   TaskSpec,
+  WorkerProfilePolicy,
 } from "./types.js";
 
 const WORKER_PROFILE = "worker";
@@ -92,6 +102,8 @@ export interface PionsExtensionOptions {
   readonly extensionEntryPath?: string;
   readonly piAgentDirectory?: string;
   readonly resolveWorkerExtensionPackages?: WorkerExtensionPackageResolver;
+  readonly backgroundProcessStarter?: typeof startBackgroundProcess;
+  readonly backgroundOwnerEntryPath?: string;
 }
 
 async function projectConfig(
@@ -244,6 +256,16 @@ async function awaitOperation(
   }
 }
 
+interface PreparedWorkerCall {
+  readonly task: TaskSpec;
+  readonly runtime: OperationRuntime;
+  readonly repositoryState: string;
+  readonly normalizedRoot: string;
+  readonly workerCwd: string;
+  readonly workerProfile: WorkerProfilePolicy;
+  readonly extensionEntryPath?: string;
+}
+
 class RuntimeOwnership {
   private readonly byRepository = new Map<string, OperationRuntime>();
   private readonly byConfig = new Map<string, OperationRuntime>();
@@ -252,10 +274,7 @@ class RuntimeOwnership {
     {
       readonly root: string;
       readonly promptDigest: string;
-      readonly result: Promise<{
-        readonly runtime: OperationRuntime;
-        readonly task: TaskSpec;
-      }>;
+      readonly result: Promise<PreparedWorkerCall>;
     }
   >();
   private readonly recoveryOwners = new Map<string, OperationRuntime>();
@@ -283,7 +302,10 @@ class RuntimeOwnership {
     await Promise.allSettled([...this.admissions]);
   }
 
-  async recover(root: string, create: () => OperationRuntime): Promise<void> {
+  async recover(
+    root: string,
+    create: () => OperationRuntime
+  ): Promise<ReadonlyArray<OperationHandle>> {
     this.assertOpen();
     let runtime = this.recoveryOwners.get(root);
     if (runtime === undefined) {
@@ -294,17 +316,15 @@ class RuntimeOwnership {
     }
     await runtime.ready();
     this.assertOpen();
+    return runtime.recoveredOperations?.() ?? [];
   }
 
   async forCall(
     root: string,
     callKey: string,
     promptDigest: string,
-    prepare: () => Promise<{
-      readonly runtime: OperationRuntime;
-      readonly task: TaskSpec;
-    }>
-  ): Promise<{ readonly runtime: OperationRuntime; readonly task: TaskSpec }> {
+    prepare: () => Promise<PreparedWorkerCall>
+  ): Promise<PreparedWorkerCall> {
     this.assertOpen();
     const existing = this.preparations.get(callKey);
     if (existing !== undefined) {
@@ -424,7 +444,7 @@ export function installPionsExtension(
       const { normalizedRoot, repositoryState } =
         await resolveRepositoryContext(context);
       const workerCwd = await realpath(context.cwd);
-      await ownership.recover(
+      const recovered = await ownership.recover(
         normalizedRoot,
         () =>
           options.runtime ??
@@ -438,20 +458,37 @@ export function installPionsExtension(
               : { extensionEntryPath: options.extensionEntryPath }),
           })
       );
+      for (const handle of recovered) operationLifetime.track(handle);
+      await recoverBackgroundProcesses({
+        repositoryRoot: normalizedRoot,
+        repositoryState,
+        entryPath:
+          options.backgroundOwnerEntryPath ??
+          backgroundOwnerEntryPath(
+            resolveWorkerExtensionEntryPath({
+              ...(options.extensionEntryPath === undefined
+                ? {}
+                : { explicitPath: options.extensionEntryPath }),
+              cwd: workerCwd,
+            })
+          ),
+        environment: options.environment ?? process.env,
+        ...(options.backgroundProcessStarter === undefined
+          ? {}
+          : { start: options.backgroundProcessStarter }),
+      });
     });
   });
 
   async function prepareWorkerCall(
     toolCallId: string,
     prompt: string,
-    context: ExtensionContext
-  ): Promise<{
-    readonly task: TaskSpec;
-    readonly runtime: OperationRuntime;
-  }> {
+    context: ExtensionContext,
+    background = false
+  ): Promise<PreparedWorkerCall> {
     const { normalizedRoot, repositoryState } =
       await resolveRepositoryContext(context);
-    const idempotencyKey = `pi-tool:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
+    const idempotencyKey = `${background ? "pi-background" : "pi-tool"}:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
     return ownership.forCall(
       normalizedRoot,
       idempotencyKey,
@@ -494,7 +531,7 @@ export function installPionsExtension(
         const promptRef = join(
           repositoryState,
           "requests",
-          `${idempotencyKey.slice("pi-tool:".length)}.utf8`
+          `${idempotencyKey.slice(idempotencyKey.indexOf(":") + 1)}.utf8`
         );
         await writePrivatePrompt(promptRef, prompt);
         const workerProfile = projectWorkerProfile(selection, extensions);
@@ -516,6 +553,7 @@ export function installPionsExtension(
               })
             : undefined;
         const selectedTask: TaskSpec = {
+          ...(background ? { background: true as const } : {}),
           promptRef,
           profile: WORKER_PROFILE,
           idempotencyKey,
@@ -524,7 +562,7 @@ export function installPionsExtension(
           tools: workerProfile.tools,
           cwd: workerCwd,
         };
-        return ownership.acquire(
+        const acquired = await ownership.acquire(
           normalizedRoot,
           configKey,
           selectedTask,
@@ -542,6 +580,14 @@ export function installPionsExtension(
             });
           }
         );
+        return {
+          ...acquired,
+          repositoryState,
+          normalizedRoot,
+          workerCwd,
+          workerProfile,
+          ...(extensionEntryPath === undefined ? {} : { extensionEntryPath }),
+        };
       }
     );
   }
@@ -688,6 +734,144 @@ export function installPionsExtension(
           cleanupDiagnostics: completion.cleanupDiagnostics,
         } satisfies PionsDelegateDetails,
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "pions_cancel",
+    label: "Pions Cancel",
+    description:
+      "Request cancellation of a background Operation by identifier in the current trusted repository, and wait for a confirmed cancellation or explicit uncertainty.",
+    parameters: OperationParameters,
+    async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
+      ownership.assertOpen();
+      if (!context.isProjectTrusted())
+        throw new Error("pions_cancel requires a trusted project");
+      return ownership.admit(async () => {
+        const { normalizedRoot, repositoryState } =
+          await resolveRepositoryContext(context);
+        const workerCwd = await realpath(context.cwd);
+        const outcome = await cancelBackgroundProcess({
+          repositoryRoot: normalizedRoot,
+          repositoryState,
+          operationId: parameters.operationId,
+          entryPath:
+            options.backgroundOwnerEntryPath ??
+            backgroundOwnerEntryPath(
+              resolveWorkerExtensionEntryPath({
+                ...(options.extensionEntryPath === undefined
+                  ? {}
+                  : { explicitPath: options.extensionEntryPath }),
+                cwd: workerCwd,
+              })
+            ),
+          environment: options.environment ?? process.env,
+          ...(options.backgroundProcessStarter === undefined
+            ? {}
+            : { start: options.backgroundProcessStarter }),
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `[Operation: ${parameters.operationId}; state: ${outcome.state}]`,
+            },
+          ],
+          details: { operationId: parameters.operationId, ...outcome },
+        };
+      });
+    },
+  });
+
+  pi.registerTool({
+    name: "pions_background",
+    label: "Pions Background",
+    description:
+      "Start one independent Worker without waiting for its Result. Use pions_operation and pions_result with the returned Operation identifier to check it later.",
+    promptSnippet:
+      "Use pions_background only when work should continue after this Pi session exits",
+    promptGuidelines: [
+      "Use pions_background when explicitly asked to start work without waiting or to keep it running after this session exits.",
+      "Use pions_operation and pions_result to check its state and answer later; use pions_cancel to stop it explicitly.",
+    ],
+    parameters: DelegateParameters,
+    async execute(toolCallId, parameters, _signal, _onUpdate, context) {
+      ownership.assertOpen();
+      if (!context.isProjectTrusted())
+        throw new Error("pions_background requires a trusted project");
+      return ownership.admit(async () => {
+        const { normalizedRoot, repositoryState } =
+          await resolveRepositoryContext(context);
+        const idempotencyKey = `pi-background:${opaqueDigest(`${context.sessionManager.getSessionId()}\0${toolCallId}`)}`;
+        const operationId = backgroundOperationId(
+          normalizedRoot,
+          idempotencyKey
+        );
+        const prompt = workerPrompt(parameters.task);
+        const saved = await readBackgroundRequest({
+          repositoryRoot: normalizedRoot,
+          repositoryState,
+          operationId,
+        });
+        let request: BackgroundOwnerRequest;
+        if (saved !== undefined) {
+          const promptRef = join(
+            repositoryState,
+            "requests",
+            `${idempotencyKey.slice("pi-background:".length)}.utf8`
+          );
+          if (
+            saved.task.idempotencyKey !== idempotencyKey ||
+            saved.task.promptRef !== promptRef ||
+            (await readFile(promptRef, "utf8")) !== prompt
+          )
+            throw new Error("Background Operation request has different work");
+          request = saved;
+        } else {
+          const prepared = await prepareWorkerCall(
+            toolCallId,
+            prompt,
+            context,
+            true
+          );
+          request = {
+            operationId,
+            task: prepared.task,
+            runtime: {
+              cwd: prepared.workerCwd,
+              stateDirectory: join(repositoryState, "runtime"),
+              profiles: { [WORKER_PROFILE]: prepared.workerProfile },
+              ...(prepared.extensionEntryPath === undefined
+                ? {}
+                : { extensionEntryPath: prepared.extensionEntryPath }),
+            },
+          };
+        }
+        const started = await (
+          options.backgroundProcessStarter ?? startBackgroundProcess
+        )({
+          repositoryState,
+          entryPath:
+            options.backgroundOwnerEntryPath ??
+            backgroundOwnerEntryPath(
+              request.runtime.extensionEntryPath ??
+                resolveWorkerExtensionEntryPath({ cwd: request.runtime.cwd })
+            ),
+          environment: options.environment ?? process.env,
+          request,
+        });
+        if (started !== operationId)
+          throw new Error("Background owner returned another Operation");
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `[Operation: ${operationId}; started; Result not yet accepted]`,
+            },
+          ],
+          details: { operationId },
+        };
+      });
     },
   });
 }

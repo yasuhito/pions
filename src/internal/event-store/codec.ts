@@ -48,6 +48,7 @@ const Metadata = {
   schemaVersion: Schema.Literal(EVENT_SCHEMA_VERSION),
 };
 const Task = Schema.Struct({
+  background: Schema.optional(Schema.Literal(true)),
   promptRef: Schema.NonEmptyString,
   profile: Schema.NonEmptyString,
   idempotencyKey: Schema.NonEmptyString,

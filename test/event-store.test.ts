@@ -105,6 +105,43 @@ test("file Event Store reconstructs a running Operation after restart", async (c
   );
 });
 
+test("concurrent creators in separate file stores cannot both create one Operation", async (context) => {
+  const directory = await root(context);
+  const outcomes = await Promise.allSettled([
+    create(new PrivateFileEventStore(directory, clock())),
+    create(new PrivateFileEventStore(directory, clock())),
+  ]);
+
+  assert.equal(
+    outcomes.filter((outcome) => outcome.status === "fulfilled").length,
+    1
+  );
+});
+
+test("separate file stores serialize competing updates to one Operation", async (context) => {
+  const directory = await root(context);
+  await create(new PrivateFileEventStore(directory, clock()));
+  const outcomes = await Promise.allSettled([
+    Effect.runPromise(
+      new PrivateFileEventStore(directory, clock()).advance("operation-1", {
+        type: "cancellation_requested",
+        cancellationEpoch: 1,
+      })
+    ),
+    Effect.runPromise(
+      new PrivateFileEventStore(directory, clock()).advance("operation-1", {
+        type: "cancellation_requested",
+        cancellationEpoch: 2,
+      })
+    ),
+  ]);
+
+  assert.equal(
+    outcomes.filter((outcome) => outcome.status === "fulfilled").length,
+    1
+  );
+});
+
 test("Operation identifiers are not used as record paths", async (context) => {
   const directory = await root(context);
   await create(

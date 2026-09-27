@@ -196,7 +196,8 @@ export interface RuntimeServices {
   readonly ids: IdGenerator;
   readonly presentation: Presentation;
   readonly store: EventStore;
-  readonly recovery?: "disabled";
+  readonly recovery?: "disabled" | "foreground-only" | "background-only";
+  readonly recoveryOperationId?: string;
   readonly configuration?: Readonly<{
     readonly cwd: string;
     readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;

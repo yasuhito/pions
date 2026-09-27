@@ -629,6 +629,10 @@ async function main() {
   let workerWriteName;
   let originalProjectConfig;
   let workerExtensionPath;
+  let backgroundReleasePath;
+  let cancellationReleasePath;
+  let recoveryReleasePath;
+  let foregroundRecoveryReleasePath;
   let originalWorkerExtension;
   let herdrReady = false;
   let failed = false;
@@ -708,6 +712,8 @@ async function main() {
       await readFile(parentToolsPath, "utf8")
     ).filter((name) => name.startsWith("pions_"));
     const expectedParentTools = [
+      "pions_background",
+      "pions_cancel",
       "pions_delegate",
       "pions_operation",
       "pions_result",
@@ -719,7 +725,7 @@ async function main() {
         `parent Pions tool surface mismatch: ${JSON.stringify(parentPionsTools)}`
       );
     }
-    log("the live parent Pi exposes exactly the three Pions tools.");
+    log("the live parent Pi exposes exactly the five Pions tools.");
     const delegateResult = await extractToolResult(
       delegateTranscript,
       "pions_delegate"
@@ -900,6 +906,367 @@ async function main() {
     log(
       "the persisted Operation records the completed cleanup of exactly the owned Worker workspace."
     );
+
+    const backgroundAnswer = `PIONS_BACKGROUND_${randomBytes(6).toString("hex")}_日本語🚀`;
+    backgroundReleasePath = join(runDir, "background-release");
+    const backgroundPromptPath = join(runDir, "background-prompt.txt");
+    await writeFile(
+      backgroundPromptPath,
+      `Use the pions_background tool exactly once with this exact task: Run bash to execute "while [ ! -f '${backgroundReleasePath}' ]; do sleep 1; done; printf '%s' '${backgroundAnswer}'", then respond with only the printed text. Do not wait for the Worker or call any other tool.\n`
+    );
+    const backgroundWorkspace = await createWorkspace(
+      "pions-e2e-background",
+      { XDG_STATE_HOME: stateDir },
+      nestedCwd
+    );
+    parentWorkspaceIds.push(backgroundWorkspace.workspaceId);
+    const backgroundTranscript = await runPiInPane(
+      runDir,
+      backgroundWorkspace.paneId,
+      backgroundPromptPath,
+      "background"
+    );
+    const backgroundStart = await extractToolResult(
+      backgroundTranscript,
+      "pions_background"
+    );
+    const backgroundId = backgroundStart.details?.operationId;
+    if (backgroundStart.isError || typeof backgroundId !== "string") {
+      throw new Error(
+        `pions_background did not start an Operation: ${JSON.stringify(backgroundStart)}`
+      );
+    }
+    const backgroundEventsAtReturn = await persistedOperationEvents(
+      stateDir,
+      backgroundId
+    );
+    if (
+      backgroundEventsAtReturn.some((event) => event.type === "result_accepted")
+    )
+      throw new Error(
+        "Background Result was already accepted before the parent Pi exited"
+      );
+    await writeFile(backgroundReleasePath, "release\n");
+    await waitFor(
+      async () => {
+        const events = await persistedOperationEvents(stateDir, backgroundId);
+        return events.some((event) => event.type === "operation_completed");
+      },
+      120_000,
+      "background Operation to complete after its parent Pi exited"
+    );
+    const backgroundResultPrompt = join(runDir, "background-result-prompt.txt");
+    await writeFile(
+      backgroundResultPrompt,
+      `Use the pions_result tool exactly once with operationId "${backgroundId}" and no cursor. Do not do anything else.\n`
+    );
+    const backgroundResultWorkspace = await createWorkspace(
+      "pions-e2e-background-result",
+      { XDG_STATE_HOME: stateDir }
+    );
+    parentWorkspaceIds.push(backgroundResultWorkspace.workspaceId);
+    const backgroundResultTranscript = await runPiInPane(
+      runDir,
+      backgroundResultWorkspace.paneId,
+      backgroundResultPrompt,
+      "background-result"
+    );
+    const backgroundResult = await extractToolResult(
+      backgroundResultTranscript,
+      "pions_result"
+    );
+    if (
+      backgroundResult.isError ||
+      !toolResultText(backgroundResult).startsWith(backgroundAnswer)
+    )
+      throw new Error(
+        "Background Result could not be retrieved after parent exit"
+      );
+    log(
+      `background Operation ${backgroundId} completed after its parent Pi exited and was retrieved by a new Pi session.`
+    );
+
+    cancellationReleasePath = join(runDir, "background-cancel-release");
+    const cancellationMarker = join(runDir, "background-cancel-started");
+    const cancellationPrompt = join(
+      runDir,
+      "background-cancel-start-prompt.txt"
+    );
+    await writeFile(
+      cancellationPrompt,
+      `Use the pions_background tool exactly once with this exact task: Run bash to execute "printf 'started' > '${cancellationMarker}'; while [ ! -f '${cancellationReleasePath}' ]; do sleep 1; done", then respond with OK. Do not wait for the Worker or call any other tool.\n`
+    );
+    const cancellationStartWorkspace = await createWorkspace(
+      "pions-e2e-background-cancel-start",
+      { XDG_STATE_HOME: stateDir },
+      nestedCwd
+    );
+    parentWorkspaceIds.push(cancellationStartWorkspace.workspaceId);
+    const cancellationStart = await extractToolResult(
+      await runPiInPane(
+        runDir,
+        cancellationStartWorkspace.paneId,
+        cancellationPrompt,
+        "background-cancel-start"
+      ),
+      "pions_background"
+    );
+    const cancellationId = cancellationStart.details?.operationId;
+    if (cancellationStart.isError || typeof cancellationId !== "string")
+      throw new Error("Background cancellation target was not started");
+    await waitFor(
+      () => hasContent(cancellationMarker),
+      90_000,
+      "background Worker to start its bash command"
+    );
+    const cancellationRequestPrompt = join(
+      runDir,
+      "background-cancel-request-prompt.txt"
+    );
+    await writeFile(
+      cancellationRequestPrompt,
+      `Use the pions_cancel tool exactly once with operationId "${cancellationId}". Do not call any other tool.\n`
+    );
+    const cancellationRequestWorkspace = await createWorkspace(
+      "pions-e2e-background-cancel-request",
+      { XDG_STATE_HOME: stateDir }
+    );
+    parentWorkspaceIds.push(cancellationRequestWorkspace.workspaceId);
+    const cancellationResponse = await extractToolResult(
+      await runPiInPane(
+        runDir,
+        cancellationRequestWorkspace.paneId,
+        cancellationRequestPrompt,
+        "background-cancel-request"
+      ),
+      "pions_cancel"
+    );
+    if (
+      cancellationResponse.isError ||
+      cancellationResponse.details?.state !== "cancelled"
+    )
+      throw new Error(
+        `Background cancellation was not confirmed: ${JSON.stringify(cancellationResponse)}`
+      );
+    log(
+      `background Operation ${cancellationId} was explicitly cancelled after its parent Pi exited.`
+    );
+
+    recoveryReleasePath = join(runDir, "background-recovery-release");
+    const recoveryMarker = join(runDir, "background-recovery-started");
+    const recoveryAnswer = `PIONS_RECOVERED_${randomBytes(6).toString("hex")}`;
+    const recoveryStartPrompt = join(
+      runDir,
+      "background-recovery-start-prompt.txt"
+    );
+    await writeFile(
+      recoveryStartPrompt,
+      `Use the pions_background tool exactly once with this exact task: Run bash to execute "printf 'started' > '${recoveryMarker}'; while [ ! -f '${recoveryReleasePath}' ]; do sleep 1; done; printf '%s' '${recoveryAnswer}'", then respond with only the printed text. Do not wait for the Worker or call any other tool.\n`
+    );
+    const recoveryStartWorkspace = await createWorkspace(
+      "pions-e2e-background-recovery-start",
+      { XDG_STATE_HOME: stateDir },
+      nestedCwd
+    );
+    parentWorkspaceIds.push(recoveryStartWorkspace.workspaceId);
+    const recoveryStart = await extractToolResult(
+      await runPiInPane(
+        runDir,
+        recoveryStartWorkspace.paneId,
+        recoveryStartPrompt,
+        "background-recovery-start"
+      ),
+      "pions_background"
+    );
+    const recoveryId = recoveryStart.details?.operationId;
+    if (recoveryStart.isError || typeof recoveryId !== "string")
+      throw new Error("Background recovery target was not started");
+    await waitFor(
+      () => hasContent(recoveryMarker),
+      90_000,
+      "background Worker to start before owner failure"
+    );
+    const repositoryKey = createHash("sha256")
+      .update(await realpath(CONSUMER_DIR), "utf8")
+      .digest("hex");
+    const recoveryRequestPath = join(
+      stateDir,
+      "pions",
+      "repositories",
+      repositoryKey,
+      "requests",
+      `${recoveryId}.background.json`
+    );
+    const recoveryEntryPath = join(
+      CONSUMER_DIR,
+      "node_modules",
+      "@yasuhito",
+      "pions",
+      "dist",
+      "src",
+      "internal",
+      "background-owner-entry.js"
+    );
+    const ownerStopped = await run("python3", [
+      join(ROOT_DIR, "scripts", "stop-owned-background-owner.py"),
+      recoveryEntryPath,
+      recoveryRequestPath,
+    ]);
+    if (ownerStopped.code !== 0)
+      throw new Error(
+        `background owner could not be stopped safely: ${ownerStopped.stderr.trim()}`
+      );
+    const recoveryInspectPrompt = join(
+      runDir,
+      "background-recovery-inspect-prompt.txt"
+    );
+    await writeFile(
+      recoveryInspectPrompt,
+      `Use the pions_operation tool exactly once with operationId "${recoveryId}". Do not do anything else.\n`
+    );
+    const recoveryInspectWorkspace = await createWorkspace(
+      "pions-e2e-background-recovery-inspect",
+      { XDG_STATE_HOME: stateDir }
+    );
+    parentWorkspaceIds.push(recoveryInspectWorkspace.workspaceId);
+    await runPiInPane(
+      runDir,
+      recoveryInspectWorkspace.paneId,
+      recoveryInspectPrompt,
+      "background-recovery-inspect"
+    );
+    await writeFile(recoveryReleasePath, "release\n");
+    await waitFor(
+      async () =>
+        (await persistedOperationEvents(stateDir, recoveryId)).some(
+          (event) => event.type === "operation_completed"
+        ),
+      120_000,
+      "background Operation completion after owner recovery"
+    );
+    const recoveredEvents = await persistedOperationEvents(
+      stateDir,
+      recoveryId
+    );
+    if (
+      recoveredEvents.filter((event) => event.type === "result_accepted")
+        .length !== 1
+    )
+      throw new Error(
+        "Recovered background Operation did not accept exactly one Result"
+      );
+    if (
+      recoveredEvents.filter(
+        (event) => event.type === "start_instruction_accepted"
+      ).length !== 1
+    )
+      throw new Error(
+        "Recovered background Operation accepted more than one Worker start"
+      );
+    log(
+      `background Operation ${recoveryId} recovered after its owner was stopped and completed without a second Result.`
+    );
+
+    foregroundRecoveryReleasePath = join(runDir, "foreground-recovery-release");
+    const foregroundRecoveryMarker = join(
+      runDir,
+      "foreground-recovery-started"
+    );
+    const foregroundRecoveryPrompt = join(
+      runDir,
+      "foreground-recovery-prompt.txt"
+    );
+    await writeFile(
+      foregroundRecoveryPrompt,
+      `Use pions_delegate exactly once with this task: Run bash to execute "printf 'started' > '${foregroundRecoveryMarker}'; while [ ! -f '${foregroundRecoveryReleasePath}' ]; do sleep 1; done", then respond OK. Do not call any other tool.\n`
+    );
+    const foregroundRecoveryParent = await createWorkspace(
+      "pions-e2e-foreground-recovery-parent",
+      { XDG_STATE_HOME: stateDir },
+      nestedCwd
+    );
+    parentWorkspaceIds.push(foregroundRecoveryParent.workspaceId);
+    await startPiInPane(
+      runDir,
+      foregroundRecoveryParent.paneId,
+      foregroundRecoveryPrompt,
+      "foreground-recovery-parent"
+    );
+    await waitFor(
+      () => hasContent(foregroundRecoveryMarker),
+      90_000,
+      "foreground Worker to start before parent failure"
+    );
+    const foregroundRecord = [
+      ...(await ownedWorkerRecords(stateDir)).values(),
+    ].find(
+      (record) =>
+        record.events.some(
+          (event) =>
+            event.type === "operation_requested" &&
+            event.task.background !== true
+        ) &&
+        !record.events.some((event) =>
+          [
+            "operation_completed",
+            "operation_cancelled",
+            "operation_failed",
+            "operation_unknown",
+          ].includes(event.type)
+        )
+    );
+    if (foregroundRecord === undefined)
+      throw new Error("Foreground recovery target was not identified");
+    const foregroundStopped = await run("python3", [
+      join(ROOT_DIR, "scripts", "stop-owned-pi-parent.py"),
+      foregroundRecoveryPrompt,
+      EXTENSION_PATH,
+    ]);
+    if (foregroundStopped.code !== 0)
+      throw new Error(
+        `foreground Pi parent could not be stopped safely: ${foregroundStopped.stderr.trim()}`
+      );
+    const foregroundRecoveryRestartPrompt = join(
+      runDir,
+      "foreground-recovery-restart-prompt.txt"
+    );
+    await writeFile(
+      foregroundRecoveryRestartPrompt,
+      "Respond with OK. Do not call any tool.\n"
+    );
+    const foregroundRecoveryRestart = await createWorkspace(
+      "pions-e2e-foreground-recovery-restart",
+      { XDG_STATE_HOME: stateDir }
+    );
+    parentWorkspaceIds.push(foregroundRecoveryRestart.workspaceId);
+    const restartExecution = await startPiInPane(
+      runDir,
+      foregroundRecoveryRestart.paneId,
+      foregroundRecoveryRestartPrompt,
+      "foreground-recovery-restart"
+    );
+    await finishPiInPane(
+      restartExecution,
+      foregroundRecoveryRestart.paneId,
+      "foreground-recovery-restart",
+      45_000
+    );
+    const foregroundEvents = await persistedOperationEvents(
+      stateDir,
+      foregroundRecord.operationId
+    );
+    if (
+      !foregroundEvents.some((event) => event.type === "cancel_dispatched") ||
+      !foregroundEvents.some((event) => event.type === "cancel_acknowledged") ||
+      !foregroundEvents.some((event) => event.type === "operation_cancelled")
+    )
+      throw new Error(
+        `Recovered foreground Worker was not confirmed stopped and cancelled: ${foregroundRecord.operationId} ${JSON.stringify(foregroundEvents.map((event) => event.type))}`
+      );
+    log(
+      "a Pi session that recovered a foreground Worker confirmed its stop and exited."
+    );
+    await writeFile(foregroundRecoveryReleasePath, "release\n");
 
     const projectConfigPath = join(CONSUMER_DIR, ".pions.json");
     originalProjectConfig = await readFile(projectConfigPath, "utf8");
@@ -1648,6 +2015,20 @@ async function main() {
     if (herdrReady) await captureDiagnostics(runDir);
     throw error;
   } finally {
+    if (backgroundReleasePath !== undefined)
+      await writeFile(backgroundReleasePath, "release\n").catch(
+        () => undefined
+      );
+    if (cancellationReleasePath !== undefined)
+      await writeFile(cancellationReleasePath, "release\n").catch(
+        () => undefined
+      );
+    if (recoveryReleasePath !== undefined)
+      await writeFile(recoveryReleasePath, "release\n").catch(() => undefined);
+    if (foregroundRecoveryReleasePath !== undefined)
+      await writeFile(foregroundRecoveryReleasePath, "release\n").catch(
+        () => undefined
+      );
     if (originalProjectConfig !== undefined) {
       await writeFile(
         join(CONSUMER_DIR, ".pions.json"),

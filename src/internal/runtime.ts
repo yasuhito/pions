@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import { Cause, Effect, Exit, Schema } from "effect";
 
 import {
@@ -47,11 +49,30 @@ const INITIAL_RECOVERY_DELAY_MS = 20;
 const MAX_RECOVERY_DELAY_MS = 5_000;
 
 const TaskSpecSchema = Schema.Struct({
+  background: Schema.optional(Schema.Literal(true)),
   promptRef: Schema.NonEmptyString,
   profile: Schema.NonEmptyString,
   idempotencyKey: Schema.NonEmptyString,
   ...RequestedWorkerConfigSchema.fields,
 });
+
+async function normalizeTask(taskInput: TaskSpec): Promise<TaskSpec> {
+  const decoded = await Effect.runPromise(
+    Schema.decodeUnknown(TaskSpecSchema)(taskInput)
+  );
+  return {
+    ...(decoded.background === undefined ? {} : { background: true as const }),
+    promptRef: decoded.promptRef,
+    profile: decoded.profile,
+    idempotencyKey: decoded.idempotencyKey,
+    ...(decoded.model === undefined ? {} : { model: decoded.model }),
+    ...(decoded.thinkingLevel === undefined
+      ? {}
+      : { thinkingLevel: decoded.thinkingLevel }),
+    ...(decoded.tools === undefined ? {} : { tools: decoded.tools }),
+    ...(decoded.cwd === undefined ? {} : { cwd: decoded.cwd }),
+  };
+}
 
 interface OperationRecord {
   readonly operationId: string;
@@ -99,6 +120,7 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
   const resultAcceptance = makeResultAcceptance({ store: services.store });
   const reader = makeOperationReader(services.store);
   const records = new Map<string, OperationRecord>();
+  const recoveredIds = new Set<string>();
   const spawns = new Map<string, Promise<OperationHandle>>();
   const cancellations = new Map<string, Promise<CancellationResult>>();
   const volatileCleanupDiagnostics = new Map<
@@ -106,6 +128,13 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
     Set<CleanupDiagnosticCode>
   >();
   const inFlight = new Set<Promise<void>>();
+  const recoveryEligible = (operation: Operation): boolean =>
+    (services.recoveryOperationId === undefined ||
+      operation.operationId === services.recoveryOperationId) &&
+    (services.recovery !== "foreground-only" ||
+      operation.task.background !== true) &&
+    (services.recovery !== "background-only" ||
+      operation.task.background === true);
   let closing = false;
 
   const runEffect = async <Value>(
@@ -678,23 +707,9 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
   };
 
   const createOperation = async (
-    taskInput: TaskSpec
+    task: TaskSpec,
+    operationId: string
   ): Promise<OperationRecord> => {
-    const decoded = await Effect.runPromise(
-      Schema.decodeUnknown(TaskSpecSchema)(taskInput)
-    );
-    const task: TaskSpec = {
-      promptRef: decoded.promptRef,
-      profile: decoded.profile,
-      idempotencyKey: decoded.idempotencyKey,
-      ...(decoded.model === undefined ? {} : { model: decoded.model }),
-      ...(decoded.thinkingLevel === undefined
-        ? {}
-        : { thinkingLevel: decoded.thinkingLevel }),
-      ...(decoded.tools === undefined ? {} : { tools: decoded.tools }),
-      ...(decoded.cwd === undefined ? {} : { cwd: decoded.cwd }),
-    };
-    await runEffect(services.presentation.preflight());
     const configuration = services.configuration ?? {
       cwd: "/test/workspace",
       profiles: { coding: DEFAULT_WORKER_PROFILE_POLICY },
@@ -711,7 +726,6 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
       profile,
       runtimeCwd: configuration.cwd,
     });
-    const operationId = await Effect.runPromise(services.ids.nextOperationId());
     const deferred = deferredResult();
     const record: OperationRecord = {
       operationId,
@@ -720,20 +734,26 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
       rejectTerminal: deferred.reject,
     };
     records.set(operationId, record);
-    let operation = await runEffect(
-      services.store
-        .create({
-          operationId,
-          task,
-          requestedConfig,
-          effectiveConfig,
-          maxResultByteCount: profile.maxResultByteCount,
-        })
-        .pipe(
-          Effect.map((snapshot) => snapshot.operation),
-          Effect.mapError((error) => persistenceError(operationId, error))
-        )
-    );
+    let operation: Operation;
+    try {
+      operation = await runEffect(
+        services.store
+          .create({
+            operationId,
+            task,
+            requestedConfig,
+            effectiveConfig,
+            maxResultByteCount: profile.maxResultByteCount,
+          })
+          .pipe(
+            Effect.map((snapshot) => snapshot.operation),
+            Effect.mapError((error) => persistenceError(operationId, error))
+          )
+      );
+    } catch (error) {
+      records.delete(operationId);
+      throw error;
+    }
     await runEffect(project(operation));
     const created = await runEffect(services.presentation.create(operation));
     try {
@@ -961,7 +981,7 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
           (snapshot) => [snapshot.operation.operationId, snapshot] as const
         )
       ).values(),
-    ];
+    ].filter((snapshot) => recoveryEligible(snapshot.operation));
     const now = Date.now();
     let earliestRetry: number | undefined;
     for (const { operation } of snapshots) {
@@ -976,6 +996,7 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
         continue;
       }
       if (record === undefined) record = recordFor(operation.operationId);
+      if (!terminal(operation)) recoveredIds.add(operation.operationId);
       record.recoverable = false;
       delete record.retryAfter;
       const recoveredRecord = record;
@@ -1092,6 +1113,7 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
     const now = Date.now();
     let earliestRetry: number | undefined;
     for (const { operation } of snapshots) {
+      if (!recoveryEligible(operation)) continue;
       const record = records.get(operation.operationId);
       if (record !== undefined && !record.recoverable) continue;
       if (
@@ -1213,7 +1235,42 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
       if (existing !== undefined) return existing;
       const admitted = (async () => {
         await recover();
-        const record = await createOperation(task);
+        const normalized = await normalizeTask(task);
+        await runEffect(services.presentation.preflight());
+        const operationId = await Effect.runPromise(
+          services.ids.nextOperationId()
+        );
+        let stored: Operation | undefined;
+        try {
+          stored = (await runEffect(services.store.read(operationId)))
+            .operation;
+        } catch (error) {
+          if (
+            typeof error !== "object" ||
+            error === null ||
+            !("code" in error) ||
+            error.code !== "not_found"
+          )
+            throw error;
+        }
+        if (stored !== undefined) {
+          if (!isDeepStrictEqual(stored.task, normalized))
+            throw new Error(
+              `Operation ${operationId} belongs to a different request`
+            );
+          if (!terminal(stored) && !records.has(operationId))
+            throw new Error(
+              `Operation ${operationId} has no recovery owner in this Runtime`
+            );
+          const record = recordFor(operationId);
+          if (terminal(stored)) await settleTerminal(record, stored);
+          return {
+            ...reader.forKnownOperation(operationId),
+            result: () => record.terminalPromise,
+            cancel: (options: CancelOptions) => cancel(record, options),
+          };
+        }
+        const record = await createOperation(normalized, operationId);
         track(execute(record, false).then(() => undefined));
         return {
           ...reader.forKnownOperation(record.operationId),
@@ -1225,5 +1282,17 @@ export function makeRuntime(services: RuntimeServices): OperationRuntime {
       return admitted;
     },
     operation: reader.operation,
+    recoveredOperations: () =>
+      [...recoveredIds].flatMap((operationId) => {
+        const record = records.get(operationId);
+        if (record === undefined) return [];
+        return [
+          {
+            ...reader.forKnownOperation(operationId),
+            result: () => record.terminalPromise,
+            cancel: (options: CancelOptions) => cancel(record, options),
+          },
+        ];
+      }),
   };
 }

@@ -31,6 +31,9 @@ const expected = new Set([
   "dist/src/extension.js",
   "dist/src/worker-extension.js",
   ...[
+    "background-owner-entry",
+    "background-owner",
+    "background-process",
     "event-store/codec",
     "event-store/file-storage",
     "event-store/index",

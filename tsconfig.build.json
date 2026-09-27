@@ -6,6 +6,10 @@
     "declaration": false,
     "sourceMap": false
   },
-  "files": ["src/extension.ts", "src/worker-extension.ts"],
+  "files": [
+    "src/extension.ts",
+    "src/worker-extension.ts",
+    "src/internal/background-owner-entry.ts"
+  ],
   "include": []
 }

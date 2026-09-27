@@ -4,7 +4,7 @@
 
 Most subagent extensions focus on starting a child session and returning its answer. Pions treats delegation as a persistent `Operation` with lifecycle evidence and an integrity-verified `Result`.
 
-Each worker runs as a real Pi TUI in its own Herdr workspace. The workspace is for humans to observe—not a source of truth. Pions determines completion from persisted protocol records rather than terminal text, process appearance, or workspace state.
+Each worker runs as a real Pi TUI in its own Herdr workspace. The workspace is for humans to observe, not a source of truth. Pions determines completion from persisted protocol records rather than terminal text, process appearance, or workspace state.
 
 ## Why Pions?
 
@@ -103,7 +103,7 @@ Configure a flat `.pions.json` in the trusted repository root as described in [W
 
 ## Pi tools
 
-The Pi extension installs exactly three tools in trusted projects: `pions_delegate`, `pions_result`, and `pions_operation`.
+The Pi extension installs five tools in trusted projects: `pions_delegate`, `pions_background`, `pions_cancel`, `pions_result`, and `pions_operation`.
 
 Recovery reads only records in the current event format; older records are rejected.
 
@@ -117,9 +117,27 @@ Use pions_delegate to investigate the lifecycle boundary in this change.
 
 The tool input is only `task`. The model cannot choose the worker model, thinking level, tools, working directory, persistence policy, presentation policy, or cancellation policy through the tool input. Every successful response returns the accepted final answer together with the `Operation` identifier, whether or not the displayed result was truncated.
 
-The worker has `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`, plus the tools of the Pi extensions configured for it; it does not have `pions_delegate`, so delegation is one level deep. It runs in the same working directory as the delegating session and edits it directly: Pions creates no worktree or branch and does not merge changes. Failed delegations are never retried automatically; the parent starts a new `Operation` explicitly if needed.
+The worker has `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`, plus the tools of the Pi extensions configured for it; it does not have Pions delegation or cancellation tools, so delegation is one level deep. It runs in the same working directory as the delegating session and edits it directly: Pions creates no worktree or branch and does not merge changes. Failed delegations are never retried automatically; the parent starts a new `Operation` explicitly if needed.
 
 Independent delegations compose through Pi's normal parallel tool execution. Not running conflicting write delegations in parallel is the parent's responsibility.
+
+### `pions_background`
+
+Starts one self-contained task in an independent process and returns its `Operation` identifier after the request is durably recorded. It does not wait for the worker's final answer. The worker keeps running after the caller's Pi session exits. Use `pions_operation` to inspect its state and `pions_result` to retrieve its accepted answer later. A returned identifier means the operation was started, not that its answer has been accepted or verified as correct.
+
+```text
+Use pions_background to investigate this issue while I work on something else.
+```
+
+The owning process receives worker results and confirms the worker's stop. If that process stops unexpectedly, a later trusted Pi session attempts recovery from persisted state rather than guessing that the worker completed or rerunning its task. No completion notification is sent.
+
+### `pions_cancel`
+
+Requests cancellation of a background operation in the current trusted repository by `Operation` identifier. It waits for a confirmed worker stop; if stopping cannot be proven, the operation remains `unknown` rather than being reported as cancelled. Completed and other terminal operations are not restarted to cancel them.
+
+```text
+operationId: <operation-id>
+```
 
 ### `pions_result`
 
@@ -169,7 +187,7 @@ Pions is not a drop-in replacement for `pi-subagents`. They prioritize different
 | Completion model       | Requires result acceptance and confirmed worker stop     | Supports foreground, detached, background, and nested async runs |
 | Agent definitions      | One general-purpose worker profile                       | Built-in and custom agents                                       |
 | Parallelism and chains | Composed through Pi tool calls                           | Built into the extension                                         |
-| Background execution   | Not supported                                            | Supported                                                        |
+| Background execution   | Supported; retrieve by Operation identifier              | Supported                                                        |
 | Steering               | Not supported                                            | Supported                                                        |
 | Herdr                  | Required                                                 | Optional                                                         |
 
@@ -181,10 +199,10 @@ Choose Pions when the important boundary is a persistent operation whose accepte
 
 Pions is under active development.
 
-- Herdr is required; Pions does not fall back to headless execution.
+- Herdr is required; Pions does not fall back to headless execution. Background execution also requires a `node` executable on `PATH` to run its independent owner process.
 - The Pi extension exposes one general-purpose worker profile; custom agent definitions are not supported.
 - Workers run without extension discovery; only the Pi packages listed in `.pions.json` and Herdr's Pi integration are loaded into them.
-- Background execution, chains, and mid-run steering are not supported.
+- Chains and mid-run steering are not supported. Background runs do not send completion notifications.
 - APIs, persistence formats, configuration, and installation may change without compatibility paths.
 
 ## Development

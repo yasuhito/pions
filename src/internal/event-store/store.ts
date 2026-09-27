@@ -109,7 +109,8 @@ export abstract class ValidatedEventStore implements EventStore {
   ): Promise<unknown | undefined>;
   protected abstract writeRecord(
     operationId: string,
-    record: StoredOperationRecord
+    record: StoredOperationRecord,
+    create: boolean
   ): Promise<void>;
   protected abstract listOperationIds(): Promise<ReadonlyArray<string>>;
   protected abstract writeResultBody(
@@ -122,6 +123,13 @@ export abstract class ValidatedEventStore implements EventStore {
   protected willAppend(_event: OperationEvent): void {}
   protected didAppend(_event: OperationEvent): void {}
 
+  protected withOperationLock<Value>(
+    _operationId: string,
+    action: () => Promise<Value>
+  ): Promise<Value> {
+    return action();
+  }
+
   private serialize<Value>(
     operationId: string,
     action: () => Promise<Value>
@@ -132,11 +140,13 @@ export abstract class ValidatedEventStore implements EventStore {
       release = resolve;
     });
     this.mutationTails.set(operationId, current);
-    return previous.then(action).finally(() => {
-      release();
-      if (this.mutationTails.get(operationId) === current)
-        this.mutationTails.delete(operationId);
-    });
+    return previous
+      .then(() => this.withOperationLock(operationId, action))
+      .finally(() => {
+        release();
+        if (this.mutationTails.get(operationId) === current)
+          this.mutationTails.delete(operationId);
+      });
   }
 
   private async load(
@@ -248,7 +258,7 @@ export abstract class ValidatedEventStore implements EventStore {
           try {
             this.willAppend(persistedEvent);
             await this.writeResultBody(request.operationId, bytes);
-            await this.writeRecord(request.operationId, record);
+            await this.writeRecord(request.operationId, record, false);
           } catch {
             return { kind: "continuable", reason: "write_failed" };
           }
@@ -380,7 +390,7 @@ export abstract class ValidatedEventStore implements EventStore {
     const operation = reduceOperation(loaded?.operation, persistedEvent);
     this.willAppend(persistedEvent);
     try {
-      await this.writeRecord(operationId, record);
+      await this.writeRecord(operationId, record, loaded === undefined);
     } catch (error) {
       throw failure(
         "write_failed",

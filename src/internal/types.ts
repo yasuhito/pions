@@ -65,6 +65,7 @@ export interface WorkerProducedResult {
 }
 
 export interface TaskSpec extends RequestedWorkerConfig {
+  readonly background?: true;
   readonly promptRef: string;
   readonly profile: string;
   readonly idempotencyKey: string;
@@ -437,6 +438,8 @@ export interface OperationRuntime {
   ready(): Promise<void>;
   spawn(task: TaskSpec): Promise<OperationHandle>;
   operation(operationId: string): Promise<OperationReader>;
+  /** Foreground Operations adopted by this Runtime during recovery. */
+  recoveredOperations?(): ReadonlyArray<OperationHandle>;
   close(): Promise<void>;
 }
 

@@ -21,7 +21,10 @@ export interface VisibleRuntimeOptions {
   readonly profiles: Readonly<Record<string, Readonly<WorkerProfilePolicy>>>;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly extensionEntryPath?: string;
-  readonly recovery?: "disabled";
+  readonly recovery?: "disabled" | "foreground-only" | "background-only";
+  readonly recoveryOperationId?: string;
+  /** Fixed identifier for a single background request owned by this Runtime. */
+  readonly operationId?: string;
 }
 
 const systemClock: RuntimeClock = {
@@ -75,10 +78,16 @@ export function makeVisibleRuntime(
   return makeRuntime({
     worker,
     clock: systemClock,
-    ids: { nextOperationId: () => Effect.sync(() => randomUUID()) },
+    ids: {
+      nextOperationId: () =>
+        Effect.sync(() => options.operationId ?? randomUUID()),
+    },
     presentation,
     store,
-    ...(options.recovery === undefined ? {} : { recovery: options.recovery }),
+    recovery: options.recovery ?? "foreground-only",
+    ...(options.recoveryOperationId === undefined
+      ? {}
+      : { recoveryOperationId: options.recoveryOperationId }),
     configuration: { cwd: options.cwd, profiles: options.profiles },
   });
 }

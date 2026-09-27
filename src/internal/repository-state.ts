@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   chmod,
   mkdir,
+  open,
   readFile,
   realpath,
   stat,
@@ -10,11 +11,30 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse } from "node:path";
 
+import { syncDirectory } from "./sync-directory.js";
+
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 
 export function opaqueDigest(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/** Give one background request the same Operation identifier after a lost reply. */
+export function backgroundOperationId(
+  root: string,
+  requestKey: string
+): string {
+  const bytes = createHash("sha256")
+    .update("pions-background-operation-v1\0")
+    .update(root)
+    .update("\0")
+    .update(requestKey)
+    .digest();
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -87,6 +107,13 @@ export async function writePrivatePrompt(
     }
   }
   await chmod(path, FILE_MODE);
+  const file = await open(path, "r");
+  try {
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await syncDirectory(dirname(path));
 }
 
 export async function resolveRepositoryState(options: {

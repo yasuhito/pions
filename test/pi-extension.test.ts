@@ -27,6 +27,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { PrivateFileEventStore } from "../src/internal/event-store/index.js";
+import { writePrivatePrompt } from "../src/internal/repository-state.js";
 import {
   DEFAULT_MAX_RESULT_BYTE_COUNT,
   DEFAULT_WORKER_PROFILE_POLICY,
@@ -295,7 +296,8 @@ async function fixture<TRuntime extends OperationRuntime = FakeRuntime>(
   >();
   const pi = {
     registerTool(tool: ToolDefinition) {
-      registered = tool as unknown as RegisteredTool;
+      if (tool.name === "pions_delegate")
+        registered = tool as unknown as RegisteredTool;
       tools.set(tool.name, tool as unknown as RegisteredTool);
     },
     on(
@@ -340,6 +342,33 @@ async function fixture<TRuntime extends OperationRuntime = FakeRuntime>(
     task = "Review the change",
     signal?: AbortSignal
   ) => tool.execute(toolCallId, { task }, signal, undefined, context);
+  const cancel = (operationId: string) => {
+    const cancelTool = tools.get("pions_cancel");
+    if (cancelTool === undefined)
+      throw new Error("pions_cancel was not registered");
+    return cancelTool.execute(
+      "cancel-call-1",
+      { operationId },
+      undefined,
+      undefined,
+      context
+    );
+  };
+  const background = (
+    toolCallId = "background-call-1",
+    task = "Review the change"
+  ) => {
+    const backgroundTool = tools.get("pions_background");
+    if (backgroundTool === undefined)
+      throw new Error("pions_background was not registered");
+    return backgroundTool.execute(
+      toolCallId,
+      { task },
+      undefined,
+      undefined,
+      context
+    );
+  };
   const result = (operationId = "operation-1", cursor?: string) => {
     const resultTool = tools.get("pions_result");
     if (resultTool === undefined)
@@ -381,6 +410,8 @@ async function fixture<TRuntime extends OperationRuntime = FakeRuntime>(
   return {
     context,
     execute,
+    background,
+    cancel,
     inspect,
     registered: tool,
     result,
@@ -398,14 +429,121 @@ async function fixture<TRuntime extends OperationRuntime = FakeRuntime>(
   };
 }
 
-test("the delegation-only extension registers exactly the three delegation tools", async (context) => {
+test("the extension registers its public Operation tools", async (context) => {
   const value = await fixture();
   context.after(() => rm(value.root, { recursive: true, force: true }));
 
   assert.deepEqual(
     [...value.tools.keys()],
-    ["pions_result", "pions_operation", "pions_delegate"]
+    [
+      "pions_result",
+      "pions_operation",
+      "pions_delegate",
+      "pions_cancel",
+      "pions_background",
+    ]
   );
+});
+
+test("cancellation refuses an Operation outside the current repository", async (context) => {
+  const value = await fixture();
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+
+  await assert.rejects(
+    value.cancel("12345678-1234-1234-1234-123456789abc"),
+    /unavailable in the current repository/u
+  );
+});
+
+test("background delegation returns an Operation identifier without waiting for its result", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime, {
+    backgroundProcessStarter: async ({ request }) => request.operationId,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  const response = await value.background();
+
+  assert.match(response.content[0]?.text ?? "", /Result not yet accepted/u);
+});
+
+test("replaying a background call after configuration changes reuses its saved request", async (context) => {
+  const start: NonNullable<
+    PionsExtensionOptions["backgroundProcessStarter"]
+  > = async ({ request }) => {
+    await writePrivatePrompt(
+      join(
+        request.runtime.stateDirectory,
+        "..",
+        "requests",
+        `${request.operationId}.background.json`
+      ),
+      JSON.stringify(request)
+    );
+    return request.operationId;
+  };
+  const first = await fixture(new FakeRuntime(), {
+    backgroundProcessStarter: start,
+  });
+  context.after(() => rm(first.root, { recursive: true, force: true }));
+  const original = await first.background("same-call");
+  await writeFile(
+    join(first.root, ".pions.json"),
+    JSON.stringify({ model: { provider: "openai", id: "gpt-5" } })
+  );
+  const second = await fixture(new FakeRuntime(), {
+    repositoryRoot: first.root,
+    stateBaseDirectory: join(first.root, "state"),
+    backgroundProcessStarter: start,
+  });
+  context.after(() => rm(second.root, { recursive: true, force: true }));
+  second.setWorkingDirectory(first.root);
+  const retried = await second.background("same-call");
+
+  assert.deepEqual(retried.details, original.details);
+});
+
+test("background delegation does not start a Worker in the parent Runtime", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime, {
+    backgroundProcessStarter: async ({ request }) => request.operationId,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.background();
+
+  assert.equal(runtime.results.size, 0);
+});
+
+test("closing the parent Pi does not cancel a background Operation", async (context) => {
+  const runtime = new PendingRuntime();
+  const value = await fixture(runtime, {
+    backgroundProcessStarter: async ({ request }) => request.operationId,
+  });
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.background();
+  await value.shutdown("quit");
+
+  assert.equal(runtime.cancellations.length, 0);
+});
+
+test("session shutdown cancels a foreground Operation adopted during recovery", async (context) => {
+  class RecoveredRuntime extends PendingRuntime {
+    private recovered: OperationHandle | undefined;
+
+    override async ready(): Promise<void> {
+      this.recovered ??= await this.spawn();
+    }
+
+    recoveredOperations(): ReadonlyArray<OperationHandle> {
+      return this.recovered === undefined ? [] : [this.recovered];
+    }
+  }
+  const runtime = new RecoveredRuntime();
+  const value = await fixture(runtime);
+  context.after(() => rm(value.root, { recursive: true, force: true }));
+  await value.start();
+  await value.shutdown("quit");
+
+  assert.equal(runtime.cancellations.length, 1);
 });
 
 test("shutdown rejects a delegation still resolving Worker extensions", async (context) => {

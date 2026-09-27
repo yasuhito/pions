@@ -1,12 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
+import { createServer } from "node:net";
 import {
   chmod,
   lstat,
+  link,
   mkdir,
   open,
   readFile,
   readdir,
   rename,
+  realpath,
   unlink,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -22,6 +25,7 @@ const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const RECORD_FILE = "events.v29.json";
 const RESULT_FILE = "result.v1.utf8";
+const LOCK_SECRET_FILE = "writer-lock.v1.key";
 
 function isMissing(error: unknown): boolean {
   return hasCode(error, "ENOENT");
@@ -87,6 +91,59 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     super(clock);
   }
 
+  protected override async withOperationLock<Value>(
+    operationId: string,
+    action: () => Promise<Value>
+  ): Promise<Value> {
+    await createPrivateDirectoryTree(this.rootDirectory);
+    const root = await realpath(this.rootDirectory);
+    const secretPath = join(root, LOCK_SECRET_FILE);
+    let secret = await this.readPrivateFile(secretPath);
+    if (secret === undefined) {
+      try {
+        await this.atomicWrite(secretPath, randomBytes(32), true);
+      } catch (error) {
+        if (!hasCode(error, "EEXIST")) throw error;
+      }
+      secret = await this.readPrivateFile(secretPath);
+    }
+    if (secret?.byteLength !== 32)
+      throw new Error("Event Store writer lock secret is unavailable");
+    // Linux abstract sockets are released by the kernel when their owning
+    // process exits. A private secret prevents other users from reserving
+    // the name of a repository's writer lock.
+    const address = `\0pions-store-${createHash("sha256").update(secret).update(root).update("\0").update(operationId).digest("hex")}`;
+    while (true) {
+      const server = createServer((socket) => socket.destroy());
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const failed = (error: Error) => {
+            server.off("listening", listening);
+            reject(error);
+          };
+          const listening = () => {
+            server.off("error", failed);
+            resolve();
+          };
+          server.once("error", failed);
+          server.once("listening", listening);
+          server.listen(address);
+        });
+      } catch (error) {
+        if (!hasCode(error, "EADDRINUSE")) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        continue;
+      }
+      try {
+        return await action();
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    }
+  }
+
   private async operationDirectory(
     operationId: string,
     create: boolean
@@ -113,7 +170,11 @@ export class PrivateFileEventStore extends ValidatedEventStore {
     return readFile(path);
   }
 
-  private async atomicWrite(path: string, bytes: Buffer): Promise<void> {
+  private async atomicWrite(
+    path: string,
+    bytes: Buffer,
+    create = false
+  ): Promise<void> {
     if (await validateRegularFile(path)) {
       // Existing regular files may be replaced atomically.
     }
@@ -126,7 +187,15 @@ export class PrivateFileEventStore extends ValidatedEventStore {
       await temporaryFile.sync();
       await temporaryFile.close();
       temporaryFile = undefined;
-      await rename(temporary, path);
+      if (create) {
+        // Linking a synced temporary file publishes a new record atomically
+        // without overwriting another process's creation of the same Operation.
+        await link(temporary, path);
+        await syncDirectory(dirname(path));
+        await unlink(temporary);
+      } else {
+        await rename(temporary, path);
+      }
       await syncDirectory(dirname(path));
     } catch (error) {
       await temporaryFile?.close().catch(() => undefined);
@@ -167,14 +236,16 @@ export class PrivateFileEventStore extends ValidatedEventStore {
 
   protected async writeRecord(
     operationId: string,
-    record: StoredOperationRecord
+    record: StoredOperationRecord,
+    create: boolean
   ): Promise<void> {
     const directory = await this.operationDirectory(operationId, true);
     if (directory === undefined)
       throw new Error("Unable to create Operation directory");
     await this.atomicWrite(
       join(directory, RECORD_FILE),
-      Buffer.from(`${JSON.stringify(record)}\n`, "utf8")
+      Buffer.from(`${JSON.stringify(record)}\n`, "utf8"),
+      create
     );
   }
 

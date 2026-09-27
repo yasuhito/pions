@@ -32,8 +32,11 @@ export class InMemoryEventStore extends ValidatedEventStore {
 
   protected writeRecord(
     operationId: string,
-    record: StoredOperationRecord
+    record: StoredOperationRecord,
+    create: boolean
   ): Promise<void> {
+    if (create && this.records.has(operationId))
+      return Promise.reject(new Error("Operation record already exists"));
     this.records.set(operationId, structuredClone(record));
     return Promise.resolve();
   }
