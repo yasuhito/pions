@@ -84,10 +84,10 @@ The worker protocol and private files do not provide an OS sandbox.
 
 ## Installation
 
-Once version `0.1.0` is published to npm, install it in a Pi project:
+Install version `0.2.0` from npm in a Pi project:
 
 ```sh
-pi install npm:@yasuhito/pions@0.1.0
+pi install npm:@yasuhito/pions@0.2.0
 ```
 
 The package manifest registers only the Pions extension. To use a fixed local tarball in another Pi project, pack it here, then install the archive as an npm dependency in that project and register the installed package with Pi:
@@ -95,7 +95,7 @@ The package manifest registers only the Pions extension. To use a fixed local ta
 ```sh
 npm pack
 cd /path/to/pi-project
-npm install --save-exact /path/to/pions/yasuhito-pions-0.1.0.tgz
+npm install --save-exact /path/to/pions/yasuhito-pions-0.2.0.tgz
 pi install --local ./node_modules/@yasuhito/pions
 ```
 
@@ -213,7 +213,7 @@ npm run build
 npm run check
 ```
 
-`npm run check` runs type checking, linting, formatting checks, test-assertion validation, and the full test suite. Run `npm run release-gate` before a release to add package-content validation and the real Pi + Herdr end-to-end test using a packed `@yasuhito/pions@0.1.0` tarball installed in a fresh consumer. The release gate needs authenticated Pi model access and may incur model charges. It is intentionally excluded from CI. See [the real Pi and Herdr E2E guide](docs/e2e-real-pi-herdr.md) for session isolation and prerequisites.
+`npm run check` runs type checking, linting, formatting checks, test-assertion validation, and the full test suite. Run `npm run release-gate` before a release to add package-content validation and the real Pi + Herdr end-to-end test using a packed `@yasuhito/pions@0.2.0` tarball installed in a fresh consumer. The release gate needs authenticated Pi model access and may incur model charges. It is intentionally excluded from CI. See [the real Pi and Herdr E2E guide](docs/e2e-real-pi-herdr.md) for session isolation and prerequisites.
 
 ## Design documentation
 

@@ -1,6 +1,6 @@
 {
   "name": "@yasuhito/pions",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Durable, verifiable runtime for visible Pi workers",
   "license": "MIT",
   "type": "module",

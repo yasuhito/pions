@@ -266,11 +266,11 @@ async function prepareConsumer(runDir) {
   );
   if (
     installedManifest.name !== "@yasuhito/pions" ||
-    installedManifest.version !== "0.1.0"
+    installedManifest.version !== "0.2.0"
   ) {
     throw new Error("installed tarball has an unexpected package identity");
   }
-  log("installed the packed @yasuhito/pions@0.1.0 tarball in a new consumer.");
+  log("installed the packed @yasuhito/pions@0.2.0 tarball in a new consumer.");
 }
 
 async function provisionSession(runDir) {

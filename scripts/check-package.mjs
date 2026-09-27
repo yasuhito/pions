@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const manifest = JSON.parse(readFileSync("package.json", "utf8"));
-if (manifest.name !== "@yasuhito/pions" || manifest.version !== "0.1.0") {
+if (manifest.name !== "@yasuhito/pions" || manifest.version !== "0.2.0") {
   throw new Error("Unexpected package identity");
 }
 if (
