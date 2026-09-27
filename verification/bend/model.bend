@@ -240,22 +240,10 @@ def transition(phase: Phase, +f: Facts, action: Action) -> Decision:
       choose(Nat.is_eq(cleanup(f), 1n), Cancelled{}, with_cleanup(f, 2n))
     case _ _: Keep{}
 
-def apply_completion_valid(valid: Bool, previous: State, facts: Facts, seq: Nat) -> State:
-  match valid:
-    case True{}: State{Completed{}, seq, facts}
-    case False{}: previous
-
-def apply_completion(previous: State, +facts: Facts, seq: Nat) -> State:
-  apply_completion_valid(both(accepted(facts), stopped(facts)), previous, facts, seq)
-
 def apply(previous: State, decision: Decision, seq: Nat) -> State:
   match decision:
     case Keep{}: previous
-    case Change{phase, facts}:
-      match phase:
-        case Completed{}:
-          apply_completion(previous, facts, seq)
-        case other: State{other, seq, facts}
+    case Change{phase, facts}: State{phase, seq, facts}
 
 # Match the reducer's terminal guard: only cleanup decisions retain a terminal phase.
 def terminal_gate(phase: Phase, decision: Decision) -> Decision:

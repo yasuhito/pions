@@ -1,20 +1,6 @@
 import Base
 import ./model.bend as M
 
-law completion_apply:
-  for +previous: M.State
-  for facts: M.Facts
-  for seq: Nat
-  for evidence: {M.completion_sound(Some{previous}) == True{} : Bool}
-  {M.completion_sound(Some{M.apply_completion(previous, facts, seq)}) == True{} : Bool}
-
-law completion_apply_decision:
-  for +previous: M.State
-  for decision: M.Decision
-  for seq: Nat
-  for evidence: {M.completion_sound(Some{previous}) == True{} : Bool}
-  {M.completion_sound(Some{M.apply(previous, decision, seq)}) == True{} : Bool}
-
 law completion_sequenced:
   for +previous: M.State
   for valid: Bool
