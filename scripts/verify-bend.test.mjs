@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { Effect } from "effect";
 
+import { bend } from "./bend-executable.mjs";
 import {
   InMemoryEventStore,
   advanceTestOperationToRunning,
@@ -20,7 +21,6 @@ import {
   RUNTIME_ACTOR_ID,
 } from "../.test-dist/src/internal/event-store/model.js";
 
-const bend = process.env.BEND ?? "bend";
 const model = resolve("verification/bend/model.bend");
 const requestedConfig = {};
 const effectiveConfig = {
