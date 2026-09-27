@@ -22,6 +22,7 @@
     "release-gate": "npm run check && npm run test:e2e",
     "test": "npm run build:test && node --test --test-reporter=dot .test-dist/test/*.test.js",
     "test:e2e": "node scripts/e2e-real-pi-herdr.mjs",
+    "verify:bend": "npm run build:test && node --test scripts/verify-bend.test.mjs && bend verification/bend/PROOF.bend --safe",
     "check:package": "node scripts/check-package.mjs",
     "build:test": "rm -rf .test-dist && tsc --outDir .test-dist",
     "prepare": "husky",
