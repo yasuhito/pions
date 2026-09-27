@@ -215,6 +215,10 @@ npm run check
 
 `npm run check` runs type checking, linting, formatting checks, test-assertion validation, and the full test suite. Run `npm run release-gate` before a release to add package-content validation and the real Pi + Herdr end-to-end test using a packed `@yasuhito/pions@0.2.0` tarball installed in a fresh consumer. The release gate needs authenticated Pi model access and may incur model charges. It is intentionally excluded from CI. See [the real Pi and Herdr E2E guide](docs/e2e-real-pi-herdr.md) for session isolation and prerequisites.
 
+### Optional Bend verification
+
+Install [Bend 2](https://bend-lang.com/) (tested with 2.0.31) and Lean 4.34.0, put `bend` and `lean` on `PATH`, and run `npm run verify:bend`. This checks the whole-history laws in [`verification/bend/`](verification/bend/) with `--safe` and compares a state projection with the TypeScript reducer after every step of seeded random and representative event sequences. It is not part of `npm run check` and does not prove the TypeScript implementation or cover every event. See [ADR 0031](docs/adr/0031-use-bend-as-an-optional-reducer-projection.md) for the trust boundary.
+
 ## Design documentation
 
 The domain vocabulary lives in [`CONTEXT.md`](CONTEXT.md). Hard-to-reverse decisions are recorded in [`docs/adr/`](docs/adr/).
