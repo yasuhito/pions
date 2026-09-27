@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -52,6 +58,66 @@ const phases = {
   cancelled: "Cancelled",
   unknown: "UnknownPhase",
 };
+
+const modeledEvents = {
+  operation_requested: "Requested",
+  presentation_owned: "PresentationOwned",
+  operation_starting: "StartingWork",
+  worker_launched: "WorkerLaunched",
+  start_instruction_acknowledged: "StartAcknowledged",
+  result_accepted: "ResultAccepted",
+  worker_stop_confirmed: "StopConfirmed",
+  operation_completed: "Complete",
+  operation_failed: "MarkFailed",
+  cancellation_requested: "CancelRequested",
+  cancel_dispatched: "CancelDispatched",
+  cancel_acknowledged: "CancelAcknowledged",
+  operation_cancelled: "Cancel",
+  operation_unknown: ["UnknownLiveness", "UnknownCancel"],
+  start_delivery_authority_acquired: "AuthorityAcquired",
+  start_delivery_authority_revoked: "AuthorityRevoked",
+  start_delivery_generation_confirmed: "GenerationConfirmed",
+  presentation_cleanup_started: "CleanupStarted",
+  presentation_cleanup_completed: "CleanupFinished",
+};
+const intentionallyUnmodeledEvents = [
+  "worker_identified",
+  "start_delivery_entered",
+  "start_instruction_dispatched",
+  "start_instruction_accepted",
+  "agent_settled",
+  "presentation_cleanup_unconfirmed",
+];
+
+function unionEventTypes(path, start, end) {
+  const source = readFileSync(resolve(path), "utf8");
+  const union = source.split(start)[1]?.split(end)[0];
+  if (union === undefined)
+    throw new Error(`Cannot locate event union in ${path}`);
+  return [...union.matchAll(/readonly type: "([^"]+)"/gu)].map(
+    (match) => match[1]
+  );
+}
+
+test("all durable TS event types are classified for the Bend projection", () => {
+  const actual = new Set([
+    ...unionEventTypes(
+      "src/internal/event-store/model.ts",
+      "export type OperationEvent =",
+      "type DistributiveOmit"
+    ),
+    ...unionEventTypes(
+      "src/internal/event-store/intent.ts",
+      "export type OperationIntent =",
+      "export type PersistableOperationIntent"
+    ),
+  ]);
+  const classified = new Set([
+    ...Object.keys(modeledEvents),
+    ...intentionallyUnmodeledEvents,
+  ]);
+  assert.deepEqual([...actual].sort(), [...classified].sort());
+});
 
 function project(operation) {
   if (operation === undefined) return "None{}";
@@ -423,6 +489,42 @@ test("authority handoff confirms only the successor generation", () => {
   assert.equal(actual, expected);
 });
 
+const launchedWithoutAuthority = [
+  presentation,
+  { type: "operation_starting" },
+  { type: "worker_launched" },
+  {
+    type: "worker_identified",
+    workerIdentity: running.workerIdentity,
+    observedConfig: running.observedConfig,
+  },
+].reduce(
+  (state, input) =>
+    tsStep(state, input, state.stateSeq + 1, state.stateSeq + 1),
+  queued
+);
+
+for (const generation of [0, 1]) {
+  test(`authority acquisition without prior authority: generation ${generation}`, () => {
+    const input = {
+      type: "start_delivery_authority_acquired",
+      instruction: {
+        ...running.startDeliveryAuthority,
+        deliveryGeneration: generation,
+      },
+    };
+    const { actual, expected } = run(launchedWithoutAuthority, [
+      [
+        input,
+        "AuthorityAcquired",
+        generation,
+        launchedWithoutAuthority.stateSeq + 1,
+      ],
+    ]);
+    assert.equal(actual, expected);
+  });
+}
+
 // Deterministic PRNG: failed events keep the snapshot and do not consume a sequence.
 function random(seed) {
   let value = seed;
@@ -438,6 +540,15 @@ for (const [seedName, seedState] of [
   ["running", running],
   ["accepted", accepted],
   ["completed", completed],
+  [
+    "cancelling",
+    tsStep(
+      queued,
+      { type: "cancellation_requested", cancellationEpoch: 2 },
+      2,
+      1
+    ),
+  ],
 ]) {
   test(`random replay after every step: ${seedName}`, () => {
     const roll = random(
@@ -449,6 +560,94 @@ for (const [seedName, seedState] of [
       samples.push([request, "Requested", undefined, 1]);
       state = tsStep(state, request, 1, 1);
     }
+    const prefix =
+      seedName === "running"
+        ? [
+            [
+              {
+                type: "start_delivery_authority_revoked",
+                successorDispatcherId: "successor",
+                deliveryGeneration: 2,
+              },
+              "AuthorityRevoked",
+              2,
+            ],
+            [
+              {
+                type: "start_delivery_generation_confirmed",
+                dispatcherId: "successor",
+                deliveryGeneration: 2,
+                acceptanceState: "not_accepted",
+              },
+              "GenerationConfirmed",
+              2,
+            ],
+            [
+              {
+                type: "start_delivery_authority_acquired",
+                instruction: {
+                  ...running.startDeliveryAuthority,
+                  dispatcherId: "successor",
+                  deliveryGeneration: 2,
+                },
+              },
+              "AuthorityAcquired",
+              2,
+            ],
+          ]
+        : seedName === "completed"
+          ? [
+              [
+                {
+                  type: "presentation_cleanup_started",
+                  cleanupId: "cleanup-1",
+                  workspaceId: "test-workspace",
+                },
+                "CleanupStarted",
+              ],
+              [
+                {
+                  type: "presentation_cleanup_completed",
+                  cleanupId: "cleanup-1",
+                  workspaceId: "test-workspace",
+                },
+                "CleanupFinished",
+              ],
+            ]
+          : seedName === "cancelling"
+            ? [
+                [
+                  {
+                    type: "cancel_acknowledged",
+                    cancellationEpoch: 1,
+                    proof: "worker-stop",
+                  },
+                  "CancelAcknowledged",
+                  1,
+                ],
+                [
+                  {
+                    type: "cancel_acknowledged",
+                    cancellationEpoch: 2,
+                    proof: "worker-stop",
+                  },
+                  "CancelAcknowledged",
+                  2,
+                ],
+                [
+                  { type: "operation_cancelled", cancellationEpoch: 1 },
+                  "Cancel",
+                  1,
+                ],
+              ]
+            : [];
+    for (const [input, type, argument] of prefix) {
+      const seq = state.stateSeq + 1;
+      samples.push([input, type, argument, seq]);
+      state = tsStep(state, input, seq, samples.length);
+    }
+    const cancellationEpoch = (s) =>
+      Math.max(0, (s?.cancellationEpoch ?? 0) + roll(3) - 1);
     const choices = [
       () => [request, "Requested"],
       () => [presentation, "PresentationOwned"],
@@ -469,43 +668,126 @@ for (const [seedName, seedState] of [
           epoch,
         ];
       },
-      (s) => [
-        {
-          type: "cancel_dispatched",
-          cancellationEpoch: s?.cancellationEpoch ?? 0,
-        },
-        "CancelDispatched",
-        s?.cancellationEpoch ?? 0,
-      ],
-      (s) => [
-        {
-          type: "cancel_acknowledged",
-          cancellationEpoch: s?.cancellationEpoch ?? 0,
-          proof: "worker-stop",
-        },
-        "CancelAcknowledged",
-        s?.cancellationEpoch ?? 0,
-      ],
-      (s) => [
-        {
-          type: "operation_cancelled",
-          cancellationEpoch: s?.cancellationEpoch ?? 0,
-        },
-        "Cancel",
-        s?.cancellationEpoch ?? 0,
-      ],
+      (s) => {
+        const epoch = cancellationEpoch(s);
+        return [
+          { type: "cancel_dispatched", cancellationEpoch: epoch },
+          "CancelDispatched",
+          epoch,
+        ];
+      },
+      (s) => {
+        const epoch = cancellationEpoch(s);
+        return [
+          {
+            type: "cancel_acknowledged",
+            cancellationEpoch: epoch,
+            proof: "worker-stop",
+          },
+          "CancelAcknowledged",
+          epoch,
+        ];
+      },
+      (s) => {
+        const epoch = cancellationEpoch(s);
+        return [
+          { type: "operation_cancelled", cancellationEpoch: epoch },
+          "Cancel",
+          epoch,
+        ];
+      },
       () => [
         { type: "operation_unknown", reason: "liveness-unproven" },
         "UnknownLiveness",
       ],
-      (s) => [
+      (s) => {
+        const epoch = cancellationEpoch(s);
+        return [
+          {
+            type: "operation_unknown",
+            reason: "cancel-unproven",
+            cancellationEpoch: epoch,
+          },
+          "UnknownCancel",
+          epoch,
+        ];
+      },
+      (s) => {
+        const generation = Math.max(
+          0,
+          (s?.startDeliveryAuthority?.deliveryGeneration ?? 1) + roll(4) - 1
+        );
+        return [
+          {
+            type: "start_delivery_authority_revoked",
+            successorDispatcherId: "successor-random",
+            deliveryGeneration: generation,
+          },
+          "AuthorityRevoked",
+          generation,
+        ];
+      },
+      (s) => {
+        const generation = Math.max(
+          0,
+          (s?.startDeliveryHandoffs.at(-1)?.deliveryGeneration ??
+            s?.startDeliveryAuthority?.deliveryGeneration ??
+            1) +
+            roll(3) -
+            1
+        );
+        return [
+          {
+            type: "start_delivery_generation_confirmed",
+            dispatcherId:
+              s?.startDeliveryHandoffs.at(-1)?.successorDispatcherId ??
+              "successor-random",
+            deliveryGeneration: generation,
+            acceptanceState: "not_accepted",
+          },
+          "GenerationConfirmed",
+          generation,
+        ];
+      },
+      (s) => {
+        const generation = Math.max(
+          0,
+          (s?.startDeliveryHandoffs.at(-1)?.deliveryGeneration ??
+            s?.startDeliveryAuthority?.deliveryGeneration ??
+            1) +
+            roll(3) -
+            1
+        );
+        return [
+          {
+            type: "start_delivery_authority_acquired",
+            instruction: {
+              ...running.startDeliveryAuthority,
+              dispatcherId:
+                s?.startDeliveryHandoffs.at(-1)?.successorDispatcherId ??
+                "successor-random",
+              deliveryGeneration: generation,
+            },
+          },
+          "AuthorityAcquired",
+          generation,
+        ];
+      },
+      () => [
         {
-          type: "operation_unknown",
-          reason: "cancel-unproven",
-          cancellationEpoch: s?.cancellationEpoch ?? 0,
+          type: "presentation_cleanup_started",
+          cleanupId: "cleanup-1",
+          workspaceId: "test-workspace",
         },
-        "UnknownCancel",
-        s?.cancellationEpoch ?? 0,
+        "CleanupStarted",
+      ],
+      () => [
+        {
+          type: "presentation_cleanup_completed",
+          cleanupId: "cleanup-1",
+          workspaceId: "test-workspace",
+        },
+        "CleanupFinished",
       ],
     ];
     for (let i = 0; i < 45; i++) {
