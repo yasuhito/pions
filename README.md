@@ -217,7 +217,7 @@ npm run check
 
 ### Optional Bend verification
 
-Install [Bend 2](https://bend-lang.com/) (tested with 2.0.31) and Lean 4.34.0, put `bend` and `lean` on `PATH`, and run `npm run verify:bend`. This checks the whole-history laws in [`verification/bend/`](verification/bend/) with `--safe` and compares a state projection with the TypeScript reducer after every step of seeded random and representative event sequences. It is not part of `npm run check` and does not prove the TypeScript implementation or cover every event. See [ADR 0031](docs/adr/0031-use-bend-as-an-optional-reducer-projection.md) for the trust boundary.
+Install [Bend 2](https://bend-lang.com/) (tested with 2.0.31) and Lean 4.34.0, put `bend` and `lean` on `PATH`, and run `npm run verify:bend`. Set `BEND` to the Bend executable path if it is not on `PATH`. This checks the whole-history laws in [`verification/bend/`](verification/bend/) with `--safe` and compares a state projection with the TypeScript reducer after every step of seeded random and representative event sequences. It is not part of `npm run check` and does not prove the TypeScript implementation or cover every event. See [ADR 0031](docs/adr/0031-use-bend-as-an-optional-reducer-projection.md) for the trust boundary.
 
 ## Design documentation
 
