@@ -2,37 +2,230 @@ import Base
 import ./LAWS.bend as Laws
 import ./model.bend as M
 
-def Laws.completion_apply(previous, facts, seq, evidence):
-  match facts:
-    case M.Facts{o, l, a, s, epoch, authority, revoked, pending, confirmed, cleanup}:
-      match a s:
-        case True{} True{}: {==}
-        case True{} False{}:
-          %evidence : {M.completion_sound(Some{previous}) == _ : Bool}
-          {==}
-        case False{} True{}:
-          %evidence : {M.completion_sound(Some{previous}) == _ : Bool}
-          {==}
-        case False{} False{}:
-          %evidence : {M.completion_sound(Some{previous}) == _ : Bool}
-          {==}
-
-def Laws.completion_apply_decision(previous, decision, seq, evidence):
-  match decision:
-    case M.Keep{}:
+def safe_choice(previous: M.State, valid: Bool, phase: M.Phase, facts: M.Facts, seq: Nat, evidence: {M.completion_sound(Some{previous}) == True{} : Bool}, target: {M.completion_sound(Some{M.State{phase, seq, facts}}) == True{} : Bool}) -> {M.completion_sound(Some{M.apply(previous, M.choose(valid, phase, facts), seq)}) == True{} : Bool}:
+  match valid:
+    case True{}: target
+    case False{}:
       %evidence : {M.completion_sound(Some{previous}) == _ : Bool}
       {==}
-    case M.Change{phase, facts}:
-      match phase:
-        case M.Completed{}:
-          Laws.completion_apply(previous, facts, seq, evidence)
-        case M.Queued{}: {==}
-        case M.Starting{}: {==}
-        case M.Running{}: {==}
-        case M.Cancelling{}: {==}
-        case M.Failed{}: {==}
-        case M.Cancelled{}: {==}
-        case M.UnknownPhase{}: {==}
+
+def cancelled_choice(old: Nat, original: M.Facts, valid: Bool, facts: M.Facts, seq: Nat) -> {M.completion_sound(Some{M.apply(M.State{M.Cancelled{}, old, original}, M.terminal_gate(M.Cancelled{}, M.choose(valid, M.Cancelled{}, facts)), seq)}) == True{} : Bool}:
+  match valid:
+    case True{}: {==}
+    case False{}: {==}
+
+def completed_cleanup(old: Nat, o: Bool, l: Bool, a: Bool, s: Bool, e: Nat, auth: Maybe<&2, Nat>, r: Maybe<&2, Nat>, p: Maybe<&2, Nat>, c: Maybe<&2, Nat>, clean: Nat, valid: Bool, next: Nat, evidence: {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == True{} : Bool}) -> {M.completion_sound(Some{M.apply(M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}, M.terminal_gate(M.Completed{}, M.choose(valid, M.Completed{}, M.with_cleanup(M.Facts{o, l, a, s, e, auth, r, p, c, clean}, next))), 1n+old)}) == True{} : Bool}:
+  match valid:
+    case True{}:
+      %evidence : {M.completion_sound(Some{M.State{M.Completed{}, 1n+old, M.Facts{o, l, a, s, e, auth, r, p, c, next}}}) == _ : Bool}
+      {==}
+    case False{}:
+      %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+      {==}
+
+def running_complete_sound(old: Nat, facts: M.Facts) -> {M.completion_sound(Some{M.sequenced(True{}, M.State{M.Running{}, old, facts}, M.Complete{})}) == True{} : Bool}:
+  match facts:
+    case M.Facts{_, _, True{}, True{}, _, _, _, _, _, _}: {==}
+    case M.Facts{_, _, True{}, False{}, _, _, _, _, _, _}: {==}
+    case M.Facts{_, _, False{}, True{}, _, _, _, _, _, _}: {==}
+    case M.Facts{_, _, False{}, False{}, _, _, _, _, _, _}: {==}
+
+def accepted_step_sound(previous: M.State, action: M.Action, evidence: {M.completion_sound(Some{previous}) == True{} : Bool}) -> {M.completion_sound(Some{M.sequenced(True{}, previous, action)}) == True{} : Bool}:
+  match previous:
+    case M.State{M.Running{}, +old, +facts}:
+      match action:
+        case M.Complete{}: running_complete_sound(old, facts)
+        case M.ResultAccepted{}:
+          safe_choice(M.State{M.Running{}, old, facts}, Bool.not(M.accepted(facts)), M.Running{}, M.with_accepted(facts), 1n+old, evidence, {==})
+        case M.StopConfirmed{}:
+          safe_choice(M.State{M.Running{}, old, facts}, M.both(M.launched(facts), Bool.not(M.stopped(facts))), M.Running{}, M.with_stopped(facts), 1n+old, evidence, {==})
+        case M.CancelRequested{+n}:
+          safe_choice(M.State{M.Running{}, old, facts}, Nat.is_gt(n, M.epoch(facts)), M.Cancelling{}, M.with_epoch(facts, n), 1n+old, evidence, {==})
+        case M.AuthorityAcquired{+n}:
+          safe_choice(M.State{M.Running{}, old, facts}, M.both(M.launched(facts), M.can_acquire(M.authority(facts), M.confirmed(facts), n)), M.Running{}, M.with_authority(facts, n), 1n+old, evidence, {==})
+        case M.AuthorityRevoked{+n}:
+          safe_choice(M.State{M.Running{}, old, facts}, M.can_revoke(M.authority(facts), M.pending(facts), n), M.Running{}, M.revoke(facts, n), 1n+old, evidence, {==})
+        case M.GenerationConfirmed{+n}:
+          safe_choice(M.State{M.Running{}, old, facts}, M.can_confirm(facts, n), M.Running{}, M.with_confirmation(facts, n), 1n+old, evidence, {==})
+        case M.Requested{}: {==}
+        case M.PresentationOwned{}: {==}
+        case M.StartingWork{}: {==}
+        case M.WorkerLaunched{}: {==}
+        case M.StartAcknowledged{}: {==}
+        case M.MarkFailed{}: {==}
+        case M.CancelDispatched{_}: {==}
+        case M.CancelAcknowledged{_}: {==}
+        case M.Cancel{_}: {==}
+        case M.UnknownLiveness{}: {==}
+        case M.UnknownCancel{_}: {==}
+        case M.CleanupStarted{}: {==}
+        case M.CleanupFinished{}: {==}
+    case M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}:
+      match action:
+        case M.CleanupStarted{}:
+          completed_cleanup(old, o, l, a, s, e, auth, r, p, c, clean, M.both(M.can_cleanup(M.Completed{}, M.Facts{o, l, a, s, e, auth, r, p, c, clean}), Nat.is_eq(clean, 0n)), 1n, evidence)
+        case M.CleanupFinished{}:
+          completed_cleanup(old, o, l, a, s, e, auth, r, p, c, clean, Nat.is_eq(clean, 1n), 2n, evidence)
+        case M.Requested{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.PresentationOwned{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.StartingWork{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.WorkerLaunched{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.StartAcknowledged{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.ResultAccepted{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.StopConfirmed{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.Complete{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.MarkFailed{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.CancelRequested{_}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.CancelDispatched{_}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.CancelAcknowledged{_}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.Cancel{_}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.UnknownLiveness{}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.UnknownCancel{_}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.AuthorityAcquired{_}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.AuthorityRevoked{_}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+        case M.GenerationConfirmed{_}:
+          %evidence : {M.completion_sound(Some{M.State{M.Completed{}, old, M.Facts{o, l, a, s, e, auth, r, p, c, clean}}}) == _ : Bool}
+          {==}
+    case M.State{M.Queued{}, old, +facts}:
+      match action:
+        case M.PresentationOwned{}:
+          safe_choice(M.State{M.Queued{}, old, facts}, Bool.not(M.owned(facts)), M.Queued{}, M.with_owned(facts), 1n+old, evidence, {==})
+        case M.StartingWork{}:
+          safe_choice(M.State{M.Queued{}, old, facts}, M.owned(facts), M.Starting{}, facts, 1n+old, evidence, {==})
+        case M.CancelRequested{+n}:
+          safe_choice(M.State{M.Queued{}, old, facts}, Nat.is_gt(n, M.epoch(facts)), M.Cancelling{}, M.with_epoch(facts, n), 1n+old, evidence, {==})
+        case M.UnknownLiveness{}: {==}
+        case M.Requested{}: {==}
+        case M.WorkerLaunched{}: {==}
+        case M.StartAcknowledged{}: {==}
+        case M.ResultAccepted{}: {==}
+        case M.StopConfirmed{}: {==}
+        case M.Complete{}: {==}
+        case M.MarkFailed{}: {==}
+        case M.CancelDispatched{_}: {==}
+        case M.CancelAcknowledged{_}: {==}
+        case M.Cancel{_}: {==}
+        case M.UnknownCancel{_}: {==}
+        case M.AuthorityAcquired{_}: {==}
+        case M.AuthorityRevoked{_}: {==}
+        case M.GenerationConfirmed{_}: {==}
+        case M.CleanupStarted{}: {==}
+        case M.CleanupFinished{}: {==}
+    case M.State{M.Starting{}, old, +facts}:
+      match action:
+        case M.WorkerLaunched{}:
+          safe_choice(M.State{M.Starting{}, old, facts}, Bool.not(M.launched(facts)), M.Starting{}, M.with_launched(facts), 1n+old, evidence, {==})
+        case M.StartAcknowledged{}:
+          safe_choice(M.State{M.Starting{}, old, facts}, M.launched(facts), M.Running{}, facts, 1n+old, evidence, {==})
+        case M.StopConfirmed{}:
+          safe_choice(M.State{M.Starting{}, old, facts}, M.both(M.launched(facts), Bool.not(M.stopped(facts))), M.Starting{}, M.with_stopped(facts), 1n+old, evidence, {==})
+        case M.MarkFailed{}: {==}
+        case M.CancelRequested{+n}:
+          safe_choice(M.State{M.Starting{}, old, facts}, Nat.is_gt(n, M.epoch(facts)), M.Cancelling{}, M.with_epoch(facts, n), 1n+old, evidence, {==})
+        case M.UnknownLiveness{}: {==}
+        case M.AuthorityAcquired{+n}:
+          safe_choice(M.State{M.Starting{}, old, facts}, M.both(M.launched(facts), M.can_acquire(M.authority(facts), M.confirmed(facts), n)), M.Starting{}, M.with_authority(facts, n), 1n+old, evidence, {==})
+        case M.AuthorityRevoked{+n}:
+          safe_choice(M.State{M.Starting{}, old, facts}, M.can_revoke(M.authority(facts), M.pending(facts), n), M.Starting{}, M.revoke(facts, n), 1n+old, evidence, {==})
+        case M.GenerationConfirmed{+n}:
+          safe_choice(M.State{M.Starting{}, old, facts}, M.can_confirm(facts, n), M.Starting{}, M.with_confirmation(facts, n), 1n+old, evidence, {==})
+        case M.Requested{}: {==}
+        case M.PresentationOwned{}: {==}
+        case M.StartingWork{}: {==}
+        case M.ResultAccepted{}: {==}
+        case M.Complete{}: {==}
+        case M.CancelDispatched{_}: {==}
+        case M.CancelAcknowledged{_}: {==}
+        case M.Cancel{_}: {==}
+        case M.UnknownCancel{_}: {==}
+        case M.CleanupStarted{}: {==}
+        case M.CleanupFinished{}: {==}
+    case M.State{M.Cancelling{}, old, +facts}:
+      match action:
+        case M.CancelDispatched{+n}:
+          safe_choice(M.State{M.Cancelling{}, old, facts}, Nat.is_eq(n, M.epoch(facts)), M.Cancelling{}, facts, 1n+old, evidence, {==})
+        case M.CancelAcknowledged{+n}:
+          safe_choice(M.State{M.Cancelling{}, old, facts}, Nat.is_eq(n, M.epoch(facts)), M.Cancelling{}, M.with_stopped(facts), 1n+old, evidence, {==})
+        case M.Cancel{+n}:
+          safe_choice(M.State{M.Cancelling{}, old, facts}, M.both(Nat.is_eq(n, M.epoch(facts)), M.stopped(facts)), M.Cancelled{}, facts, 1n+old, evidence, {==})
+        case M.UnknownCancel{+n}:
+          safe_choice(M.State{M.Cancelling{}, old, facts}, Nat.is_eq(n, M.epoch(facts)), M.UnknownPhase{}, facts, 1n+old, evidence, {==})
+        case M.Requested{}: {==}
+        case M.PresentationOwned{}: {==}
+        case M.StartingWork{}: {==}
+        case M.WorkerLaunched{}: {==}
+        case M.StartAcknowledged{}: {==}
+        case M.ResultAccepted{}: {==}
+        case M.StopConfirmed{}: {==}
+        case M.Complete{}: {==}
+        case M.MarkFailed{}: {==}
+        case M.CancelRequested{_}: {==}
+        case M.UnknownLiveness{}: {==}
+        case M.AuthorityAcquired{_}: {==}
+        case M.AuthorityRevoked{_}: {==}
+        case M.GenerationConfirmed{_}: {==}
+        case M.CleanupStarted{}: {==}
+        case M.CleanupFinished{}: {==}
+    case M.State{M.Failed{}, _, _}: {==}
+    case M.State{M.Cancelled{}, old, +facts}:
+      match action:
+        case M.CleanupStarted{}:
+          cancelled_choice(old, facts, M.both(M.can_cleanup(M.Cancelled{}, facts), Nat.is_eq(M.cleanup(facts), 0n)), M.with_cleanup(facts, 1n), 1n+old)
+        case M.CleanupFinished{}:
+          cancelled_choice(old, facts, Nat.is_eq(M.cleanup(facts), 1n), M.with_cleanup(facts, 2n), 1n+old)
+        case M.Requested{}: {==}
+        case M.PresentationOwned{}: {==}
+        case M.StartingWork{}: {==}
+        case M.WorkerLaunched{}: {==}
+        case M.StartAcknowledged{}: {==}
+        case M.ResultAccepted{}: {==}
+        case M.StopConfirmed{}: {==}
+        case M.Complete{}: {==}
+        case M.MarkFailed{}: {==}
+        case M.CancelRequested{_}: {==}
+        case M.CancelDispatched{_}: {==}
+        case M.CancelAcknowledged{_}: {==}
+        case M.Cancel{_}: {==}
+        case M.UnknownLiveness{}: {==}
+        case M.UnknownCancel{_}: {==}
+        case M.AuthorityAcquired{_}: {==}
+        case M.AuthorityRevoked{_}: {==}
+        case M.GenerationConfirmed{_}: {==}
+    case M.State{M.UnknownPhase{}, _, _}: {==}
 
 def Laws.completion_sequenced(previous, valid, action, evidence):
   match previous:
@@ -42,7 +235,7 @@ def Laws.completion_sequenced(previous, valid, action, evidence):
           %evidence : {M.completion_sound(Some{M.State{phase, old, facts}}) == _ : Bool}
           {==}
         case True{}:
-          Laws.completion_apply_decision(M.State{phase, old, facts}, M.terminal_gate(phase, M.transition(phase, facts, action)), 1n+old, evidence)
+          accepted_step_sound(M.State{phase, old, facts}, action, evidence)
 
 def Laws.completion_step(current, event, evidence):
   match current event:
@@ -85,27 +278,9 @@ def Laws.completion_sound_replay(xs):
   Laws.completion_replay_from(xs, None{}, {==})
 
 def Laws.sequence_apply(previous, decision):
-  match previous:
-    case M.State{phase, old, facts}:
-      match decision:
-        case M.Keep{}: Inl{{==}}
-        case M.Change{newPhase, newFacts}:
-          match newPhase:
-            case M.Completed{}:
-              match newFacts:
-                case M.Facts{o, l, a, s, epoch, auth, revoked, pending, confirmed, cleanup}:
-                  match a s:
-                    case True{} True{}: Inr{{==}}
-                    case True{} False{}: Inl{{==}}
-                    case False{} True{}: Inl{{==}}
-                    case False{} False{}: Inl{{==}}
-            case M.Queued{}: Inr{{==}}
-            case M.Starting{}: Inr{{==}}
-            case M.Running{}: Inr{{==}}
-            case M.Cancelling{}: Inr{{==}}
-            case M.Failed{}: Inr{{==}}
-            case M.Cancelled{}: Inr{{==}}
-            case M.UnknownPhase{}: Inr{{==}}
+  match decision:
+    case M.Keep{}: Inl{{==}}
+    case M.Change{_, _}: Inr{{==}}
 
 def Laws.sequence_sequenced(previous, valid, action):
   match previous:
@@ -218,20 +393,7 @@ def Laws.terminal_apply(phase, decision, previous, seq, identity, terminal):
   match phase:
     case M.Completed{}:
       match decision:
-        case M.Change{M.Completed{}, facts}:
-          match facts:
-            case M.Facts{o, l, a, s, e, auth, r, p, c, clean}:
-              match a s:
-                case True{} True{}: {==}
-                case True{} False{}:
-                  %identity : {M.phase_of(Some{previous}) == _ : Maybe<&2, M.Phase>}
-                  {==}
-                case False{} True{}:
-                  %identity : {M.phase_of(Some{previous}) == _ : Maybe<&2, M.Phase>}
-                  {==}
-                case False{} False{}:
-                  %identity : {M.phase_of(Some{previous}) == _ : Maybe<&2, M.Phase>}
-                  {==}
+        case M.Change{M.Completed{}, facts}: {==}
         case M.Keep{}:
           %identity : {M.phase_of(Some{previous}) == _ : Maybe<&2, M.Phase>}
           {==}
@@ -291,7 +453,7 @@ def Laws.terminal_apply(phase, decision, previous, seq, identity, terminal):
     case M.UnknownPhase{}:
       %identity : {M.phase_of(Some{previous}) == _ : Maybe<&2, M.Phase>}
       {==}
-    case M.Queued{}: match terminal: 
+    case M.Queued{}: match terminal:
     case M.Starting{}: match terminal:
     case M.Running{}: match terminal:
     case M.Cancelling{}: match terminal:
