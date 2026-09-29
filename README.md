@@ -52,7 +52,7 @@ By contrast, `pi-subagents` documents its async completion replay records as bes
 
 ### Completion requires result acceptance and worker stop
 
-A worker producing its own answer is **self-settlement**. It is not necessarily **terminal completion**.
+When a worker produces its own answer, that is **self-settlement**. It is not necessarily **terminal completion**.
 
 An operation reaches terminal completion when its result has been durably accepted and its worker has been confirmed stopped. Worker settlement alone does not establish either fact.
 
@@ -70,7 +70,7 @@ An accepted result is never automatically deleted. It remains available until th
 
 ### Workers are visible, but the UI is not authoritative
 
-Pions starts each worker as an actual `pi` CLI in a dedicated Herdr workspace labelled `Pions <short operation id>`, created without moving focus or splitting the caller's pane. Humans can pick it from Herdr's workspace list and inspect the normal Pi TUI directly; Pions does not simulate it. A successful or stop-confirmed cancelled worker closes its own workspace; failed or unknown workers leave it open for investigation.
+Pions starts each worker as an actual `pi` CLI in a dedicated Herdr workspace labeled `Pions <short operation id>`, created without moving focus or splitting the caller's pane. Humans can pick it from Herdr's workspace list and inspect the normal Pi TUI directly; Pions does not simulate it. A worker that succeeds, or that is cancelled with a confirmed stop, closes its own workspace; failed or unknown workers leave it open for investigation.
 
 Semantic completion still comes exclusively from the authenticated worker protocol and persistent runtime state. Terminal rendering is evidence for an observer, not a lifecycle database.
 
@@ -78,7 +78,7 @@ Semantic completion still comes exclusively from the authenticated worker protoc
 
 The Pi subagent example passes delegated task text as a child-process argument. Pions writes task content and worker configuration to owner-only private files and passes references instead.
 
-Worker lifecycle and result frames travel over a local Unix-domain socket authenticated with an operation-specific capability. A result acknowledgement is sent only after durable acceptance.
+Worker lifecycle and result frames travel over a local Unix-domain socket authenticated with an operation-specific capability. A result acknowledgment is sent only after durable acceptance.
 
 The worker protocol and private files do not provide an OS sandbox.
 
@@ -90,7 +90,7 @@ Install version `0.2.0` from npm in a Pi project:
 pi install npm:@yasuhito/pions@0.2.0
 ```
 
-The package manifest registers only the Pions extension. To use a fixed local tarball in another Pi project, pack it here, then install the archive as an npm dependency in that project and register the installed package with Pi:
+The package manifest registers only the Pions extension. To use a fixed local tarball in another Pi project, pack it in this repository, then install the archive as an npm dependency in that project and register the installed package with Pi:
 
 ```sh
 npm pack
@@ -119,7 +119,7 @@ The tool input is only `task`. The model cannot choose the worker model, thinkin
 
 The worker has `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`, plus the tools of the Pi extensions configured for it; it does not have Pions delegation or cancellation tools, so delegation is one level deep. It runs in the same working directory as the delegating session and edits it directly: Pions creates no worktree or branch and does not merge changes. Failed delegations are never retried automatically; the parent starts a new `Operation` explicitly if needed.
 
-Independent delegations compose through Pi's normal parallel tool execution. Not running conflicting write delegations in parallel is the parent's responsibility.
+Independent delegations compose through Pi's normal parallel tool execution. The parent is responsible for not running conflicting write delegations in parallel.
 
 ### `pions_background`
 
@@ -169,7 +169,7 @@ A trusted repository pins the worker model and thinking level, and chooses the P
 }
 ```
 
-Workers start without extension discovery. Besides the internal Pions worker extension, they load only the Pi packages listed in `extensions`, written as in Pi settings, plus Herdr's Pi integration (`extensions/herdr-agent-state.ts` in the Pi agent directory) when it is installed. Pions resolves listed packages from the ones the delegating Pi already has installed and enabled, and never downloads them; a missing or disabled package, or Pions itself, is a configuration error before any worker starts. Workers can use every tool their loaded extensions register, in addition to the seven built-in tools.
+Workers start without extension discovery. Besides the internal Pions worker extension, they load only the Pi packages listed in `extensions` (using the same syntax as Pi settings), plus Herdr's Pi integration (`extensions/herdr-agent-state.ts` in the Pi agent directory) when it is installed. Pions resolves listed packages from the ones the delegating Pi already has installed and enabled, and never downloads them; a missing or disabled package, or Pions itself, is a configuration error before any worker starts. Workers can use every tool their loaded extensions register, in addition to the seven built-in tools.
 
 Pions bundles no model provider. Installing and authenticating the configured provider is the Pi environment's responsibility. To use a provider that a Pi extension registers, such as `claude-bridge`, list the package that provides it in `extensions`; with no `extensions`, such a provider is rejected before any worker starts. Pions never falls back to another model.
 
@@ -213,7 +213,7 @@ npm run build
 npm run check
 ```
 
-`npm run check` runs type checking, linting, formatting checks, test-assertion validation, and the full test suite. Run `npm run release-gate` before a release to add package-content validation and the real Pi + Herdr end-to-end test using a packed `@yasuhito/pions@0.2.0` tarball installed in a fresh consumer. The release gate needs authenticated Pi model access and may incur model charges. It is intentionally excluded from CI. See [the real Pi and Herdr E2E guide](docs/e2e-real-pi-herdr.md) for session isolation and prerequisites.
+`npm run check` runs type checking, linting, formatting checks, test-assertion validation, and the full test suite. Run `npm run release-gate` before a release to add package-content validation and the real Pi + Herdr end-to-end test using a packed `@yasuhito/pions@0.2.0` tarball installed in a fresh consumer project. The release gate needs authenticated Pi model access and may incur model charges. It is intentionally excluded from CI. See [the real Pi and Herdr E2E guide](docs/e2e-real-pi-herdr.md) for session isolation and prerequisites.
 
 ### Optional Bend verification
 
