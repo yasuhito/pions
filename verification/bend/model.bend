@@ -115,10 +115,6 @@ def with_authority(f: Facts, n: Nat) -> Facts:
   match f:
     case Facts{o, l, a, s, e, _, r, _, c, clean}: Facts{o, l, a, s, e, Some{n}, r, None{}, c, clean}
 
-def with_revocation(f: Facts, old: Nat, successor: Nat) -> Facts:
-  match f:
-    case Facts{o, l, a, s, e, auth, _, _, _, clean}: Facts{o, l, a, s, e, auth, Some{old}, Some{successor}, None{}, clean}
-
 def with_confirmation(f: Facts, n: Nat) -> Facts:
   match f:
     case Facts{o, l, a, s, e, auth, r, p, _, clean}: Facts{o, l, a, s, e, auth, r, p, Some{n}, clean}
