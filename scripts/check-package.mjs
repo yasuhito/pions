@@ -13,9 +13,13 @@ if (
 }
 if (
   JSON.stringify(Object.keys(manifest.dependencies ?? {}).sort()) !==
-  JSON.stringify(["effect", "typebox"])
+  JSON.stringify(["effect"])
 ) {
   throw new Error("Unexpected production dependencies");
+}
+
+if (manifest.peerDependencies?.typebox !== "*") {
+  throw new Error("Pions must use host-provided typebox from peerDependencies");
 }
 
 execFileSync("npm", ["run", "build"], { stdio: "inherit" });
