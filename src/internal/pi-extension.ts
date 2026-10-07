@@ -23,6 +23,7 @@ import {
   startBackgroundProcess,
 } from "./background-process.js";
 import type { BackgroundOwnerRequest } from "./background-owner.js";
+import { missingHerdrVariables } from "./herdr-presentation.js";
 import { makePersistedOperationReader } from "./persisted-operation-reader.js";
 import {
   backgroundOperationId,
@@ -440,6 +441,10 @@ export function installPionsExtension(
 
   pi.on("session_start", async (_event, context) => {
     if (!context.isProjectTrusted()) return;
+    // Outside Herdr nothing can be recovered, so startup stays silent; an
+    // explicit tool call still reports the missing Herdr environment.
+    if (missingHerdrVariables(options.environment ?? process.env).length > 0)
+      return;
     await ownership.admit(async () => {
       const { normalizedRoot, repositoryState } =
         await resolveRepositoryContext(context);

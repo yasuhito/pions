@@ -277,6 +277,13 @@ interface RegisteredTool {
   }>;
 }
 
+const HERDR_ENVIRONMENT = {
+  HERDR_ENV: "1",
+  HERDR_WORKSPACE_ID: "caller-workspace",
+  HERDR_TAB_ID: "caller-tab",
+  HERDR_PANE_ID: "caller-pane",
+} as const;
+
 async function fixture<TRuntime extends OperationRuntime = FakeRuntime>(
   runtime: TRuntime = new FakeRuntime() as unknown as TRuntime,
   options: Omit<PionsExtensionOptions, "runtime" | "stateBaseDirectory"> & {
@@ -315,6 +322,7 @@ async function fixture<TRuntime extends OperationRuntime = FakeRuntime>(
     repositoryRoot: root,
     piAgentDirectory: join(root, "pi-agent"),
     resolveWorkerExtensionPackages: () => Promise.resolve([]),
+    environment: HERDR_ENVIRONMENT,
     ...(useDefaultStateDirectory
       ? {}
       : { stateBaseDirectory: join(root, "state") }),
@@ -523,6 +531,136 @@ test("closing the parent Pi does not cancel a background Operation", async (cont
   await value.shutdown("quit");
 
   assert.equal(runtime.cancellations.length, 0);
+});
+
+async function pendingBackgroundFixture(
+  environment: NodeJS.ProcessEnv,
+  start: NonNullable<PionsExtensionOptions["backgroundProcessStarter"]>,
+  runtimeFactory?: PionsExtensionOptions["runtimeFactory"]
+) {
+  const seed = await fixture(new FakeRuntime(), {
+    backgroundProcessStarter: async ({ request }) => {
+      await writePrivatePrompt(
+        join(
+          request.runtime.stateDirectory,
+          "..",
+          "requests",
+          `${request.operationId}.background.json`
+        ),
+        JSON.stringify(request)
+      );
+      return request.operationId;
+    },
+  });
+  await seed.background();
+  const value = await fixture(new FakeRuntime(), {
+    repositoryRoot: seed.root,
+    stateBaseDirectory: join(seed.root, "state"),
+    environment,
+    backgroundProcessStarter: start,
+    ...(runtimeFactory === undefined ? {} : { runtimeFactory }),
+  });
+  value.setWorkingDirectory(seed.root);
+  return {
+    ...value,
+    cleanup: () =>
+      Promise.all([
+        rm(seed.root, { recursive: true, force: true }),
+        rm(value.root, { recursive: true, force: true }),
+      ]),
+  };
+}
+
+test("Herdr外のsession_startは保存済みのバックグラウンド要求を起動しない", async (context) => {
+  const starts: Array<string> = [];
+  const value = await pendingBackgroundFixture({}, async ({ request }) => {
+    starts.push(request.operationId);
+    return request.operationId;
+  });
+  context.after(value.cleanup);
+  await value.start();
+
+  assert.deepEqual(starts, []);
+});
+
+test("Herdr外のsession_startはエラーを出さずに完了する", async (context) => {
+  const value = await pendingBackgroundFixture({}, async () => {
+    throw new HerdrPreconditionError(["HERDR_ENV"]);
+  });
+  context.after(value.cleanup);
+
+  await assert.doesNotReject(value.start());
+});
+
+test("Herdr外のsession_startはRuntimeを復旧しない", async (context) => {
+  let creations = 0;
+  const value = await pendingBackgroundFixture(
+    {},
+    async ({ request }) => request.operationId,
+    () => {
+      creations += 1;
+      return new FakeRuntime();
+    }
+  );
+  context.after(value.cleanup);
+  await value.start();
+
+  assert.equal(creations, 0);
+});
+
+test("Herdr識別子が欠けた環境のsession_startは保存済みのバックグラウンド要求を起動しない", async (context) => {
+  const starts: Array<string> = [];
+  const value = await pendingBackgroundFixture(
+    { ...HERDR_ENVIRONMENT, HERDR_PANE_ID: "" },
+    async ({ request }) => {
+      starts.push(request.operationId);
+      return request.operationId;
+    }
+  );
+  context.after(value.cleanup);
+  await value.start();
+
+  assert.deepEqual(starts, []);
+});
+
+test("HERDR_ENVが1でない環境のsession_startは保存済みのバックグラウンド要求を起動しない", async (context) => {
+  const starts: Array<string> = [];
+  const value = await pendingBackgroundFixture(
+    { ...HERDR_ENVIRONMENT, HERDR_ENV: "0" },
+    async ({ request }) => {
+      starts.push(request.operationId);
+      return request.operationId;
+    }
+  );
+  context.after(value.cleanup);
+  await value.start();
+
+  assert.deepEqual(starts, []);
+});
+
+test("有効なHerdr内のsession_startは保存済みのバックグラウンド要求を起動する", async (context) => {
+  const starts: Array<string> = [];
+  const value = await pendingBackgroundFixture(
+    HERDR_ENVIRONMENT,
+    async ({ request }) => {
+      starts.push(request.operationId);
+      return request.operationId;
+    }
+  );
+  context.after(value.cleanup);
+  await value.start();
+
+  assert.equal(starts.length, 1);
+});
+
+test("有効なHerdr内のsession_startはバックグラウンド要求の起動失敗を伝える", async (context) => {
+  const failure = new Error("Background owner failed to start");
+  const value = await pendingBackgroundFixture(HERDR_ENVIRONMENT, async () => {
+    throw failure;
+  });
+  context.after(value.cleanup);
+
+  await assert.rejects(value.start(), (error) => error === failure);
 });
 
 test("session shutdown cancels a foreground Operation adopted during recovery", async (context) => {
