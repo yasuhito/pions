@@ -124,25 +124,32 @@ function commandFailure(output: CommandOutput): Error | undefined {
   );
 }
 
+/** Name the Herdr variables that keep this environment from being a Herdr pane. */
+export function missingHerdrVariables(
+  environment: Readonly<Record<string, string | undefined>>
+): ReadonlyArray<string> {
+  const required = [
+    "HERDR_ENV",
+    "HERDR_WORKSPACE_ID",
+    "HERDR_TAB_ID",
+    "HERDR_PANE_ID",
+  ] as const;
+  return required.filter((name) => {
+    const value = environment[name];
+    return (
+      value === undefined ||
+      value.length === 0 ||
+      (name === "HERDR_ENV" && value !== "1")
+    );
+  });
+}
+
 export class HerdrPresentation implements Presentation {
   constructor(private readonly options: HerdrPresentationOptions) {}
 
   preflight(): Effect.Effect<void, HerdrPreconditionError> {
     return Effect.suspend(() => {
-      const required = [
-        "HERDR_ENV",
-        "HERDR_WORKSPACE_ID",
-        "HERDR_TAB_ID",
-        "HERDR_PANE_ID",
-      ] as const;
-      const missing = required.filter((name) => {
-        const value = this.options.environment[name];
-        return (
-          value === undefined ||
-          value.length === 0 ||
-          (name === "HERDR_ENV" && value !== "1")
-        );
-      });
+      const missing = missingHerdrVariables(this.options.environment);
       return missing.length === 0
         ? Effect.void
         : Effect.fail(new HerdrPreconditionError(missing));
